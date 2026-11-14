@@ -86,6 +86,20 @@ static uint32_t x_form(unsigned rt, unsigned ra, unsigned rb, unsigned xo, unsig
 }
 
 static bool more_jumps;         /* plain B, which the JIT follows into ROM-like code */
+static bool fp_heavy;           /* mostly floating point, as MathLib's code is */
+
+/* An FPSCR instruction: mffs, mtfsf (often all fields, as MathLib saves and restores it), mtfsfi, mtfsb1/0, mcrfs */
+static uint32_t gen_fpscr(unsigned rc)
+{
+	switch (pick(6)) {
+	case 0:  return 63u << 26 | pick(32) << 21 | 583 << 1 | rc;
+	case 1:  return 63u << 26 | (pick(2) ? 0xFFu : pick(4) ? pick(256) : 0x18u >> pick(2)) << 17 | pick(32) << 11 |
+			711 << 1 | rc;
+	case 2:  return 63u << 26 | pick(8) << 23 | pick(16) << 12 | 134 << 1 | rc;
+	case 3:  return 63u << 26 | (pick(2) ? pick(32) : 13 + pick(7)) << 21 | (pick(2) ? 38 : 70) << 1 | rc;
+	default: return 63u << 26 | pick(8) << 23 | (pick(2) ? pick(8) : 3 + pick(2)) << 18 | 64 << 1;
+	}
+}
 
 static uint32_t gen_insn(unsigned k, unsigned n)
 {
@@ -98,7 +112,7 @@ static uint32_t gen_insn(unsigned k, unsigned n)
 					   49, 53 };
 	static const unsigned x_mem[] = { 23, 55, 87, 119, 279, 311, 343, 375, 151, 183, 215, 247, 407, 439,
 					  599, 631, 727, 759, 534, 790, 662, 918, 20, 150, 1014, 535, 663, 567, 695 };
-	unsigned c = pick(100);
+	unsigned c = fp_heavy && pick(4) ? 82 + pick(6) : pick(100);
 
 	if (more_jumps && pick(8) == 0) {
 		int32_t target = (int32_t)pick(n + 4) - (int32_t)k;
@@ -168,6 +182,8 @@ static uint32_t gen_insn(unsigned k, unsigned n)
 		static const unsigned a_ops[] = { 21, 20, 25, 18, 29, 28, 31, 30, 21, 25, 29, 22, 24, 26, 23 };
 		static const unsigned x_ops[] = { 72, 40, 264, 136, 12, 15, 14, 12, 15, 583, 711, 134, 38, 70, 64 };
 		unsigned rc = pick(4) == 0;
+		if (fp_heavy && pick(3) == 0)
+			return gen_fpscr(rc);
 		switch (pick(5)) {
 		case 0: case 1:
 			return (pick(2) ? 63u : 59u) << 26 | pick(32) << 21 | pick(32) << 16 | pick(32) << 11 | pick(32) << 6 |
@@ -434,8 +450,20 @@ static void test_random_programs(unsigned programs, bool rom_code)
 		rng = seed;
 		uint32_t code[CODE_MAX + 1];
 		unsigned n = 8 + pick(CODE_MAX - 8);
+		fp_heavy = pick(4) == 0;
 		for (unsigned k = 0; k < n; k++)
 			code[k] = gen_insn(k, n);
+		for (unsigned m = fp_heavy ? pick(4) : 0; m; m--) {    /* integers into doubles: stw, stw, lfd */
+			unsigned k = pick(n - 4), base = pick(4) ? 31 : 29;
+			int32_t d = (int32_t)(pick(256) * 4) - 512;
+			code[k] = d_form(36, rsrc(), base, (uint32_t)d);
+			code[k + 1] = d_form(36, rsrc(), base, (uint32_t)(d + 4));
+			if (pick(3) == 0)               /* something in between, perhaps over them */
+				code[k + 2] = pick(2) ? d_form((unsigned[]){ 36, 38, 44, 37, 32, 14 }[pick(6)], rdst(),
+								 pick(4) ? base : rsrc(), (uint32_t)(d + (int32_t)pick(8))) :
+							gen_insn(k + 2, n);
+			code[k + 3] = d_form(pick(8) ? 50 : 51, pick(32), base, (uint32_t)d);
+		}
 		code[n] = 17u << 26 | 2;                                /* sc */
 		for (unsigned k = 1; k < n; k++)                        /* the quick system calls, often */
 			if (code[k] == code[n] && pick(2))

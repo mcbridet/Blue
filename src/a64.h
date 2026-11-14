@@ -142,6 +142,12 @@ static inline uint32_t a64_pair(bool load, enum a64_pair_mode mode, unsigned t1,
 	       t2 << 10 | n << 5 | t1;
 }
 
+/* STP/LDP of D registers at [Xn, #offset] (a multiple of 8) */
+static inline uint32_t a64_fp_pair(bool load, unsigned t1, unsigned t2, unsigned n, int offset)
+{
+	return 0x6D000000u | (unsigned)load << 22 | ((unsigned)(offset / 8) & 0x7F) << 15 | t2 << 10 | n << 5 | t1;
+}
+
 /* Branches; offsets in bytes from the branch */
 static inline uint32_t a64_b(bool link, int32_t offset)
 {
