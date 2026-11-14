@@ -1820,3 +1820,55 @@ Facts later tasks need, added as they are found.
   restored one's, whose Special menu has Burn CD) then powers off with
   the volume unmounted. The Setup Assistant's first screen quits with
   Command-Q and a click on Quit.
+- **MacBench's Floating Point test** (M5; profiles in instruction time
+  with `clock 1000`, which runs the same code, `SYSHM_JIT_PROFILE=FROM:TO`
+  over one part): five parts of about 10 s of guest time, each counting
+  iterations: an FFT (MacBench's code at 0x06D17xxx in that run), an LU
+  decomposition (0x06D18xxx), MathLib's functions with NaNs and infinities
+  among the arguments (0x0760xxxx-0x0761xxxx), a table of log factorials
+  (`build_logfact`: MathLib's log and exp, from a loop turning integers
+  into doubles the 0x43300000 way) and arithmetic on special values. The
+  score is homogeneous in guest speed (clock 1000: 3,894; 2000: 7,776) and
+  weighs the parts like a harmonic mean: doubling the clock in one part
+  alone raised it 12.6%, 3.5%, 1.6%, 43% and 4.1%, so their shares of the
+  "time" are about 22%, 7%, 3%, 60% and 8%. Host speed per part before
+  (guest instructions per second): 3.2, 5.7, 1.0, 1.35 and 3.3 billion
+  (the Processor test's code: 5.2), which predicts about 6,700 in real time
+  (7,085 measured; the user's window: about 7x). What was slow: MathLib
+  saves the FPSCR with mffs, clears it and restores it (XX ORed in) with
+  mtfsf 0xFF in every call, and those went to the interpreter through
+  `call_step()` (every register written back, the cache dropped, the
+  pending FP operation replayed in C first): 120 million in 19 billion
+  instructions of the first parts, 79 million replays. Every FP operation
+  then loaded its operands from struct ppc_cpu, stored its result there
+  (the next one loading it back, on the dependency chain), checked the
+  rounding mode and stored its pending record (operands, instruction):
+  about 22 host instructions. Special values (NaN, infinity, x/0) go to
+  the interpreter (13.6 million in those 19 billion), as before: they are
+  most of the MathLib and special-value parts (3% and 8%). In `src/jit.c`
+  now: the FPSCR instructions natively (`fp_fpscr()`; mtfsf 0xFF replaces
+  what's pending, so only mffs and partial writes settle it, and
+  `fp_settle()` replays in the mode the operation ran in and takes only
+  FR, FI and FPRF from the replay, so mode and exception bits may change
+  in between); FPRs in host registers within a block (16 slots, part of
+  the register cache's state, so every exit and call into C writes them
+  back); the mode checked once a block (`fp_mode()`, a side exit
+  otherwise); the pending record deferred in the cache state
+  (`fp_record()`) and settled natively (`build_settle()`: a routine per
+  operation, with the fast path's checks, else `fp_settle()`; a slow path
+  that rejoins leaves its own record to come, so the routine must check);
+  checks only the inexact test needs skipped while XX is set
+  (`fp_lazy_checks()`); w5 kept as the FPSCR between FP instructions
+  (`fp_keeps_w5()`); stw, stw, lfd of those words built from the registers
+  (`forward_double()`). Per part after: 5.4, 6.2, 1.7, 3.4 and 5.1
+  billion; real time 7,085 → 16,616 (medians of 4 headless runs,
+  interleaved; in a later session 6,250 → 14,700, main merged; single
+  runs on a loaded host ranged from 4,660 to 8,826 for the same binary). The 8.5 and 9.1 CD checks, and the test's own
+  instruction-time run to 70 billion, end exactly as before. Left: the log
+  factorials are still two thirds of what remains (MathLib code at 8-15
+  host instructions an FP operation, the range checks and the XX test
+  most of them; a settle and two mtfsf a call); special values through the
+  interpreter; FPRs in host registers across blocks. The interpreter's
+  mffs leaves the upper word 0 (`FP_INT_HI`'s comment says otherwise; the
+  750's is undefined, 0xFFF80000 on the Gekko): both engines agree, as
+  before.

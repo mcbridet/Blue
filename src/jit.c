@@ -95,6 +95,7 @@ struct jit_state {
 	const void ***l1;
 	uint64_t remaining;
 	bool (*step)(struct ppc_cpu *, uint32_t, uint32_t);
+	void (*settle)(struct ppc_cpu *);
 	bool (*kcall)(struct ppc_cpu *, unsigned);
 	void (*code_store)(struct jit_state *, uint32_t, uint64_t, uint32_t);
 	unsigned (*mmio)(struct ppc_cpu *, uint32_t, uint32_t, uint32_t, uint32_t, uint64_t);
@@ -107,26 +108,29 @@ struct jit_state {
 	uint64_t entry_budget;          /* R_BUDGET when generated code was entered */
 	/*
 	 * FP arithmetic whose FR, FI and FPRF are still to be worked out (see
-	 * fp_arith()), or 0; 0x10 | FPCC if a compare has set FPCC since, or 0;
-	 * the instruction's operands.
+	 * fp_arith()): FP_PENDING(), or 0; 0x10 | FPCC if a compare has set
+	 * FPCC since, or 0; the instruction's operands (a, b, c).
 	 */
-	uint32_t fp_insn, fp_fpcc;
+	uint32_t fp_op, fp_fpcc;
 	uint64_t fp_ops[3];
 	uint32_t scratch;
 	uint64_t mmio_return;           /* (the mmio stub's) */
 	uint32_t mmio_exit;             /* how slow_ios() leaves after an access the hook did */
 };
 
-/* (generated code clears fp_insn and fp_fpcc with one 64-bit store) */
-_Static_assert(offsetof(struct jit_state, fp_insn) % 8 == 0 &&
-	       offsetof(struct jit_state, fp_fpcc) == offsetof(struct jit_state, fp_insn) + 4, "jit_state layout");
+/* An opcode-59 or 63 operation in fp_op: 16 bits, nonzero */
+#define FP_PENDING(op, xo5) (0x8000u | ((op) == 59 ? 0x20u : 0) | (xo5))
+
+/* (generated code clears fp_op and fp_fpcc with one 64-bit store) */
+_Static_assert(offsetof(struct jit_state, fp_op) % 8 == 0 &&
+	       offsetof(struct jit_state, fp_fpcc) == offsetof(struct jit_state, fp_op) + 4, "jit_state layout");
 
 struct jit {
 	struct jit_state st;
 	struct mem *mem;
 	uint32_t *code, *code_end, *code_free, *blocks_start;
 	uint32_t (*enter)(struct ppc_cpu *, const void *, uint64_t, struct jit_state *);
-	const uint32_t *exit, *side_exit, *link, *link_branch, *hook_exit, *miss_exit, *lookup, *mmio_call;
+	const uint32_t *exit, *side_exit, *link, *link_branch, *hook_exit, *miss_exit, *lookup, *mmio_call, *settle;
 	uint32_t linked_hook;           /* blocks are never linked to this pc */
 	/* the match hook blocks are translated for: only a block of its own runs its pc, checking first */
 	uint32_t match_pc;
@@ -163,6 +167,25 @@ struct jit {
 	uint64_t translated_insns;
 };
 
+/* sampling profiler (see below) */
+#define PROF_MAX 1000000u
+
+struct prof_sample {
+	uint32_t guest_pc;              /* block, or 0 */
+	uint32_t where;                 /* offset in the block, or host address bits */
+	uintptr_t host_pc;
+};
+
+static struct {
+	struct jit *j;
+	unsigned long total, blocks, stubs, host, other;
+	struct prof_sample *s;
+	unsigned n;
+	uintptr_t text_lo, text_hi;     /* syshm's own code */
+	const uint64_t *icount;         /* samples only from instruction `from` to `to` */
+	uint64_t from, to;
+} prof;
+
 /* ---- code emission ------------------------------------------------------- */
 
 enum { FIX_IMM19, FIX_IMM14, FIX_SITE };
@@ -193,6 +216,15 @@ static const uint8_t fixed_guest[NFIXED] = { G_CR, G_LR, 3, 4, 1, 24, 27, 29 };
 static const uint8_t fixed_reg[NFIXED] = { 12, 13, 14, 15, 26, 27, 28, 29 };
 static const uint8_t cache_reg[NCACHE] = { 7, 8, 16, 17, 24 };
 
+/*
+ * FPRs are cached the same way, in d8-d15, which calls into C keep (only
+ * their low 64 bits, all a double needs: generated code saves the C
+ * caller's on entry), and d24-d31, which they don't
+ */
+#define NFCACHE 16u
+#define FCALLEE_SAVED 8u                /* (slots 0-7 are d8-d15) */
+#define FREG(s) ((s) < FCALLEE_SAVED ? 8u + (s) : 16u + (s))
+
 /* The host register a guest register is fixed in, or 0 */
 static unsigned fixed_host(unsigned g)
 {
@@ -205,6 +237,11 @@ static unsigned fixed_host(unsigned g)
 struct cache_state {
 	int8_t guest[NCACHE];           /* guest register in each slot, or -1 */
 	uint8_t dirty;                  /* slots not yet written back */
+	int8_t fpr[NFCACHE];            /* FPR in each FP slot (FREG()), or -1 */
+	uint16_t fp_dirty;
+	/* FP_PENDING() of an operation whose record is still to be stored (see fp_arith()), or 0; its operand FPRs */
+	uint16_t fp_rec;
+	int8_t fp_rec_ops[4];
 };
 
 struct fixup {
@@ -260,9 +297,17 @@ struct slow_fp {
 	uint32_t *at[MAX_FP_EXITS];     /* conditional branches to it (imm19) */
 	unsigned nat;
 	uint32_t *rejoin;
-	struct cache_state cs;
+	struct cache_state cs, after;   /* at the branches to it, where it rejoins */
 	uint32_t insn, pc;
 };
+
+/* A word the block stored, at rA + d, from rS (both unchanged since) */
+struct stored_word {
+	int8_t base, src;
+	int16_t off;
+};
+
+#define MAX_STORED 8u
 
 /* Exit to a known pc */
 struct link {
@@ -297,6 +342,13 @@ struct tx {
 	int8_t slot_of[NGUEST];
 	uint32_t used[NCACHE], tick;
 	unsigned pins;                  /* slots the current instruction uses */
+	int8_t fp_slot_of[32];
+	uint32_t fp_used[NFCACHE];
+	unsigned fp_pins;
+	bool fp_mode_ok;                /* the FPSCR is known to round to nearest with no exceptions enabled */
+	bool w5_fpscr;                  /* w5 holds the FPSCR (see fp_keeps_w5()) */
+	struct stored_word stored[MAX_STORED];  /* see forward_double() */
+	unsigned nstored;
 };
 
 #define OFF(field) ((unsigned)offsetof(struct ppc_cpu, field))
@@ -418,20 +470,71 @@ static void rc_reset(struct tx *t)
 	t->rc.dirty = 0;
 	memset(t->slot_of, -1, sizeof t->slot_of);
 	t->pins = 0;
+	memset(t->rc.fpr, -1, sizeof t->rc.fpr);
+	t->rc.fp_dirty = 0;
+	memset(t->fp_slot_of, -1, sizeof t->fp_slot_of);
+	t->fp_pins = 0;
+	t->rc.fp_rec = 0;
+	memset(t->rc.fp_rec_ops, -1, sizeof t->rc.fp_rec_ops);
 }
 
-/* Writes back the registers dirty in `cs` */
+/*
+ * Stores the record of the FP operation `cs` defers (see fp_arith()): its
+ * operands, which are still in their FPRs, and FP_PENDING(). Uses d0, x9.
+ */
+static void fp_record(struct tx *t, const struct cache_state *cs)
+{
+	if (!cs->fp_rec)
+		return;
+	for (unsigned k = 0; k < 3; k++) {
+		int r = cs->fp_rec_ops[k];
+		if (r < 0)
+			continue;
+		unsigned d = 0;
+		for (unsigned s = 0; s < NFCACHE; s++)
+			if (cs->fpr[s] == r)
+				d = FREG(s);
+		if (!d)
+			emit(t, a64_fp_ldst(true, true, 0, R_CPU, FPR((unsigned)r)));
+		emit(t, a64_fp_ldst(true, false, d, R_STATE, (unsigned)offsetof(struct jit_state, fp_ops) + 8 * k));
+	}
+	emit(t, a64_movw(0, A64_MOVZ, 9, cs->fp_rec, 0));
+	emit(t, a64_ldst_imm(3, false, 9, R_STATE, (unsigned)offsetof(struct jit_state, fp_op)));    /* (and fp_fpcc = 0) */
+}
+
+/* Writes back the registers dirty in `cs` (and a deferred FP record) */
 static void rc_store(struct tx *t, const struct cache_state *cs)
 {
+	fp_record(t, cs);
 	for (unsigned s = 0; s < NCACHE; s++)
 		if (cs->dirty & (1u << s))
 			st32(t, cache_reg[s], guest_off((unsigned)cs->guest[s]));
+	for (unsigned s = 0; s < NFCACHE; s++)
+		if (cs->fp_dirty & (1u << s))
+			emit(t, a64_fp_ldst(true, false, FREG(s), R_CPU, FPR((unsigned)cs->fpr[s])));
+}
+
+/* Loads the FPRs cached in `cs` after a call into C: all if it may have changed them, else those it didn't keep */
+static void rc_fp_load(struct tx *t, const struct cache_state *cs, bool all)
+{
+	for (unsigned s = all ? 0 : FCALLEE_SAVED; s < NFCACHE; s++)
+		if (cs->fpr[s] >= 0)
+			emit(t, a64_fp_ldst(true, true, FREG(s), R_CPU, FPR((unsigned)cs->fpr[s])));
 }
 
 static void rc_flush(struct tx *t)
 {
 	rc_store(t, &t->rc);
 	t->rc.dirty = 0;
+	t->rc.fp_dirty = 0;
+	t->rc.fp_rec = 0;
+}
+
+/* Stores the deferred FP record now */
+static void fp_record_now(struct tx *t)
+{
+	fp_record(t, &t->rc);
+	t->rc.fp_rec = 0;
 }
 
 /* A slot for guest register g: a free one, or the least recently used (written back) */
@@ -487,9 +590,21 @@ static unsigned rd0(struct tx *t, unsigned r)
 	return r ? rd(t, r) : A64_ZR;
 }
 
+/* Guest register g changes: stored words it was the base or the value of are forgotten */
+static void forget_stored(struct tx *t, unsigned g)
+{
+	for (unsigned k = 0; k < t->nstored;) {
+		if (t->stored[k].base == (int8_t)g || t->stored[k].src == (int8_t)g)
+			t->stored[k] = t->stored[--t->nstored];
+		else
+			k++;
+	}
+}
+
 /* A host register for guest register g's new value (all 32 bits must be written) */
 static unsigned wr(struct tx *t, unsigned g)
 {
+	forget_stored(t, g);
 	unsigned h = fixed_host(g);
 	if (h)
 		return h;
@@ -503,10 +618,68 @@ static unsigned wr(struct tx *t, unsigned g)
 /* Guest register g, to be changed in place */
 static unsigned rw(struct tx *t, unsigned g)
 {
+	forget_stored(t, g);
 	unsigned h = rd(t, g);
 	if (!fixed_host(g))
 		t->rc.dirty |= (uint8_t)(1u << t->slot_of[g]);
 	return h;
+}
+
+/* An FP slot for FPR r: a free one, or the least recently used (written back) */
+static unsigned fp_alloc(struct tx *t, unsigned r)
+{
+	unsigned best = NFCACHE;
+	for (unsigned s = 0; s < NFCACHE; s++) {
+		if (t->fp_pins & (1u << s))
+			continue;
+		if (t->rc.fpr[s] < 0) {
+			best = s;
+			break;
+		}
+		if (best == NFCACHE || t->fp_used[s] < t->fp_used[best])
+			best = s;
+	}
+	int8_t old = t->rc.fpr[best];
+	if (old >= 0) {
+		if (t->rc.fp_dirty & (1u << best))
+			emit(t, a64_fp_ldst(true, false, FREG(best), R_CPU, FPR((unsigned)old)));
+		t->fp_slot_of[old] = -1;
+	}
+	t->rc.fpr[best] = (int8_t)r;
+	t->rc.fp_dirty &= (uint16_t)~(1u << best);
+	t->fp_slot_of[r] = (int8_t)best;
+	return best;
+}
+
+static unsigned fp_use(struct tx *t, unsigned s)
+{
+	t->fp_pins |= 1u << s;
+	t->fp_used[s] = ++t->tick;
+	return FREG(s);
+}
+
+/* A host FP register holding FPR r */
+static unsigned frd(struct tx *t, unsigned r)
+{
+	int s = t->fp_slot_of[r];
+	if (s < 0) {
+		s = (int)fp_alloc(t, r);
+		emit(t, a64_fp_ldst(true, true, FREG((unsigned)s), R_CPU, FPR(r)));
+	}
+	return fp_use(t, (unsigned)s);
+}
+
+/* A host FP register for FPR r's new value (the deferred FP record stored first if r is an operand of it) */
+static unsigned fwr(struct tx *t, unsigned r)
+{
+	const int8_t *ops = t->rc.fp_rec_ops;
+	if (t->rc.fp_rec && (ops[0] == (int8_t)r || ops[1] == (int8_t)r || ops[2] == (int8_t)r))
+		fp_record_now(t);
+	int s = t->fp_slot_of[r];
+	if (s < 0)
+		s = (int)fp_alloc(t, r);
+	t->rc.fp_dirty |= (uint16_t)(1u << s);
+	return fp_use(t, (unsigned)s);
 }
 
 /* The fixed registers to and from memory, before and after calls into C */
@@ -647,6 +820,9 @@ static void call_step(struct tx *t, uint32_t insn)
 	call_c(t, (unsigned)offsetof(struct jit_state, step));
 	fixed_load(t, NFIXED);          /* it may have changed any register */
 	rc_reset(t);
+	t->fp_mode_ok = false;
+	t->w5_fpscr = false;
+	t->nstored = 0;
 	exit_if_zero(t, false, 0);
 	exit_if_code_changed(t);
 }
@@ -754,9 +930,57 @@ static struct slow_io *add_io(struct tx *t, unsigned bit, unsigned k, uint32_t i
 	return io;
 }
 
+/*
+ * lfd of the two words the block has just stored with stw, as compilers
+ * turn integers into doubles: the double is put together from the
+ * registers stored (the host can't forward two stores to one load, which
+ * then waits for them to reach its cache). They went to plain memory
+ * (fastmem: else the block would have been left), and nothing has stored
+ * there since. False if it isn't that.
+ */
+static bool forward_double(struct tx *t, unsigned frt, unsigned ra, int32_t d)
+{
+	int hi = -1, lo = -1;
+	for (unsigned k = 0; k < t->nstored; k++) {
+		if (t->stored[k].base != (int8_t)ra)
+			continue;
+		if (t->stored[k].off == d)
+			hi = t->stored[k].src;
+		else if (t->stored[k].off == d + 4)
+			lo = t->stored[k].src;
+	}
+	if (hi < 0 || lo < 0)
+		return false;
+	unsigned h = rd(t, (unsigned)hi), l = rd(t, (unsigned)lo);
+	mov_reg(t, 2, l);
+	emit(t, a64_bitfield(1, A64_BFM, 2, h, 32, 31));       /* x2 = h << 32 | l */
+	emit(t, a64_fmov_gp(true, true, fwr(t, frt), 2));
+	return true;
+}
+
+/* After a store of `bytes` at rA + d (indexed: unknown), from rS: what's known stored, and if `keep`, this word too */
+static void note_store(struct tx *t, bool keep, bool indexed, unsigned ra, int32_t d, unsigned bytes, unsigned rs)
+{
+	if (indexed || !ra) {
+		t->nstored = 0;
+		return;
+	}
+	for (unsigned k = 0; k < t->nstored;) {         /* (other bases may point there too) */
+		const struct stored_word *w = &t->stored[k];
+		if (w->base != (int8_t)ra || (w->off < d + (int32_t)bytes && d < w->off + 4))
+			t->stored[k] = t->stored[--t->nstored];
+		else
+			k++;
+	}
+	if (keep && t->nstored < MAX_STORED && d >= -32768 && d <= 32767)
+		t->stored[t->nstored++] = (struct stored_word){ (int8_t)ra, (int8_t)rs, (int16_t)d };
+}
+
 static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool update, bool indexed, unsigned fp,
 		       unsigned rd_, unsigned ra, unsigned rb, int32_t d)
 {
+	if (load && fp == LS_DOUBLE && !update && !indexed && ra && forward_double(t, rd_, ra, d))
+		return;
 	unsigned base = update ? rd(t, ra) : rd0(t, ra);
 	if (indexed)
 		emit(t, a64_addsub(0, 0, 0, 1, base, rd(t, rb), A64_LSL, 0));
@@ -766,7 +990,7 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 		add_imm(t, 1, base, d, 2);
 	if (!load) {
 		if (fp == LS_DOUBLE) {
-			emit(t, a64_ldst_imm(3, true, 4, R_CPU, FPR(rd_)));
+			emit(t, a64_fmov_gp(true, false, 4, frd(t, rd_)));
 			emit(t, a64_dp1(1, A64_REV64, 4, 4));
 		} else if (fp == LS_SINGLE) {
 			store_single(t, rd_);
@@ -782,6 +1006,7 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 
 	bool fast = fast_access(t);
 	if (!fast) {
+		t->w5_fpscr = false;            /* (slow_stores() calls C) */
 		emit(t, a64_bitfield(0, A64_UBFM, 9, 1, MEM_PAGE_SHIFT, 31));
 		emit(t, a64_ldst_uxtw(0, true, 9, R_FLAGS, 9));
 	}
@@ -800,7 +1025,7 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 		emit(t, a64_ldst_uxtw(size, true, v, fast ? R_MEM : R_CBASE, 1));
 		if (fp == LS_DOUBLE) {
 			emit(t, a64_dp1(1, A64_REV64, 2, 2));
-			emit(t, a64_ldst_imm(3, false, 2, R_CPU, FPR(rd_)));
+			emit(t, a64_fmov_gp(true, true, fwr(t, rd_), 2));
 		} else if (fp == LS_SINGLE) {
 			emit(t, a64_dp1(0, A64_REV32, 2, 2));
 			load_single(t, rd_);
@@ -828,11 +1053,15 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 		if (slow)
 			slow->rejoin = t->p;
 	}
+	if (!load)
+		note_store(t, fast && size == 2 && fp == LS_GPR && !update, indexed, ra, d, 1u << size, rd_);
 	if (update)
 		mov_reg(t, wr(t, ra), 1);
 	if (io) {
 		io->rejoin = t->p;
 		io->after = t->rc;
+		t->fp_mode_ok = false;          /* (the hook might switch contexts, change registers) */
+		t->nstored = 0;
 	}
 }
 
@@ -856,6 +1085,8 @@ static void block_access(struct tx *t, bool load, unsigned n)
 static void load_store_multiple(struct tx *t, bool load, unsigned rs, unsigned ra, int32_t d)
 {
 	unsigned n = 32 - rs, base = rd0(t, ra);
+	if (!load)
+		t->nstored = 0;
 	if (base == A64_ZR)
 		mov32(t, 1, (uint32_t)d);
 	else
@@ -942,6 +1173,7 @@ static void slow_stores(struct tx *t)
 		for (unsigned c = 0; c < CALLER_SAVED_SLOTS; c++)
 			if (ss->cs.guest[c] >= 0)
 				ld32(t, cache_reg[c], guest_off((unsigned)ss->cs.guest[c]));
+		rc_fp_load(t, &ss->cs, false);
 		rc_reset(t);                            /* (everything was written back) */
 		if (ss->update) {
 			emit(t, a64_ldst_imm(2, true, 1, R_STATE, (unsigned)offsetof(struct jit_state, scratch)));
@@ -1000,6 +1232,7 @@ static void slow_ios(struct tx *t)
 		for (unsigned c = 0; c < NCACHE; c++)
 			if (io->after.guest[c] >= 0)
 				ld32(t, cache_reg[c], guest_off((unsigned)io->after.guest[c]));
+		rc_fp_load(t, &io->after, true);
 		if (io->reload_ea)
 			ld32(t, 1, OFF(fault_addr));
 		branch_to(t, io->rejoin);
@@ -1023,9 +1256,11 @@ static void slow_ios(struct tx *t)
  * transformation detects. Results, FPSCR included, are exactly the
  * interpreter's. Anything else goes out of line, where the interpreter runs
  * the instruction (struct slow_fp): every check comes before the instruction
- * changes anything. Values are loaded from and stored to struct ppc_cpu by
- * each instruction; host registers d0-d7 and d16-d31 are scratch, and the
- * host always rounds to nearest here (see ppc_fp.c).
+ * changes anything. The rounding mode and enables are checked once in a
+ * block (until something may change them): in another mode the interpreter
+ * takes each instruction. FPRs are cached in d8-d15 and d24-d31 (see the
+ * register cache); d0-d7 and d16-d23 are scratch, and the host always
+ * rounds to nearest here (see ppc_fp.c).
  */
 
 #define FPSCR_XX_BIT 25
@@ -1055,6 +1290,7 @@ static void logic_imm64(struct tx *t, enum a64_logic op, unsigned d, unsigned n,
 		t->overflow = true;     /* (only encodable values are used) */
 }
 
+/* After the instruction's FPR operands are in the cache (the slow path writes back what's dirty here) */
 static bool fp_begin(struct tx *t, uint32_t insn)
 {
 	if (t->nfps >= MAX_SLOW_FP)
@@ -1081,14 +1317,17 @@ static void fp_slow(struct tx *t, uint32_t branch)
 
 static void fp_end(struct tx *t)
 {
-	t->fps[t->nfps - 1].rejoin = t->p;
+	struct slow_fp *f = &t->fps[t->nfps - 1];
+	f->rejoin = t->p;
+	f->after = t->rc;
 }
 
 /*
  * The slow paths: the interpreter executes the instruction, which changes
  * only FPRs, the FPSCR and CR (memory and GPRs are the business of loads
- * and stores, which take other paths); the cached registers in caller-saved
- * host registers are reloaded afterwards.
+ * and stores, which take other paths); the cached registers in
+ * caller-saved host registers, and the FPRs cached where it rejoins, are
+ * reloaded afterwards.
  */
 static void slow_fps(struct tx *t)
 {
@@ -1108,28 +1347,33 @@ static void slow_fps(struct tx *t)
 		for (unsigned c = 0; c < CALLER_SAVED_SLOTS; c++)
 			if (f->cs.guest[c] >= 0)
 				ld32(t, cache_reg[c], guest_off((unsigned)f->cs.guest[c]));
+		rc_fp_load(t, &f->after, true);
+		ld32(t, 5, OFF(fpscr));                 /* (see fp_keeps_w5()) */
 		branch_to(t, f->rejoin);
 	}
 }
 
-/* Out of line unless the FPSCR (loaded into w5) enables no exceptions and, if `nearest`, rounds to nearest */
-static void fp_mode(struct tx *t, bool nearest)
+/*
+ * w5 = the FPSCR. Unless this block already knows it rounds to nearest and
+ * enables no exceptions (or, if `any_rounding`, enables none), the block is
+ * left for the interpreter otherwise.
+ */
+static void fp_mode(struct tx *t, bool any_rounding)
 {
-	ld32(t, 5, OFF(fpscr));
-	if (nearest) {
+	if (!t->w5_fpscr)
+		ld32(t, 5, OFF(fpscr));
+	t->w5_fpscr = true;
+	if (t->fp_mode_ok)
+		return;
+	if (any_rounding) {
+		logic_imm(t, A64_ANDS, A64_ZR, 5, 0xF8, 9);
+	} else {
 		mov32(t, 9, 0xFB);      /* (NI, 0x04, changes nothing here) */
 		emit(t, a64_logic(0, A64_ANDS, 0, A64_ZR, 5, 9, A64_LSL, 0));
-	} else {
-		logic_imm(t, A64_ANDS, A64_ZR, 5, 0xF8, 9);
 	}
-	fp_slow(t, a64_bcond(A64_NE, 0));
-}
-
-/* x`x` and d`d` = FPR r */
-static void fp_load(struct tx *t, unsigned x, unsigned d, unsigned r)
-{
-	emit(t, a64_ldst_imm(3, true, x, R_CPU, FPR(r)));
-	emit(t, a64_fmov_gp(true, true, d, x));
+	exit_if(t, A64_NE);
+	if (!any_rounding)
+		t->fp_mode_ok = true;
 }
 
 /*
@@ -1176,22 +1420,41 @@ static void fp_nonzero(struct tx *t, unsigned d, bool or)
 		cset(t, 4, A64_NE);
 }
 
-/* Rounds d3 to single precision as opcode 59 does (out of line unless tame_single()); w4 |= it changed if `track` */
-static void fp_round_single(struct tx *t, bool track)
+/*
+ * Rounds d3 to single precision as opcode 59 does (with `checks`, out of
+ * line unless tame_single()); w4 |= it changed if `track`
+ */
+static void fp_round_single(struct tx *t, bool checks, bool track)
 {
 	emit(t, a64_fp1(1, A64_FCVT_S, 6, 3));
 	emit(t, a64_fp1(0, A64_FCVT_D, 6, 6));
-	emit(t, a64_fmov_gp(true, false, 10, 6));
-	uint32_t *ok = fp_range(t, 10, 903, 1148, true);
-	emit(t, a64_fmov_gp(true, false, 11, 3));               /* rounded to zero: was it zero? */
-	emit(t, a64_bitfield(1, A64_UBFM, 11, 11, 63, 62));
-	fp_slow(t, a64_cbz(1, true, 11, 0));
-	land(t, ok);
+	if (checks) {
+		emit(t, a64_fmov_gp(true, false, 10, 6));
+		uint32_t *ok = fp_range(t, 10, 903, 1148, true);
+		emit(t, a64_fmov_gp(true, false, 11, 3));       /* rounded to zero: was it zero? */
+		emit(t, a64_bitfield(1, A64_UBFM, 11, 11, 63, 62));
+		fp_slow(t, a64_cbz(1, true, 11, 0));
+		land(t, ok);
+	}
 	if (track) {
 		emit(t, a64_fcmp(1, 6, 3, false));
 		emit(t, a64_csel(0, 0, 1, 4, 4, A64_ZR, A64_EQ));
 	}
 	emit(t, a64_fp1(1, A64_FMOV, 3, 6));
+}
+
+/* FPRF for the zero or normal double in x3, into w5: 0x02, or 0x12 if negative; 0x04, or 0x08 */
+static void fp_fprf(struct tx *t)
+{
+	emit(t, a64_bitfield(1, A64_UBFM, 9, 3, 63, 63));
+	emit(t, a64_bitfield(1, A64_UBFM, 10, 3, 63, 62));
+	emit(t, a64_addsub_imm(1, 1, 1, A64_ZR, 10, 0));
+	emit(t, a64_bitfield(0, A64_UBFM, 11, 9, 28, 27));
+	logic_imm(t, A64_ORR, 11, 11, 2, 10);
+	emit(t, a64_movw(0, A64_MOVZ, 10, 4, 0));
+	emit(t, a64_dp2(0, A64_LSLV, 10, 10, 9));
+	emit(t, a64_csel(0, 0, 0, 10, 11, 10, A64_EQ));
+	bfi(t, 5, 10, 12, 5);
 }
 
 /*
@@ -1200,17 +1463,8 @@ static void fp_round_single(struct tx *t, bool track)
  */
 static void fp_commit(struct tx *t, unsigned frt, bool fprf, bool rc)
 {
-	if (fprf) {             /* zero: 0x02, or 0x12 if negative; normal: 0x04, or 0x08 */
-		emit(t, a64_bitfield(1, A64_UBFM, 9, 3, 63, 63));
-		emit(t, a64_bitfield(1, A64_UBFM, 10, 3, 63, 62));
-		emit(t, a64_addsub_imm(1, 1, 1, A64_ZR, 10, 0));
-		emit(t, a64_bitfield(0, A64_UBFM, 11, 9, 28, 27));
-		logic_imm(t, A64_ORR, 11, 11, 2, 10);
-		emit(t, a64_movw(0, A64_MOVZ, 10, 4, 0));
-		emit(t, a64_dp2(0, A64_LSLV, 10, 10, 9));
-		emit(t, a64_csel(0, 0, 0, 10, 11, 10, A64_EQ));
-		bfi(t, 5, 10, 12, 5);
-	}
+	if (fprf)
+		fp_fprf(t);
 	logic_imm(t, A64_AND, 5, 5, ~FPSCR_FR_FI, 9);
 	uint32_t *exact = fwd(t, a64_cbz(0, false, 4, 0));
 	logic_imm(t, A64_AND, 9, 5, 1u << FPSCR_XX_BIT, 10);
@@ -1221,7 +1475,8 @@ static void fp_commit(struct tx *t, unsigned frt, bool fprf, bool rc)
 	logic_imm(t, A64_ORR, 5, 5, 1u << FPSCR_FI_BIT, 10);
 	land(t, exact);
 	st32(t, 5, OFF(fpscr));
-	emit(t, a64_ldst_imm(3, false, 3, R_CPU, FPR(frt)));
+	t->w5_fpscr = true;
+	emit(t, a64_fmov_gp(true, true, fwr(t, frt), 3));
 	if (rc) {
 		ubfx(t, 9, 5, 28, 4);
 		bfi(t, rw(t, G_CR), 9, 24, 4);
@@ -1241,26 +1496,26 @@ static void fp_cr1(struct tx *t, bool rc)
 /* FPR r = the single in w2, as a double (lfs: exactly; infinities and NaNs keep their bits) */
 static void load_single(struct tx *t, unsigned r)
 {
+	unsigned d = fwr(t, r);
 	ubfx(t, 9, 2, 23, 8);
 	emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 9, 255));
 	uint32_t *special = fwd(t, a64_bcond(A64_EQ, 0));
 	emit(t, a64_fmov_gp(false, true, 0, 2));
-	emit(t, a64_fp1(0, A64_FCVT_D, 0, 0));
-	emit(t, a64_fp_ldst(true, false, 0, R_CPU, FPR(r)));
+	emit(t, a64_fp1(0, A64_FCVT_D, d, 0));
 	uint32_t *done = fwd(t, a64_bcond(A64_AL, 0));
 	land(t, special);
 	emit(t, a64_bitfield(1, A64_UBFM, 10, 2, 35, 22));     /* fraction << 29 */
 	logic_imm64(t, A64_ORR, 10, 10, 0x7FF0000000000000ull);
 	emit(t, a64_bitfield(0, A64_UBFM, 9, 2, 31, 31));
 	emit(t, a64_logic(1, A64_ORR, 0, 10, 10, 9, A64_LSL, 63));
-	emit(t, a64_ldst_imm(3, false, 10, R_CPU, FPR(r)));
+	emit(t, a64_fmov_gp(true, true, d, 10));
 	land(t, done);
 }
 
 /* w4 = FPR r in single precision, as stfs stores it (see ppc_fp_double_to_single()) */
 static void store_single(struct tx *t, unsigned r)
 {
-	emit(t, a64_ldst_imm(3, true, 5, R_CPU, FPR(r)));
+	emit(t, a64_fmov_gp(true, false, 5, frd(t, r)));
 	emit(t, a64_bitfield(1, A64_UBFM, 9, 5, 52, 62));      /* exponent */
 	emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 9, 896));
 	uint32_t *small = fwd(t, a64_bcond(A64_LS, 0));
@@ -1284,10 +1539,13 @@ static void store_single(struct tx *t, unsigned r)
 	land(t, done);
 }
 
-/* The error-free transformation of fma_inexact() (ppc_fp.c): w4 = d`r` = d0 * d2 + d`b` inexactly, u1 = d0 * d2 in d16 */
-static void fma_inexact(struct tx *t, unsigned b, unsigned r)
+/*
+ * The error-free transformation of fma_inexact() (ppc_fp.c): w4 = d`r` =
+ * d`a` * d`c` + d`b` inexactly, u1 = a * c in d16 (d17-d23 scratch)
+ */
+static void fma_inexact(struct tx *t, unsigned a, unsigned c, unsigned b, unsigned r)
 {
-	emit(t, a64_fp3(1, 1, 1, 17, 0, 2, 16));       /* u2 = a * c - u1 */
+	emit(t, a64_fp3(1, 1, 1, 17, a, c, 16));       /* u2 = a * c - u1 */
 	emit(t, a64_fp2(1, A64_FADD, 18, b, 17));      /* a1 = b + u2 */
 	emit(t, a64_fp2(1, A64_FSUB, 19, 18, b));      /* a1 - b */
 	emit(t, a64_fp2(1, A64_FSUB, 20, 18, 19));
@@ -1296,17 +1554,17 @@ static void fma_inexact(struct tx *t, unsigned b, unsigned r)
 	emit(t, a64_fp2(1, A64_FADD, 20, 20, 21));     /* z */
 	emit(t, a64_fp2(1, A64_FADD, 22, 16, 18));     /* b1 = u1 + a1 */
 	emit(t, a64_fp2(1, A64_FSUB, 23, 22, 16));     /* bv = b1 - u1 */
-	emit(t, a64_fp2(1, A64_FSUB, 24, 22, 23));
-	emit(t, a64_fp2(1, A64_FSUB, 24, 16, 24));     /* u1 - (b1 - bv) */
-	emit(t, a64_fp2(1, A64_FSUB, 25, 18, 23));     /* a1 - bv */
-	emit(t, a64_fp2(1, A64_FADD, 24, 24, 25));     /* b2 */
-	emit(t, a64_fp2(1, A64_FSUB, 26, 22, r));      /* b1 - r */
-	emit(t, a64_fp2(1, A64_FADD, 26, 26, 24));     /* g */
-	emit(t, a64_fp2(1, A64_FADD, 27, 26, 20));     /* r2 = g + z */
-	emit(t, a64_fp2(1, A64_FSUB, 28, 27, 26));
-	emit(t, a64_fp2(1, A64_FSUB, 28, 20, 28));     /* r3 = z - (r2 - g) */
-	fp_nonzero(t, 27, false);
-	fp_nonzero(t, 28, true);
+	emit(t, a64_fp2(1, A64_FSUB, 19, 22, 23));
+	emit(t, a64_fp2(1, A64_FSUB, 19, 16, 19));     /* u1 - (b1 - bv) */
+	emit(t, a64_fp2(1, A64_FSUB, 21, 18, 23));     /* a1 - bv */
+	emit(t, a64_fp2(1, A64_FADD, 19, 19, 21));     /* b2 */
+	emit(t, a64_fp2(1, A64_FSUB, 21, 22, r));      /* b1 - r */
+	emit(t, a64_fp2(1, A64_FADD, 21, 21, 19));     /* g */
+	emit(t, a64_fp2(1, A64_FADD, 17, 21, 20));     /* r2 = g + z */
+	emit(t, a64_fp2(1, A64_FSUB, 18, 17, 21));
+	emit(t, a64_fp2(1, A64_FSUB, 18, 20, 18));     /* r3 = z - (r2 - g) */
+	fp_nonzero(t, 17, false);
+	fp_nonzero(t, 18, true);
 }
 
 /* w4 = s = a + b inexactly (Knuth's TwoSum, as sum_inexact() in ppc_fp.c), with d4 and d5 */
@@ -1320,153 +1578,225 @@ static void sum_inexact(struct tx *t, unsigned a, unsigned b, unsigned s)
 	fp_nonzero(t, 4, false);
 }
 
-/*
- * A-form arithmetic (opcode 59 single, 63 double precision). As in the
- * interpreter's fast path, only division and square roots check their
- * operands: for the others a tame result is enough (see fp_fast()).
- *
- * The FPSCR is kept up to date lazily. XX and FX change only while XX is
- * clear, and are dealt with at once (with the inexact check, which is then
- * needed); but FR, FI and FPRF, which the next such operation replaces,
- * are left pending: the instruction and its operands go in struct
- * jit_state, for fp_settle() to work them out when something else might
- * look (C, the interpreter, a compare).
- */
-static void fp_arith(struct tx *t, unsigned op, unsigned xo5, unsigned frt, unsigned fra, unsigned frb, unsigned frc,
-		     bool rc)
+/* Which A-form operations natively, and which operands they use (opcode 63 also has fsel and frsqrte) */
+static bool fp_a_form(unsigned op, unsigned xo5, bool uses[3])
 {
-	bool uses_a = xo5 != 22 && xo5 != 24 && xo5 != 26, uses_b = xo5 != 25, uses_c = xo5 == 25 || xo5 >= 28;
-	bool checked = xo5 == 18 || xo5 == 22 || xo5 == 24 || xo5 == 26;
-	unsigned addend = xo5 & 1 ? 1 : 5;             /* (fused: b, or -b in d5) */
-	fp_mode(t, true);
-	const unsigned regs[3] = { fra, frb, frc };
-	const bool uses[3] = { uses_a, uses_b, uses_c };
+	static const uint32_t valid59 = 1u << 18 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 24 | 1u << 25 |
+					1u << 28 | 1u << 29 | 1u << 30 | 1u << 31;
+	static const uint32_t valid63 = 1u << 18 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 23 | 1u << 25 |
+					1u << 26 | 1u << 28 | 1u << 29 | 1u << 30 | 1u << 31;
+	uses[0] = xo5 != 22 && xo5 != 24 && xo5 != 26;
+	uses[1] = xo5 != 25;
+	uses[2] = xo5 == 23 || xo5 == 25 || xo5 >= 28;
+	return (op == 59 ? valid59 : valid63) & (1u << xo5);
+}
+
+/* Out of line unless the operands of fdiv, fsqrt, fres and frsqrte are tame */
+static void fp_operands_tame(struct tx *t, const unsigned h[3], const bool uses[3])
+{
 	for (unsigned k = 0; k < 3; k++) {
-		if (!uses[k])
-			continue;
-		if (checked) {
-			fp_load(t, k, k, regs[k]);
+		if (uses[k]) {
+			emit(t, a64_fmov_gp(true, false, k, h[k]));
 			land(t, fp_range(t, k, TAME_LO, TAME_HI, true));
-		} else {
-			emit(t, a64_fp_ldst(true, true, k, R_CPU, FPR(regs[k])));
 		}
 	}
+}
+
+/* Out of line unless a * c (into d16) is tame and didn't underflow to zero (fused operations) */
+static void fp_product_tame(struct tx *t, unsigned a, unsigned c)
+{
+	emit(t, a64_fp2(1, A64_FMUL, 16, a, c));
+	emit(t, a64_fmov_gp(true, false, 10, 16));
+	uint32_t *ok = fp_range(t, 10, TAME_LO, TAME_HI, true);
+	fp_either_zero(t, a, c);
+	land(t, ok);
+}
+
+/*
+ * The result of an A-form operation (opcode 59 single, 63 double
+ * precision) in d3, with its operands in host registers h (a, b, c); with
+ * `checks`, out of line unless the interpreter's fast path would take it.
+ * As there, only division and square roots check their operands: for the
+ * others a tame result is enough (see fp_fast()). With `lazy`, the checks
+ * only the inexact check needs (fp_lazy_checks()) are left out; the result
+ * is still the interpreter's, with no exception but inexact. Returns the
+ * register holding the result before negation and rounding. Scratch:
+ * d1-d7, d16-d23; w4, w5, x9-x11 and (for checks) x0-x3.
+ */
+static unsigned fp_compute(struct tx *t, unsigned op, unsigned xo5, const unsigned h[3], const bool uses[3], bool checks,
+			   bool lazy)
+{
+	unsigned a = h[0], b = h[1], c = h[2];
+	bool checked = xo5 == 22 || xo5 == 24 || xo5 == 26 || (xo5 == 18 && !lazy);
+	unsigned addend = xo5 & 1 ? b : 5;             /* (fused: b, or -b in d5) */
+	if (checks && checked)
+		fp_operands_tame(t, h, uses);
 	switch (xo5) {
 	case 18:                                        /* fdiv */
-		emit(t, a64_fcmp(1, 1, 0, true));
-		fp_slow(t, a64_bcond(A64_EQ, 0));
-		emit(t, a64_fp2(1, A64_FDIV, 3, 0, 1));
-		emit(t, a64_fmov_gp(true, false, 3, 3));
-		{
+		if (checks) {
+			emit(t, a64_fcmp(1, b, 0, true));
+			fp_slow(t, a64_bcond(A64_EQ, 0));
+		}
+		emit(t, a64_fp2(1, A64_FDIV, 3, a, b));
+		if (checks) {
+			emit(t, a64_fmov_gp(true, false, 3, 3));
 			uint32_t *ok = fp_range(t, 3, TAME_LO, TAME_HI, true);
-			emit(t, a64_bitfield(1, A64_UBFM, 11, 0, 63, 62));     /* underflow unless a = 0 */
-			fp_slow(t, a64_cbz(1, true, 11, 0));
+			emit(t, a64_fcmp(1, a, 0, true));       /* underflow unless a = 0 */
+			fp_slow(t, a64_bcond(A64_NE, 0));
 			land(t, ok);
 		}
 		break;
 	case 20: case 21:                               /* fsub, fadd */
-		emit(t, a64_fp2(1, xo5 == 20 ? A64_FSUB : A64_FADD, 3, 0, 1));
-		emit(t, a64_fmov_gp(true, false, 3, 3));
-		land(t, fp_range(t, 3, TAME_LO, TAME_HI, true));
+		emit(t, a64_fp2(1, xo5 == 20 ? A64_FSUB : A64_FADD, 3, a, b));
+		if (checks) {
+			emit(t, a64_fmov_gp(true, false, 3, 3));
+			land(t, fp_range(t, 3, TAME_LO, TAME_HI, true));
+		}
 		break;
 	case 22:                                        /* fsqrt */
-		emit(t, a64_fcmp(1, 1, 0, true));
-		fp_slow(t, a64_bcond(A64_LT, 0));
-		emit(t, a64_fp1(1, A64_FSQRT, 3, 1));
+		if (checks) {
+			emit(t, a64_fcmp(1, b, 0, true));
+			fp_slow(t, a64_bcond(A64_LT, 0));
+		}
+		emit(t, a64_fp1(1, A64_FSQRT, 3, b));
 		break;
 	case 24:                                        /* fres */
-		emit(t, a64_fcmp(1, 1, 0, true));
-		fp_slow(t, a64_bcond(A64_EQ, 0));
+		if (checks) {
+			emit(t, a64_fcmp(1, b, 0, true));
+			fp_slow(t, a64_bcond(A64_EQ, 0));
+		}
 		emit(t, a64_fmov_one(7));
-		emit(t, a64_fp2(1, A64_FDIV, 3, 7, 1));
-		emit(t, a64_fmov_gp(true, false, 3, 3));
-		fp_range(t, 3, TAME_LO, TAME_HI, false);
+		emit(t, a64_fp2(1, A64_FDIV, 3, 7, b));
+		if (checks) {
+			emit(t, a64_fmov_gp(true, false, 3, 3));
+			fp_range(t, 3, TAME_LO, TAME_HI, false);
+		}
 		break;
 	case 25:                                        /* fmul */
-		emit(t, a64_fp2(1, A64_FMUL, 3, 0, 2));
-		emit(t, a64_fmov_gp(true, false, 3, 3));
-		{
+		emit(t, a64_fp2(1, A64_FMUL, 3, a, c));
+		if (checks) {
+			emit(t, a64_fmov_gp(true, false, 3, 3));
 			uint32_t *ok = fp_range(t, 3, TAME_LO, TAME_HI, true);
-			fp_either_zero(t, 0, 2);
+			fp_either_zero(t, a, c);
 			land(t, ok);
 		}
 		break;
 	case 26:                                        /* frsqrte */
-		emit(t, a64_fcmp(1, 1, 0, true));
-		fp_slow(t, a64_bcond(A64_LE, 0));
-		emit(t, a64_fp1(1, A64_FSQRT, 6, 1));
+		if (checks) {
+			emit(t, a64_fcmp(1, b, 0, true));
+			fp_slow(t, a64_bcond(A64_LE, 0));
+		}
+		emit(t, a64_fp1(1, A64_FSQRT, 6, b));
 		emit(t, a64_fmov_one(7));
 		emit(t, a64_fp2(1, A64_FDIV, 3, 7, 6));
 		break;
 	default:                                        /* fmsub, fmadd, fnmsub, fnmadd */
-		if (addend != 1)
-			emit(t, a64_fp1(1, A64_FNEG, addend, 1));
-		emit(t, a64_fp3(1, 0, 0, 3, 0, 2, addend));
-		emit(t, a64_fmov_gp(true, false, 3, 3));
-		land(t, fp_range(t, 3, TAME_LO, TAME_HI, true));
-		emit(t, a64_fp2(1, A64_FMUL, 16, 0, 2));
-		emit(t, a64_fmov_gp(true, false, 10, 16));
-		{
-			uint32_t *ok = fp_range(t, 10, TAME_LO, TAME_HI, true);
-			fp_either_zero(t, 0, 2);
+		if (addend != b)
+			emit(t, a64_fp1(1, A64_FNEG, addend, b));
+		emit(t, a64_fp3(1, 0, 0, 3, a, c, addend));
+		if (checks) {
+			emit(t, a64_fmov_gp(true, false, 3, 3));
+			uint32_t *ok = fp_range(t, 3, TAME_LO, TAME_HI, true);
+			if (lazy)                       /* zero: exact unless the product underflowed */
+				fp_product_tame(t, a, c);
 			land(t, ok);
+			if (!lazy)
+				fp_product_tame(t, a, c);
+		} else {
+			emit(t, a64_fp2(1, A64_FMUL, 16, a, c));
 		}
 		break;
 	}
-	unsigned raw = 3;                               /* the result before negation and rounding */
+	unsigned raw = 3;
 	if (xo5 >= 30 || op == 59) {
-		emit(t, a64_fp1(1, A64_FMOV, 30, 3));
-		raw = 30;
+		emit(t, a64_fp1(1, A64_FMOV, 2, 3));
+		raw = 2;
 	}
 	if (xo5 >= 30)
 		emit(t, a64_fp1(1, A64_FNEG, 3, 3));
 	if (op == 59) {
-		emit(t, a64_fp1(1, A64_FMOV, 31, 3));
-		fp_round_single(t, false);
+		emit(t, a64_fp1(1, A64_FMOV, 1, 3));
+		fp_round_single(t, checks, false);
 	}
-	emit(t, a64_fmov_gp(true, false, 3, 3));
+	return raw;
+}
 
-	/* XX clear: was it inexact? Then XX, and FX */
-	uint32_t *xx_set = t->p;
-	emit(t, a64_tbz(true, 5, FPSCR_XX_BIT, 0));
+/* What fp_compute() left out for `lazy` */
+static void fp_lazy_checks(struct tx *t, unsigned xo5, const unsigned h[3], const bool uses[3])
+{
+	if (xo5 == 18)
+		fp_operands_tame(t, h, uses);
+	else if (xo5 >= 28)
+		fp_product_tame(t, h[0], h[2]);
+}
+
+/* w4 = whether the operation fp_compute() did was inexact */
+static void fp_inexact(struct tx *t, unsigned op, unsigned xo5, const unsigned h[3], unsigned raw)
+{
+	unsigned a = h[0], b = h[1], c = h[2];
 	switch (xo5) {
 	case 18:
-		emit(t, a64_fp3(1, 0, 1, 4, raw, 1, 0));       /* a - r * b */
+		emit(t, a64_fp3(1, 0, 1, 4, raw, b, a));       /* a - r * b */
 		fp_nonzero(t, 4, false);
 		break;
 	case 20:
-		emit(t, a64_fp1(1, A64_FNEG, 6, 1));
-		sum_inexact(t, 0, 6, raw);
+		emit(t, a64_fp1(1, A64_FNEG, 6, b));
+		sum_inexact(t, a, 6, raw);
 		break;
 	case 21:
-		sum_inexact(t, 0, 1, raw);
+		sum_inexact(t, a, b, raw);
 		break;
 	case 22:
-		emit(t, a64_fp3(1, 0, 1, 4, raw, raw, 1));     /* b - r * r */
+		emit(t, a64_fp3(1, 0, 1, 4, raw, raw, b));     /* b - r * r */
 		fp_nonzero(t, 4, false);
 		break;
 	case 24:
-		emit(t, a64_fp3(1, 0, 1, 4, raw, 1, 7));       /* 1 - r * b */
+		emit(t, a64_fp3(1, 0, 1, 4, raw, b, 7));       /* 1 - r * b */
 		fp_nonzero(t, 4, false);
 		break;
 	case 25:
-		emit(t, a64_fp3(1, 1, 1, 4, 0, 2, raw));       /* a * c - r */
+		emit(t, a64_fp3(1, 1, 1, 4, a, c, raw));       /* a * c - r */
 		fp_nonzero(t, 4, false);
 		break;
 	case 26:
-		emit(t, a64_fp3(1, 0, 1, 4, 6, 6, 1));         /* b - s * s */
+		emit(t, a64_fp3(1, 0, 1, 4, 6, 6, b));         /* b - s * s */
 		fp_nonzero(t, 4, false);
 		emit(t, a64_fp3(1, 0, 1, 4, raw, 6, 7));       /* 1 - r * s */
 		fp_nonzero(t, 4, true);
 		break;
 	default:
-		fma_inexact(t, addend, raw);
+		fma_inexact(t, a, c, xo5 & 1 ? b : 5, raw);
 		break;
 	}
 	if (op == 59) {                                 /* ... or rounded to single */
-		emit(t, a64_fcmp(1, 3, 31, false));
+		emit(t, a64_fcmp(1, 3, 1, false));
 		emit(t, a64_csel(0, 0, 1, 4, 4, A64_ZR, A64_EQ));
 	}
+}
+
+/*
+ * A-form arithmetic, natively where the interpreter's fast path would take
+ * it (see fp_compute()).
+ *
+ * The FPSCR is kept up to date lazily. XX and FX change only while XX is
+ * clear, and are dealt with at once (with the inexact check, which is then
+ * needed); but FR, FI and FPRF, which the next such operation replaces,
+ * are left pending: the operation and its operands go in struct
+ * jit_state, for fp_settle() or the settle stub (build_settle()) to work
+ * them out when something else might look (C, the interpreter, a compare,
+ * mffs).
+ */
+static void fp_arith(struct tx *t, unsigned op, unsigned xo5, unsigned frt, const unsigned regs[3], const unsigned h[3],
+		     const bool uses[3], bool rc)
+{
+	fp_mode(t, false);
+	unsigned raw = fp_compute(t, op, xo5, h, uses, true, true);
+
+	/* XX clear: was it inexact? Then XX, and FX */
+	uint32_t *xx_set = t->p;
+	emit(t, a64_tbz(true, 5, FPSCR_XX_BIT, 0));
+	fp_lazy_checks(t, xo5, h, uses);
+	fp_inexact(t, op, xo5, h, raw);
 	uint32_t *exact = fwd(t, a64_cbz(0, false, 4, 0));
 	logic_imm(t, A64_ORR, 5, 5, 0x80000000u | 1u << FPSCR_XX_BIT, 10);
 	st32(t, 5, OFF(fpscr));
@@ -1474,13 +1804,218 @@ static void fp_arith(struct tx *t, unsigned op, unsigned xo5, unsigned frt, unsi
 	if (!t->overflow)
 		patch(t, xx_set, FIX_IMM14, t->p);
 
-	/* the result, and the rest pending */
-	emit(t, a64_ldst_imm(3, false, 3, R_CPU, FPR(frt)));
-	for (unsigned k = 0; k < 3; k++)
-		if (uses[k])
-			emit(t, a64_fp_ldst(true, false, k, R_STATE, (unsigned)offsetof(struct jit_state, fp_ops) + 8 * k));
-	mov32(t, 9, t->fps[t->nfps - 1].insn);
-	emit(t, a64_ldst_imm(3, false, 9, R_STATE, (unsigned)offsetof(struct jit_state, fp_insn)));   /* (and fp_fpcc = 0) */
+	/*
+	 * The rest pending: its record (replacing any before) is left to
+	 * the next exit, call into C or reader of the FPSCR to store, unless
+	 * the result replaces an operand (see fp_record(), fwr()); then the
+	 * result.
+	 */
+	struct cache_state *cs = &t->rc;
+	cs->fp_rec = FP_PENDING(op, xo5);
+	bool replaced = false;
+	for (unsigned k = 0; k < 3; k++) {
+		cs->fp_rec_ops[k] = uses[k] ? (int8_t)regs[k] : -1;
+		replaced |= uses[k] && regs[k] == frt;
+	}
+	if (replaced)
+		fp_record_now(t);
+	emit(t, a64_fp1(1, A64_FMOV, fwr(t, frt), 3));
+	if (rc) {
+		ubfx(t, 9, 5, 28, 4);
+		bfi(t, rw(t, G_CR), 9, 24, 4);
+	}
+}
+
+/*
+ * The settle stub, called (BL) from generated code with FP_PENDING() in
+ * w9: works out FR, FI and FPRF of the pending operation as fp_settle()
+ * does, through a routine for each (the operands go in registers its code
+ * leaves alone), or, if the fast path wouldn't have taken it (it went the
+ * slow way, which left its record to come), by calling fp_settle(). Uses
+ * the scratch registers.
+ */
+static void build_settle(struct tx *t)
+{
+	uint32_t *slow[64 * MAX_FP_EXITS];
+	unsigned nslow = 0;
+	logic_imm(t, A64_AND, 10, 9, 0x3F, 11);
+	emit(t, a64_adr(11, 12));
+	emit(t, a64_addsub(1, 0, 0, 11, 11, 10, A64_LSL, 2));
+	emit(t, a64_br(11));
+	uint32_t *table = t->p;
+	for (unsigned k = 0; k < 64; k++)
+		emit(t, 0xD4200000u);                   /* BRK (never: the codes are those below) */
+	for (unsigned k = 0; k < 64; k++) {
+		unsigned op = k & 0x20 ? 59 : 63, xo5 = k & 31;
+		bool uses[3];
+		if (xo5 == 23 || !fp_a_form(op, xo5, uses))
+			continue;
+		if (!t->overflow)
+			table[k] = a64_b(false, (int32_t)((t->p - &table[k]) * 4));
+		/* (registers fp_compute() and fp_inexact() leave alone for each) */
+		unsigned h[3] = { 0, xo5 >= 28 ? 4 : xo5 == 24 || xo5 == 26 ? 0 : 7, 7 };
+		for (unsigned r = 0; r < 3; r++)
+			if (uses[r])
+				emit(t, a64_fp_ldst(true, true, h[r], R_STATE, (unsigned)offsetof(struct jit_state, fp_ops) + 8 * r));
+		t->nfps = 1;
+		t->fps[0].nat = 0;
+		unsigned raw = fp_compute(t, op, xo5, h, uses, true, false);
+		for (unsigned b = 0; b < t->fps[0].nat; b++)
+			slow[nslow++] = t->fps[0].at[b];
+		fp_inexact(t, op, xo5, h, raw);
+		emit(t, a64_fmov_gp(true, false, 3, 3));
+		ld32(t, 5, OFF(fpscr));
+		fp_fprf(t);
+		logic_imm(t, A64_AND, 5, 5, ~FPSCR_FR_FI, 9);
+		uint32_t *exact = fwd(t, a64_cbz(0, false, 4, 0));
+		logic_imm(t, A64_ORR, 5, 5, 1u << FPSCR_FI_BIT, 10);
+		land(t, exact);
+		emit(t, a64_ldst_imm(2, true, 9, R_STATE, (unsigned)offsetof(struct jit_state, fp_fpcc)));
+		uint32_t *no_fpcc = fwd(t, a64_cbz(0, false, 9, 0));
+		bfi(t, 5, 9, 12, 4);
+		land(t, no_fpcc);
+		st32(t, 5, OFF(fpscr));
+		emit(t, a64_ldst_imm(3, false, A64_ZR, R_STATE, (unsigned)offsetof(struct jit_state, fp_op)));
+		emit(t, a64_ret());
+	}
+	t->nfps = 0;
+
+	/* fp_settle(), keeping the registers generated code holds in caller-saved ones */
+	for (unsigned b = 0; b < nslow; b++)
+		patch(t, slow[b], FIX_IMM19, t->p);
+	static const uint8_t keep[] = { 7, 8, 12, 13, 14, 15, 16, 17, 30, 31 };        /* (31: XZR, for the pair) */
+	emit(t, a64_addsub_imm(1, 1, 0, A64_SP, A64_SP, 16 * 9));
+	for (unsigned k = 0; k < sizeof keep; k += 2)
+		emit(t, a64_pair(false, A64_OFFSET, keep[k], keep[k + 1], A64_SP, 8 * (int)k));
+	for (unsigned k = FCALLEE_SAVED; k < NFCACHE; k += 2)
+		emit(t, a64_fp_pair(false, FREG(k), FREG(k + 1), A64_SP, 80 + 8 * (int)(k - FCALLEE_SAVED)));
+	emit(t, a64_logic(1, A64_ORR, 0, 0, A64_ZR, R_CPU, A64_LSL, 0));
+	emit(t, a64_ldst_imm(3, true, 9, R_STATE, (unsigned)offsetof(struct jit_state, settle)));
+	emit(t, a64_blr(9));
+	for (unsigned k = 0; k < sizeof keep; k += 2)
+		emit(t, a64_pair(true, A64_OFFSET, keep[k], keep[k + 1], A64_SP, 8 * (int)k));
+	for (unsigned k = FCALLEE_SAVED; k < NFCACHE; k += 2)
+		emit(t, a64_fp_pair(true, FREG(k), FREG(k + 1), A64_SP, 80 + 8 * (int)(k - FCALLEE_SAVED)));
+	emit(t, a64_addsub_imm(1, 0, 0, A64_SP, A64_SP, 16 * 9));
+	emit(t, a64_ret());
+}
+
+#define FPSCR_PENDING (FPSCR_FR_FI | 0x1Fu << 12)     /* what fp_arith() leaves pending: FR, FI, FPRF */
+#define FPSCR_VX_ALL 0x01F80700u                        /* VXSNAN to VXVC, VXSOFT, VXSQRT, VXCVI */
+#define FPSCR_EXC_ALL (0xFu << 25 | FPSCR_VX_ALL)       /* OX UX ZX XX and those */
+
+/* The settle stub first, if the instruction touches what may be pending and something is */
+static void fp_settle_first(struct tx *t, uint32_t touched)
+{
+	if (!(touched & FPSCR_PENDING))
+		return;
+	fp_record_now(t);
+	t->w5_fpscr = false;
+	emit(t, a64_ldst_imm(2, true, 9, R_STATE, (unsigned)offsetof(struct jit_state, fp_op)));
+	uint32_t *settled = fwd(t, a64_cbz(0, false, 9, 0));
+	emit(t, a64_b(true, (int32_t)((t->j->settle - t->p) * 4)));
+	emit(t, a64_ldst_imm(3, true, R_CBASE, R_STATE, (unsigned)offsetof(struct jit_state, membase)));
+	land(t, settled);
+}
+
+/* VX and FEX in w5 worked out again, as fpscr_summarize() (ppc_fp.c) does */
+static void fp_summarize(struct tx *t)
+{
+	logic_imm(t, A64_AND, 5, 5, ~0x60000000u, 9);
+	logic_imm(t, A64_ANDS, A64_ZR, 5, FPSCR_VX_ALL, 9);
+	cset(t, 10, A64_NE);
+	emit(t, a64_logic(0, A64_ORR, 0, 5, 5, 10, A64_LSL, 29));
+	emit(t, a64_logic(0, A64_AND, 0, 10, 5, 5, A64_LSR, 22));     /* VX OX UX ZX XX over their enables */
+	logic_imm(t, A64_ANDS, A64_ZR, 10, 0xF8, 9);
+	cset(t, 10, A64_NE);
+	emit(t, a64_logic(0, A64_ORR, 0, 5, 5, 10, A64_LSL, 30));
+}
+
+/*
+ * mffs, mtfsf, mtfsfi, mtfsb0, mtfsb1 and mcrfs, as ppc_fp_exec() does
+ * them. What arithmetic left pending stays so, unless they read or change
+ * part of it: then it's worked out first, or it's all replaced.
+ */
+static void fp_fpscr(struct tx *t, uint32_t i, unsigned xo10)
+{
+	unsigned frt = (i >> 21) & 31, frb = (i >> 11) & 31;
+	bool rc = i & 1;
+	unsigned hb = xo10 == 711 ? frd(t, frb) : 0;
+	switch (xo10) {
+	case 583:                                       /* mffs */
+		fp_settle_first(t, FPSCR_PENDING);
+		ld32(t, 5, OFF(fpscr));
+		emit(t, a64_fmov_gp(true, true, fwr(t, frt), 5));
+		break;
+	case 711: {                                     /* mtfsf */
+		unsigned flm = (i >> 17) & 0xFF;
+		uint32_t mask = 0;
+		for (unsigned k = 0; k < 8; k++)
+			if (flm & (0x80u >> k))
+				mask |= 0xFu << (28 - 4 * k);
+		if ((mask & FPSCR_PENDING) == FPSCR_PENDING) {
+			emit(t, a64_ldst_imm(3, false, A64_ZR, R_STATE, (unsigned)offsetof(struct jit_state, fp_op)));
+			t->rc.fp_rec = 0;
+		} else
+			fp_settle_first(t, mask);
+		ld32(t, 5, OFF(fpscr));
+		emit(t, a64_fmov_gp(false, false, 9, hb));     /* (its low word) */
+		if (mask == 0xFFFFFFFFu) {
+			mov_reg(t, 5, 9);
+		} else if (mask) {
+			logic_imm(t, A64_AND, 5, 5, ~mask, 10);
+			logic_imm(t, A64_AND, 9, 9, mask, 10);
+			emit(t, a64_logic(0, A64_ORR, 0, 5, 5, 9, A64_LSL, 0));
+		}
+		break;
+	}
+	case 134: {                                     /* mtfsfi */
+		unsigned sh = 28 - 4 * ((i >> 23) & 7);
+		uint32_t mask = 0xFu << sh, val = ((i >> 12) & 0xF) << sh;
+		fp_settle_first(t, mask);
+		ld32(t, 5, OFF(fpscr));
+		logic_imm(t, A64_AND, 5, 5, ~mask, 10);
+		if (val)
+			logic_imm(t, A64_ORR, 5, 5, val, 10);
+		break;
+	}
+	case 38: case 70: {                             /* mtfsb1, mtfsb0 */
+		uint32_t bit = 0x80000000u >> frt;
+		fp_settle_first(t, bit);
+		ld32(t, 5, OFF(fpscr));
+		if (bit == 0x40000000u || bit == 0x20000000u)   /* (FEX and VX are summaries) */
+			break;
+		if (xo10 == 70) {
+			logic_imm(t, A64_AND, 5, 5, ~bit, 10);
+			break;
+		}
+		if (bit & FPSCR_EXC_ALL) {              /* a new exception: FX */
+			logic_imm(t, A64_ANDS, A64_ZR, 5, bit, 10);
+			cset(t, 10, A64_EQ);
+			emit(t, a64_logic(0, A64_ORR, 0, 5, 5, 10, A64_LSL, 31));
+		}
+		logic_imm(t, A64_ORR, 5, 5, bit, 10);
+		break;
+	}
+	default: {                                      /* mcrfs */
+		unsigned crfd = (i >> 23) & 7, sh = 28 - 4 * ((i >> 18) & 7);
+		uint32_t clear = 0xFu << sh & (0x80000000u | FPSCR_EXC_ALL);
+		fp_settle_first(t, 0xFu << sh);
+		ld32(t, 5, OFF(fpscr));
+		ubfx(t, 9, 5, sh, 4);
+		bfi(t, rw(t, G_CR), 9, 28 - 4 * crfd, 4);
+		if (clear)
+			logic_imm(t, A64_AND, 5, 5, ~clear, 10);
+		rc = false;
+		break;
+	}
+	}
+	if (xo10 != 583) {
+		fp_summarize(t);
+		st32(t, 5, OFF(fpscr));
+		if (xo10 != 64)
+			t->fp_mode_ok = false;
+	}
 	if (rc) {
 		ubfx(t, 9, 5, 28, 4);
 		bfi(t, rw(t, G_CR), 9, 24, 4);
@@ -1496,28 +2031,33 @@ static bool fp_insn(struct tx *t, uint32_t i)
 
 	if (op == 63 && !(xo5 & 0x10)) {
 		switch (xo10) {
-		case 40: case 72: case 136: case 264:   /* fneg, fmr, fnabs, fabs */
-			emit(t, a64_ldst_imm(3, true, 3, R_CPU, FPR(frb)));
-			if (xo10 != 72)
-				logic_imm64(t, xo10 == 40 ? A64_EOR : xo10 == 136 ? A64_ORR : A64_AND, 3, 3,
-					    xo10 == 264 ? ~(1ull << 63) : 1ull << 63);
-			emit(t, a64_ldst_imm(3, false, 3, R_CPU, FPR(frt)));
+		case 40: case 72: case 136: case 264: { /* fneg, fmr, fnabs, fabs */
+			unsigned b = frd(t, frb), d = fwr(t, frt);
+			if (xo10 == 72) {
+				emit(t, a64_fp1(1, A64_FMOV, d, b));
+			} else if (xo10 == 40) {
+				emit(t, a64_fp1(1, A64_FNEG, d, b));
+			} else {
+				emit(t, a64_fp1(1, A64_FABS, d, b));
+				if (xo10 == 136)
+					emit(t, a64_fp1(1, A64_FNEG, d, d));
+			}
 			fp_cr1(t, rc);
 			return true;
+		}
 		case 0: case 32: {                      /* fcmpu, fcmpo */
-			unsigned crf = (i >> 23) & 7;
+			unsigned crf = (i >> 23) & 7, a = frd(t, fra), b = frd(t, frb);
+			fp_record_now(t);
 			if (!fp_begin(t, i))
 				return false;
-			emit(t, a64_fp_ldst(true, true, 0, R_CPU, FPR(fra)));
-			emit(t, a64_fp_ldst(true, true, 1, R_CPU, FPR(frb)));
-			emit(t, a64_fcmp(1, 0, 1, false));
+			emit(t, a64_fcmp(1, a, b, false));
 			fp_slow(t, a64_bcond(A64_VS, 0));       /* unordered: VXSNAN, VXVC */
 			emit(t, a64_movw(0, A64_MOVZ, 10, 2, 0));
 			emit(t, a64_movw(0, A64_MOVZ, 11, 8, 0));
 			emit(t, a64_csel(0, 0, 0, 10, 11, 10, A64_MI));
 			emit(t, a64_movw(0, A64_MOVZ, 11, 4, 0));
 			emit(t, a64_csel(0, 0, 0, 10, 11, 10, A64_GT));
-			emit(t, a64_ldst_imm(2, true, 9, R_STATE, (unsigned)offsetof(struct jit_state, fp_insn)));
+			emit(t, a64_ldst_imm(2, true, 9, R_STATE, (unsigned)offsetof(struct jit_state, fp_op)));
 			uint32_t *settled = fwd(t, a64_cbz(0, false, 9, 0));
 			logic_imm(t, A64_ORR, 9, 10, 0x10, 11);         /* FPCC over what's pending */
 			emit(t, a64_ldst_imm(2, false, 9, R_STATE, (unsigned)offsetof(struct jit_state, fp_fpcc)));
@@ -1531,63 +2071,67 @@ static bool fp_insn(struct tx *t, uint32_t i)
 			fp_end(t);
 			return true;
 		}
-		case 12:                                /* frsp */
+		case 12: {                              /* frsp */
+			unsigned b = frd(t, frb);
 			if (!fp_begin(t, i))
 				return false;
-			fp_mode(t, true);
-			fp_load(t, 1, 1, frb);
+			fp_mode(t, false);
+			emit(t, a64_fmov_gp(true, false, 1, b));
 			land(t, fp_range(t, 1, TAME_LO, TAME_HI, true));
-			emit(t, a64_fp1(1, A64_FMOV, 3, 1));
+			emit(t, a64_fp1(1, A64_FMOV, 3, b));
 			emit(t, a64_movw(0, A64_MOVZ, 4, 0, 0));
-			fp_round_single(t, true);
+			fp_round_single(t, true, true);
 			emit(t, a64_fmov_gp(true, false, 3, 3));
 			fp_commit(t, frt, true, rc);
-			emit(t, a64_ldst_imm(3, false, A64_ZR, R_STATE, (unsigned)offsetof(struct jit_state, fp_insn)));
-										/* (it replaced all that was pending) */
+			emit(t, a64_ldst_imm(3, false, A64_ZR, R_STATE, (unsigned)offsetof(struct jit_state, fp_op)));
+			t->rc.fp_rec = 0;                       /* (it replaced all that was pending) */
 			fp_end(t);
 			return true;
-		case 14: case 15:                       /* fctiw, fctiwz */
+		}
+		case 14: case 15: {                     /* fctiw, fctiwz */
+			unsigned b = frd(t, frb);
 			if (!fp_begin(t, i))
 				return false;
-			fp_mode(t, xo10 == 14);
-			emit(t, a64_ldst_imm(2, true, 9, R_STATE, (unsigned)offsetof(struct jit_state, fp_insn)));
-			fp_slow(t, a64_cbz(0, true, 9, 0));     /* (FPRF stays, so it must be settled first) */
-			emit(t, a64_fp_ldst(true, true, 1, R_CPU, FPR(frb)));
-			emit(t, a64_fp1(1, xo10 == 14 ? A64_FRINTN : A64_FRINTZ, 2, 1));
+			fp_mode(t, xo10 == 15);
+			fp_settle_first(t, FPSCR_PENDING);      /* (FPRF stays) */
+			ld32(t, 5, OFF(fpscr));
+			emit(t, a64_fp1(1, xo10 == 14 ? A64_FRINTN : A64_FRINTZ, 2, b));
 			emit(t, a64_fcvtzs(10, 2));
 			emit(t, a64_scvtf(3, 10));
 			emit(t, a64_fcmp(1, 3, 2, false));
 			fp_slow(t, a64_bcond(A64_NE, 0));       /* out of range, NaN */
-			emit(t, a64_fcmp(1, 2, 1, false));
+			emit(t, a64_fcmp(1, 2, b, false));
 			cset(t, 4, A64_NE);
 			logic_imm64(t, A64_ORR, 3, 10, 0xFFF8000000000000ull);  /* FP_INT_HI */
 			fp_commit(t, frt, false, rc);
 			fp_end(t);
+			return true;
+		}
+		case 583: case 711: case 134: case 38: case 70: case 64:
+			fp_fpscr(t, i, xo10);
 			return true;
 		default:
 			return false;
 		}
 	}
 
-	static const uint32_t valid59 = 1u << 18 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 24 | 1u << 25 |
-					1u << 28 | 1u << 29 | 1u << 30 | 1u << 31;
-	static const uint32_t valid63 = 1u << 18 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 23 | 1u << 25 |
-					1u << 26 | 1u << 28 | 1u << 29 | 1u << 30 | 1u << 31;
-	if (!((op == 59 ? valid59 : valid63) & (1u << xo5)))
+	bool uses[3];
+	if (!fp_a_form(op, xo5, uses))
 		return false;
+	unsigned h[3] = { 0, 0, 0 };
+	const unsigned regs[3] = { fra, frb, frc };
+	for (unsigned k = 0; k < 3; k++)
+		if (uses[k])
+			h[k] = frd(t, regs[k]);
 	if (xo5 == 23) {                                /* fsel */
-		emit(t, a64_fp_ldst(true, true, 0, R_CPU, FPR(fra)));
-		emit(t, a64_fp_ldst(true, true, 1, R_CPU, FPR(frb)));
-		emit(t, a64_fp_ldst(true, true, 2, R_CPU, FPR(frc)));
-		emit(t, a64_fcmp(1, 0, 0, true));
-		emit(t, a64_fcsel(1, 3, 2, 1, A64_GE));
-		emit(t, a64_fp_ldst(true, false, 3, R_CPU, FPR(frt)));
+		emit(t, a64_fcmp(1, h[0], 0, true));
+		emit(t, a64_fcsel(1, fwr(t, frt), h[2], h[1], A64_GE));
 		fp_cr1(t, rc);
 		return true;
 	}
 	if (!fp_begin(t, i))
 		return false;
-	fp_arith(t, op, xo5, frt, fra, frb, frc, rc);
+	fp_arith(t, op, xo5, frt, regs, h, uses, rc);
 	fp_end(t);
 	return true;
 }
@@ -2050,6 +2594,7 @@ static int insn31(struct tx *t, uint32_t i)
 		return EMITTED;
 	}
 	case 1014: {                                                    /* dcbz */
+		t->nstored = 0;
 		unsigned base = rd0(t, ra), b = rd(t, rb);
 		emit(t, a64_addsub(0, 0, 0, 1, base, b, A64_LSL, 0));
 		logic_imm(t, A64_AND, 1, 1, ~31u, 9);
@@ -2222,11 +2767,35 @@ static int kernel_call(struct tx *t, uint32_t insn)
 	return kernel_exit(t, insn, EXIT_TRAP);
 }
 
+/*
+ * Whether the instruction leaves w5 and the FPSCR alone, or (FP arithmetic
+ * and conversions) leaves the FPSCR in w5, so that FP arithmetic after it
+ * needn't load the FPSCR again: FPR loads and moves, most FP instructions
+ */
+static bool fp_keeps_w5(uint32_t i)
+{
+	unsigned op = i >> 26, xo = (i >> 1) & 0x3FF;
+	switch (op) {
+	case 48: case 49: case 50: case 51: case 54: case 55:  /* lfs lfsu lfd lfdu stfd stfdu (not stfs: x5) */
+		return true;
+	case 31:
+		return xo == 535 || xo == 567 || xo == 599 || xo == 631 || xo == 727 || xo == 759;
+	case 59: case 63:
+		return op == 59 || (xo & 0x10) || xo == 40 || xo == 72 || xo == 136 || xo == 264 || xo == 12 ||
+		       xo == 14 || xo == 15;
+	default:
+		return false;
+	}
+}
+
 static int insn(struct tx *t, uint32_t i)
 {
 	unsigned op = i >> 26, rd_ = (i >> 21) & 31, ra = (i >> 16) & 31;
 	int32_t simm = (int16_t)(i & 0xFFFF);
 	uint32_t uimm = i & 0xFFFF;
+
+	if (!fp_keeps_w5(i))
+		t->w5_fpscr = false;
 
 	switch (op) {
 	case 3:                                 /* twi: unless it always traps, the interpreter tests */
@@ -2584,21 +3153,30 @@ static void drop_block(struct jit *j, struct jit_block *b)
 /*
  * Works out what generated code left pending in the FPSCR (see fp_arith()):
  * the interpreter replays that instruction, with its operands, on a scratch
- * processor whose FPSCR is ours (XX and FX already right for it).
+ * processor, in the mode it ran in (round to nearest, no exceptions
+ * enabled), for its FR, FI and FPRF; the rest of the FPSCR (XX and FX,
+ * already right for it) may have changed since (see fp_fpscr()).
  */
 static void fp_settle(struct jit *j, struct ppc_cpu *c)
 {
-	uint32_t insn = j->st.fp_insn;
-	if (!insn)
+	uint32_t code = j->st.fp_op;
+	if (!code)
 		return;
 	static struct ppc_cpu scratch;
-	scratch.fpscr = c->fpscr;
+	scratch.fpscr = c->fpscr & ~0xFFu;
 	memcpy(&scratch.fpr[1], j->st.fp_ops, sizeof j->st.fp_ops);
-	ppc_fp_exec(&scratch, (insn & 0xFC00003Eu) | 1u << 16 | 2u << 11 | 3u << 6);    /* (f0 = f1 op f2, f3) */
-	c->fpscr = scratch.fpscr;
+	ppc_fp_exec(&scratch, (code & 0x20 ? 59u : 63u) << 26 | 1u << 16 | 2u << 11 | 3u << 6 | (code & 31) << 1);
+										/* (f0 = f1 op f2, f3) */
+	c->fpscr = (c->fpscr & ~FPSCR_PENDING) | (scratch.fpscr & FPSCR_PENDING);
 	if (j->st.fp_fpcc)
 		c->fpscr = (c->fpscr & ~0xF000u) | (j->st.fp_fpcc & 0xFu) << 12;
-	j->st.fp_insn = j->st.fp_fpcc = 0;
+	j->st.fp_op = j->st.fp_fpcc = 0;
+}
+
+/* For the settle stub (see build_settle()) */
+static void settle(struct ppc_cpu *c)
+{
+	fp_settle(c->jit, c);
 }
 
 /* The interpreter's step for generated code, which may read the FPSCR */
@@ -2754,6 +3332,9 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	t.nfps = 0;
 	t.nbexits = 0;
 	rc_reset(&t);
+	t.fp_mode_ok = false;
+	t.w5_fpscr = false;
+	t.nstored = 0;
 	uint32_t *start = t.p;
 	uint32_t pc = pc0;
 	unsigned n = 0, budget_needed, cover = 0;
@@ -2768,6 +3349,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 		t.pc = t.pcs[n] = pc;
 		t.k = n;
 		t.pins = 0;
+		t.fp_pins = 0;
 		uint32_t i = mem_r32(j->mem, pc);
 		if (!cover && pc - pc0 != 4 * n)
 			cover = n;              /* the block has left its first run of words */
@@ -3166,13 +3748,15 @@ static void build_stubs(struct jit *j)
 
 	/* enter(cpu x0, code x1, budget x2, state x3) */
 	memcpy(&j->enter, &(void *){ t.p }, sizeof j->enter);   /* object to function pointer */
-	emit(&t, a64_pair(false, A64_PRE, 29, 30, A64_SP, -96));
+	emit(&t, a64_pair(false, A64_PRE, 29, 30, A64_SP, -160));
 	emit(&t, a64_addsub_imm(1, 0, 0, 29, A64_SP, 0));
 	emit(&t, a64_pair(false, A64_OFFSET, 19, 20, A64_SP, 16));
 	emit(&t, a64_pair(false, A64_OFFSET, 21, 22, A64_SP, 32));
 	emit(&t, a64_pair(false, A64_OFFSET, 23, 24, A64_SP, 48));
 	emit(&t, a64_pair(false, A64_OFFSET, 25, 26, A64_SP, 64));
 	emit(&t, a64_pair(false, A64_OFFSET, 27, 28, A64_SP, 80));
+	for (unsigned k = 0; k < FCALLEE_SAVED; k += 2)
+		emit(&t, a64_fp_pair(false, FREG(k), FREG(k + 1), A64_SP, 96 + 8 * (int)k));
 	emit(&t, a64_logic(1, A64_ORR, 0, R_CPU, A64_ZR, 0, A64_LSL, 0));
 	emit(&t, a64_logic(1, A64_ORR, 0, R_BUDGET, A64_ZR, 2, A64_LSL, 0));
 	emit(&t, a64_logic(1, A64_ORR, 0, R_STATE, A64_ZR, 3, A64_LSL, 0));
@@ -3194,7 +3778,9 @@ static void build_stubs(struct jit *j)
 	emit(&t, a64_pair(true, A64_OFFSET, 23, 24, A64_SP, 48));
 	emit(&t, a64_pair(true, A64_OFFSET, 25, 26, A64_SP, 64));
 	emit(&t, a64_pair(true, A64_OFFSET, 27, 28, A64_SP, 80));
-	emit(&t, a64_pair(true, A64_POST, 29, 30, A64_SP, 96));
+	for (unsigned k = 0; k < FCALLEE_SAVED; k += 2)
+		emit(&t, a64_fp_pair(true, FREG(k), FREG(k + 1), A64_SP, 96 + 8 * (int)k));
+	emit(&t, a64_pair(true, A64_POST, 29, 30, A64_SP, 160));
 	emit(&t, a64_ret());
 
 	/* side exit: the interpreter runs the instruction at w0 */
@@ -3246,11 +3832,15 @@ static void build_stubs(struct jit *j)
 	emit(&t, a64_ldst_imm(3, true, 30, R_STATE, (unsigned)offsetof(struct jit_state, mmio_return)));
 	emit(&t, a64_ret());
 
+	j->settle = t.p;
+	build_settle(&t);
+
 	__builtin___clear_cache((char *)j->code, (char *)t.p);
 	j->blocks_start = j->code_free = t.p;
 }
 
-static void prof_start(struct jit *j);
+
+static void prof_start(struct jit *j, const char *window);
 
 struct jit *jit_create(struct mem *mem)
 {
@@ -3303,6 +3893,7 @@ struct jit *jit_create(struct mem *mem)
 		.pageflags = mem->pageflags,
 		.l1 = j->l1,
 		.step = step,
+		.settle = settle,
 		.kcall = kcall,
 		.code_store = code_store,
 		.mmio = mmio,
@@ -3330,8 +3921,9 @@ struct jit *jit_create(struct mem *mem)
 	mem->flags_changed = flags_changed;
 	mem->code_ctx = j;
 	fastmem_init(j);
-	if (getenv("SYSHM_JIT_PROFILE"))
-		prof_start(j);
+	const char *window = getenv("SYSHM_JIT_PROFILE");
+	if (window)
+		prof_start(j, window);
 	return j;
 }
 
@@ -3364,6 +3956,8 @@ enum ppc_exit jit_run(struct jit *j, struct ppc_cpu *c, uint64_t budget)
 		flush(j);
 	}
 	j->st.hook = c->hook_pc;
+	if (prof.j == j)
+		prof.icount = &c->icount;
 	while (budget) {
 		struct jit_block *e = find(j, c->pc);
 		if (!e || e->ninsn > budget) {
@@ -3443,21 +4037,6 @@ enum ppc_exit jit_run(struct jit *j, struct ppc_cpu *c, uint64_t budget)
 
 /* ---- sampling profiler (SYSHM_JIT_PROFILE=1) ------------------------------- */
 
-#define PROF_MAX 1000000u
-
-struct prof_sample {
-	uint32_t guest_pc;              /* block, or 0 */
-	uint32_t where;                 /* offset in the block, or host address bits */
-	uintptr_t host_pc;
-};
-
-static struct {
-	struct jit *j;
-	unsigned long total, blocks, stubs, host, other;
-	struct prof_sample *s;
-	unsigned n;
-	uintptr_t text_lo, text_hi;     /* syshm's own code */
-} prof;
 
 static void prof_signal(int sig, siginfo_t *si, void *ctx)
 {
@@ -3466,6 +4045,8 @@ static void prof_signal(int sig, siginfo_t *si, void *ctx)
 	uintptr_t pc = context_pc(ctx);
 	struct jit *j = prof.j;
 	struct prof_sample smp = { 0, 0, pc };
+	if (!prof.icount || *prof.icount < prof.from || *prof.icount >= prof.to)
+		return;
 
 	prof.total++;
 	if (pc >= (uintptr_t)j->code && pc < (uintptr_t)j->blocks_start) {
@@ -3494,9 +4075,12 @@ static void prof_signal(int sig, siginfo_t *si, void *ctx)
 		prof.s[prof.n++] = smp;
 }
 
-static void prof_start(struct jit *j)
+static void prof_start(struct jit *j, const char *window)
 {
+	char *end;
 	prof.j = j;
+	prof.from = strtoull(window, &end, 0);
+	prof.to = *end == ':' ? strtoull(end + 1, NULL, 0) : UINT64_MAX;
 	prof.s = malloc(PROF_MAX * sizeof *prof.s);
 	if (!prof.s)
 		return;

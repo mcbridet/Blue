@@ -611,21 +611,31 @@ drives): put the image in instead, or a copy of it.
 ### MacBench
 
 ZD MacBench 5.0 runs (tested from a shared folder, on an installed 8.5):
-it registers, opens its main window and runs its Processor test (the
-others are untried). Right after registering it uses Gary Davidian's
-skeleton key, a kernel call that gives a program supervisor mode, to read
-the processor's L2CR and HID0 (see the kernel calls and privileged
-instructions below); without it, MacBench quit with "an error of type 1".
-Its scores are relative to its reference machine, a Power Macintosh G3/300
-(1000 in every test). Benchmark in real time, in a window: in instruction
-time, guest time follows the instruction count, so the guest processor
-looks like a 16.6 MIPS one (Processor: 62, 6% of the G3/300); in one
-real-time run on an M5, with other work on the host, Processor scored
-18,324 (the test took about 25 s). MacBench times things by polling the
-VIA's timer in a tight loop; in real time, a loop whose device register
-read fell on the last instruction before a sync point kept syshm from ever
-reaching one (guest time stood still, and the window froze); it no longer
-does.
+it registers, opens its main window and runs its Processor and Floating
+Point tests (the others are untried). Right after registering it uses
+Gary Davidian's skeleton key, a kernel call that gives a program
+supervisor mode, to read the processor's L2CR and HID0 (see the kernel
+calls and privileged instructions below); without it, MacBench quit with
+"an error of type 1". Its scores are relative to its reference machine, a
+Power Macintosh G3/300 (1000 in every test). Benchmark in real time, in a
+window: in instruction time, guest time follows the instruction count, so
+the guest processor looks like a 16.6 MIPS one (Processor: 62, 6% of the
+G3/300); in one real-time run on an M5, with other work on the host,
+Processor scored 18,324 (the test took about 25 s). MacBench times things
+by polling the VIA's timer in a tight loop; in real time, a loop whose
+device register read fell on the last instruction before a sync point
+kept syshm from ever reaching one (guest time stood still, and the window
+froze); it no longer does. Its Floating Point test runs for about 50 s
+of guest time (five parts of about 10 s that count iterations: an FFT, an
+LU decomposition, MathLib's functions, NaNs and infinities among their
+arguments, a table of log factorials from MathLib's log and exp,
+arithmetic on special values); the score weighs them like a harmonic
+mean, so the log factorials (60% of it on syshm) count most. Headless in
+real time on an M5 (`--realtime`, a script in seconds; medians of 4 runs,
+interleaved) it scored 7,085 before the JIT's floating-point work above
+and 16,616 after (in a later session, 6,250 and 14,700: the host's speed
+varies), while the Processor test's code runs as fast as before; see
+Findings in plan.md.
 
 ### Guest tools
 
@@ -849,18 +859,30 @@ lacks: syshm says to install it again (and a window offers to update it).
     code must run 16 times again before it's translated: most of the 68k
     emulator's translations are replaced after a few runs (a boot
     translated 222,000 blocks before this, 140,000 after).
-  - Floating point: arithmetic, conversions, compares, moves and
-    single-precision loads and stores run natively where the interpreter's
-    fast path would apply (round to nearest, no exceptions enabled, operands
-    and results well inside the normal range, so that inexact is the only
+  - Floating point: arithmetic, conversions, compares, moves, FPR loads
+    and stores and the FPSCR instructions (mffs, mtfsf, mtfsfi, mtfsb0,
+    mtfsb1, mcrfs) run natively, arithmetic where the interpreter's fast
+    path would apply (round to nearest, no exceptions enabled, operands and
+    results well inside the normal range, so that inexact is the only
     possible exception and an error-free transformation finds it). The
     FPSCR comes out exactly as the interpreter's; anything else calls the
-    interpreter for that instruction from out-of-line code. The FPSCR is
-    kept lazily: XX and FX at once (they change only while XX is clear),
-    but an operation's FR, FI and result class, which the next one
-    replaces, wait with its operands until C or the interpreter might look,
-    when the interpreter replays the operation to work them out. Keeping
-    them exactly at every operation cost QuickDraw 3D's code (Bugdom) 13%.
+    interpreter for that instruction from out-of-line code. FPRs are cached
+    in host registers within a block as GPRs are (sixteen: d8-d15, which
+    calls into C keep, and d24-d31), and the rounding mode and enables are
+    checked once a block (again after anything that may change them): in
+    another mode each FP operation leaves the block for the interpreter.
+    The FPSCR is kept lazily: XX and FX at once (they change only while XX
+    is clear; checks only the inexact test needs are skipped while it's
+    set), but an operation's FR, FI and result class, which the next one
+    replaces, wait. Its record (the operation and its operands, still in
+    their FPRs) is itself only stored when something might look (an exit,
+    a call into C, an FPSCR reader) or an operand is about to change; then
+    a native routine (mffs and the like) or the interpreter (C) replays the
+    operation to work them out. Keeping them exactly at every operation
+    cost QuickDraw 3D's code (Bugdom) 13%. An lfd of the two words a block
+    has just stored with stw (how compilers turn integers into doubles) is
+    put together from the registers stored: the host can't forward two
+    stores to one load.
   - Hosts: generated code is the same on Linux and macOS. It never uses
     x18, which macOS reserves; on macOS the code buffer is `MAP_JIT`
     memory, which the emulation thread makes writable only while it writes
@@ -868,7 +890,8 @@ lacks: syshm says to install it again (and a window offers to update it).
     left that only macOS pays (those switches, its slower fault signals) is
     under 1% of a boot.
   - `SYSHM_JIT_PROFILE=1` samples where host time goes (translated blocks
-    by guest address, stubs, C functions) and prints it at the end.
+    by guest address, stubs, C functions) and prints it at the end;
+    `SYSHM_JIT_PROFILE=FROM:TO` samples only from instruction FROM to TO.
     `SYSHM_PERF=1` reads the host processor's counters for the emulation
     thread (Linux): every second, guest instructions per second and host
     instructions and cycles per guest instruction; a total at the end.
