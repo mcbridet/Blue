@@ -395,3 +395,24 @@ MPArmTimer.
    after call 63, from the Time Manager's first timer), and arrive at the
    68k as vector 0x58 with the group ID pushed (section 6); Task 5's
    description in plan.md is right on the kernel side.
+
+## 7. Mac OS 9.2.2 (the MacOS9Lives CD)
+
+`tools/qemu-ref/run91.sh 922.iso` boots the MacOS9Lives 9.2.2 CD (Mac OS ROM
+10.2f1, NanoKernel 2.28) to the Finder on `mac99,via=pmu` in under a minute,
+with its Read Me open in SimpleText. NanoKernel 2.28 keeps the InfoRecord
+page apart from the KDP (10 pages below it), and its info records (at the
+Finder, from a RAM dump):
+
+| record          | logical    | version | length |
+|-----------------|------------|---------|--------|
+| ProcessorState  | 0x68FFDB30 (PSA) | 0x0100 | 0x80 |
+| HWInfo          | 0x5FFFEF00 | 0x0108  | 0xC0   |
+| ProcessorInfo   | 0x68FFEF20 (KDP) | 0x0112 | 0xA0 |
+| NanoKernelInfo  | 0x68FFEDC0 (KDP) | 0x0228 | 0x160 |
+| DiagInfo        | 0x68FFDA30 (PSA) | 0x0100 | 0x100 |
+| SystemInfo      | 0x5FFFEDC0 | 0x0107  | 0x140  |
+
+HWInfo's new fields (+0x9C, +0xA0 the device tree's checksum, +0xA8
+CascadeInfo), the `sc` calls of the boot (`-d int`) and what syshm does
+with them are in plan.md's Findings ("Mac OS 9.2.2: the CD" and after).

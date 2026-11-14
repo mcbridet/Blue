@@ -29,6 +29,8 @@
 #define MACIO_ENET (MACIO_BASE + 0x11000u)     /* Ethernet ("bmac+"; lanLib drives it) */
 #define MACIO_NVRAM (MACIO_BASE + 0x60000u)    /* NVRAM, a byte every 16 (ROM files with parcels only) */
 #define MACIO_NVRAM_SIZE 0x20000u
+#define MACIO_SWIM3 (MACIO_BASE + 0x15000u)    /* the floppy controller's cell: empty (ROM files with parcels only) */
+#define MACIO_SWIM3_SIZE 0x1000u
 #define MACIO_DMA_ENET_TX (MACIO_DBDMA + 2 * 0x100u)
 #define MACIO_DMA_ENET_RX (MACIO_DBDMA + 3 * 0x100u)
 #define MACIO_DMA_SOUND_OUT (MACIO_DBDMA + 8 * 0x100u)
@@ -101,6 +103,7 @@ struct bootinfo {
 	uint32_t product_info;          /* UniversalInfoTableBase */
 	uint32_t vector_mask_table;
 	uint32_t vector_lookup_table;
+	uint32_t cascade_info;          /* HWInfo's CascadeInfo (ROM files with parcels), or 0 */
 	unsigned parcel_props;          /* properties set (or removed) from the ROM file's parcels */
 };
 
@@ -130,7 +133,10 @@ int bootinfo_build(struct mem *mem, struct bootinfo *bi, const struct bootinfo_m
  */
 void bootinfo_level_masks(uint32_t masks[2][8]);
 
-/* Fills the NKHWInfo record (0xA0 bytes) that the NanoKernel copies from the Trampoline. */
+/*
+ * Fills the NKHWInfo record that the NanoKernel copies from the Trampoline:
+ * 0xA0 bytes, or NanoKernel 2's 0xC0 for a ROM file with parcels.
+ */
 void bootinfo_hwinfo(const struct bootinfo *bi, uint8_t *hw);
 
 #endif
