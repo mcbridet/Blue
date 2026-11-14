@@ -17,10 +17,10 @@
  * latency-protected task becomes nominal, and tasks of its priority get
  * their turn. A task that waits blocks with its PC on the `sc`, and makes
  * the call again once woken: what it waited for is there then, or the call
- * returns the status it was woken with (a deletion, a semaphore handed
- * over). The blue task never blocks: it polls, which yields, or naps,
- * while tasks run. Time is the guest timebase: time slices end at
- * timebase values, checked by mp_tick().
+ * returns the status it was woken with (a timeout, a deletion, a semaphore
+ * handed over). The blue task never blocks: it polls, which yields, or
+ * naps, while tasks run. Time is the guest timebase: timeouts, delays,
+ * timers and time slices end at timebase values, checked by mp_tick().
  *
  * Objects have NanoKernel 2's opaque IDs (a slot number << 16 | the count
  * of the slot's uses), and its classes. After the reverse-engineered
@@ -86,13 +86,14 @@ struct mp_object {
 			uint32_t exceptions;            /* a queue for its exceptions */
 			uint32_t process, name, options, weight;
 			uint32_t queue, message[3];     /* its termination message, and where it goes */
-			uint32_t waiting;               /* blocked: the queue, semaphore, event group or critical region (0: none) */
-			uint32_t since;                 /* ... from this (mp->blocks when it blocked: the first to block is woken first) */
+			uint32_t waiting;               /* blocked: the queue, semaphore, event group or critical region (0: none, a delay) */
+			uint32_t since;                 /* ... from this (mp->queued then: the first to block is woken first) */
+			uint64_t deadline;              /* ... until this timebase value: its timeout, its delay's end (UINT64_MAX: none) */
 			int32_t resume;                 /* the status the call it makes again returns (BLOCKED: it makes it) */
 			uint8_t state, priority;
 			uint8_t regs;                   /* its entry in mp->task */
 		} task;
-		struct { struct mp_notify notify; uint64_t time; bool armed, keep; } timer;    /* (notify: what firing does) */
+		struct { struct mp_notify notify; uint64_t time; uint32_t since; bool armed, keep; } timer;    /* (notify: what firing does; since: mp->queued as it was armed) */
 		struct { uint32_t reserve; } queue;
 		struct { uint32_t value, max; } sem;
 		struct { uint32_t depth, owner, key; } region;  /* (owner: the task in it; key: its process, as it entered) */
@@ -122,9 +123,8 @@ struct mp {
 	bool yield;                     /* ... may have to give it up (see mp_next()) */
 	uint64_t slice_end;             /* ... until this timebase value, its time slice */
 	uint64_t next_tb;               /* mp_tick() is due at this timebase value */
-	uint32_t blocks;                /* tasks that have blocked so far */
+	uint32_t queued;                /* tasks blocked and timers armed so far (their order, for those due at once) */
 	uint32_t polled;                /* the object the blue task last polled; UINT32_MAX: it has become available since */
-	uint64_t nap_until;             /* the blue task's nap (it's blocked) ends at this timebase value, or at an interrupt */
 	uint64_t cake[4];               /* each priority's time to share, in timebase ticks */
 	uint32_t tb_hz;                 /* the timebase's rate */
 	uint32_t free_pages;            /* the system's free page list: pages the kernel has to spare (see nk.c) */
@@ -194,7 +194,7 @@ void mp_interrupt(struct mp *mp, uint64_t now);
 enum mp_nap { MP_NAP_SKIPPED, MP_NAP_IDLE, MP_NAP_YIELDED };
 enum mp_nap mp_nap(struct mp *mp, uint64_t until);
 
-/* Whether the blue task is napping (and not current, unless mp_next() has just chosen it). */
+/* Whether the blue task is napping (and not current, unless mp_next() has just chosen it), until its deadline. */
 bool mp_napping(const struct mp *mp);
 
 /* Whether mp_tick() has something to do by `now`. */
@@ -206,11 +206,17 @@ static inline bool mp_due(const struct mp *mp, uint64_t now)
 /*
  * Ends what ends by `now`: the current task's time slice (a critical or
  * latency-protected task becomes nominal, and tasks as urgent get their
- * turn), the blue task's nap. Sets mp->yield if that may change the task
- * to run. Not while the blue task runs with its 68k interrupts masked
- * (`boost` MP_CRITICAL): NanoKernel 2's decrementer then only makes it
- * critical, and comes back a critical time slice later.
+ * turn); then timers, timeouts, delays and the blue task's nap, earliest
+ * first (a timer fires, notifying as set; a wait times out, its call
+ * returning kMPTimeoutErr; a task that delayed, latency-protected, carries
+ * on). Sets mp->yield if that may change the task to run. Not while the
+ * blue task runs with its 68k interrupts masked (`boost` MP_CRITICAL):
+ * NanoKernel 2's decrementer then only comes back a critical time slice
+ * later.
  */
 void mp_tick(struct mp *mp, uint64_t now, unsigned boost);
+
+/* The earliest a timer, timeout, delay or nap ends (UINT64_MAX: none). */
+uint64_t mp_next_due(const struct mp *mp);
 
 #endif

@@ -1142,7 +1142,8 @@ static void fast_start_input(struct machine *m, int key, bool down)
  * guest time reaches `deadline` (UINT64_MAX: none). In real time, sleep
  * until the next device event: the next VIA timer interrupt, the next
  * window frame, or host input, whichever is first. Interrupts only come
- * from the VIA timers and from Cuda, which only talks after input.
+ * from the VIA timers and from Cuda, which only talks after input. With
+ * Multiprocessing Services, a timer's, timeout's or delay's end counts too.
  *
  * Guest time that disk transfers put ahead of the host clock is made up
  * here, while nothing shows it: guest time runs at 3/4 speed while the guest
@@ -1165,6 +1166,8 @@ static void idle_wait(struct machine *m, uint64_t deadline)
 		fast_start_idle(m);
 	if (!m->idle_sleep || m->ipl)
 		return;
+	if (m->mp_kernel && mp_next_due(&m->mp) < deadline)
+		deadline = mp_next_due(&m->mp);
 	uint64_t now = host_ns(), until = now + IDLE_MAX_NS;
 	uint64_t ev = via_next_event(&m->via);
 	if (ev != UINT64_MAX && host_ns_at(m, ev, VIA_HZ) < until)
@@ -2322,7 +2325,7 @@ static void switch_task(struct machine *m, uint32_t to)
 {
 	struct ppc_cpu *cpu = &m->cpu;
 	if (to == m->mp.blue_task && mp_napping(&m->mp))
-		idle_wait(m, m->mp.nap_until);
+		idle_wait(m, mp_lookup(&m->mp, to, MP_TASK)->task.deadline);
 	if (to == m->mp.current) {
 		mp_switch(&m->mp, to, cpu->tb);
 		return;
@@ -2898,8 +2901,14 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			why = ppc_exit_name(e);
 			break;
 		}
-		if (m.mp_kernel && !why && !debug_exit && mp_due(&m.mp, cpu->tb))
+		if (m.mp_kernel && !why && !debug_exit && mp_due(&m.mp, cpu->tb)) {
 			mp_tick(&m.mp, cpu->tb, blue_boost(&m));
+			if (m.mp.swi_raised) {
+				printf("MPDispatch: a timer set event group 0x%08X, which raises a software interrupt\n",
+				       m.mp.swi_raised);
+				why = "software interrupts from Multiprocessing Services aren't delivered yet";
+			}
+		}
 		if (m.mp.yield && !why)         /* (Multiprocessing Services: the task to run may change) */
 			switch_task(&m, mp_next(&m.mp, blue_boost(&m)));
 		if (!dev_clean)

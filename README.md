@@ -131,8 +131,8 @@ with the call number in r0; `src/mp.c`): queues, semaphores, critical
 regions, event groups (setting one that raises a 68k software interrupt
 stops the run, as it isn't delivered yet), notifications, the areas
 startup's address space is made of (Mac OS's RAM and the page map's
-regions), and timers (made, set and armed, but they don't fire yet).
-`SYSHM_LOG_MP=1` logs them, and the switches between tasks.
+regions), and timers, which fire on the guest timebase.
+`SYSHM_LOG_MP=1` logs them, the switches between tasks, and timers firing.
 
 Tasks besides the blue one run on the same processor, one at a time: each
 has its registers saved while another runs, and the blue task's stay as
@@ -142,13 +142,14 @@ blue task; the blue task goes ahead of all once an interrupt is posted to
 it, or while its 68k code has interrupts masked), and in time slices
 shared by weight, measured on the guest timebase so that runs stay
 reproducible. A task that waits blocks, and makes its call again once
-what it waits for comes; the blue task may not wait, and polls instead,
-letting other tasks run, or naps while they do. Startup makes three tasks,
-which first run once the 68k code unmasks interrupts: one that waits for
-other tasks to end, one for the debugger's queue, and the page ager, which
-then waits for 3 seconds. With nothing to wake them yet (timers don't
-fire), Mac OS idles from there on, with the grey desktop pattern on the
-screen.
+what it waits for comes, or its timeout; tasks can also wait for a time.
+The blue task may not wait, and polls instead, letting other tasks run,
+or naps while they do. Startup makes three tasks, which first run once the
+68k code unmasks interrupts: one that waits for other tasks to end, one
+for the debugger's queue, and the page ager, which then waits for 3
+seconds. Soon after, the first of the Time Manager's timers fires, setting
+an event group that raises a 68k software interrupt, and the run stops
+there, before anything is on the screen.
 
 ### Networking
 

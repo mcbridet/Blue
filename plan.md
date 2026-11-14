@@ -38,11 +38,11 @@ Done:
   notifications (64-67, 128), task queries (11, 12, 14, 56, 59, 63),
   `MPYieldWithHint` (13), areas (77, 80; one per startup region plus Mac
   OS's RAM), the page ager's (82, 100, and 116 for an invalid process),
-  timers (40, 30, 31, 32: made, set and armed, but they never fire), and
-  `sc` with r0 -1 and -2 (`system_call()`: is the current task the blue
-  one). `SYSHM_LOG_MP=1` logs each, and the task switches. Setting an event
-  group that raises a 68k software interrupt stops the run (not delivered
-  yet).
+  timers (40, 41, 30, 31, 32), delays (33, and 55 for tasks), and `sc`
+  with r0 -1 and -2 (`system_call()`: is the current task the blue one).
+  `SYSHM_LOG_MP=1` logs each, the task switches and timers firing. Setting
+  an event group that raises a 68k software interrupt stops the run (not
+  delivered yet).
 - **Tasks** (Task 1): tasks other than the blue one are made, started,
   terminated and deleted, and run on the one processor: registers saved
   in `struct mp`, swapped by `switch_task()`.
@@ -53,20 +53,27 @@ Done:
   (`mp_interrupt()`), and its 68k interrupt mask setting its priority
   (`blue_boost()`). NanoKernelInfo's task count starts at 2, as with the
   real kernel's idle task.
+- **Timers and delays** (Task 3): timeouts on waits, `MPDelayUntil`, and
+  timer objects firing (`mp_tick()`), all on the guest timebase.
 
 Where it stops:
 
 ```
 build/syshm boot MOS91.rom --cdrom 91.iso --max 20000000000
-stopped: instruction limit reached (native context)
+MPDispatch: a timer set event group 0x00160001, which raises a software interrupt
+stopped: software interrupts from Multiprocessing Services aren't delivered yet (system context)
 ```
 
 Startup's three tasks first run at instruction 53,900,000, once the 68k
 code unmasks interrupts (as with the real kernel, `docs/nk2-reference.md`):
 'deth' and 'dbgr' block on their queues; 'ager' sets itself up (100, 64,
 15, 39, 49, 66, 66, 82, 116, 100, the real kernel's sequence) and blocks in
-`MPWaitForEvent` with a 3 s timeout. The blue task then idles to the limit
-(21 million naps), waiting for timers to fire (Task 3). The screen shows
+`MPWaitForEvent` with a 3 s timeout. The first of the Time Manager's timers
+armed for real (0x00450001, due at timebase 54,143,452) then fires at
+instruction 54,160,000 and sets the level-1 software interrupt group:
+that's Task 5's (on the real kernel too the first software interrupt comes
+17 ms after the tasks first run). Nothing is on the screen yet. Without
+Task 3's timers the blue task idled to the limit (21 million naps) with
 the grey desktop pattern.
 
 ## Ground rules for every task
@@ -225,9 +232,8 @@ the kernel); 8 onwards as the boot progresses.
   `switch_task()`, `blue_naps()`, `blue_boost()` and the run loop in
   `nk.c`); waits on queues, semaphores, event groups and critical regions
   block and are woken (and deletions wake them with `kMPDeletedErr`);
-  `MPYieldWithHint` (13); the page ager's calls (82, 100, 116). Finite
-  timeouts block like infinite ones until Task 3. `tests/test_mp.c`
-  covers it. See Findings.
+  `MPYieldWithHint` (13); the page ager's calls (82, 100, 116). Timeouts
+  are Task 3's. `tests/test_mp.c` covers it. See Findings.
 - **Owns:** `src/mp.c`, `src/mp.h`, the run loop in `src/nk.c`.
 - **Goal:** waits block MP tasks and wake them; the blue task and MP
   tasks share the processor fairly and deterministically.
@@ -251,7 +257,15 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 3. Timers and delays
 
-- **Status:** not started. **Needs:** 2.
+- **Status:** done. Waits on queues (18), semaphores (23), event groups
+  (52) and critical regions (27) time out (a Duration: milliseconds, or
+  negative, microseconds; `kDurationForever` doesn't), their calls
+  returning `kMPTimeoutErr`; `MPDelayUntil` (33, and 55 for tasks) blocks
+  until a time; timers (40 records the time made, 41 deletes, 31 arms with
+  NanoKernel 2's options) fire in `mp_tick()`: queue, semaphore and event
+  group as call 30 set, then deleted unless kept. The run loop stops when
+  one sets a software interrupt group. `idle_wait()` wakes for them in real
+  time (`mp_next_due()`). `tests/test_mp.c` covers it. See Findings.
 - **Owns:** `src/mp.c`, `src/mp.h`.
 - **Goal:** timeouts on waits, `MPDelayUntil` (33) for tasks, timer
   objects (`NKCreateTimer` 40, `NKDeleteTimer` 41, `NKSetTimerNotify` 30,
@@ -447,11 +461,10 @@ Facts later tasks need, added as they are found.
   loop after an exit is handled, when `mp.yield` is set (see the
   scheduler's finding below).
 - **Timers:** 40 makes one (ID in r4), 30 sets what firing does (as 66
-  does for notifications), 31 records an absolute time (options 2 and 4,
-  delta and duration, are left unimplemented), 32 returns the time left in
-  r4:r5 and disarms. None fire. When they do (Task 3), TimeManagerLib's
-  timers set event group 0x160001, the level-1 software interrupt group:
-  Task 5 is needed then too.
+  does for notifications), 31 arms it (options: see "Timers in syshm"
+  below), 32 returns the time left in r4:r5 and disarms. TimeManagerLib's
+  timers set event group 0x160001, the level-1 software interrupt group,
+  when they fire: Task 5 is needed for that.
 - **The scheduler in syshm (Task 2, `mp.c`):** one ready queue in arrival
   order (`mp->ready`, the blue task included when it's ready but not
   running); `mp_next()` (NanoKernel 2's `SchEval`) keeps the running task
@@ -480,7 +493,7 @@ Facts later tasks need, added as they are found.
   again (`SignalSemaphore` leaves the value alone); deleting an object
   wakes every waiter with `kMPDeletedErr` (priority unchanged). Such
   statuses are kept in `task.resume`: the call made again returns it at
-  once (`mp_call()`), which is also how timeouts will end waits (Task 3).
+  once (`mp_call()`), which is also how timeouts end waits (Task 3).
 - **The blue task:** a poll (`kMPBlueBlockingErr`) yields to tasks as
   urgent and records the object (`mp->polled`, NanoKernel 2's
   `BlueSpinningOn`); when that object becomes available, a napping blue
@@ -525,3 +538,21 @@ Facts later tasks need, added as they are found.
   with process 0 and returns `kMPInvalidIDErr`, as on the real kernel;
   other uses are unimplemented. NanoKernelInfo.TaskCount starts at 2
   (`mp->tasks`), so the page-fault queue's reserves are 2, 3, 4, 5.
+- **Timers in syshm (Task 3):** timer objects and blocked tasks' deadlines
+  (`task.deadline`: a timeout, a delay's end, the blue task's nap) end in
+  `mp_tick()`, earliest first and, among those due together, in the order
+  they were armed or blocked (`mp->queued`), as NanoKernel 2's sorted timer
+  queue does (`EnqueueTimer`, `TimerDispatch`). A timeout wakes the task
+  with its priority unchanged, its call returning `kMPTimeoutErr`
+  (`TimerFire2`); a delay's end latency-protected, its call returning noErr
+  (`TimerFire1`). A timer (`TimerFire3`) sends its message, signals its
+  semaphore and sets its event group (each only if that object still
+  exists), and is deleted unless armed with `kMPPreserveTimerIDMask`
+  (1). `MPArmTimer`'s options as NanoKernel 2 takes them: 4 converts r4, a
+  Duration, to ticks; 2 adds the timer's last time (the time it was made,
+  for a new one); without 2 the result is an absolute time, even for a
+  Duration. TimeManagerLib arms all its timers with option 1 (kept). The
+  first timer of syshm's run fires at instruction 54,160,000, its time
+  54,143,452: deadlines are seen at the next sync point or exit (every
+  20,000 instructions at most, about 1.2 ms of guest time), never while the
+  blue task runs with its 68k interrupts masked.

@@ -297,14 +297,21 @@ static void test_slices(void)
 	CHECK_EQ(schedule(now), blue);
 	CHECK_EQ(mp.slice_end, now + mp.cake[MP_NOMINAL] * 200 / 400);
 
-	/* while the blue task runs with its 68k interrupts masked, nothing ends: it's critical */
+	/* while the blue task runs with its 68k interrupts masked, nothing ends */
 	now = mp.slice_end;
 	mp_tick(&mp, now, MP_CRITICAL);
 	CHECK(!mp.yield);
-	CHECK_EQ(priority(blue), MP_CRITICAL);
+	CHECK_EQ(priority(blue), MP_NOMINAL);
 	CHECK_EQ(mp.next_tb, now + mp.cake[MP_CRITICAL]);
+	CHECK_EQ(mp_next(&mp, MP_CRITICAL), blue);      /* (but it's critical when the task to run is chosen) */
+	CHECK_EQ(priority(blue), MP_CRITICAL);
+	mp_switch(&mp, blue, now);
+	CHECK_EQ(mp.slice_end, now + mp.cake[MP_CRITICAL]);
 	now += 1000;
-	mp_tick(&mp, now, MP_AS_IS);    /* (unmasked: its time slice is over, it's nominal again) */
+	mp_tick(&mp, now, MP_AS_IS);    /* (unmasked: critical for the rest of its time slice) */
+	CHECK(!mp.yield);
+	now = mp.slice_end;
+	mp_tick(&mp, now, MP_AS_IS);
 	CHECK(mp.yield);
 	CHECK_EQ(priority(blue), MP_NOMINAL);
 	CHECK_EQ(schedule(now), one);
@@ -407,10 +414,215 @@ static void test_naps(void)
 	CHECK(!mp.yield);
 }
 
+/* Timeouts on waits, delays, and timers, on the timebase */
+static void test_timers(void)
+{
+	mp_init(&mp, TB_HZ);
+	uint32_t blue = mp.blue_task;
+	CHECK_EQ(call(15, 0, NULL), MP_NO_ERR);
+	uint32_t queue = cpu.gpr[4];
+	uint32_t task = start_task(queue);
+	uint32_t yield[] = { 0 };
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(0), task);
+	CHECK_EQ(mp_next_due(&mp), UINT64_MAX);
+
+	/* a wait times out (Durations: milliseconds, or negative, microseconds), its call returning kMPTimeoutErr */
+	cpu.tb = 1000;
+	uint32_t wait[] = { queue, 0, 0, 0, 10 };
+	CHECK_EQ(call(18, 5, wait), (int32_t)queue);
+	CHECK_EQ(mp_lookup(&mp, task, MP_TASK)->task.deadline, 1000 + 166000);
+	CHECK_EQ(mp_next_due(&mp), 167000);
+	CHECK_EQ(schedule(1000), blue);
+	mp_tick(&mp, 166999, MP_AS_IS);
+	CHECK_EQ(state(task), MP_TASK_BLOCKED);
+	CHECK_EQ(mp.next_tb, 167000);
+	mp_tick(&mp, 167000, MP_AS_IS);
+	CHECK_EQ(state(task), MP_TASK_READY);
+	CHECK_EQ(priority(task), MP_NOMINAL);
+	CHECK_EQ(mp_next_due(&mp), UINT64_MAX);
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(167000), task);
+	wait[1] = 0x44;
+	CHECK_EQ(call(18, 5, wait), MP_TIMEOUT_ERR);
+	CHECK_EQ(cpu.gpr[4], 0x44);
+
+	/* ... unless what it waits for comes first */
+	cpu.tb = 200000;
+	uint32_t sem_args[] = { 1, 0 };
+	CHECK_EQ(call(20, 2, sem_args), MP_NO_ERR);
+	uint32_t sem = cpu.gpr[5];
+	uint32_t sem_wait[] = { sem, (uint32_t)-500 };  /* (500 us: 66 * 500 / 4 ticks) */
+	CHECK_EQ(call(23, 2, sem_wait), (int32_t)sem);
+	CHECK_EQ(mp_next_due(&mp), 200000 + 8250);
+	CHECK_EQ(schedule(200000), blue);
+	uint32_t signal[] = { sem };
+	CHECK_EQ(call(22, 1, signal), MP_NO_ERR);
+	CHECK_EQ(mp_next_due(&mp), UINT64_MAX);
+	mp_tick(&mp, 300000, MP_AS_IS);
+	CHECK_EQ(schedule(300000), task);
+	CHECK_EQ(call(23, 2, sem_wait), MP_NO_ERR);
+
+	/* event groups and critical regions time out too */
+	cpu.tb = 300000;
+	CHECK_EQ(call(49, 0, NULL), MP_NO_ERR);
+	uint32_t event_wait[] = { cpu.gpr[4], 0, 1 };
+	CHECK_EQ(call(52, 3, event_wait), (int32_t)event_wait[0]);
+	CHECK_EQ(mp_next_due(&mp), 300000 + 16600);
+	CHECK_EQ(schedule(300000), blue);
+	mp_tick(&mp, 400000, MP_AS_IS);
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(400000), task);
+	CHECK_EQ(call(52, 3, event_wait), MP_TIMEOUT_ERR);
+	CHECK_EQ(call(25, 0, NULL), MP_NO_ERR);
+	uint32_t region = cpu.gpr[4];
+	uint32_t enter[] = { region, 1, mp.blue_process };
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(400000), blue);
+	CHECK_EQ(call(27, 3, enter), MP_NO_ERR);
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(400000), task);
+	cpu.tb = 400000;
+	CHECK_EQ(call(27, 3, enter), (int32_t)region);
+	CHECK_EQ(schedule(400000), blue);
+	mp_tick(&mp, 416600, MP_AS_IS);
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(416600), task);
+	CHECK_EQ(call(27, 3, enter), MP_TIMEOUT_ERR);
+
+	/* MPDelayUntil (and MPDelayUntilSys, for tasks): until then, then latency-protected */
+	uint32_t delay[] = { 0x80000000u, 500000 };     /* (the top bit is ignored) */
+	CHECK_EQ(call(33, 2, delay), (int32_t)0x80000000u);
+	CHECK_EQ(state(task), MP_TASK_BLOCKED);
+	CHECK_EQ(mp_next_due(&mp), 500000);
+	CHECK_EQ(schedule(416600), blue);
+	CHECK_EQ(call(33, 2, delay), MP_BLUE_BLOCKING_ERR);     /* (the blue task may not; it naps with call 55) */
+	mp_tick(&mp, 499999, MP_AS_IS);
+	CHECK_EQ(state(task), MP_TASK_BLOCKED);
+	mp_tick(&mp, 500000, MP_AS_IS);
+	CHECK_EQ(priority(task), MP_LATENCY_PROTECTED);
+	CHECK_EQ(schedule(500000), task);
+	CHECK_EQ(call(33, 2, delay), MP_NO_ERR);
+	delay[1] = 600000;
+	CHECK_EQ(call(55, 2, delay), (int32_t)delay[0]);
+	CHECK_EQ(mp_next_due(&mp), 600000);
+	CHECK_EQ(schedule(500000), blue);
+
+	/* while the blue task runs with its 68k interrupts masked, nothing ends */
+	mp_tick(&mp, 600000, MP_CRITICAL);
+	CHECK_EQ(state(task), MP_TASK_BLOCKED);
+	mp_tick(&mp, 600000 + mp.cake[MP_CRITICAL], MP_AS_IS);
+	CHECK_EQ(state(task), MP_TASK_READY);
+	CHECK_EQ(schedule(600000), task);
+	CHECK_EQ(call(55, 2, delay), MP_NO_ERR);
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(600000), blue);
+
+	/* a timer: made at a time (for deltas); armed, it notifies as set and is deleted */
+	cpu.tb = 700000;
+	CHECK_EQ(call(40, 0, NULL), MP_NO_ERR);
+	uint32_t timer = cpu.gpr[4];
+	CHECK_EQ(mp_lookup(&mp, timer, MP_TIMER)->timer.time, 700000);
+	CHECK_EQ(call(15, 0, NULL), MP_NO_ERR);
+	uint32_t timer_queue = cpu.gpr[4];
+	CHECK_EQ(call(49, 0, NULL), MP_NO_ERR);
+	uint32_t event = cpu.gpr[4];
+	uint32_t to_queue[] = { timer, timer_queue, 1, 2, 3 }, to_sem[] = { timer, sem }, to_event[] = { timer, event, 8 };
+	CHECK_EQ(call(30, 5, to_queue), MP_NO_ERR);
+	CHECK_EQ(call(30, 2, to_sem), MP_NO_ERR);
+	CHECK_EQ(call(30, 3, to_event), MP_NO_ERR);
+	uint32_t arm[] = { timer, 0, 800000, 0 };
+	CHECK_EQ(call(31, 4, arm), MP_NO_ERR);
+	CHECK_EQ(mp_next_due(&mp), 800000);
+	mp_tick(&mp, 799999, MP_AS_IS);
+	CHECK(mp_lookup(&mp, timer, MP_TIMER) != NULL);
+	mp_tick(&mp, 800000, MP_AS_IS);
+	CHECK(mp_lookup(&mp, timer, MP_TIMER) == NULL);
+	CHECK_EQ(mp_lookup(&mp, sem, MP_SEMAPHORE)->sem.value, 1);
+	CHECK_EQ(mp_lookup(&mp, event, MP_EVENT_GROUP)->event.flags, 8);
+	uint32_t timer_wait[] = { timer_queue, 0, 0, 0, 0 };
+	CHECK_EQ(call(18, 5, timer_wait), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], 1);
+	CHECK_EQ(cpu.gpr[6], 3);
+	CHECK_EQ(call(31, 4, arm), MP_INVALID_ID_ERR);
+
+	/* kept (option 1): armed again from its last time (2), or for a Duration (4) */
+	CHECK_EQ(call(40, 0, NULL), MP_NO_ERR);
+	timer = arm[0] = to_queue[0] = cpu.gpr[4];
+	CHECK_EQ(call(30, 5, to_queue), MP_NO_ERR);
+	arm[3] = 1;
+	CHECK_EQ(call(31, 4, arm), MP_NO_ERR);
+	mp_tick(&mp, 800000, MP_AS_IS);
+	CHECK(mp_lookup(&mp, timer, MP_TIMER) != NULL);
+	CHECK_EQ(mp_next_due(&mp), UINT64_MAX);
+	timer_wait[4] = 0;
+	CHECK_EQ(call(18, 5, timer_wait), MP_NO_ERR);
+	arm[2] = 1000;
+	arm[3] = 3;
+	CHECK_EQ(call(31, 4, arm), MP_NO_ERR);
+	CHECK_EQ(mp_next_due(&mp), 801000);
+	arm[1] = 2;
+	arm[3] = 7;
+	CHECK_EQ(call(31, 4, arm), MP_NO_ERR);
+	CHECK_EQ(mp_next_due(&mp), 801000 + 33200);
+	arm[3] = 5;
+	CHECK_EQ(call(31, 4, arm), MP_NO_ERR);
+	CHECK_EQ(mp_next_due(&mp), 33200);
+
+	/* cancelled, it doesn't fire, and says how long it had left */
+	cpu.tb = 33000;
+	uint32_t cancel[] = { timer };
+	CHECK_EQ(call(32, 1, cancel), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], 0);
+	CHECK_EQ(cpu.gpr[5], 200);
+	CHECK_EQ(mp_next_due(&mp), UINT64_MAX);
+	CHECK_EQ(call(32, 1, cancel), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[5], 0);
+
+	/* timers due together fire in the order they were armed, and wake who waits */
+	CHECK_EQ(call(40, 0, NULL), MP_NO_ERR);
+	uint32_t other = cpu.gpr[4], to_queue2[] = { other, timer_queue, 4, 5, 6 };
+	CHECK_EQ(call(30, 5, to_queue2), MP_NO_ERR);
+	uint32_t arm2[] = { other, 0, 900000, 0 };
+	CHECK_EQ(call(31, 4, arm2), MP_NO_ERR);
+	arm[1] = 0;
+	arm[2] = 900000;
+	arm[3] = 1;
+	CHECK_EQ(call(31, 4, arm), MP_NO_ERR);
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(800000), task);
+	timer_wait[4] = 0x7FFFFFFF;
+	CHECK_EQ(call(18, 5, timer_wait), (int32_t)timer_queue);
+	CHECK_EQ(schedule(800000), blue);
+	mp_tick(&mp, 900000, MP_AS_IS);
+	CHECK_EQ(priority(task), MP_LATENCY_PROTECTED);
+	CHECK_EQ(schedule(900000), task);
+	CHECK_EQ(call(18, 5, timer_wait), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], 4);
+	CHECK_EQ(call(18, 5, timer_wait), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], 1);
+	uint32_t del[] = { timer };
+	CHECK_EQ(call(41, 1, del), MP_NO_ERR);
+	CHECK_EQ(call(41, 1, del), MP_INVALID_ID_ERR);
+
+	/* one that sets an event group raising a software interrupt says so */
+	uint32_t swi[] = { event, 1 };
+	CHECK_EQ(call(54, 2, swi), MP_NO_ERR);
+	CHECK_EQ(call(40, 0, NULL), MP_NO_ERR);
+	to_event[0] = arm[0] = cpu.gpr[4];
+	CHECK_EQ(call(30, 3, to_event), MP_NO_ERR);
+	arm[2] = 950000;
+	CHECK_EQ(call(31, 4, arm), MP_NO_ERR);
+	CHECK_EQ(mp.swi_raised, 0);
+	mp_tick(&mp, 950000, MP_AS_IS);
+	CHECK_EQ(mp.swi_raised, event);
+}
+
 void test_mp(void)
 {
 	test_tasks();
 	test_waking();
 	test_slices();
 	test_naps();
+	test_timers();
 }

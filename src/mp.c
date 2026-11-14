@@ -8,6 +8,10 @@
 #define NAME_UNNAMED 0x2D2D2D2Du        /* '----' */
 #define OPTIONS_VALID 6u                /* kMPCreateTaskTakesAllExceptionsMask, kMPCreateTaskNotDebuggableMask */
 #define POLLED_AVAILABLE UINT32_MAX     /* (mp->polled) */
+#define DURATION_FOREVER 0x7FFFFFFFu
+#define TIMER_KEEP 1u                   /* MPArmTimer's options: kMPPreserveTimerIDMask */
+#define TIMER_DELTA 2u                  /* ... kMPTimeIsDeltaMask */
+#define TIMER_DURATION 4u               /* ... kMPTimeIsDurationMask */
 
 /* Timebase ticks in a Duration (NanoKernel 2's TimebaseTicksPerPeriod): milliseconds, or (negative) microseconds */
 static uint64_t duration_ticks(const struct mp *mp, int32_t d)
@@ -36,6 +40,7 @@ void mp_init(struct mp *mp, uint32_t tb_hz)
 	blue->task.priority = MP_NOMINAL;
 	blue->task.state = MP_TASK_RUNNING;
 	blue->task.resume = BLOCKED;
+	blue->task.deadline = UINT64_MAX;
 	mp->task[0].id = mp->blue_task;
 	mp->tasks = 2;          /* (and NanoKernel 2's idle task, which syshm doesn't need; MPLibrary counts on it) */
 	mp->current = mp->blue_task;
@@ -119,6 +124,7 @@ static void make_ready(struct mp *mp, uint32_t task, bool front)
 	struct mp_object *o = mp_lookup(mp, task, MP_TASK);
 	o->task.state = MP_TASK_READY;
 	o->task.waiting = 0;
+	o->task.deadline = UINT64_MAX;
 	if (front) {
 		memmove(&mp->ready[1], &mp->ready[0], mp->readies * sizeof mp->ready[0]);
 		mp->ready[0] = task;
@@ -201,12 +207,25 @@ static void available(struct mp *mp, uint32_t id)
 	}
 }
 
+/* The current task blocks, waiting on `id` (0: none) until `deadline` (UINT64_MAX: none). */
+static int32_t block(struct mp *mp, uint32_t id, uint64_t deadline)
+{
+	struct mp_object *o = mp_lookup(mp, mp->current, MP_TASK);
+	o->task.state = MP_TASK_BLOCKED;
+	o->task.waiting = id;
+	o->task.since = mp->queued++;
+	o->task.deadline = deadline;
+	mp->yield = true;
+	return BLOCKED;
+}
+
 /*
  * What a wait on `id` comes to when what's waited for isn't there: with a
- * timeout of 0, none; the blue task may not block, and polls (and yields
- * to tasks as urgent); others block until woken.
+ * timeout (a Duration) of 0, none; the blue task may not block, and polls
+ * (and yields to tasks as urgent); others block until woken, or until the
+ * timeout from `now` (kDurationForever: none).
  */
-static int32_t unavailable(struct mp *mp, uint32_t id, uint32_t timeout)
+static int32_t unavailable(struct mp *mp, uint32_t id, uint32_t timeout, uint64_t now)
 {
 	if (!timeout)
 		return MP_TIMEOUT_ERR;
@@ -215,12 +234,7 @@ static int32_t unavailable(struct mp *mp, uint32_t id, uint32_t timeout)
 		yield(mp);
 		return MP_BLUE_BLOCKING_ERR;
 	}
-	struct mp_object *o = mp_lookup(mp, mp->current, MP_TASK);
-	o->task.state = MP_TASK_BLOCKED;
-	o->task.waiting = id;
-	o->task.since = mp->blocks++;
-	mp->yield = true;
-	return BLOCKED;
+	return block(mp, id, timeout == DURATION_FOREVER ? UINT64_MAX : now + duration_ticks(mp, (int32_t)timeout));
 }
 
 /* Deletes an object; tasks waiting on it are woken, their calls returning kMPDeletedErr. */
@@ -320,8 +334,10 @@ enum mp_nap mp_nap(struct mp *mp, uint64_t until)
 	}
 	if (!mp_ready(mp))
 		return MP_NAP_IDLE;
-	mp_lookup(mp, mp->blue_task, MP_TASK)->task.state = MP_TASK_BLOCKED;
-	mp->nap_until = until;
+	struct mp_object *blue = mp_lookup(mp, mp->blue_task, MP_TASK);
+	blue->task.state = MP_TASK_BLOCKED;
+	blue->task.since = mp->queued++;
+	blue->task.deadline = until;
 	mp->yield = true;
 	mp->next_tb = 0;
 	return MP_NAP_YIELDED;
@@ -330,29 +346,6 @@ enum mp_nap mp_nap(struct mp *mp, uint64_t until)
 bool mp_napping(const struct mp *mp)
 {
 	return task_at(mp, mp->blue_task)->task.state == MP_TASK_BLOCKED;
-}
-
-void mp_tick(struct mp *mp, uint64_t now, unsigned boost)
-{
-	struct mp_object *current = mp_lookup(mp, mp->current, MP_TASK);
-	struct mp_object *blue = mp_lookup(mp, mp->blue_task, MP_TASK);
-	if (boost == MP_CRITICAL && current == blue && blue->task.state == MP_TASK_RUNNING) {
-		blue->task.priority = MP_CRITICAL;
-		mp->next_tb = now + mp->cake[MP_CRITICAL];
-		return;
-	}
-	if (current->task.state == MP_TASK_RUNNING && now >= mp->slice_end) {
-		if (current->task.priority < MP_NOMINAL)
-			current->task.priority = MP_NOMINAL;
-		yield(mp);
-	}
-	if (blue->task.state == MP_TASK_BLOCKED && now >= mp->nap_until) {
-		blue->task.priority = MP_LATENCY_PROTECTED;
-		make_ready(mp, mp->blue_task, false);
-	}
-	mp->next_tb = current->task.state == MP_TASK_RUNNING ? mp->slice_end : UINT64_MAX;   /* (else mp_switch() is next) */
-	if (blue->task.state == MP_TASK_BLOCKED && mp->nap_until < mp->next_tb)
-		mp->next_tb = mp->nap_until;
 }
 
 /*
@@ -378,6 +371,7 @@ static int32_t create_task(struct mp *mp, const uint32_t *r, uint32_t *id)
 	o->task.weight = 100;
 	o->task.priority = MP_NOMINAL;
 	o->task.resume = BLOCKED;
+	o->task.deadline = UINT64_MAX;
 	o->task.message[2] = (uint32_t)MP_TASK_ABORTED_ERR;
 	o->task.regs = (uint8_t)k;
 	mp->task[k].id = made;
@@ -474,6 +468,90 @@ static int32_t cause_notification(struct mp *mp, uint32_t id)
 	return status;
 }
 
+/*
+ * The timer or blocked task to end first: the earliest, and among those
+ * due at once, the first armed or blocked. NULL if none; its time to
+ * *time (UINT64_MAX: never), its ID to *id.
+ */
+static struct mp_object *earliest(struct mp *mp, uint64_t *time, uint32_t *id)
+{
+	struct mp_object *first = NULL;
+	uint32_t since = 0;
+	*time = UINT64_MAX;
+	for (unsigned k = 0; k < mp->slots; k++) {
+		struct mp_object *o = &mp->obj[k];
+		uint64_t t;
+		uint32_t s;
+		if (o->class == MP_TIMER && o->timer.armed)
+			t = o->timer.time, s = o->timer.since;
+		else if (o->class == MP_TASK && o->task.state == MP_TASK_BLOCKED && o->task.deadline != UINT64_MAX)
+			t = o->task.deadline, s = o->task.since;
+		else
+			continue;
+		if (first && (t > *time || (t == *time && (int32_t)(s - since) >= 0)))
+			continue;
+		first = o;
+		*time = t;
+		since = s;
+		*id = (uint32_t)k << 16 | o->uses;
+	}
+	return first;
+}
+
+/* A timer fires: it notifies as NKSetTimerNotify (call 30) set, and is deleted unless armed to be kept. */
+static void fire(struct mp *mp, struct mp_object *timer, uint32_t id)
+{
+	const struct mp_notify *n = &timer->timer.notify;
+	if (mp->log)
+		printf("mp: timer 0x%08X fires\n", id);
+	timer->timer.armed = false;
+	if (mp_lookup(mp, n->queue, MP_QUEUE))
+		notify_queue(mp, n->queue, n->word);
+	if (mp_lookup(mp, n->sem, MP_SEMAPHORE))
+		signal_semaphore(mp, n->sem);
+	if (mp_lookup(mp, n->event, MP_EVENT_GROUP))
+		set_event(mp, n->event, n->flags);
+	if (!timer->timer.keep)
+		timer->class = MP_FREE;
+}
+
+void mp_tick(struct mp *mp, uint64_t now, unsigned boost)
+{
+	struct mp_object *current = mp_lookup(mp, mp->current, MP_TASK);
+	struct mp_object *blue = mp_lookup(mp, mp->blue_task, MP_TASK);
+	if (boost == MP_CRITICAL && current == blue && blue->task.state == MP_TASK_RUNNING) {
+		mp->next_tb = now + mp->cake[MP_CRITICAL];
+		return;
+	}
+	if (current->task.state == MP_TASK_RUNNING && now >= mp->slice_end) {
+		if (current->task.priority < MP_NOMINAL)
+			current->task.priority = MP_NOMINAL;
+		yield(mp);
+	}
+	uint64_t time;
+	uint32_t id;
+	struct mp_object *o;
+	while ((o = earliest(mp, &time, &id)) && time <= now) {
+		if (o->class == MP_TIMER)
+			fire(mp, o, id);
+		else if (o->task.waiting)
+			wake(mp, id, MP_TIMEOUT_ERR, false);
+		else            /* (a delay, or the blue task's nap: it made no call to make again) */
+			wake(mp, id, id == mp->blue_task ? BLOCKED : MP_NO_ERR, true);
+	}
+	mp->next_tb = current->task.state == MP_TASK_RUNNING ? mp->slice_end : UINT64_MAX;   /* (else mp_switch() is next) */
+	if (time < mp->next_tb)
+		mp->next_tb = time;
+}
+
+uint64_t mp_next_due(const struct mp *mp)
+{
+	uint64_t time;
+	uint32_t id;
+	earliest((struct mp *)mp, &time, &id);
+	return time;
+}
+
 int32_t mp_terminate(struct mp *mp, uint32_t task, uint32_t result)
 {
 	struct mp_object *o = mp_lookup(mp, task, MP_TASK);
@@ -486,6 +564,7 @@ int32_t mp_terminate(struct mp *mp, uint32_t task, uint32_t result)
 		mp->yield = true;
 	o->task.state = MP_TASK_TERMINATED;
 	o->task.waiting = 0;
+	o->task.deadline = UINT64_MAX;
 	o->task.message[2] = result;
 	if (mp_lookup(mp, o->task.queue, MP_QUEUE))
 		notify_queue(mp, o->task.queue, o->task.message);
@@ -582,7 +661,7 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 		if (!mp_lookup(mp, r[3], MP_QUEUE)) {
 			status = MP_INVALID_ID_ERR;
 		} else if (k == mp->messages) {
-			status = unavailable(mp, r[3], r[7]);
+			status = unavailable(mp, r[3], r[7], cpu->tb);
 		} else {
 			memcpy(&r[4], mp->msg[k].word, sizeof mp->msg[k].word);
 			memmove(&mp->msg[k], &mp->msg[k + 1], (--mp->messages - k) * sizeof mp->msg[0]);
@@ -618,7 +697,7 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 		else if (o->sem.value)
 			o->sem.value--;
 		else
-			status = unavailable(mp, r[3], r[4]);
+			status = unavailable(mp, r[3], r[4], cpu->tb);
 		break;
 	case 25:        /* MPCreateCriticalRegion -> r4 */
 		status = create(mp, MP_CRITICAL_REGION, &r[4]);
@@ -636,7 +715,7 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 		} else if (!mp_lookup(mp, o->region.owner, MP_TASK) || !mp_lookup(mp, o->region.key, MP_PROCESS)) {
 			status = MP_TASK_ABORTED_ERR;
 		} else {
-			status = unavailable(mp, r[3], r[4]);
+			status = unavailable(mp, r[3], r[4], cpu->tb);
 		}
 		break;
 	case 28:        /* MPExitCriticalRegion(r3, key r4): the first waiting enters it once it's free */
@@ -650,8 +729,12 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 			wake_first(mp, r[3], BLOCKED);
 		}
 		break;
-	case 40:        /* NKCreateTimer -> r4 */
-		status = create(mp, MP_TIMER, &r[4]);
+	case 40:        /* NKCreateTimer -> r4: its time (for MPArmTimer's deltas) is now */
+		if (!(status = create(mp, MP_TIMER, &r[4])))
+			mp_lookup(mp, r[4], MP_TIMER)->timer.time = cpu->tb;
+		break;
+	case 41:        /* NKDeleteTimer(r3) */
+		status = delete(mp, r[3], MP_TIMER);
 		break;
 	case 30:        /* NKSetTimerNotify(timer r3, what r4: see set_notify()) */
 		if (!(o = mp_lookup(mp, r[3], MP_TIMER)))
@@ -659,15 +742,15 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 		else
 			status = set_notify(mp, &o->timer.notify, r);
 		break;
-	case 31:        /* MPArmTimer(r3, time r4:r5, options r6: 1 keeps the timer once fired): when it fires (they don't yet) */
-		if (r[6] & ~1u)
-			return false;   /* (2: the time is from the last one; 4: it's a Duration, in r4) */
+	case 31:        /* MPArmTimer(r3, time r4:r5, options r6): it fires then (see TIMER_KEEP) */
 		if (!(o = mp_lookup(mp, r[3], MP_TIMER))) {
 			status = MP_INVALID_ID_ERR;
 		} else {
-			o->timer.time = (uint64_t)r[4] << 32 | r[5];
+			uint64_t time = r[6] & TIMER_DURATION ? duration_ticks(mp, (int32_t)r[4]) : (uint64_t)r[4] << 32 | r[5];
+			o->timer.time = r[6] & TIMER_DELTA ? o->timer.time + time : time;
+			o->timer.since = mp->queued++;
 			o->timer.armed = true;
-			o->timer.keep = r[6] & 1;
+			o->timer.keep = r[6] & TIMER_KEEP;
 		}
 		break;
 	case 32:        /* MPCancelTimer(r3) -> the time it had left r4:r5 (0 if it wasn't armed) */
@@ -679,6 +762,13 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 			r[4] = (uint32_t)(left >> 32);
 			r[5] = (uint32_t)left;
 		}
+		break;
+	case 33:        /* MPDelayUntil(time r3:r4, its top bit ignored): the task blocks until then (the blue task may not) */
+	case 55:        /* (MPDelayUntilSys: the same for tasks; the blue task's is a nap, see nk.c) */
+		if (mp->current == mp->blue_task)
+			status = MP_BLUE_BLOCKING_ERR;
+		else
+			status = block(mp, 0, (uint64_t)(r[3] & 0x7FFFFFFFu) << 32 | r[4]);
 		break;
 	case 49:        /* MPCreateEvent -> r4 */
 		status = create(mp, MP_EVENT_GROUP, &r[4]);
@@ -696,7 +786,7 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 			r[4] = o->event.flags;
 			o->event.flags = 0;
 		} else {
-			status = unavailable(mp, r[3], r[5]);
+			status = unavailable(mp, r[3], r[5], cpu->tb);
 		}
 		break;
 	case 54:        /* MPSetSWIEvent(r3, level r4 1-8, else 1): setting the group raises that software interrupt */
