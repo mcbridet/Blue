@@ -58,10 +58,19 @@ enum mp_class {
 #define MP_TIMEOUT_ERR (-29296)
 #define MP_DELETED_ERR (-29295)
 #define MP_BLUE_BLOCKING_ERR (-29293)           /* the blue task may not wait: it spins instead */
+#define MP_NO_CPU_PLUGIN_ERR (-29286)           /* MPCpuPlugin: none is registered */
+#define MP_CPU_PLUGIN_SELECTOR_ERR (-29287)     /* ... it has no such routine */
+#define MP_CPU_PLUGIN_FAULT_ERR (-29285)        /* ... it took an exception */
 
 #define MP_MAX_OBJECTS 1024u
 #define MP_MAX_MESSAGES 256u
 #define MP_MAX_TASKS 64u
+#define MP_MAX_PAGES (1u << (30 - MEM_PAGE_SHIFT))      /* (in the paged area, Mac OS's RAM: 1 GB) */
+
+/* An area's access, its PTEConfig as NanoKernel 2 makes it from the page map's attributes */
+#define MP_AREA_READ_WRITE 7u
+#define MP_AREA_READ_ONLY 5u
+#define MP_AREA_IO 0xA0u                /* (with one of those: cache-inhibited and guarded) */
 
 enum mp_task_state {
 	MP_TASK_NEW,            /* made, not started yet */
@@ -88,11 +97,12 @@ struct mp_notify {
 struct mp_object {
 	uint8_t class;
 	uint16_t uses;
+	uint32_t process;                       /* the process it belongs to: the one that made it (a task's own) */
 	union {
 		struct {
 			uint32_t label;                 /* a word for Multiprocessing Services (call 63 sets it) */
 			uint32_t exceptions;            /* a queue for its exceptions */
-			uint32_t process, name, options, weight;
+			uint32_t name, options, weight;
 			uint32_t queue, message[3];     /* its termination message, and where it goes */
 			uint32_t waiting;               /* blocked: the queue, semaphore, event group or critical region (0: none, a delay) */
 			uint32_t since;                 /* ... from this (mp->queued then: the first to block is woken first) */
@@ -107,7 +117,8 @@ struct mp_object {
 		struct { uint32_t depth, owner, key; } region;  /* (owner: the task in it; key: its process, as it entered) */
 		struct { uint32_t flags, swi; } event;          /* (swi: 0, or 0x10 | the 68k software interrupt it raises) */
 		struct mp_notify note;                          /* what causing it does */
-		struct { uint32_t base, length, provider, provider_misc; bool writable; } area;  /* (provider: a notification for its page faults) */
+		struct { uint32_t base, length, pte_config, provider, provider_misc; bool paged; } area;      /* (provider: a notification for its page faults) */
+		struct { uint32_t space; bool terminated; } proc;
 	};
 };
 
@@ -139,7 +150,9 @@ struct mp {
 	uint32_t tb_hz;                 /* the timebase's rate */
 	uint32_t free_pages;            /* the system's free page list: pages the kernel has to spare (see nk.c) */
 	uint32_t ager;                  /* the page ager's notification, for when they run short (call 82), or 0 */
+	uint16_t age[MP_MAX_PAGES];     /* the paged area's pages' ages (see call 93): 0x8000 held, else time since it was last used */
 	uint32_t task_return;           /* where a new task's entry point returns to: it ends there (nk.c sees to it) */
+	struct { uint32_t base, size, desc, routines; } plugin;        /* the CPU plugin (call 2: see nk.c), or desc 0 */
 	bool log;
 };
 
@@ -150,8 +163,12 @@ struct mp {
  */
 void mp_init(struct mp *mp, uint32_t tb_hz);
 
-/* Adds an area of the address space (startup's, from the page map); returns its ID, or 0 if it overlaps one. */
-uint32_t mp_add_area(struct mp *mp, uint32_t base, uint32_t length, bool writable);
+/*
+ * Adds an area of the address space (startup's, from the page map), with
+ * its access (MP_AREA_*): contiguous, or `paged` (Mac OS's RAM, the only
+ * one); returns its ID, or 0 if it overlaps one.
+ */
+uint32_t mp_add_area(struct mp *mp, uint32_t base, uint32_t length, uint32_t access, bool paged);
 
 uint32_t mp_make(struct mp *mp, enum mp_class class);
 struct mp_object *mp_lookup(struct mp *mp, uint32_t id, enum mp_class class);

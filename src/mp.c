@@ -13,6 +13,10 @@
 #define TIMER_DELTA 2u                  /* ... kMPTimeIsDeltaMask */
 #define TIMER_DURATION 4u               /* ... kMPTimeIsDurationMask */
 #define SWI_LEVELS 8u                   /* a software interrupt's 68k levels: 1-8 */
+#define AGE_MAX 0x7FFFu                 /* (a page's age: see call 93) */
+#define AGE_HELD 0x8000u
+#define AREA_PAGED 0x600Cu              /* an area's FlagsAndMinAlign: paged, or contiguous (0x8000), page-aligned (12 bits) */
+#define AREA_CONTIGUOUS 0xE00Cu
 
 /* The 68k emulator's context block: software interrupts (EmulatorPublic.a) */
 enum {
@@ -39,9 +43,9 @@ void mp_init(struct mp *mp, uint32_t tb_hz)
 	mp->blue_task = mp_make(mp, MP_TASK);
 	mp->page_queue = mp_make(mp, MP_QUEUE);
 	mp->space = mp_make(mp, MP_ADDRESS_SPACE);
+	mp_lookup(mp, mp->blue_process, MP_PROCESS)->proc.space = mp->space;
 
 	struct mp_object *blue = mp_lookup(mp, mp->blue_task, MP_TASK);
-	blue->task.process = mp->blue_process;
 	blue->task.name = NAME_BLUE;
 	blue->task.weight = 200;
 	blue->task.priority = MP_NOMINAL;
@@ -53,7 +57,7 @@ void mp_init(struct mp *mp, uint32_t tb_hz)
 	mp->current = mp->blue_task;
 }
 
-uint32_t mp_add_area(struct mp *mp, uint32_t base, uint32_t length, bool writable)
+uint32_t mp_add_area(struct mp *mp, uint32_t base, uint32_t length, uint32_t access, bool paged)
 {
 	for (unsigned k = 0; k < mp->slots; k++) {
 		const struct mp_object *o = &mp->obj[k];
@@ -61,13 +65,18 @@ uint32_t mp_add_area(struct mp *mp, uint32_t base, uint32_t length, bool writabl
 			return 0;
 		if (o->class == MP_AREA && o->area.base - base < length)
 			return 0;
+		if (o->class == MP_AREA && o->area.paged && paged)
+			return 0;
 	}
 	uint32_t id = mp_make(mp, MP_AREA);
 	if (id) {
 		struct mp_object *o = mp_lookup(mp, id, MP_AREA);
 		o->area.base = base;
 		o->area.length = length;
-		o->area.writable = writable;
+		o->area.pte_config = access;
+		o->area.paged = paged;
+		for (uint32_t k = 0; paged && k < MP_MAX_PAGES; k++)
+			mp->age[k] = AGE_MAX;
 	}
 	return id;
 }
@@ -87,6 +96,42 @@ static struct mp_object *area_at(struct mp *mp, uint32_t space, uint32_t addr, u
 	return NULL;
 }
 
+/*
+ * Call 78's record of an area (NanoKernel 2's MPCall_78, from its Area
+ * structure): 1, its process, address space, parent (an alias's); its
+ * backing provider, access, FlagsAndMinAlign, base; its length, logical
+ * separation, page fault count, bytes mapped; its page size, a word, the
+ * backing provider's word. Words from `offset` (0x00, 0x10, 0x20, 0x30, 0x3C:
+ * the end) go to r6 up, four at most, their byte count to r10.
+ */
+static int32_t area_record(const struct mp *mp, const struct mp_object *o, uint32_t offset, uint32_t *r)
+{
+	const uint32_t record[15] = {
+		1, o->process, mp->space, 0,
+		o->area.provider, o->area.pte_config, o->area.paged ? AREA_PAGED : AREA_CONTIGUOUS, o->area.base,
+		o->area.length, 0, 0, o->area.length,
+		MEM_PAGE_SIZE, 0, o->area.provider_misc,
+	};
+	if (offset > 0x3C || (offset % 16 && offset != 0x3C))
+		return MP_PARAM_ERR;
+	uint32_t words = offset == 0x3C ? 0 : offset == 0x30 ? 3 : 4;
+	memcpy(&r[6], &record[offset / 4], words * sizeof record[0]);
+	r[10] = words * sizeof record[0];
+	return MP_NO_ERR;
+}
+
+/* The age of the page at `addr` in a paged area, or NULL (*status: why). */
+static uint16_t *page_age(struct mp *mp, uint32_t area, uint32_t addr, int32_t *status)
+{
+	const struct mp_object *o = mp_lookup(mp, area, MP_AREA);
+	uint32_t page = o ? (addr - o->area.base) >> MEM_PAGE_SHIFT : 0;
+	*status = !o ? MP_INVALID_ID_ERR : MP_PARAM_ERR;
+	if (!o || addr - o->area.base >= o->area.length || !o->area.paged || page >= MP_MAX_PAGES)
+		return NULL;
+	*status = MP_NO_ERR;
+	return &mp->age[page];
+}
+
 uint32_t mp_make(struct mp *mp, enum mp_class class)
 {
 	for (unsigned k = 0; k < MP_MAX_OBJECTS; k++) {
@@ -94,9 +139,11 @@ uint32_t mp_make(struct mp *mp, enum mp_class class)
 		if (o->class != MP_FREE)
 			continue;
 		uint16_t uses = (uint16_t)(o->uses + 1);
+		const struct mp_object *current = mp_lookup(mp, mp->current, MP_TASK);
 		memset(o, 0, sizeof *o);
 		o->class = (uint8_t)class;
 		o->uses = uses ? uses : 1;
+		o->process = current ? current->process : mp->blue_process;
 		if (k >= mp->slots)
 			mp->slots = k + 1;
 		return (uint32_t)k << 16 | o->uses;
@@ -127,6 +174,14 @@ static uint32_t next_id(const struct mp *mp, uint32_t class, uint32_t id)
 			return (uint32_t)k << 16 | o->uses;
 	}
 	return 0;
+}
+
+/* The same for the objects of a class (not 0) that belong to a process. */
+static uint32_t next_owned(const struct mp *mp, uint32_t process, uint32_t class, uint32_t id)
+{
+	while ((id = next_id(mp, class, id)) && mp->obj[id >> 16].process != process)
+		;
+	return id;
 }
 
 /* Makes an object, its ID to *id; returns the status. */
@@ -381,7 +436,7 @@ static int32_t create_task(struct mp *mp, const uint32_t *r, uint32_t *id)
 	if (!made)
 		return MP_INSUFFICIENT_RESOURCES_ERR;
 	struct mp_object *o = mp_lookup(mp, made, MP_TASK);
-	o->task.process = r[3];
+	o->process = r[3];
 	o->task.queue = r[4];
 	o->task.options = r[5];
 	o->task.label = r[6];
@@ -676,11 +731,50 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 	int32_t status = MP_NO_ERR;
 
 	switch (r[0]) {
-	case 7:         /* MPCreateTask(process r3, termination queue r4, options r5, ...: see create_task()) -> r10 */
-		if (r[5] & ~OPTIONS_VALID)
+	case 3:         /* MPProcessors(r3: 0 all, else those scheduled) -> r3 (not a status): there's one */
+		status = 1;
+		break;
+	case 4:         /* MPCreateProcess(address space r3, 0: the system's) -> r5 */
+		if (r[3] && !mp_lookup(mp, r[3], MP_ADDRESS_SPACE)) {
+			status = MP_INVALID_ID_ERR;
+		} else if (!(status = create(mp, MP_PROCESS, &r[5]))) {
+			mp_lookup(mp, r[5], MP_PROCESS)->proc.space = r[3] ? r[3] : mp->space;
+		}
+		break;
+	case 5:         /* MPTerminateProcess(r3): marks it, so it gets no more tasks (its tasks carry on) */
+		if (!(o = mp_lookup(mp, r[3], MP_PROCESS)))
+			status = MP_INVALID_ID_ERR;
+		else if (o->proc.terminated)
+			status = MP_INSUFFICIENT_RESOURCES_ERR;
+		else
+			o->proc.terminated = true;
+		break;
+	case 6:         /* MPDeleteProcess(r3): once terminated, with no tasks left */
+		if (!(o = mp_lookup(mp, r[3], MP_PROCESS)))
+			status = MP_INVALID_ID_ERR;
+		else if (!o->proc.terminated || next_owned(mp, r[3], MP_TASK, 0))
+			status = MP_INSUFFICIENT_RESOURCES_ERR;
+		else
+			status = delete(mp, r[3], MP_PROCESS);
+		break;
+	case 99:        /* MPSetBlueProcessID(process r3, word r4): the blue task's process and its call-63 word */
+		if (mp->current != mp->blue_task)
 			status = MP_INSUFFICIENT_RESOURCES_ERR;
 		else if (!mp_lookup(mp, r[3], MP_PROCESS))
 			status = MP_INVALID_ID_ERR;
+		else {
+			o = mp_lookup(mp, mp->current, MP_TASK);
+			o->process = r[3];
+			o->task.label = r[4];
+		}
+		break;
+	case 7:         /* MPCreateTask(process r3, termination queue r4, options r5, ...: see create_task()) -> r10 */
+		if (r[5] & ~OPTIONS_VALID)
+			status = MP_INSUFFICIENT_RESOURCES_ERR;
+		else if (!(o = mp_lookup(mp, r[3], MP_PROCESS)))
+			status = MP_INVALID_ID_ERR;
+		else if (o->proc.terminated)
+			status = MP_INSUFFICIENT_RESOURCES_ERR;
 		else
 			status = create_task(mp, r, &r[10]);
 		break;
@@ -962,6 +1056,30 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 		else if (!area_at(mp, r[3], r[4], &r[5]))
 			status = MP_PARAM_ERR, r[5] = 0;
 		break;
+	case 78:        /* (area r3, 1 r4, offset r5) -> words of its record r6 up, their byte count r10: see area_record() */
+		if (!(o = mp_lookup(mp, r[3], MP_AREA)))
+			status = MP_INVALID_ID_ERR;
+		else if (r[4] != 1)
+			status = MP_PARAM_ERR;
+		else
+			status = area_record(mp, o, r[5], r);
+		break;
+	case 93: {      /* MPGetPageAge(area r3, address r4) -> r5 (0 while it's held) */
+		const uint16_t *age = page_age(mp, r[3], r[4], &status);
+		if (age)
+			r[5] = *age & AGE_HELD ? 0 : *age;
+		break;
+	}
+	case 94: {      /* MPSetPageAge(area r3, address r4, age r5) (NanoKernel 2 then takes it out of the hash table, for its next use to halve its age; syshm has none) */
+		uint16_t *age = page_age(mp, r[3], r[4], &status);
+		if (age && r[5] > AGE_MAX)
+			status = MP_PARAM_ERR;
+		else if (age && *age & AGE_HELD)
+			status = MP_INSUFFICIENT_RESOURCES_ERR;
+		else if (age)
+			*age = (uint16_t)r[5];
+		break;
+	}
 	case 100:       /* MPGetFreePageCount -> r3 (not a status) */
 		status = (int32_t)mp->free_pages;
 		break;
@@ -973,11 +1091,18 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 		else
 			mp->ager = r[3];
 		break;
-	case 116:       /* MPGetNextIDOwnedByProcess(process r3, class r4, ID r5) -> the next r5 (only an invalid process so far) */
-		if (mp_lookup(mp, r[3], MP_PROCESS))
-			return false;
-		status = MP_INVALID_ID_ERR;
+	case 116: {     /* MPGetNextIDOwnedByProcess(process r3, class r4, ID r5, 0: from the first) -> the next r5 of the class that belongs to it */
+		uint32_t class = r[4];
+		bool owned = class != MP_FREE && class != MP_PROCESS && class != MP_CPU && class != MP_COHERENCE_GROUP &&
+			     class <= MP_CONSOLE_LOG;
+		if (!mp_lookup(mp, r[3], MP_PROCESS))
+			status = MP_INVALID_ID_ERR;
+		else if (!owned)
+			status = (r[5] = next_id(mp, class, r[5])) ? MP_PARAM_ERR : MP_INVALID_ID_ERR;
+		else if (!(r[5] = next_owned(mp, r[3], class, r[5])))
+			status = MP_INVALID_ID_ERR;
 		break;
+	}
 	default:
 		return false;
 	}

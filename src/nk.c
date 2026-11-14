@@ -881,9 +881,11 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		/* the areas a NanoKernel 2 makes from the page map: Mac OS's RAM, then the rest */
 		struct nk_region regions[NK_MAX_REGIONS];
 		int n = nk_user_regions(m->rom, &m->ci, regions, NK_MAX_REGIONS);
-		mp_add_area(&m->mp, 0, m->ram_size, true);
+		mp_add_area(&m->mp, 0, m->ram_size, MP_AREA_READ_WRITE, true);
 		for (int k = 0; k < n; k++)
-			mp_add_area(&m->mp, regions[k].logical, regions[k].size, regions[k].writable);
+			mp_add_area(&m->mp, regions[k].logical, regions[k].size,
+				    (regions[k].writable ? MP_AREA_READ_WRITE : MP_AREA_READ_ONLY) |
+				    (regions[k].kind == NK_REGION_IO ? MP_AREA_IO : 0), false);
 		/* a new task's entry point returns into the kernel's data page, which can't run: that ends it (see nk_boot()) */
 		m->mp.task_return = ci->la_kernel_data;
 		m->mp.emulator_data = mem_ptr(&m->mem, ci->la_emulator_data);
@@ -2422,6 +2424,120 @@ static void blue_naps(struct machine *m, uint64_t until)
 	idle_wait(m, until);
 }
 
+/*
+ * The CPU plugin, for the machine's processors (starting others, their
+ * clocks, power and temperature): Mac OS registers one with
+ * MPRegisterCpuPlugin (call 2: coherence group r3, 0 the machine's; the
+ * plugin's page-aligned code r4 and size r5; its descriptor r6, in it: a
+ * table of stacks by processor +0, its routine count +0x1C, their
+ * transition vectors +0x20), and calls its routines with MPCpuPlugin
+ * (call 46: selector r3, arguments r4-r10). NanoKernel 2 runs one there and
+ * then (SIGP), in supervisor mode with interrupts off, on the processor's
+ * stack with r3 its index (0), returning to the emulator's
+ * ReturnFromException trap; its r3 and r4 are the call's results, the
+ * caller's other registers stay. An exception in it ends it with
+ * MP_CPU_PLUGIN_FAULT_ERR (here: anything but a trap, a device register's
+ * access or mfmsr, so supervisor-only registers too).
+ */
+#define MP_REGISTER_CPU_PLUGIN 2u
+#define MP_CPU_PLUGIN 46u
+#define CPU_PLUGIN_ROUTINES 64u                 /* (at most) */
+#define CPU_PLUGIN_INSNS 10000000u              /* (a routine that runs longer has hung) */
+#define SUPERVISOR_MSR (USER_MSR & ~0xC000u)    /* (EE and PR off) */
+
+static int32_t cpu_plugin_register(struct machine *m)
+{
+	const uint32_t *r = m->cpu.gpr;
+	struct mp *mp = &m->mp;
+	if ((r[4] | r[5]) & (MEM_PAGE_SIZE - 1) || !r[5])
+		return MP_INSUFFICIENT_RESOURCES_ERR;
+	if (r[3])                       /* (there's no coherence group but the machine's) */
+		return MP_INVALID_ID_ERR;
+	if (!r[6]) {
+		mp->plugin.desc = 0;
+		return MP_INVALID_ID_ERR;
+	}
+	if (r[6] - r[4] >= r[5] || !mem_ok(&m->mem, r[6], 0x20, MEM_R))
+		return MP_INSUFFICIENT_RESOURCES_ERR;
+	if (mp->plugin.desc)
+		return MP_INVALID_ID_ERR;
+	mp->plugin.base = r[4];
+	mp->plugin.size = r[5];
+	mp->plugin.desc = r[6];
+	mp->plugin.routines = mem_r32(&m->mem, r[6] + 0x1C);
+	return mp->plugin.routines > CPU_PLUGIN_ROUTINES ? MP_INSUFFICIENT_RESOURCES_ERR : MP_NO_ERR;
+}
+
+/* Runs the plugin's routine `selector` to its end; returns its r3 (r4 in *r4), or MP_CPU_PLUGIN_FAULT_ERR. */
+static int32_t cpu_plugin_run(struct machine *m, uint32_t selector, uint32_t *r4)
+{
+	struct ppc_cpu *cpu = &m->cpu;
+	struct mem *mem = &m->mem;
+	uint32_t desc = m->mp.plugin.desc, tv = desc + 0x20 + 4 * selector;
+	if (!mem_ok(mem, tv, 4, MEM_R) || !mem_ok(mem, desc, 4, MEM_R) || !mem_ok(mem, mem_r32(mem, desc), 4, MEM_R))
+		return MP_CPU_PLUGIN_FAULT_ERR;
+	tv = mem_r32(mem, tv);
+	if (!mem_ok(mem, tv, 8, MEM_R))
+		return MP_CPU_PLUGIN_FAULT_ERR;
+	cpu->pc = mem_r32(mem, tv);
+	cpu->gpr[2] = mem_r32(mem, tv + 4);
+	cpu->gpr[1] = mem_r32(mem, mem_r32(mem, desc));
+	cpu->gpr[3] = 0;
+	cpu->lr = trap_table(m);
+	for (uint64_t end = cpu->icount + CPU_PLUGIN_INSNS; cpu->icount < end;) {
+		enum ppc_exit e = ppc_run(cpu, end - cpu->icount);
+		if (e == PPC_EXIT_TRAP) {
+			*r4 = cpu->gpr[4];
+			return (int32_t)cpu->gpr[3];
+		} else if (e == PPC_EXIT_PRIV && is_mfmsr(cpu->exit_insn)) {
+			cpu->gpr[(cpu->exit_insn >> 21) & 31] = SUPERVISOR_MSR;
+			cpu->pc += 4;
+		} else if (e == PPC_EXIT_DSI && mmio_find(&m->bus, cpu->fault_addr)) {
+			update_device_time(m);
+			if (mmio_emulate(&m->bus, cpu) != MMIO_DONE)
+				break;
+		} else if (e == PPC_EXIT_BREAK) {
+			cpu->break_skip = true;
+		} else if (e != PPC_EXIT_BUDGET) {
+			if (m->mp.log)
+				printf("mp: CPU plugin routine %u: exit %s at pc 0x%08X (insn 0x%08X)\n", selector,
+				       ppc_exit_name(e), cpu->pc, cpu->exit_insn);
+			break;
+		}
+	}
+	*r4 = cpu->gpr[4];
+	return MP_CPU_PLUGIN_FAULT_ERR;
+}
+
+static int32_t cpu_plugin_call(struct machine *m)
+{
+	struct ppc_cpu *cpu = &m->cpu;
+	uint32_t selector = cpu->gpr[3], r4 = cpu->gpr[4];
+	if (!m->mp.plugin.desc)
+		return MP_NO_CPU_PLUGIN_ERR;
+	if (selector >= m->mp.plugin.routines)
+		return MP_CPU_PLUGIN_SELECTOR_ERR;
+	struct mp_regs caller;
+	memcpy(caller.gpr, cpu->gpr, sizeof caller.gpr);
+	memcpy(caller.fpr, cpu->fpr, sizeof caller.fpr);
+	caller.cr = cpu->cr;
+	caller.xer = cpu->xer;
+	caller.lr = cpu->lr;
+	caller.ctr = cpu->ctr;
+	caller.fpscr = cpu->fpscr;
+	int32_t result = cpu_plugin_run(m, selector, &r4);
+	memcpy(cpu->gpr, caller.gpr, sizeof cpu->gpr);
+	memcpy(cpu->fpr, caller.fpr, sizeof cpu->fpr);
+	cpu->cr = caller.cr;
+	cpu->xer = caller.xer;
+	cpu->lr = caller.lr;
+	cpu->ctr = caller.ctr;
+	ppc_fp_set_fpscr(cpu, caller.fpscr);
+	cpu->resv_valid = false;
+	cpu->gpr[4] = r4;
+	return result;
+}
+
 /* Makes call r0; the caller resumes at next_pc once it's done (a task that blocks in it makes it again). */
 static const char *kcall_mp_dispatch(struct machine *m, uint32_t next_pc)
 {
@@ -2432,6 +2548,15 @@ static const char *kcall_mp_dispatch(struct machine *m, uint32_t next_pc)
 	if (cpu->gpr[0] == MP_DELAY_UNTIL && blue_running(m)) {
 		blue_naps(m, (uint64_t)cpu->gpr[3] << 32 | cpu->gpr[4]);
 		cpu->gpr[3] = 0;                /* noErr */
+		cpu->pc = next_pc;
+		return NULL;
+	}
+	if (m->mp_kernel && (cpu->gpr[0] == MP_REGISTER_CPU_PLUGIN || cpu->gpr[0] == MP_CPU_PLUGIN)) {
+		uint32_t r3 = cpu->gpr[3], r4 = cpu->gpr[4], r5 = cpu->gpr[5];
+		int32_t status = cpu->gpr[0] == MP_CPU_PLUGIN ? cpu_plugin_call(m) : cpu_plugin_register(m);
+		if (m->mp.log)
+			printf("mp: call %u (r3=0x%08X r4=0x%08X r5=0x%08X) -> %d\n", cpu->gpr[0], r3, r4, r5, status);
+		cpu->gpr[3] = (uint32_t)status;
 		cpu->pc = next_pc;
 		return NULL;
 	}

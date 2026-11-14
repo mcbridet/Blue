@@ -723,6 +723,127 @@ static void test_swi(void)
 	CHECK_EQ(cpu.gpr[4], blue);
 }
 
+/* Areas: the page ager's record (78) and page ages (93, 94) */
+static void test_areas(void)
+{
+	mp_init(&mp, TB_HZ);
+	uint32_t ram = mp_add_area(&mp, 0, 0x08000000u, MP_AREA_READ_WRITE, true);
+	uint32_t io = mp_add_area(&mp, 0xF0000000u, 0x0F010000u, MP_AREA_READ_WRITE | MP_AREA_IO, false);
+	CHECK(ram && io);
+	CHECK_EQ(mp_add_area(&mp, 0x07FFF000u, 0x2000, MP_AREA_READ_ONLY, false), 0);  /* (overlapping) */
+	CHECK_EQ(mp_add_area(&mp, 0x10000000u, 0x1000, MP_AREA_READ_WRITE, true), 0);  /* (a second paged one) */
+	CHECK_EQ(call(64, 0, NULL), MP_NO_ERR);
+	uint32_t provider[] = { ram, cpu.gpr[4], 0 };
+	CHECK_EQ(call(77, 3, provider), MP_NO_ERR);
+
+	/* the record, 16 bytes at a time (12 at 0x30, none at 0x3C), as the real kernel gives the RAM area's */
+	const uint32_t want[15] = {
+		1, mp.blue_process, mp.space, 0, provider[1], MP_AREA_READ_WRITE, 0x600C, 0,
+		0x08000000u, 0, 0, 0x08000000u, 0x1000, 0, 0,
+	};
+	for (uint32_t offset = 0; offset <= 0x3C; offset += offset == 0x30 ? 0xC : 0x10) {
+		uint32_t args[] = { ram, 1, offset, 0xAAAA, 0xAAAA, 0xAAAA, 0xAAAA, 0xAAAA };
+		CHECK_EQ(call(78, 8, args), MP_NO_ERR);
+		CHECK_EQ(cpu.gpr[10], offset == 0x3C ? 0 : offset == 0x30 ? 12 : 16);
+		for (unsigned k = 0; k < 4; k++)
+			CHECK_EQ(cpu.gpr[6 + k], offset / 4 + k < 15 && offset < 0x3C ? want[offset / 4 + k] : 0xAAAA);
+	}
+	uint32_t contig[] = { io, 1, 0x10 };
+	CHECK_EQ(call(78, 3, contig), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[7], 0xA7);
+	CHECK_EQ(cpu.gpr[8], 0xE00C);           /* (0x8000: contiguous; the ager skips it) */
+	CHECK_EQ(cpu.gpr[9], 0xF0000000u);
+	uint32_t bad[] = { ram, 2, 0 }, odd[] = { ram, 1, 8 }, gone[] = { mp.space, 1, 0 };
+	CHECK_EQ(call(78, 3, bad), MP_PARAM_ERR);
+	CHECK_EQ(call(78, 3, odd), MP_PARAM_ERR);
+	CHECK_EQ(call(78, 3, gone), MP_INVALID_ID_ERR);
+
+	/* page ages: 0x7FFF to start with; only in the paged area */
+	uint32_t get[] = { ram, 0x07D33000u, 0 }, set[] = { ram, 0x07D33000u, 12 };
+	CHECK_EQ(call(93, 3, get), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[5], 0x7FFF);
+	CHECK_EQ(call(94, 3, set), MP_NO_ERR);
+	CHECK_EQ(call(93, 3, get), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[5], 12);
+	set[2] = 0x8000;
+	CHECK_EQ(call(94, 3, set), MP_PARAM_ERR);
+	uint32_t outside[] = { ram, 0x08000000u, 0 }, unpaged[] = { io, 0xF0000000u, 0 };
+	CHECK_EQ(call(93, 3, outside), MP_PARAM_ERR);
+	CHECK_EQ(call(93, 3, unpaged), MP_PARAM_ERR);
+	mp.age[0x07D33] |= 0x8000;              /* (held) */
+	CHECK_EQ(call(93, 3, get), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[5], 0);
+	set[2] = 1;
+	CHECK_EQ(call(94, 3, set), MP_INSUFFICIENT_RESOURCES_ERR);
+}
+
+/* Processes (4, 5, 6), the blue task's (99), what belongs to them (116), and the processor count (3) */
+static void test_processes(void)
+{
+	mp_init(&mp, TB_HZ);
+	uint32_t blue = mp.blue_task;
+	uint32_t all[] = { 0 };
+	CHECK_EQ(call(3, 1, all), 1);
+
+	uint32_t made[] = { 0 };
+	CHECK_EQ(call(4, 1, made), MP_NO_ERR);
+	uint32_t process = cpu.gpr[5];
+	CHECK_EQ(mp_lookup(&mp, process, MP_PROCESS)->proc.space, mp.space);
+	uint32_t bad[] = { mp.blue_task };
+	CHECK_EQ(call(4, 1, bad), MP_INVALID_ID_ERR);
+
+	/* objects belong to the process of the task that made them */
+	CHECK_EQ(call(15, 0, NULL), MP_NO_ERR);
+	uint32_t queue = cpu.gpr[4];
+	uint32_t become[] = { process, 0x00AAF520u };
+	CHECK_EQ(call(99, 2, become), MP_NO_ERR);
+	CHECK_EQ(mp_lookup(&mp, blue, MP_TASK)->process, process);
+	CHECK_EQ(call(12, 0, NULL), (int32_t)blue);
+	CHECK_EQ(cpu.gpr[4], 0x00AAF520u);
+	CHECK_EQ(call(49, 0, NULL), MP_NO_ERR);
+	uint32_t event = cpu.gpr[4];
+	uint32_t owned[] = { process, MP_EVENT_GROUP, 0 };
+	CHECK_EQ(call(116, 3, owned), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[5], event);
+	owned[2] = event;
+	CHECK_EQ(call(116, 3, owned), MP_INVALID_ID_ERR);
+	CHECK_EQ(cpu.gpr[5], 0);
+	uint32_t old[] = { mp.blue_process, MP_QUEUE, 0 };
+	CHECK_EQ(call(116, 3, old), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[5], mp.page_queue);
+	old[2] = mp.page_queue;
+	CHECK_EQ(call(116, 3, old), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[5], queue);
+	uint32_t tasks[] = { process, MP_TASK, 0 }, processes[] = { process, MP_PROCESS, 0 }, none[] = { 0, MP_QUEUE, 0 };
+	CHECK_EQ(call(116, 3, tasks), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[5], blue);
+	CHECK_EQ(call(116, 3, processes), MP_PARAM_ERR);
+	CHECK_EQ(call(116, 3, none), MP_INVALID_ID_ERR);
+
+	/* terminated, it takes no tasks; it's deleted once its tasks are gone */
+	uint32_t that[] = { process };
+	CHECK_EQ(call(6, 1, that), MP_INSUFFICIENT_RESOURCES_ERR);
+	CHECK_EQ(call(5, 1, that), MP_NO_ERR);
+	CHECK_EQ(call(5, 1, that), MP_INSUFFICIENT_RESOURCES_ERR);
+	uint32_t create[] = { process, queue, 0, 0, 0, 0xFFCE03A0u, 0 };
+	CHECK_EQ(call(7, 7, create), MP_INSUFFICIENT_RESOURCES_ERR);
+	CHECK_EQ(call(6, 1, that), MP_INSUFFICIENT_RESOURCES_ERR);       /* (the blue task is in it) */
+	become[0] = mp.blue_process;
+	CHECK_EQ(call(99, 2, become), MP_NO_ERR);
+	CHECK_EQ(call(6, 1, that), MP_NO_ERR);
+	CHECK(!mp_lookup(&mp, process, MP_PROCESS));
+
+	/* only the blue task changes its process */
+	CHECK_EQ(call(4, 1, made), MP_NO_ERR);
+	process = cpu.gpr[5];
+	uint32_t task = start_task(queue);
+	CHECK_EQ(mp_nap(&mp, UINT64_MAX), MP_NAP_YIELDED);
+	CHECK_EQ(schedule(0), task);
+	become[0] = process;
+	CHECK_EQ(call(99, 2, become), MP_INSUFFICIENT_RESOURCES_ERR);
+	CHECK_EQ(mp_lookup(&mp, task, MP_TASK)->process, mp.blue_process);
+}
+
 void test_mp(void)
 {
 	test_tasks();
@@ -731,4 +852,6 @@ void test_mp(void)
 	test_naps();
 	test_timers();
 	test_swi();
+	test_areas();
+	test_processes();
 }
