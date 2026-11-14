@@ -173,12 +173,29 @@ off (it says there's one processor). Then Mac OS makes a process of its
 own and moves the blue task into it.
 
 The CD then starts up to the Finder ("Mac OS 9.1", Starting Up with the
-extensions' icons, then the CD's window), within 2 billion instructions
-(about a second):
+extensions' icons, then the CD's window), within about a billion
+instructions (under a second):
 
 ```
 build/syshm boot MOS91.rom --cdrom 91.iso --max 3000000000 --screenshot finder.png
 ```
+
+Startup used to wait 25 s first. 9.1's Start Manager, unlike earlier ones,
+starts up only from the drive Open Firmware booted from until the internal
+disk's wait time (25 s unless set in PRAM) has passed, and only then from
+any drive. It learns which drive that is from StartLib (one of the ROM
+file's libraries), which reads the path Open Firmware leaves in the device
+tree (`/chosen`'s `bootpath`: the device, the partition, and the System
+Folder's ROM file) and asks each disk driver, through DriverGestalt, which
+device-tree node, unit and partition its drives are. syshm's tree had no
+such path. For ROM files with parcels it now names the first partition
+with boot blocks, the disks taken in command-line order, and syshm's disk
+driver answers those questions, its drives being a SCSI target at the
+disk's PCI device number (StartLib knows units only for SCSI, ATA, USB
+and FireWire drives). In real time with fast start the CD is at the
+Finder after 16 s of guest time (1.3 s on the host) instead of 41 (3.8 s);
+what's left is mostly AppleTalk on Ethernet finding no one (5 s, as with
+9.0.4) and the CD's transfers.
 
 The clock and NVRAM work as on an iMac. 9.1 reaches neither through RTAS,
 as 8.5 does: its ROM prepares the libraries in order and stops at the
@@ -384,7 +401,8 @@ lacks: syshm says to install it again from the tools volume.
   waits out (AppleTalk on Ethernet looking for other machines, Apple Remote
   Access making sure of its name, USB, DHCP) pass in a tenth of the time;
   meanwhile the guest sees a processor a tenth as fast. Mac OS 9.0.4 is at
-  the Finder in under 3 s instead of 13, the 8.5 CD in about 1.5 s. Most of
+  the Finder in under 3 s instead of 13, the 8.5 CD in about 1.5 s, the 9.1
+  CD in about 1.3 s. Most of
   those waits are busy loops, which don't call `_SynchIdleTime`, so guest
   time runs faster throughout. The Finder counts as up once it has run (the
   Process Manager names the current application in `CurApName`, which stays
@@ -620,6 +638,13 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
   (`device_type` and `compatible` `nvram`, `reg` 0x60000 0x20000, `#bytes`
   0x2000, `AAPL,address`), as on Heathrow and Paddington Macs: 8 KB, byte k
   at `+16k`.
+- Where Open Firmware booted from, for ROM files with parcels only:
+  `/chosen`'s `bootpath`, such as `/pci/syshm,disk@2:8,\\:tbxi` (a disk's
+  node is at its PCI device number, the partition is its map entry, none
+  without a map), for the first partition with boot blocks. The disk
+  driver says, through DriverGestalt, which node ('nmrg'), unit ('intf'
+  'scsi', 'dvrf' with the PCI device number as target ID) and partition
+  ('ofpt') each drive is.
 - ADB/power-manager kind 0 in the universal flags, so the early ROM code uses
   RTAS (tokens in `NKHWInfo`) for clock, NVRAM and power (`NKHWInfo`'s Mac OS
   NVRAM offset, `0x1400`, is where PRAM goes; a ROM file with parcels uses the

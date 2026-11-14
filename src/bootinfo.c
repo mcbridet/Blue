@@ -334,6 +334,23 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	dt_add_node(root, "rtas");
 
 	/*
+	 * Where Open Firmware booted from: the device, the partition (its map
+	 * entry) and the file (the blessed folder's of type tbxi, the ROM file).
+	 * Until the internal disk's wait time (PRAM; 25 s if unset) has passed,
+	 * Mac OS 9.1's Start Manager starts up only from the drive StartLib
+	 * finds for it; the disk driver says which that is (see disk.c).
+	 */
+	if (hw->parcels && hw->boot && hw->boot_disk < hw->disks) {
+		char path[64];
+		unsigned dev = (PCI_DEVFN_DISK + 8 * hw->boot_disk) >> 3;
+		if (hw->boot_map_entry)
+			snprintf(path, sizeof path, "/pci/syshm,disk@%x:%u,\\\\:tbxi", dev, hw->boot_map_entry);
+		else
+			snprintf(path, sizeof path, "/pci/syshm,disk@%x:,\\\\:tbxi", dev);
+		dt_prop_str(dt_add_node(root, "chosen"), "bootpath", path);
+	}
+
+	/*
 	 * A ROM file with parcels: the /rom/macos node its boot script makes, and
 	 * the nodes and properties the Trampoline adds from the parcels.
 	 */

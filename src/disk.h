@@ -21,6 +21,7 @@
 
 struct disk_partition {
 	uint64_t offset, size;          /* bytes */
+	unsigned map_entry;             /* its entry in the partition map (from 1), 0 without a map */
 	char name[33];
 	uint16_t drive_num;             /* 0 until queued */
 	bool mounted;                   /* the File Manager has read its MDB */
@@ -40,12 +41,23 @@ struct disk {
 	unsigned long calls, reads, writes;
 	uint64_t bytes_read, bytes_written;
 	bool log;
+	/*
+	 * For ROM files with parcels: the DriverGestalt answers that tie the
+	 * drives to the node in the device tree ('nmrg', 'intf', 'dvrf', 'ofpt'),
+	 * by which Mac OS 9.1's StartLib finds the drive /chosen's bootpath names
+	 * (see status()). `unit` is the node's unit address, its PCI device.
+	 */
+	bool boot_gestalt;
+	unsigned unit;
 	struct ndrv_layout layout;
 };
 
 /* Opens the backing file and reads its partition map; returns 0 on success. */
 int disk_open(struct disk *d, struct mem *mem, const char *path, bool read_only, bool cdrom);
 void disk_close(struct disk *d);
+
+/* Whether a partition starts with boot blocks (what the Start Manager looks for) */
+bool disk_bootable(const struct disk *d, unsigned part);
 
 /* Creates a (sparse) image of `size` bytes holding an empty HFS volume; returns 0 on success. */
 int disk_create(const char *path, uint64_t size, const char *volume_name);
