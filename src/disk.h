@@ -7,9 +7,16 @@
  * partition (as Apple's own disk drivers do); otherwise the whole file is
  * one drive.
  *
- * The floppy drive is one too, with removable media (see
- * disk_open_removable()): images (floppy.h) go in and come out while the
- * machine runs, and Mac OS ejects them through the driver.
+ * Drives with removable media are too, the floppy drive (see
+ * disk_open_floppy()) and CD-ROM drives whose discs can be swapped (see
+ * disk_open_cdrom()): images go in and come out while the machine runs,
+ * and Mac OS ejects them through the driver.
+ *
+ * CD-ROM drives (`cdrom`, swappable or not) answer as Apple's CD-ROM driver
+ * does (cdrom.h): DriverGestalt 'devt' 'cdrm', the disc's table of contents,
+ * playing and reading audio, a CD-ROM drive's icons. Their images are plain
+ * (2048-byte sectors) or cue sheets (cdimage.h), whose data track Mac OS
+ * mounts; a disc of audio alone has a drive whose reads fail.
  */
 #ifndef SYSHM_DISK_H
 #define SYSHM_DISK_H
@@ -18,6 +25,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cdimage.h"
+#include "cdrom.h"
 #include "floppy.h"
 #include "mem.h"
 #include "ndrv.h"
@@ -40,6 +49,8 @@ struct disk_partition {
 	uint16_t drive_num;             /* 0 until queued */
 	bool mounted;                   /* the File Manager has read its MDB */
 	uint64_t next_post;             /* timebase of the next disk-inserted event, 0: now */
+	bool ejected;                   /* (removable) Mac OS ejected this drive, the disc staying for another's
+					 * volume in use */
 };
 
 struct disk {
@@ -66,23 +77,44 @@ struct disk {
 	unsigned unit;
 	struct ndrv_layout layout;
 	/*
-	 * The floppy drive (`removable`): one drive, whose image is in it
-	 * (`media`, host side) or not. The driver's timer tells Mac OS
-	 * (`shown`, in the drive's flags), and posts a disk-inserted event, only
-	 * once applications run, so that a floppy is never the startup disk.
+	 * Removable media (`removable`): the floppy drive (`floppy`, one drive),
+	 * and swappable CD-ROM drives (one drive per partition of the disc in
+	 * at startup, at least one). The image is in it (`media`, host side) or
+	 * not. The driver's timer tells Mac OS (`shown`, in the drives' flags)
+	 * and posts disk-inserted events; of an image put in while the machine
+	 * runs, only once applications run, so that it is never the startup disk
+	 * (a CD in at startup may be).
 	 */
-	bool removable;
+	bool removable, floppy;
 	bool media, shown;
 	unsigned media_gen, shown_gen;  /* (an image put in after another before Mac OS saw that one go) */
+	unsigned media_parts;           /* the drives the image has partitions for (the others are empty) */
 	struct floppy_image image;
 	char media_path[1024];
+	/* a CD-ROM drive's: the disc's tracks (its data through disc_data for a cue sheet), the drive's state */
+	struct cdimage *disc;
+	struct disk_backend disc_data;
+	struct cdrom *cd;               /* (made at the driver's first call) */
 	bool dirty;                     /* written since last flushed (and a DC42 image's checksums worked out) */
 	uint64_t written_tb;            /* ... last, at this timebase */
 	unsigned long ejects;           /* by Mac OS */
 };
 
-/* Opens the backing file and reads its partition map; returns 0 on success. */
+/*
+ * Opens the backing file and reads its partition map; returns 0 on success.
+ * A CD (`cdrom`, then read-only) may be a cue sheet too.
+ */
 int disk_open(struct disk *d, struct mem *mem, const char *path, bool read_only, bool cdrom);
+
+/*
+ * Reads `len` bytes at `at` of a partition's (a `struct disk_reader`):
+ * the image's data, whatever it's in (for hfsread_open_with()). 0, or -1.
+ */
+struct disk_reader {
+	const struct disk *d;
+	unsigned part;
+};
+int disk_read(void *reader, void *buf, size_t len, uint64_t at);
 void disk_close(struct disk *d);
 
 /* Attaches a drive whose blocks come from `b`; returns 0 on success. */
@@ -108,14 +140,26 @@ void disk_driver_call(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz)
  * floppy drive (icons, format list, DriverGestalt 'devt' 'flop'), and
  * ejects when Mac OS asks (Put Away, Eject), which empties the drive.
  */
-void disk_open_removable(struct disk *d, struct mem *mem);
+void disk_open_floppy(struct disk *d, struct mem *mem);
+
+/*
+ * A CD-ROM drive whose discs can be swapped, with the image at `path` in
+ * it (NULL: empty), shown to Mac OS at once. It answers as the disks do
+ * (it looks like one), but says its disc is ejectable, and Mac OS ejects it
+ * through the driver; the disc comes out once none of its volumes is in use.
+ * Returns 0, or -1 (having said why).
+ */
+int disk_open_cdrom(struct disk *d, struct mem *mem, const char *path);
 
 /*
  * Puts an image in the drive (taking out the one in it, if any): read-only
- * if the file can't be written. Returns 0, or -1 with the reason in `why`
- * (the drive is left as it was).
+ * if the file can't be written (a CD always). Returns 0, or -1 with the
+ * reason in `why` (the drive is left as it was).
  */
 int disk_insert(struct disk *d, const char *path, char *why, size_t len);
+
+/* Whether an image would go in a CD-ROM drive: 0, or -1 with the reason in `why` */
+int disk_check_cd(const char *path, char *why, size_t len);
 
 /* Takes the image out, host side (what was written is flushed); Mac OS learns of it from the driver's timer. */
 void disk_eject(struct disk *d);
@@ -123,7 +167,7 @@ void disk_eject(struct disk *d);
 /* Writes what's pending: a DC42 image's checksums, and the file to its disk. */
 void disk_flush(struct disk *d);
 
-/* Whether Mac OS has a volume on the drive mounted (in its volume queue), so that only it can eject it */
+/* Whether Mac OS has a volume on the drive (one of its drives) mounted, so that only it can eject it */
 bool disk_in_use(const struct disk *d);
 
 #endif

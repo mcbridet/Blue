@@ -213,38 +213,29 @@ commands for reproducible tests.
 - **Size:** small to moderate for the InputSprocket driver and the key
   mapping; moderate for the USB gamepad.
 
-## More CD formats, and CD audio
+## More CD formats
 
-- **Where syshm is:** a `--cdrom` image is an Apple partition map with HFS
-  partitions, or a bare HFS or HFS+ volume (`86.iso`, "International 8.6
-  Update", is one of those: it attaches, it just has no blessed System
-  Folder). That covers most Mac CDs, and Toast and `.cdr` images are often
-  exactly that. Hybrid Mac/PC discs usually carry a partition map too and
-  should work (not yet tried).
+- **Where syshm is:** a CD image is a plain one (an Apple partition map with
+  HFS partitions, a bare HFS or HFS+ volume, or ISO 9660, which an
+  installed system mounts with ISO 9660 File Access) or a cue sheet with
+  `.bin`, WAVE or AIFF tracks, whose audio the CD-ROM drive plays and reads
+  as Apple's CD-ROM driver does (README, "CDs: audio and cue sheets").
+  Hybrid Mac/PC discs usually carry a partition map too and should work
+  (not yet tried).
 - **Formats missing:**
-  - Raw-sector images: `.bin`/`.cue` (2352-byte sectors, mode 1 or 2,
-    several tracks), and the likes of `.nrg`, `.mdf`/`.mds` and `.chd`:
-    read the track layout, take the 2048-byte data out of each raw sector.
+  - Other track layouts: `.nrg`, `.mdf`/`.mds`, `.ccd`/`.img`/`.sub` and
+    `.chd`: readers giving the same table of contents as the cue sheets'
+    (`src/cdimage.c`); cue sheets with compressed audio (FLAC, MP3, Ogg),
+    decoded as read.
   - Compressed images: UDIF `.dmg` (zlib, bzip2, ADC or LZFSE chunks,
     read-only, decompressed as read) and Disk Copy 6 NDIF `.img` (whose map
     is in the resource fork, so only where the fork survived, or from
     MacBinary). Meanwhile, macOS's `hdiutil convert` makes a plain image.
-  - Pure ISO 9660 discs (PC CDs, and some Mac ones): Mac OS reads them with
-    ISO 9660 File Access. Whether that works through syshm's driver, which
-    answers as a disk rather than as Apple's CD-ROM driver, is to check (it
-    may want the CD-ROM driver's calls, such as the table of contents).
-- **CD audio:** many games of the time played their soundtracks from audio
-  tracks on the CD, and AppleCD Audio Player plays music CDs. On the real
-  machine the drive played them itself, into the sound chip's input; Mac OS
-  drives that with the Apple CD-ROM driver's control calls (table of
-  contents, play, pause, stop, status, volume), and Audio CD Access shows
-  the tracks as AIFF files by reading them digitally. To do it: images with
-  audio tracks (`.cue` sheets with `.bin` or `.wav` tracks), syshm's CD
-  driver answering as a CD-ROM drive with those calls and digital reads,
-  and the audio mixed into syshm's sound output on the host, paced by guest
-  time so instruction-time runs stay reproducible. First check what Mac OS
-  8.5-9.1 and games ask of a CD-ROM drive (DriverGestalt `devt` `cdrm`,
-  the control calls) that a read-only disk doesn't answer today.
-- **Size:** moderate: the formats are self-contained readers behind the
-  disk driver; CD audio needs the CD-ROM driver interface and the sound
-  mixing.
+- **CD audio, what's left:** recording from the CD (the codec's input DMA
+  records silence even with the CD selected); de-emphasis for tracks
+  flagged with pre-emphasis (played as stored); CD-Text (titles); a check
+  of Mac OS 9's Audio CD Access and its AIFF tracks, and of games that play
+  their soundtracks from the CD (AppleCD Audio Player, the Control Strip's
+  CD module, Audio CD Access and QuickTime's import were tried on 8.5).
+- **Size:** small to moderate: each format is a self-contained reader behind
+  the CD-ROM drive.

@@ -32,11 +32,14 @@ void test_cuda(void);
 void test_mmio(void);
 void test_dbdma(void);
 void test_awacs(void);
+void test_cdimage(void);
+void test_cdaudio(void);
 void test_drivers(void);
 void test_net(void);
 void test_hfs(void);
 void test_hfsread(void);
 void test_floppy(void);
+void test_drives(void);
 void test_install(void);
 void test_share(void);
 void test_tools(void);
@@ -50,5 +53,6 @@ void test_jit(void);
 void test_ohci(void);
 void test_mp(void);
 void test_nvram(void);
+void test_priv(void);
 
 #endif

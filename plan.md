@@ -93,6 +93,22 @@ Done:
   calls 44, 45, 62 and 132; kernel call 7 answers unknown selectors; the
   floppy controller's Mac I/O cell reads as zeros; syshm's lanLib stays in
   the Ethernet node. See Findings, "Mac OS 9.2.2: the CD" and after.
+- **CD swapping** (`--cdrom`, `--cdrom-drive`; removable CD-ROM drives in
+  `src/disk.c`, where images go and the menu in `src/drives.c`): CD-ROM
+  drives' discs come and go like the floppy's, through the same media
+  changes, wherever they can be swapped (a window or real time, an empty
+  drive, a script with `cdrom` commands); dropped images go by size, a
+  floppy's to the floppy drive, others to a CD-ROM drive. The menu shows
+  each drive's disc with Eject; its list of images is gone, and the
+  `--floppy` images after the first go in as Mac OS ejects. Eject, Put
+  Away and the Trash work on an installed 8.5 with a second CD-ROM drive
+  (`ut.iso` out, `86.iso` in, by script), 9.1 and 8.5 still start up from
+  ejectable CDs, and runs where discs can't be swapped are the same as
+  before. See Findings, "Ejectable drives".
+- **CD audio** (Task 16; `src/cdimage.c`, `src/cdaudio.c`, `src/cdrom.c`):
+  CD-ROM drives answer as Apple's CD-ROM driver, with CD icons; cue sheets
+  with audio tracks; the drive's audio played through the sound chip's
+  input and read digitally. See Findings, "CD audio".
 
 Where it stops:
 
@@ -490,8 +506,8 @@ the kernel); 8 onwards as the boot progresses.
   in place of a file. `hfsread` reads through a callback too, and walks
   the whole catalog (`hfsread_walk()`). `tests/test_share.c` covers names,
   volumes (checked with hfsutils, and on Linux Apple's `fsck_hfs` from
-  hfsprogs), and writing back. 8.5 and 9.1 from their CDs and 8.6 from a
-  disk show the volume; Finder copies, new folders, renames, moves,
+  hfsprogs), dates, and writing back. 8.5 and 9.1 from their CDs and 8.6
+  from a disk show the volume; Finder copies, new folders, renames, moves,
   deletions and a SimpleText save came back to the folder. Open: writing
   back when the volume is ejected, and offering the folder again as new
   media (needs the disk driver's removable media).
@@ -561,9 +577,90 @@ the kernel); 8 onwards as the boot progresses.
   runs are unchanged. Measurements in Findings. Open: presenting on a
   thread of its own; tracking framebuffer writes instead of comparing.
 
+### 16. CD audio
+
+- **Status:** done (8.5; 9.1 has no installed image here to try
+  AppleCD Audio Player on). CD images with audio as cue sheets
+  (`src/cdimage.c`: `.bin` in raw, 2048- or 2336-byte sectors, `MOTOROLA`,
+  WAVE and AIFF tracks, `INDEX 00` and `PREGAP`/`POSTGAP`, sessions; the
+  table of contents, the data track's 2048 bytes a sector as a
+  `disk_backend`, raw sectors, the Q and P-W subchannel; `syshm disk toc`
+  lists it). The drive's player (`src/cdaudio.c`): ranges or the driver's
+  play lists, pause, stop, scan, volume, channel routing, its position a
+  function of guest time; frames in a FIFO taken by the sound chip's analog
+  input (`struct awacs_input` in `src/awacs.c`), mixed with the DMA's or
+  alone, resampled to the codec's rate, through when the codec selects the
+  CD with loop-through (or nothing). Every CD-ROM drive answers as Apple's
+  CD-ROM driver (`src/cdrom.c`, after Technical Note DV22: ReadTOC 1-6,
+  ReadTheQSubcode, ReadHeader, AudioTrackSearch, AudioPlay, AudioPause,
+  AudioStop, AudioStatus, AudioScan, AudioControl, ReadMCN, ReadISRC,
+  ReadAudioVolume, spindle speed, ReadAudio, the play lists 122-126;
+  GetDriveType, GetBlockSize, ReturnDeviceIdent, GetCDFeatures,
+  Get2KOffset), named `.AppleCD`, with DriverGestalt `devt` `cdrm`,
+  `intf`, `dvrf`, `minf`, and a CD and CD-ROM drive icon (Control 21/22,
+  `mics`/`dics`/`mnam`; drawn in `src/cdrom.c` with the floppy's palette).
+  Tests: `tests/test_cd.c` (synthetic discs: an HFS data track made with
+  `hfs_format()` read back with hfsread, audio tracks of patterns in each
+  kind of file; the player's positions, pauses, lists, volume, pacing by
+  guest time, resampling, through the codec), `tests/test_awacs.c` (the
+  analog input with and without DMA), `tests/test_drives.c` (the driver
+  calls on a cue sheet's disc). Checked on an installed 8.5 with the real
+  Quake CD (`Quake [1996].cue`): the ISO 9660 data track mounts
+  (QUAKE106), AppleCD Audio Player lists the 10 audio tracks with their
+  lengths and plays, shuffles and scans them; `SYSHM_SOUND_WAV` holds
+  track 2's samples bit for bit (scaled by Mac OS's volume), in
+  instruction time (reproducibly) and in real time; a synthetic audio disc
+  mounts as "Audio CD 1", and MoviePlayer's conversion of a track to AIFF
+  holds its samples bit for bit. Instruction-time runs of the 8.5 and 9.1
+  CDs reach the Finder as before, but for the CD icon (on the desktop and
+  in the window's title). Open: see future.md, "More CD formats".
+
 ## Findings
 
 Facts later tasks need, added as they are found.
+
+- **CD audio, Apple's CD-ROM driver** (Technical Note DV22, "CD-ROM Driver
+  Calls", developer.apple.com/library/archive/technotes/dv/dv_22.html):
+  csParam layouts as in the note; addresses are a type word and a long (0
+  LBA, 1 MSF `0x00MMSSFF` in BCD, 2 a track in BCD, 3 a play-list entry in
+  BCD, from 0); a track number as a stop address means the end of that
+  track (AppleCD Audio Player stops "at" the last track, 0x11 on the Quake
+  CD; AudioStop with track 0, which it sends at launch, means none);
+  AudioStop with an address sets the stop for the next play too (the
+  Control Strip's module sets it, then plays). DriveStatus's disc-in-place
+  byte is 1 with a disc, as the note has it, whatever the drive queue's
+  flags say (AppleCD Audio Player polls DriveStatus with drive 0 and wants
+  exactly 1; a fixed drive's flags say 8). ReadAudio returns samples
+  little-endian, as drives do; QuickTime's import reads 75 sectors and
+  moves on 68 (its jitter correction finds the overlap by content, so a
+  periodic test tone fools it: test with aperiodic audio).
+- **CD audio, who asks what (8.5):** AppleCD Audio Player 2.2 walks the unit
+  table from unit 32; for drivers with `dCtlFlags` bit 2 (DriverGestalt)
+  it asks `devt` (`cdrm` or `dvdr`) and ReturnDeviceIdent (120), for others
+  it compares the DRVR name with `.AppleCD`; its parameter block's
+  ioVRefNum is 0. It numbers a mixed disc's audio tracks from 1. The
+  Control Strip's CD module (CDStrip) asks `devt` of every DriverGestalt
+  driver (drive 0) about every second, `intf` (`atpi` or `scsi`, then 120
+  for "SCSI ID n"), reads the table of contents at startup and, with its
+  AutoPlay, plays from the first audio track when a disc mounts, with the
+  table it read at startup. Foreign File Access tries its file systems
+  when MountVol fails (reads of an audio-only disc must succeed: with
+  ioErr it gives up and the Finder offers to initialize); Audio CD Access
+  4.0 then reads ReadTOC 5, 3, 1, 2, 3 and mounts "Audio CD n" with
+  'trak'/'aucd' documents. ISO 9660 File Access reads 2048-byte sectors at
+  32768. The Device Manager shows a native driver's name at
+  `dCtlDriver + 18` (unit 49 `.AppleCD`), so `OpenDriver(".AppleCD")`
+  finds it; Apple CD/DVD Driver 1.0.1 (68k DRVRs `.AppleCD` for SCSI and
+  ATAPI) finds no drives of its own and leaves it alone.
+- **CD audio, the codec:** Mac OS 8.5's sound driver writes register 0 =
+  0x233 (input: the CD, gain 3) and register 1 = 0x8C0 (loop-through on,
+  the speaker muted); Mac OS 9.1 here writes 0x000 and 0x880 (no input
+  selected, no loop-through: its input component isn't loaded, see Mac OS
+  9), so the CD plays through when nothing is selected too. Output
+  attenuation 0x249 (9 steps, 13851/65536) applies to the CD as to DMA
+  sound. In instruction time CD audio costs about 1 s per 8 billion
+  instructions with 385 s of it playing (an installed 8.5 boot: 4.85 s
+  against 3.83 s); the player reads 16 sectors at a time.
 
 - **ID format:** slot << 16 | the slot's use count; the first ID made is
   1 (the blue process). Classes (`NKOpaque.a`): process 1, task 2, timer
@@ -1057,10 +1154,11 @@ Facts later tasks need, added as they are found.
   stops right after the access (`PPC_EXIT_MMIO`, 2% of accesses) and the
   loop does the rest, without the exit's own device update. Two things
   had to be exactly as at the exit: an access on a run's last
-  instruction still exits, because after that exit the loop computes its
-  next sync point from the count past it and skips the one there (an
-  old quirk; done in place, the access would leave the sync point to be
-  serviced, though the boots came out the same that way too); and
+  instruction still exits, because after that exit the loop computed its
+  next sync point from the count past it and skipped the one there (an
+  old quirk, since fixed: see "MacBench's freeze"; done in place, the
+  access would leave the sync point to be serviced, though the boots came
+  out the same that way too); and
   `in_place()` runs again after each access, as before the loop's next
   run (without it, kernel calls in place ran past the next device event
   as the access had moved it, and the boot changed). Off with `clock`
@@ -1082,6 +1180,36 @@ Facts later tasks need, added as they are found.
   The Finder makes `Desktop DB` and `Desktop DF` on every writable volume
   it mounts, and Desktop Printing (8.6) an invisible `DesktopPrinters DB`;
   the Trash and the `Desktop Folder` come when used.
+- **Norton Utilities and the shared volume's dates:** Norton FileSaver
+  (Norton Utilities 6, scanning every disk at startup after a crash) said
+  "There is damage to the Master Directory Block. (Error 16,005)" of the
+  shared volume, whose MDB's creation and modification dates were the
+  folder's (2026) and so later than the guest's clock in instruction-time
+  runs (`--fixed-time 1000000000`, 2001). Disk Doctor names it: "The
+  creation date is invalid" (5,1,3), then the modification date (5,1,4),
+  the alternate MDB's (5,2,3 and 5,2,4), and every file's "bad creation
+  dates" (15,2,8, minor). Norton allows a minute or so in the future, not
+  an hour (scanned with the guest's clock 60 s, 1 h, 1 day, 1 and 20 years
+  behind the folder's dates; FileSaver's 16,005 is any MDB damage). It also
+  takes a file modified before it was created for "bad modification dates"
+  (15,2,9), as macOS's copies and unpacked files are (born anew, modified
+  when they were): 316 files of a copy of the user's folder, with the
+  guest's clock at the host's time. `share_open()` now takes the guest's
+  clock at the start (`--fixed-time`, else the host's) and no date is
+  later, nor created after modified. With that, FileSaver, Disk Doctor
+  ("No Problems Found"), Disk First Aid 8.5 and Linux's `fsck.hfs` find
+  nothing wrong, on that copy too, in instruction time and real time; but
+  for the dates they found nothing before either. A Macintosh HD made later
+  than such a run's clock is flagged the same way (`syshm disk create`
+  dates it then). Mac OS 8.5's Disk Initialization of a volume the share's
+  size gives the same geometry (63,569 blocks of 16,896 bytes from sector
+  19, the alternate MDB right after the last), but 1 MB B-trees. FileSaver
+  scans after a crash: a run ended by `--max` leaves an image as one.
+  macOS's own `fsck_hfs` (hfs-753.41.1) can't check HFS volumes with
+  files: it stops at a bounds check (`brk #0x5512`) in
+  `hfs_swap_HFSBTInternalNode`, which swaps a file record's six extents
+  through its three-entry `dataExtents`; it does the same on a Mac OS-made
+  HD.
 - **The catalog's order of names** is Apple's FastRelString (the HFS code
   in Apple's open-source `hfs`, `UCStringCompareData.h`'s `gCompareTable`):
   case-insensitive, each accented letter after its plain one, a
@@ -1162,6 +1290,25 @@ Facts later tasks need, added as they are found.
   floppies" says it needs a drive that can make 720K/1440K disks, without
   a call to the driver: it looks for other drives, the Sony driver's
   presumably), though it offers to make an image of one put in.
+- **Ejectable drives** (CD swapping): the flags' "ejectable" (1) rather
+  than "non-ejectable" (8) changes what Mac OS does from early on: with
+  only that changed, the 8.5 CD's 4-billion-instruction run ended
+  elsewhere (its screen the same) and 9.1's screen differed, as Mac OS
+  reads the flags as it runs; set only once the CD was mounted, the runs
+  still diverged. With flags 8, the Finder's Eject is disabled and Put
+  Away asks "Do you really want to remove the disk ... It will reappear on
+  the desktop when the computer is restarted", then unmounts it without a
+  call to the driver (only DriverGestalt 'flus' queries), so nothing could
+  tell the driver to release the image or start its timer again (it stops
+  once its volumes are mounted). Hence CD-ROM drives are ejectable only
+  where discs can be swapped. With flags 1, Put Away, the Trash and the
+  Finder's Eject unmount the volume and call Control 7; the Finder refuses
+  for the startup disk. What 8.5 asks of an ejectable CD drive is what it
+  asks of the disks (DriverGestalt 'flus', 'intf', 'minf', 'mics', Control
+  20, 21, 22, 23 at mount), all declined as before, so a CD keeps its
+  look: the generic disk's icon or the disc's own, the same in at startup
+  or put in later. 'ejec' (kRestartDontEject) keeps the startup CD in at a
+  restart.
 - **Each application has its own scrap:** its scrap handle is in its
   heap, and the low-memory scrap globals (`0x960`) are switched with it;
   the Process Manager hands the front application's scrap to the next one
@@ -1391,3 +1538,72 @@ Facts later tasks need, added as they are found.
   2001, summer time in the northern hemisphere but not where this host is
   (Australia). The CD's Date & Time sets daylight-saving time itself; the
   restored system shows the host's local time like the others.
+- **Gary Davidian's skeleton key** (`src/priv.c`, `priv.h`; ZD MacBench
+  5.0): ResetSystem (kernel call 2, the 68k RESET) with r3 'Gary' and r4
+  0x05051956 doesn't reset: both NanoKernels (1: `KCallResetSystem` in
+  `SoftInts.s`; 2: `kcResetSystem` in `NKInterrupts.s`, which logs
+  "Skeleton key inserted at") return to the caller (LR from the
+  emulator's trap table, else the next instruction) with SRR1 = (MSR &
+  ~r5) | r7, r7 the caller's. MacBench uses it once, right after its
+  registration, from code it puts in RAM and runs in the System context:
+  r5 0xC010 (EE PR DR off), r7 0; then `mtmsr` DR on, a subroutine that
+  stores L2CR and HID0 at 0xA78 and 0xA7C, `mtmsr` DR off, `mtmsr` with
+  0xC010 ORed back in, and back into the emulator (r30 | 0x6084). syshm's
+  processor still runs it in user mode: the kernel keeps the blue task's
+  MSR (`m->priv`; 0xD032 otherwise, and always for other tasks) and,
+  while it has PR clear, does the privileged instructions that exit to it
+  (`privileged()` in `nk.c`, `priv_insn()`): mfmsr, mtmsr (POW never
+  kept: no nap), rfi (MSR = SRR1, pc = SRR0), mfspr/mtspr of the 750's
+  supervisor SPRs, mfsr, mtsr, mfsrin, mtsrin, and tlbie, tlbsync and
+  dcbi, which do nothing; tlbia (the 750 has none) and SPRs it hasn't are
+  an illegal instruction exception, as on the 750 (in user mode,
+  privileged instruction, as before). In user mode only mfmsr is done.
+  The values: PVR 0x00080301 (ProcessorInfo's); HID0 0x8010C0A4 (EMCP DPM
+  ICE DCE SGE BTIC BHT); HID1 0xA0000000 (PLL_CFG 1010, 4x: table 17 of
+  the MPC750 hardware specifications; read-only, as are PVR and the time
+  base's write SPRs, 284/285, whose writes do nothing); L2CR 0xA9000000
+  (L2E, 512 KB, the core clock / 2, pipelined burst SRAM; L2IP reads 0, so
+  a global invalidate is over at once); ICTC 0; THRM1 and THRM2 compare
+  with 40 °C while THRM3 has E and they have V (TIV at once; TIN when
+  above the threshold, bits 2-8, or below it with TID), as Linux's
+  tau_6xx.c and successive approximation read it; DEC counts down with
+  the time base from what was last written (0 at startup); SDR1 (RAM
+  size - 1 MB) | 0xF (SystemInfo's 1 MB hash table at the top of RAM;
+  NanoKernel 1 sizes it for 2 PTEs a page); the BATs as SetSpace loads
+  them from ConfigInfo's user BAT map (ConfigInfo-relative lower words +
+  ConfigInfo's physical address, `ROM_PHYS_BASE` + 0x30D000, as `Reset.s`
+  makes them; no G in instruction BATs; all 0 for ROM files without a
+  map, from 9.1 on), the segment registers its user segment map's; SPRG0-3,
+  SRR0/1, DAR, DSISR, EAR, IABR, DABR and the performance monitor's
+  (952-958) start at 0 and keep what's written (the counters don't count).
+  Real mode (IR or DR off) uses the same address space: RAM is at its
+  physical address there, and so is I/O; elsewhere it's Mac OS's map (the
+  ROM's physical copy at 0x00C00000 isn't there: that's RAM here).
+  Exceptions keep the MSR, as NanoKernel 1 keeps SRR1 through its
+  exception and context-switch paths. With EE off nothing interrupts:
+  `update_interrupts()` returns at once (sources stay pending, PendingInts
+  as it was), and preemption, software interrupts, Multiprocessing
+  Services' tick and task switches wait (`blue_interruptible()`; the blue
+  task never blocks in a nap then), so supervisor code only ever runs as
+  the blue task. MacBench's window has 13 instructions with EE off. Not
+  done: the CPU plugin's routines (`cpu_plugin_run()`, 9.1's
+  MPCpuPlugin) still have only mfmsr; they could use `priv_insn()` with a
+  supervisor MSR.
+- **MacBench's freeze** (real time only): after its registration MacBench
+  times something by reading VIA1's T1C-L in a 4-instruction loop (`lbz
+  r30,0(r31)`, r31 0x81096800, in its heap). In real time the time base
+  only moves at sync points and some exits (the processor's step is 0),
+  and a device register access on a run's last instruction exits and is
+  done by the loop, which then computed its next sync point from the
+  count past it, skipping the one the access ended at. SYNC_INSNS is a
+  multiple of 4, so once the read fell on a sync point it fell on every
+  one: no sync point was ever serviced again, so the time base, the
+  timer and the loop stood still, and so did the window, input and
+  `--seconds` (100% of a host core in `device_hook()`). The loop now
+  services the sync point an access ends (as for quiet and info-record
+  stores). Instruction-time runs are unchanged but for the JIT's count of
+  kernel exits (the 8.5 CD's 4-billion check: 1,106,623 → 1,106,673:
+  the sync point sets `dev_dirty`, so the next run makes no kernel calls
+  in place). Main froze the same way: the user's freeze was this, not
+  the skeleton key (which without it quit MacBench with "an error of type
+  1", in instruction time).

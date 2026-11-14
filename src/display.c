@@ -192,8 +192,8 @@ struct display {
 	bool bar_stale;                 /* ... has changed since it was drawn */
 	bool resize;                    /* a DISPLAY_EVENT_RESIZE to deliver: it came or went, the window kept its size */
 	bool captured;                  /* the pointer is captured (display_capture_mouse()) */
-	bool has_floppy;                /* the menu shows the floppy drive: */
-	struct ui_floppy floppy;
+	bool has_drives;                /* the menu shows drives with removable media: */
+	struct ui_drives drives;
 	char drop[1024];                /* the file last dropped on the window */
 };
 
@@ -550,7 +550,7 @@ static void draw(struct display *d)
 			.prompt = d->prompt ? d->prompt_text : NULL,
 			.prompt_yes = d->prompt_yes,
 			.prompt_no = d->prompt_no[0] ? d->prompt_no : NULL,
-			.floppy = d->has_floppy ? &d->floppy : NULL,
+			.drives = d->has_drives ? &d->drives : NULL,
 		};
 		enum ui_action action = ui_draw(d->ui, &s, ww, wh, ww > 0 ? (float)pw / (float)ww : 1, now - d->menu_time);
 		if (action != UI_NONE)
@@ -946,11 +946,11 @@ void display_menu_state(struct display *d, enum ui_mouse mouse, const char *stat
 	snprintf(d->menu_status, sizeof d->menu_status, "%s", status ? status : "");
 }
 
-void display_floppy_state(struct display *d, const struct ui_floppy *f)
+void display_drives_state(struct display *d, const struct ui_drives *drives)
 {
-	d->has_floppy = f != NULL;
-	if (f)
-		d->floppy = *f;
+	d->has_drives = drives != NULL;
+	if (drives)
+		d->drives = *drives;
 }
 
 bool display_prompt(struct display *d, const char *text, const char *yes, const char *no)

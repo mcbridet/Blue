@@ -15,6 +15,7 @@
 #include "dbdma.h"
 #include "disk.h"
 #include "display.h"
+#include "drives.h"
 #include "gpu.h"
 #include "install.h"
 #include "jit.h"
@@ -28,6 +29,7 @@
 #include "pci.h"
 #include "perf.h"
 #include "ppc_fp.h"
+#include "priv.h"
 #include "rave.h"
 #include "rtas.h"
 #include "scc.h"
@@ -171,7 +173,7 @@ enum {
 
 #define TWI_KCALL_MASK 0xFFFF0000u
 #define TWI_KCALL 0x0FFF0000u           /* twi 31,r31,N */
-#define USER_MSR 0x0000D032u            /* EE PR ME IR DR RI, as the NanoKernel sets it */
+#define USER_MSR PRIV_USER_MSR          /* EE PR ME IR DR RI, as the NanoKernel sets it */
 
 static uint32_t ci32(const struct rom *rom, uint32_t off)
 {
@@ -537,14 +539,19 @@ struct machine {
 	uint8_t display_ndrv[8192];
 	struct disk disk[NK_MAX_DISKS];
 	unsigned disks;
-	uint8_t disk_ndrv[NK_MAX_DISKS][2048];
-	/* the floppy drive, if there's one (see floppy_insert()): the images it's been given, and the one in it */
+	uint8_t disk_ndrv[NK_MAX_DISKS][8192];                  /* (a CD-ROM drive's has its icons) */
+	/* the floppy drive, if there's one (see drive_insert()): what's in it at startup, and what follows */
 	bool has_floppy;
 	struct disk floppy;
 	uint8_t floppy_ndrv[8192];
-	char *floppy_list[NK_MAX_FLOPPIES];
-	unsigned floppy_count;
-	int floppy_in;                  /* (-1: none) */
+	char floppy_path[1024];         /* ("": nothing) */
+	const char *floppy_queue[NK_MAX_FLOPPIES];      /* (they go in in turn, as Mac OS ejects the one in) */
+	unsigned floppy_queued;
+	/* CD-ROM drives whose discs can be swapped (cd_swap: see nk_boot()), and what's in each at startup */
+	bool cd_swap;
+	char cd_path[NK_MAX_DISKS][1024];               /* ("": nothing) */
+	struct drives drives;                           /* the drives with removable media (see drives.h) */
+	struct disk *menu_drives[UI_DRIVES];            /* (those the menu shows, in its order) */
 	struct net net;                 /* Ethernet */
 	uint8_t lanlib[4096];
 	uint64_t net_poll_ns;           /* host time the host network was last serviced */
@@ -572,6 +579,7 @@ struct machine {
 	uint32_t hw_info;               /* ... where HWInfo is in it (see init_info_records()) */
 	bool mp_kernel;                 /* the ROM wants Multiprocessing Services from the kernel (see init_info_records()) */
 	struct mp mp;                   /* ... which are these */
+	struct priv priv;               /* the blue task's MSR, and supervisor mode by the skeleton key (see priv.h) */
 };
 
 /*
@@ -713,6 +721,51 @@ static void play_sound(void *ctx, const uint8_t *frames, unsigned count, unsigne
 		frames += 4 * n;
 		count -= n;
 	}
+}
+
+/*
+ * The sound chip's analog input: what the CD-ROM drives play (one on the
+ * iMac; here each one's player, mixed).
+ */
+static void cd_input_run(void *ctx, uint64_t time)
+{
+	struct machine *m = ctx;
+	for (unsigned k = 0; k < m->disks; k++)
+		if (m->disk[k].cd)
+			cdaudio_run(&m->disk[k].cd->audio, time);
+}
+
+static bool cd_input_pull(void *ctx, int16_t *frames, unsigned count, unsigned rate)
+{
+	struct machine *m = ctx;
+	int16_t more[2 * 256];
+	bool any = false;
+	for (unsigned k = 0; k < m->disks; k++) {
+		struct cdaudio *p = m->disk[k].cd ? &m->disk[k].cd->audio : NULL;
+		if (!p || !cdaudio_active(p))
+			continue;
+		for (unsigned at = 0; at < count; at += 256) {
+			unsigned n = count - at < 256 ? count - at : 256;
+			if (!any)
+				cdaudio_pull(p, frames + 2 * at, n, rate);
+			else if (cdaudio_pull(p, more, n, rate))
+				for (unsigned j = 0; j < 2 * n; j++) {
+					int v = frames[2 * at + j] + more[j];
+					frames[2 * at + j] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+				}
+		}
+		any = true;
+	}
+	return any;
+}
+
+static bool cd_input_active(const void *ctx)
+{
+	const struct machine *m = ctx;
+	for (unsigned k = 0; k < m->disks; k++)
+		if (m->disk[k].cd && cdaudio_active(&m->disk[k].cd->audio))
+			return true;
+	return false;
 }
 
 static void wav_header(uint8_t h[44], uint32_t frames, uint32_t rate)
@@ -864,7 +917,9 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	unsigned boot_disk = 0, boot_map_entry = 0;
 	for (unsigned k = 0; k < opt->disks + (opt->share != NULL) && k < NK_MAX_DISKS; k++) {
 		struct disk *d = &m->disk[k];
-		if (k < opt->disks ? disk_open(d, &m->mem, opt->disk[k], opt->cdrom[k], opt->cdrom[k]) :
+		bool swap = k < opt->disks && opt->cdrom[k] && m->cd_swap;
+		if (swap ? disk_open_cdrom(d, &m->mem, m->cd_path[k][0] ? m->cd_path[k] : NULL) :
+		    k < opt->disks ? disk_open(d, &m->mem, opt->disk[k], opt->cdrom[k], opt->cdrom[k]) :
 				     disk_open_backend(d, &m->mem, opt->share))
 			return -1;
 		m->disks = k + 1;
@@ -873,9 +928,12 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		d->unit = (PCI_DEVFN_DISK + 8 * k) >> 3;
 		disk_ndrv_size[k] = disk_build_ndrv(d, m->disk_ndrv[k], sizeof m->disk_ndrv[k],
 						    HOSTCALL_DISK_DRIVER + k);
-		for (unsigned p = 0; p < d->partitions; p++) {
+		if (d->removable && !d->media)
+			printf("disk %u: a CD-ROM drive, empty\n", k);
+		for (unsigned p = 0; p < d->partitions && (d->media || !d->removable); p++) {
 			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, d->path,
-			       d->backend ? " (shared folder)" : d->read_only ? " (read-only)" : "",
+			       d->removable ? " (a CD: read-only, ejectable)" : d->backend && !d->cdrom ? " (shared folder)" :
+			       d->read_only ? " (read-only)" : "",
 			       (unsigned long long)(d->part[p].size >> 20),
 			       (unsigned long long)d->part[p].offset, d->part[p].name[0] ? ", partition " : "",
 			       d->part[p].name);
@@ -885,6 +943,15 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 				boot_map_entry = d->part[p].map_entry;
 			}
 		}
+	}
+	for (unsigned k = 0; k < m->disks; k++) {
+		const struct cdimage *c = m->disk[k].disc;
+		unsigned audio = 0;
+		for (unsigned t = 0; c && t < c->tracks; t++)
+			audio += !c->track[t].mode;
+		if (audio)
+			printf("disk %u: %u tracks, %u of them audio%s\n", k, c->tracks, audio,
+			       c->data < 0 ? " (no data: Mac OS reads its tracks with Audio CD Access)" : "");
 	}
 	/* Open Firmware boots from where it found the ROM file */
 	if (parcels && opt->rom_from_disk && opt->rom_disk < m->disks &&
@@ -899,17 +966,19 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	if (opt->floppies || opt->floppy_drive) {
 		char why[512];
 		m->has_floppy = true;
-		disk_open_removable(&m->floppy, &m->mem);
+		disk_open_floppy(&m->floppy, &m->mem);
 		m->floppy.log = opt->log_hostcalls;
 		floppy_ndrv_size = disk_build_ndrv(&m->floppy, m->floppy_ndrv, sizeof m->floppy_ndrv,
 						   HOSTCALL_FLOPPY_DRIVER);
-		if (m->floppy_in >= 0 && disk_insert(&m->floppy, m->floppy_list[m->floppy_in], why, sizeof why)) {
-			fprintf(stderr, "floppy: %s: %s\n", m->floppy_list[m->floppy_in], why);
-			m->floppy_in = -1;
-		} else if (m->floppy_in >= 0) {
+		if (m->floppy_path[0] && disk_insert(&m->floppy, m->floppy_path, why, sizeof why))
+			fprintf(stderr, "floppy: %s: %s\n", m->floppy_path, why);
+		else if (m->floppy_path[0])
 			floppy_said(&m->floppy);
-		}
 	}
+	m->drives.floppy = m->has_floppy ? &m->floppy : NULL;
+	for (unsigned k = 0; k < m->disks && m->drives.cds < DRIVES_MAX_CDS; k++)
+		if (m->disk[k].removable)
+			m->drives.cd[m->drives.cds++] = &m->disk[k];
 
 	static const uint8_t mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };   /* (locally administered) */
 	net_init(&m->net, &m->mem, mac, TIMEBASE_HZ);
@@ -979,6 +1048,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->awacs.log = getenv("SYSHM_LOG_SOUND") != NULL;
 	m->awacs.sink = play_sound;
 	m->awacs.sink_ctx = m;
+	m->awacs.input = (struct awacs_input){ cd_input_run, cd_input_pull, cd_input_active, m };
 	if (!m->wav && getenv("SYSHM_SOUND_WAV") && (m->wav = fopen(getenv("SYSHM_SOUND_WAV"), "wb"))) {
 		uint8_t h[44];
 		wav_header(h, 0, 44100);
@@ -1413,104 +1483,93 @@ static const char *file_name(const char *path)
 	return slash && slash[1] ? slash + 1 : path;
 }
 
-/* An image's number in the floppy drive's list, which it's added to if need be (in place of an older one, if full) */
-static int floppy_listed(struct machine *m, const char *path)
+/*
+ * Drives with removable media (see disk.h, drives.h): the floppy drive and
+ * swappable CD-ROM drives. An image goes in when a drive is empty, or Mac
+ * OS isn't using the disc in it; only Mac OS ejects one it has mounted (Put
+ * Away, the Trash, an installer's Eject). Messages go to the output, and to
+ * the menu's news.
+ */
+static const char *drive_name(const struct machine *m, const struct disk *d)
 {
-	for (unsigned k = 0; k < m->floppy_count; k++)
-		if (strcmp(m->floppy_list[k], path) == 0)
-			return (int)k;
-	char *copy = strdup(path);
-	if (!copy)
-		return -1;
-	unsigned k = m->floppy_count;
-	if (k == NK_MAX_FLOPPIES) {     /* (full: the last goes, unless it's the one in the drive) */
-		k = NK_MAX_FLOPPIES - 1 - (m->floppy_in == NK_MAX_FLOPPIES - 1);
-		free(m->floppy_list[k]);
-	} else {
-		m->floppy_count++;
-	}
-	m->floppy_list[k] = copy;
-	return (int)k;
+	static char name[24];
+	return drives_name(&m->drives, d, name, sizeof name);
 }
 
-/*
- * The floppy drive (see disk.h): the images it was given (--floppy's, then
- * those dropped on the window or put in by a script), and which is in it.
- * An image goes in when the drive is empty, or Mac OS isn't using the one
- * in it; only Mac OS ejects one it has mounted (Put Away, the Trash, an
- * installer's Eject). Messages go to the output, and to the menu's news.
- */
-static bool floppy_insert(struct machine *m, const char *path)
+static bool drive_insert(struct machine *m, const char *path, enum drives_for kind)
 {
 	char why[400];
-	if (!m->has_floppy) {
-		snprintf(m->menu_status, sizeof m->menu_status, "There's no floppy drive: start syshm with "
-			 "--floppy IMAGE, or --floppy-drive for an empty one");
-		fprintf(stderr, "floppy: %s\n", m->menu_status);
+	struct disk *d = drives_pick(&m->drives, path, kind, m->menu_status, sizeof m->menu_status);
+	if (!d) {
+		fprintf(stderr, "%s: %s\n", kind == DRIVES_FLOPPY ? "floppy" : kind == DRIVES_CD ? "cdrom" : "drop",
+			m->menu_status);
 		return false;
 	}
-	if (floppy_check(path, why, sizeof why)) {
+	if (disk_insert(d, path, why, sizeof why)) {
 		snprintf(m->menu_status, sizeof m->menu_status, "%.60s: %s", file_name(path), why);
-		fprintf(stderr, "floppy: %s: %s\n", path, why);
+		fprintf(stderr, "%s: %s: %s\n", d->floppy ? "floppy" : "cdrom", path, why);
 		return false;
 	}
-	if (m->floppy.media && disk_in_use(&m->floppy)) {
-		snprintf(m->menu_status, sizeof m->menu_status,
-			 "The floppy drive has %.100s in it, which Mac OS is using: put it away there first (drag it to "
-			 "the Trash), then put in %.100s", file_name(m->floppy.media_path), file_name(path));
-		fprintf(stderr, "floppy: %s\n", m->menu_status);
-		return false;
-	}
-	if (disk_insert(&m->floppy, path, why, sizeof why)) {
-		snprintf(m->menu_status, sizeof m->menu_status, "%.60s: %s", file_name(path), why);
-		fprintf(stderr, "floppy: %s: %s\n", path, why);
-		return false;
-	}
-	m->floppy_in = floppy_listed(m, path);
-	snprintf(m->menu_status, sizeof m->menu_status, "Put %.100s in the floppy drive", file_name(path));
-	floppy_said(&m->floppy);
+	snprintf(m->menu_status, sizeof m->menu_status, "Put %.100s in the %s", file_name(path), drive_name(m, d));
+	if (d->floppy)
+		floppy_said(d);
+	else
+		printf("cdrom: %s in the %s\n", path, drive_name(m, d));
 	return true;
 }
 
-/* Takes the image out of the floppy drive, unless Mac OS is using it */
-static void floppy_eject(struct machine *m)
+/* Takes the image out of a drive, unless Mac OS is using it */
+static void drive_eject(struct machine *m, struct disk *d)
 {
-	if (!m->has_floppy || !m->floppy.media)
+	if (!d->media)
 		return;
-	if (disk_in_use(&m->floppy)) {
+	if (disk_in_use(d)) {
 		snprintf(m->menu_status, sizeof m->menu_status,
 			 "Mac OS is using %.100s: put it away there (drag it to the Trash) to eject it",
-			 file_name(m->floppy.media_path));
-		fprintf(stderr, "floppy: %s\n", m->menu_status);
+			 file_name(d->media_path));
+		fprintf(stderr, "%s: %s\n", d->floppy ? "floppy" : "cdrom", m->menu_status);
 		return;
 	}
-	printf("floppy: %s taken out\n", m->floppy.media_path);
-	snprintf(m->menu_status, sizeof m->menu_status, "Took %.100s out of the floppy drive",
-		 file_name(m->floppy.media_path));
-	disk_eject(&m->floppy);
-	m->floppy_in = -1;
+	printf("%s: %s taken out\n", d->floppy ? "floppy" : "cdrom", d->media_path);
+	snprintf(m->menu_status, sizeof m->menu_status, "Took %.100s out of the %s", file_name(d->media_path),
+		 drive_name(m, d));
+	disk_eject(d);
 }
 
-/* What the menu shows of the floppy drive */
-static void floppy_state(struct machine *m)
+/* Takes a disc out of a CD-ROM drive: the first whose disc Mac OS isn't using */
+static void cd_eject(struct machine *m)
 {
-	struct ui_floppy f;
-	if (!m->has_floppy) {
-		display_floppy_state(m->display, NULL);
+	struct disk *first = NULL;
+	for (unsigned k = 0; k < m->drives.cds; k++) {
+		struct disk *d = m->drives.cd[k];
+		if (!d->media)
+			continue;
+		if (!disk_in_use(d)) {
+			drive_eject(m, d);
+			return;
+		}
+		first = first ? first : d;
+	}
+	if (first)
+		drive_eject(m, first);  /* (which says Mac OS is using it) */
+}
+
+/* Mac OS ejected the floppy drive's disk: the next of --floppy's goes in */
+static void floppy_next(struct machine *m)
+{
+	if (!m->floppy_queued)
 		return;
-	}
-	memset(&f, 0, sizeof f);
-	f.current = -1;
-	if (m->floppy.media) {
-		snprintf(f.in, sizeof f.in, "%.63s", file_name(m->floppy.media_path));
-		f.locked = m->floppy.read_only;
-		f.in_use = disk_in_use(&m->floppy);
-		f.current = m->floppy_in;
-	}
-	f.count = m->floppy_count < UI_FLOPPIES ? m->floppy_count : UI_FLOPPIES;
-	for (unsigned k = 0; k < f.count; k++)
-		snprintf(f.names[k], sizeof f.names[k], "%.63s", file_name(m->floppy_list[k]));
-	display_floppy_state(m->display, &f);
+	const char *path = m->floppy_queue[0];
+	memmove(m->floppy_queue, m->floppy_queue + 1, --m->floppy_queued * sizeof m->floppy_queue[0]);
+	drive_insert(m, path, DRIVES_FLOPPY);
+}
+
+/* What the menu shows of the drives with removable media */
+static void drives_state(struct machine *m)
+{
+	struct ui_drives dr;
+	drives_menu(&m->drives, m->floppy_queue, m->floppy_queued, &dr, m->menu_drives);
+	display_drives_state(m->display, dr.count ? &dr : NULL);
 }
 
 /* What the menu shows: whether the mouse will be captured when the guest resumes, and news */
@@ -1519,7 +1578,7 @@ static void menu_state(struct machine *m)
 	enum ui_mouse mouse = !m->cursor_hidden_ns ? UI_MOUSE_FOLLOWS :
 			      m->mouse_released ? UI_MOUSE_RELEASED : UI_MOUSE_CAPTURED;
 	display_menu_state(m->display, mouse, m->menu_status);
-	floppy_state(m);
+	drives_state(m);
 }
 
 /* The screen as a PNG on the Desktop (or here), named for when it was taken */
@@ -1586,19 +1645,9 @@ static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
 		install_answer(&m->install, action == UI_PROMPT_YES, &m->helper);
 		follow_cursor(m, now);
 		break;
-	case UI_FLOPPY_EJECT:
-		floppy_eject(m);
-		break;
 	default:
-		/* an image put in: the Mac goes on (to mount it) */
-		if (action >= UI_FLOPPY_INSERT && action <= UI_FLOPPY_INSERT_LAST &&
-		    (unsigned)(action - UI_FLOPPY_INSERT) < m->floppy_count &&
-		    floppy_insert(m, m->floppy_list[action - UI_FLOPPY_INSERT])) {
-			m->paused = false;
-			display_menu(m->display, false);
-			follow_cursor(m, now);
-			printf("resumed\n");
-		}
+		if (action >= UI_EJECT && action <= UI_EJECT_LAST && m->menu_drives[action - UI_EJECT])
+			drive_eject(m, m->menu_drives[action - UI_EJECT]);
 		break;
 	}
 	menu_state(m);
@@ -1869,10 +1918,10 @@ static void display_input(struct machine *m, uint64_t now)
 				m->want_ns = host_ns();
 			}
 			break;
-		case DISPLAY_EVENT_DROP_FILE:   /* into the floppy drive; if it can't go in, the menu says why */
+		case DISPLAY_EVENT_DROP_FILE:   /* into a drive; if it can't go in, the menu says why */
 			if (m->scripted)
 				break;
-			if (!floppy_insert(m, ev.path) && !m->paused) {
+			if (!drive_insert(m, ev.path, DRIVES_ANY) && !m->paused) {
 				m->paused = true;
 				follow_cursor(m, now);
 				menu_state(m);
@@ -1959,7 +2008,8 @@ static int script_load(struct script *s, const char *path)
 			script_text(rest, e.arg, sizeof e.arg);
 		} else if (strcmp(e.cmd, "key") == 0) {
 			sscanf(rest, " %x %255s", (unsigned *)&e.a, e.arg);
-		} else if (strcmp(e.cmd, "floppy") == 0) {      /* floppy insert FILE (the rest of the line), eject */
+		} else if (strcmp(e.cmd, "floppy") == 0 || strcmp(e.cmd, "cdrom") == 0) {
+			/* floppy insert FILE (the rest of the line), floppy eject; cdrom insert FILE, cdrom eject */
 			e.a = sscanf(rest, " insert %255[^\n]", e.arg) == 1 ? 1 : strstr(rest, "eject") ? 2 : 0;
 			for (size_t n = strlen(e.arg); n && (e.arg[n - 1] == ' ' || e.arg[n - 1] == '\r'); n--)
 				e.arg[n - 1] = '\0';
@@ -2080,11 +2130,18 @@ static void script_run(struct machine *m, struct script *s)
 			install_answer(&m->install, strcmp(e->arg, "install") == 0, &m->helper);
 		} else if (strcmp(e->cmd, "floppy") == 0) {
 			if (e->a == 1)
-				floppy_insert(m, e->arg);
-			else if (e->a == 2)
-				floppy_eject(m);
-			else
+				drive_insert(m, e->arg, DRIVES_FLOPPY);
+			else if (e->a == 2 && m->has_floppy)
+				drive_eject(m, &m->floppy);
+			else if (e->a != 2)
 				fprintf(stderr, "input script: floppy insert FILE, or floppy eject\n");
+		} else if (strcmp(e->cmd, "cdrom") == 0) {
+			if (e->a == 1)
+				drive_insert(m, e->arg, DRIVES_CD);
+			else if (e->a == 2)
+				cd_eject(m);
+			else
+				fprintf(stderr, "input script: cdrom insert FILE, or cdrom eject\n");
 		} else {
 			fprintf(stderr, "input script: unknown command '%s'\n", e->cmd);
 		}
@@ -2233,9 +2290,22 @@ static unsigned blue_boost(struct machine *m)
  * blue_boost() for how it gives up being critical.)
  *
  * Returns whether anything changed (what's reported pending, or posted).
+ *
+ * While the blue task's MSR has EE off (the skeleton key: see priv.h),
+ * nothing is taken, as the NanoKernel's interrupt handler wouldn't run:
+ * the sources stay pending and PendingInts as it was, and posting,
+ * preemption, software interrupts, Multiprocessing Services' tick and
+ * task switches wait (blue_interruptible()).
  */
+static bool blue_interruptible(const struct machine *m)
+{
+	return m->priv.msr & MSR_EE;
+}
+
 static bool update_interrupts(struct machine *m, bool force)
 {
+	if (!blue_interruptible(m))
+		return false;
 	macio_set_line(&m->macio, IRQ_VIA1, via_irq(&m->via));
 	macio_set_line(&m->macio, IRQ_USB, ohci_irq(&m->ohci));
 	macio_set_line(&m->macio, IRQ_DISPLAY, video_irq(&m->video));
@@ -2316,9 +2386,9 @@ static const char *device_stop(const struct machine *m)
  * preemption, a stop), the run stops right after the access for the loop
  * to do the rest (PPC_EXIT_MMIO), as it would after the access at that exit.
  *
- * Not on the last instruction before the loop's next stop (mmio_until): an
- * exit there has the loop skip the sync point it ends at, so that access
- * still makes its exit; nor while the loop sets guest time at every exit
+ * Not on the last instruction before the loop's next stop (mmio_until):
+ * that access exits, as it always has (the loop then services the sync
+ * point it ends at); nor while the loop sets guest time at every exit
  * (the script's "clock"). What the engines may do in place is worked out
  * again after the access (as the loop would before its next run), device
  * time having changed.
@@ -2586,6 +2656,49 @@ static bool is_mfmsr(uint32_t insn)
 }
 
 /*
+ * A privileged instruction: the blue task's mfmsr, and in supervisor mode
+ * what the 750 has, are priv.c's; other tasks' mfmsr reads the user MSR.
+ * Else an exception: a privileged instruction in user mode, an illegal one
+ * in supervisor mode.
+ */
+static const char *privileged(struct machine *m)
+{
+	struct ppc_cpu *cpu = &m->cpu;
+	bool blue = blue_running(m);
+	if (blue && priv_insn(&m->priv, cpu))
+		return NULL;
+	if (!blue && is_mfmsr(cpu->exit_insn)) {
+		cpu->gpr[(cpu->exit_insn >> 21) & 31] = USER_MSR;
+		cpu->pc += 4;
+		return NULL;
+	}
+	return exception(m, blue && priv_supervisor(&m->priv) ? EC_INVALID_INSTR : EC_PRIVILEGED_INSTR, cpu->pc);
+}
+
+/*
+ * The registers the kernel gives Mac OS (see priv.h): the BATs of
+ * ConfigInfo's user BAT map (ConfigInfo-relative ones in the ROM's physical
+ * copy; instruction BATs without G), its user segment registers, and SDR1
+ * for SystemInfo's 1 MB hash table at the top of RAM.
+ */
+static void init_priv(struct machine *m)
+{
+	const struct nk_config *ci = &m->ci;
+	uint32_t bat[16] = { 0 }, sr[16];
+	for (int k = 0; k < 8 && ci->batmap_usr; k++) {
+		unsigned idx = (ci->batmap_usr >> (28 - 4 * k)) & 0xF;
+		uint32_t l = ci->bat_range[idx][1];
+		if (l & PATTR_PTE_REL)
+			l = (l & ~PATTR_PTE_REL) + ROM_PHYS_BASE + NK_CONFIGINFO_OFFSET;
+		bat[2 * k] = ci->bat_range[idx][0];
+		bat[2 * k + 1] = k < 4 ? l & ~0x8u : l;
+	}
+	for (int s = 0; s < 16; s++)
+		sr[s] = ci->segmap_usr[s][1];
+	priv_init(&m->priv, CPU_PVR, (m->ram_size - 0x00100000u) | 0x000Fu, bat, sr);
+}
+
+/*
  * KCall 0. r3 is the handler's verdict: 0 resumes the interrupted code with
  * PC, LR, r3 and r4 restored from the context block; 1 propagates the
  * exception to the System context; 32-255 ends the alternate context with that
@@ -2843,13 +2956,15 @@ static const char *host_call(struct machine *m, uint32_t selector)
 	case HOSTCALL_LANLIB:
 		net_call(&m->net, &c);
 		break;
-	case HOSTCALL_FLOPPY_DRIVER:
+	case HOSTCALL_FLOPPY_DRIVER: {
 		if (!m->has_floppy)
 			return "unknown host call";
+		bool had = m->floppy.media;
 		drive_call(m, &m->floppy, &c);
-		if (!m->floppy.media)
-			m->floppy_in = -1;      /* (Mac OS ejected it) */
+		if (had && !m->floppy.media)
+			floppy_next(m);         /* (Mac OS ejected it) */
 		break;
+	}
 	default:
 		if (selector - HOSTCALL_DISK_DRIVER >= m->disks)
 			return "unknown host call";
@@ -3014,7 +3129,7 @@ static void switch_task(struct machine *m, uint32_t to)
  */
 static void blue_naps(struct machine *m, uint64_t until)
 {
-	if (m->mp_kernel && blue_running(m) && !m->ipl && mp_nap(&m->mp, until) != MP_NAP_IDLE)
+	if (m->mp_kernel && blue_running(m) && !m->ipl && blue_interruptible(m) && mp_nap(&m->mp, until) != MP_NAP_IDLE)
 		return;
 	idle_wait(m, until);
 }
@@ -3226,7 +3341,10 @@ static const char *kernel_call(struct machine *m, unsigned n)
 	}
 
 	switch (n) {
-	case 2:     /* ResetSystem (68k RESET): the kernel re-initializes itself and resumes */
+	case 2:     /* ResetSystem (68k RESET): the kernel re-initializes itself and resumes (with the skeleton key, see priv.h) */
+		if (priv_skeleton_key(&m->priv, cpu->gpr) && m->priv.keys <= 4)
+			printf("kernel: skeleton key inserted at pc 0x%08X: MSR 0x%08X @%llu\n", cpu->pc, m->priv.msr,
+			       (unsigned long long)cpu->icount);
 		break;
 	case 4:     /* PrioritizeInterrupts: re-evaluate pending interrupts */
 		update_device_time(m);
@@ -3343,6 +3461,7 @@ static int start_machine(struct machine *m, const struct nk_boot_options *opt)
 	}
 	if (setup_machine(m, opt))
 		return -1;
+	init_priv(m);
 	{
 		uint32_t irp = m->ci.la_info_record & ~(MEM_PAGE_SIZE - 1);     /* see kdp_pull() */
 		mem_map(&m->mem, irp, MEM_PAGE_SIZE, m->mem.pageflags[irp >> MEM_PAGE_SHIFT] & ~MEM_W);
@@ -3430,9 +3549,14 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->dev_accesses = old.dev_accesses;
 	m->dev_inline = old.dev_inline;
 	m->net_poll_ns = old.net_poll_ns;
-	memcpy(m->floppy_list, old.floppy_list, sizeof m->floppy_list);        /* (the disk stays in the drive) */
-	m->floppy_count = old.floppy_count;
-	m->floppy_in = old.floppy_in;
+	/* (discs stay in their drives) */
+	snprintf(m->floppy_path, sizeof m->floppy_path, "%s", old.floppy.media ? old.floppy.media_path : "");
+	memcpy(m->floppy_queue, old.floppy_queue, sizeof m->floppy_queue);
+	m->floppy_queued = old.floppy_queued;
+	m->cd_swap = old.cd_swap;
+	for (unsigned k = 0; k < NK_MAX_DISKS; k++)
+		snprintf(m->cd_path[k], sizeof m->cd_path[k], "%s", !old.disk[k].removable ? old.cd_path[k] :
+			 old.disk[k].media ? old.disk[k].media_path : "");
 	memcpy(m->exceptions, old.exceptions, sizeof m->exceptions);
 	if (start_machine(m, opt))
 		return -1;
@@ -3470,17 +3594,36 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	m.realtime = opt->realtime;
 	/* (only for the window: headless and instruction-time runs draw the pointer as they always have) */
 	m.hw_cursor = opt->window && opt->realtime;
-	/* the floppy images, checked now: the first goes in at startup (unless the drive starts empty) */
-	m.floppy_in = opt->floppies && !opt->floppy_drive ? 0 : -1;
+	/* the floppy images, checked now: the first goes in at startup, the others as Mac OS ejects it */
 	for (unsigned k = 0; k < opt->floppies && k < NK_MAX_FLOPPIES; k++) {
 		char why[400];
 		if (floppy_check(opt->floppy[k], why, sizeof why)) {
 			fprintf(stderr, "%s: %s\n", opt->floppy[k], why);
 			return 1;
 		}
-		if (floppy_listed(&m, opt->floppy[k]) < 0)
-			return 1;
+		if (k)
+			m.floppy_queue[m.floppy_queued++] = opt->floppy[k];
 	}
+	if (opt->floppies)
+		snprintf(m.floppy_path, sizeof m.floppy_path, "%s", opt->floppy[0]);
+	struct script script = { 0 };
+	if (opt->input_script && script_load(&script, opt->input_script))
+		return 1;
+	m.scripted = opt->input_script != NULL;
+	/*
+	 * CD-ROM drives' discs can be swapped (Mac OS ejects them) where someone
+	 * can swap them: in a window or real time, with an empty drive, or when
+	 * the input script does. Otherwise they stay fixed, as they were: Mac OS
+	 * treats ejectable drives differently all along, so instruction-time runs
+	 * that don't swap discs stay the same instruction for instruction.
+	 */
+	m.cd_swap = opt->window || opt->realtime;
+	for (unsigned k = 0; k < opt->disks; k++) {
+		m.cd_swap |= opt->cdrom[k] && !opt->disk[k];
+		snprintf(m.cd_path[k], sizeof m.cd_path[k], "%s", opt->disk[k] ? opt->disk[k] : "");
+	}
+	for (size_t k = 0; k < script.count; k++)
+		m.cd_swap |= strcmp(script.ev[k].cmd, "cdrom") == 0;
 	m.gpu = open_gpu(opt);          /* (getting ready in the background) */
 	if (start_machine(&m, opt))
 		return 1;
@@ -3489,10 +3632,6 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	printf("boot: emulator entry 0x%08X, emulator data 0x%08X, dispatch table 0x%08X, %u MB RAM\n",
 	       m.cpu.pc, m.cpu.gpr[3], m.cpu.gpr[4], m.ram_size >> 20);
 
-	struct script script = { 0 };
-	if (opt->input_script && script_load(&script, opt->input_script))
-		return 1;
-	m.scripted = opt->input_script != NULL;
 	for (size_t k = 0; k < script.count; k++)       /* (a script's clipboard stands in for the host's) */
 		m.clip.enabled |= strcmp(script.ev[k].cmd, "clipboard") == 0 ||
 				  strcmp(script.ev[k].cmd, "print-clipboard") == 0;
@@ -3539,7 +3678,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	 * don't change what the guest does.
 	 */
 	while (!why) {
-		if (m.preempt && blue_running(&m)) {
+		if (m.preempt && blue_running(&m) && blue_interruptible(&m)) {
 			m.preempt = false;
 			if (!m.system && (why = raise_exception(&m, EC_NO_EXCEPTION, cpu->pc)))
 				break;
@@ -3724,12 +3863,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			why = exception(&m, EC_INST_INVALID_ADDRESS, cpu->pc);
 			break;
 		case PPC_EXIT_PRIV:
-			if (is_mfmsr(cpu->exit_insn)) {
-				cpu->gpr[(cpu->exit_insn >> 21) & 31] = USER_MSR;
-				cpu->pc += 4;
-				break;
-			}
-			why = exception(&m, EC_PRIVILEGED_INSTR, cpu->pc);
+			why = privileged(&m);
 			break;
 		case PPC_EXIT_DSI:
 			if (info_write) {
@@ -3784,6 +3918,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 				device_access(&m, &a);
 				dev_clean = true;
 				why = device_stop(&m);
+				if (!sync && cpu->icount >= next_sync)  /* the access ended the chunk */
+					sync = true;
 				break;
 			}
 			if (opt->io_as_ram && cpu->fault_addr >= 0x80000000u &&
@@ -3803,11 +3939,11 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			why = ppc_exit_name(e);
 			break;
 		}
-		if (m.mp_kernel && !why && !debug_exit && mp_due(&m.mp, cpu->tb))
+		if (m.mp_kernel && !why && !debug_exit && blue_interruptible(&m) && mp_due(&m.mp, cpu->tb))
 			mp_tick(&m.mp, cpu->tb, mp_fires(&m.mp, cpu->tb) ? blue_boost(&m) : MP_AS_IS);
-		if (m.mp.swi)
+		if (m.mp.swi && blue_interruptible(&m))
 			post_software_interrupt(&m);
-		if (m.mp.yield && !why)         /* (Multiprocessing Services: the task to run may change) */
+		if (m.mp.yield && !why && blue_interruptible(&m))       /* (Multiprocessing Services: the task to run may change) */
 			switch_task(&m, mp_next(&m.mp, blue_boost(&m)));
 		if (!dev_clean)
 			m.dev_dirty = true;
@@ -3836,6 +3972,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	printf("\n");
 	if (be32(m.kdp + KDP_NK_INFO + NKI_QUIET_WRITES))
 		printf("quiet writes: %u (stores to the ROM, dropped)\n", be32(m.kdp + KDP_NK_INFO + NKI_QUIET_WRITES));
+	if (m.priv.keys)
+		printf("skeleton key: used %u times, MSR now 0x%08X\n", m.priv.keys, m.priv.msr);
 	printf("kernel calls:");
 	for (unsigned n = 0; n < 16; n++)
 		if (kcalls[n])
@@ -3850,11 +3988,16 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	printf("\nvideo: %lu driver calls, %u opens, %ux%u %u-bit, %lu mode changes, %lu VBLs",
 	       m.video.calls, m.video.open_count, video_width(&m.video), video_height(&m.video),
 	       video_bpp(&m.video), m.video.mode_changes, m.video.vbls);
-	for (unsigned k = 0; k < m.disks; k++)
+	for (unsigned k = 0; k < m.disks; k++) {
 		printf("\ndisk %u: %lu driver calls, drive %u, %lu reads (%llu KB), %lu writes (%llu KB)", k,
 		       m.disk[k].calls, m.disk[k].part[0].drive_num, m.disk[k].reads,
 		       (unsigned long long)(m.disk[k].bytes_read >> 10), m.disk[k].writes,
 		       (unsigned long long)(m.disk[k].bytes_written >> 10));
+		const struct cdrom *cd = m.disk[k].cd;
+		if (cd && cd->audio_calls)
+			printf("\ndisk %u: CD audio: %lu calls to play or read, %lu frames played (%.1f s)", k,
+			       cd->audio_calls, cd->audio.frames, cd->audio.frames / (double)CD_RATE);
+	}
 	if (m.has_floppy)
 		printf("\nfloppy: %lu driver calls, drive %u, %lu reads (%llu KB), %lu writes (%llu KB), "
 		       "%lu ejected by Mac OS; %s", m.floppy.calls, m.floppy.part[0].drive_num, m.floppy.reads,
@@ -3876,6 +4019,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	if (m.awacs.codec_writes)
 		printf("\nsound: %lu codec writes, %u Hz, %lu frames played, %lu recorded",
 		       m.awacs.codec_writes, awacs_rate(&m.awacs), m.awacs.frames_played, m.awacs.frames_recorded);
+	if (m.awacs.frames_through)
+		printf("\nsound: %lu frames with the CD's audio in them", m.awacs.frames_through);
 	if (m.audio)
 		printf("\naudio: %lu frames dropped, %lu frames of silence added",
 		       audio_dropped(m.audio), audio_padded(m.audio));
@@ -3931,8 +4076,6 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	display_close(m.display);
 	free(m.shown);
 	free(script.ev);
-	for (unsigned k = 0; k < m.floppy_count; k++)
-		free(m.floppy_list[k]);
 	clip_free(&m.clip);
 	return 0;
 }

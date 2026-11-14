@@ -44,7 +44,9 @@ through the host (in real time). Games run accelerated by the guest tools'
 3D, Game Sprockets) reached about 100 frames per second in play on an M1
 Max, with music (it needs URL Access, which comes with Mac OS 8.6 and
 later). The built-in Ethernet reaches the host's
-network, so Internet Explorer loads web pages.
+network, so Internet Explorer loads web pages. CD-ROM drives play audio CDs
+and games' CD soundtracks (cue sheets) through the sound chip, as the iMac's
+drive did.
 
 ```
 build/syshm disk create hd.img 2G "Macintosh HD"      # an empty HFS volume
@@ -351,6 +353,13 @@ shows them; one longer than 31 characters, or the same as another's to
 Mac OS (which ignores case), is shortened with the item's ID, as Mac OS 9
 does (`A very long file name#1A.txt`). Dot files, symbolic links to
 folders and files over 2 GB (HFS's limit) are left out, and syshm says so.
+Dates are the host's, but none later than the guest's clock as the run
+starts (`--fixed-time`'s, else the host's), and none created after it was
+modified (as a file macOS copied or unpacked is: it's created when it was
+modified): Norton Utilities takes either for damage, a volume's creation
+date in the future for "damage to the Master Directory Block (Error
+16,005)". The volume was created when the folder was (on Linux, when it
+last changed), so Mac OS knows it from run to run.
 Resource forks and Finder info (type, creator, flags) are the host's: on
 macOS the file's own (`..namedfork/rsrc`, `com.apple.FinderInfo`), and
 otherwise an AppleDouble file, `._name` beside it or in a `__MACOSX` folder
@@ -404,31 +413,128 @@ at the end. Text files keep their line endings (a host's LF shows as boxes
 in SimpleText). Folders' Finder info (window positions, custom icons) and
 the Locked checkbox aren't written back.
 
-### Floppies
+### Floppies and CDs: removable drives
 
-`--floppy IMAGE` puts a floppy disk image in a floppy drive, mainly to
-install software that came on floppies; give it several times for a set of
-disks. The first is in the drive at startup; the others are listed in the
-window's menu (F12), where a click puts one in, and dragging an image file
-onto the window puts it in too. `--floppy-drive` gives a drive that's empty
-at startup (with `--floppy` images only listed). Mac OS ejects a disk as
-on any Mac: Put Away or dragging it to the Trash, Eject in the Finder's
-Special menu, an installer's own eject, an Initialize dialog's Eject. The
-drive is then empty, and syshm says so (`floppy: Mac OS ejected ...`).
+The floppy drive (`--floppy`) and the CD-ROM drives (`--cdrom`) take disc
+images that come and go while Mac OS runs, mainly to install software that
+came on floppies or on several CDs. Mac OS ejects a disc as on any Mac: Put
+Away or dragging it to the Trash, Eject in the Finder's Special menu, an
+installer's own eject, an Initialize dialog's Eject. The drive is then
+empty, and syshm says so (`cdrom: Mac OS ejected ut.iso`). To put an image
+in, drop it on the window: one of a floppy's size (2880K or less) goes in
+the floppy drive, any other in a CD-ROM drive, the first that's empty (else
+one whose disc Mac OS isn't using). Mac OS learns of a disc going in as
+from a real drive, by a disk-inserted event, so whatever application is in
+front and waiting for one (an installer, Disk Copy) gets it, and mounts it.
 
 ```
-build/syshm boot --disk hd.img --floppy "Install 1.image" --floppy "Install 2.image" --window
+build/syshm boot --disk hd.img --cdrom "Game CD 1.iso" --window
+build/syshm boot --disk hd.img --cdrom-drive --floppy "Install 1.image" --floppy "Install 2.image" --window
 ```
 
-A multi-disk installer ejects disk 1 and asks for disk 2: press F12 and
-click disk 2 (the menu closes and Mac OS goes on), or drag disk 2's image
-onto the window. Mac OS learns of a disk going in as from a real drive,
-by a disk-inserted event, so whatever application is in front and waiting
-for a disk (an installer, Disk Copy) gets it. syshm won't take a disk out
-that Mac OS has mounted (it's using it; the menu says so, and how to
-eject it there); one that isn't mounted (unreadable, say) can be ejected or
-replaced from the menu. Input scripts have `floppy insert FILE` (the rest
-of the line) and `floppy eject`, which follow the same rules.
+The window's menu (F12) shows what's in each drive, with an Eject button.
+syshm won't take a disc out that Mac OS has mounted (it's using it: the
+button is disabled, and the menu says to put it away in Mac OS); one that
+isn't mounted (unreadable, say, or just put in) it can. If an image can't
+go in (no empty drive, a drive Mac OS is using, not an image syshm takes),
+the menu opens to say why.
+
+`--floppy IMAGE` puts a floppy disk image in the floppy drive; given
+several times, for a set of disks, the first is in the drive at startup
+and the others go in, in turn, as Mac OS ejects the one in (a second
+later, as from a quick hand): a multi-disk installer that ejects disk 1 and
+asks for disk 2 gets it with nothing to do, and the menu lists what's still
+to come. Dropping an image puts that one in instead (when the drive is
+free), and the rest follow as before. `--floppy-drive` gives a floppy drive
+with nothing in it, `--cdrom-drive` an empty CD-ROM drive (one of the four
+disks). Input scripts have `floppy insert FILE` and `cdrom insert FILE` (the
+rest of the line), `floppy eject` and `cdrom eject` (the first CD-ROM drive
+whose disc Mac OS isn't using), which follow the same rules.
+
+CD-ROM drives answer as CD-ROM drives (see CDs: audio and cue sheets
+below), and the swappable ones say their disc is ejectable, and that a
+restart keeps it in. A CD-ROM drive gives
+Mac OS a drive for each HFS partition of the disc in it at startup (one if
+it's empty); a disc put in later with more shows its first ones, and a
+disc comes out once none of its volumes is in use. A CD put in while Mac OS runs is never
+the startup disk (it's shown to Mac OS once applications run); one in at
+startup may be, as before, and Mac OS won't eject the startup disk ("The
+startup disk cannot be removed from the desktop"). CD images are raw (an
+`.iso`, `.toast`, `.cdr` or `.img`, with or without a partition map) or cue
+sheets (below); compressed ones and UDIF `.dmg` (`hdiutil convert -format
+UDTO` makes a raw `.cdr`) are refused, saying what they are, and so is a
+`.bin` of raw sectors given without its `.cue` (when it starts with a data
+track; one that starts with audio can't be told from a plain image). Ejectable drives change what Mac OS does all along (it looks at
+the drives' flags as it runs), so CD-ROM drives are ejectable only where
+discs can be swapped: in a window or real time, with `--cdrom-drive`, or
+with an input script that swaps CDs (`cdrom` commands); other
+instruction-time runs keep them fixed, as before, the same instruction for
+instruction.
+
+#### CDs: audio and cue sheets
+
+A CD-ROM drive (every one, swappable or not) answers Mac OS as Apple's
+CD-ROM driver does on a real Mac (`src/cdrom.c`, after Apple's Technical
+Note DV22): its driver is named `.AppleCD`, DriverGestalt says `cdrm`, and
+it has the calls that AppleCD Audio Player, the Control Strip's CD module,
+Audio CD Access, QuickTime and games make: the table of contents
+(ReadTOC), where the drive is (AudioStatus, the Q subchannel), playing
+(AudioPlay, AudioTrackSearch, AudioPause, AudioStop, AudioScan), the
+drive's volume and channels (AudioControl, ReadAudioVolume), the track
+play lists the driver plays itself (AppleCD Audio Player's shuffle and
+programs, with repeat), reading audio digitally (ReadAudio, with the Q or
+all of the subchannel). The Finder shows a CD and a CD-ROM drive icon (a
+disc's own volume icon, if it has one, goes before them), and Get Info says
+"syshm CD-ROM drive".
+
+Images with audio come as cue sheets (`.cue`, with `.bin` files, as most
+CD rips are): tracks in raw 2352-byte sectors (audio; mode 1 or mode 2
+data), in 2048- or 2336-byte data sectors, or in WAVE or AIFF files (44.1
+kHz, 16-bit stereo); `BINARY` and `MOTOROLA` files, one for the disc or one
+a track; `INDEX 00` pregaps in the file and `PREGAP`/`POSTGAP` silence that
+isn't; several sessions (`REM SESSION`, as on CD-Extra discs); `CATALOG` and
+`ISRC`. The disc's own addresses are worked out as a drive has them (track 1
+at 00:02:00). `syshm disk toc FILE` lists what the drive will say:
+
+```
+$ build/syshm disk toc "Quake [1996].cue"
+Quake [1996].cue: 11 tracks, 1 session, lead-out at 61:47:11 (LBA 277886)
+   1  mode 1  00:02:00  LBA      0  02:47:20  (Mac OS sees its data)
+   2  audio   02:51:20  LBA  12695  05:08:38  (pregap 00:02:00)
+   3  audio   07:59:65  LBA  35840  02:25:60  (pregap 00:00:07)
+   ...
+```
+
+Mac OS mounts the data track (the first one): an HFS volume, with or
+without a partition map, or ISO 9660 with ISO 9660 File Access (in an
+installed system: the PC Quake CD shows up as QUAKE106). A disc of audio
+alone reads as blank data, and Foreign File Access with Audio CD Access
+mounts it as "Audio CD 1", its tracks as documents (on 8.5; AppleCD Audio
+Player opens them, QuickTime's MoviePlayer converts them to AIFF files,
+reading them digitally).
+
+The drive plays audio as the iMac's did: into the sound chip's analog input,
+which Mac OS sets to play the CD through to the outputs (8.5 selects the CD
+and turns loop-through on; with no input selected, as Mac OS 9 leaves it
+here, it plays through too). So CD audio is mixed with Mac OS's own sound
+and follows its volume and mute (Monitors & Sound), as on the real machine,
+and the drive's own volume (AudioControl) comes before. It's paced by guest
+time: where the drive is follows from where and when play started, so
+instruction-time runs are reproducible, and `SYSHM_SOUND_WAV` records it.
+To play a music CD's or a game's soundtrack, start Mac OS with the cue
+sheet, or drop it on the window:
+
+```
+build/syshm boot --disk hd.img --cdrom "Quake [1996].cue" --window    # then AppleCD Audio Player, in the Apple menu
+```
+
+On an installed 8.5, the Control Strip's CD module plays a disc that's in at
+startup by itself (its AutoPlay); for one put in later it keeps the table of
+contents it read at startup (none) and doesn't, while AppleCD Audio Player
+plays either. AppleCD Audio Player numbers a mixed disc's audio tracks from
+1 (on the Quake CD, its Track 1 is the disc's track 2).
+
+#### Floppies
 
 Images: raw ones of 400K, 720K, 800K, 1440K and 2880K disks (`.img`,
 `.dsk`, `.ima`, `.flp`), and Disk Copy 4.2 ones (`.image`: an 84-byte
@@ -455,8 +561,9 @@ blank.img 1440K "Untitled"` makes a blank formatted floppy (400K, 720K,
 
 The iMac has no floppy controller, so none is emulated: the drive is a
 third kind of drive of syshm's own disk driver (`src/disk.c`, images in
-`src/floppy.c`), at PCI device 7, much as a USB floppy drive is on a real
-iMac, and needs nothing installed in Mac OS. It answers as a floppy drive
+`src/floppy.c`, which drive an image goes in `src/drives.c`), at PCI
+device 7, much as a USB floppy drive is on a real iMac, and needs nothing
+installed in Mac OS. It answers as a floppy drive
 (DriverGestalt 'devt' 'flop', a floppy disk's icon and the drive's, in
 color, the 'where' of Get Info, the format list) and says its disk is
 ejectable, and Mac OS keeps the disk in at a restart. A floppy is never the
@@ -466,6 +573,25 @@ Transfers take guest time at the disks' rate. The status bar's floppy light
 (with a floppy drive only) is dimmed while it's empty. Disk Copy can't
 make floppies from images in this drive (it looks for Apple's floppy
 drives): put the image in instead, or a copy of it.
+
+### MacBench
+
+ZD MacBench 5.0 runs (tested from a shared folder, on an installed 8.5):
+it registers, opens its main window and runs its Processor test (the
+others are untried). Right after registering it uses Gary Davidian's
+skeleton key, a kernel call that gives a program supervisor mode, to read
+the processor's L2CR and HID0 (see the kernel calls and privileged
+instructions below); without it, MacBench quit with "an error of type 1".
+Its scores are relative to its reference machine, a Power Macintosh G3/300
+(1000 in every test). Benchmark in real time, in a window: in instruction
+time, guest time follows the instruction count, so the guest processor
+looks like a 16.6 MIPS one (Processor: 62, 6% of the G3/300); in one
+real-time run on an M5, with other work on the host, Processor scored
+18,324 (the test took about 25 s). MacBench times things by polling the
+VIA's timer in a tight loop; in real time, a loop whose device register
+read fell on the last instruction before a sync point kept syshm from ever
+reaching one (guest time stood still, and the window froze); it no longer
+does.
 
 ### Guest tools
 
@@ -765,7 +891,19 @@ lacks: syshm says to install it again (and a window offers to update it).
   68k emulator from the ROM.
 - Native kernel calls: `ReturnFromException` (all verdicts), `RunAlternateContext`,
   `ResetSystem`, `VMDispatch` (VM off; `VMAllocateMemory` supported),
-  `PrioritizeInterrupts` and `RTASDispatch`.
+  `PrioritizeInterrupts` and `RTASDispatch`. `ResetSystem` with Gary
+  Davidian's skeleton key (r3 'Gary', r4 0x05051956) doesn't reset: its
+  caller goes on with MSR = (MSR & ~r5) | r7, as with both NanoKernels.
+- Privileged instructions: in user mode, `mfmsr` reads the user MSR and the
+  rest raise the privileged instruction exception. In supervisor mode (the
+  skeleton key's MSR with PR off) the kernel does them (`src/priv.c`):
+  `mfmsr`, `mtmsr` (PR on again ends it), `rfi`, the 750's supervisor SPRs
+  with an iMac's values (PVR, HID0, HID1 for 266 MHz on a 66 MHz bus, L2CR
+  for its 512 KB L2 at half speed, the thermal assist unit reading 40 °C,
+  the decrementer, SPRGs, SRR0/1, BATs...), segment registers, and `tlbie`,
+  `tlbsync` and `dcbi`, which do nothing; writes are kept, without effect.
+  Real mode is the same address space (identity for RAM). While the MSR has
+  EE off, interrupts wait.
 - Exceptions go the NanoKernel way: to the running context's handler if
   enabled, otherwise ending the native (alternate) context. An interrupt that
   arrives while native code runs ends that context with exception 0, so the
@@ -797,7 +935,11 @@ lacks: syshm says to install it again (and a window offers to update it).
   DAVAudioLib, the GCAwacs hardware plug-in and the 'awgc' sound output and
   port components; Mac OS 9's has a DMA plug-in in DAVAudioLib's place). Output takes 16-bit stereo frames from DMA channel 8 at
   the sample rate of guest time, so guest-visible behaviour never depends on
-  the host; input (channel 9) records silence. The codec's attenuation and
+  the host; input (channel 9) records silence. The codec's analog input
+  carries the CD-ROM drives' audio (`src/cdaudio.c`), played through to
+  the outputs when the input selector has the CD and loop-through is on
+  (or no input was selected), mixed with the DMA's frames or alone,
+  resampled to the codec's rate. The codec's attenuation and
   mute bits are applied before the frames go to the host, so the volume
   slider and Mute in Monitors & Sound work. What it took for Mac OS to use
   it: a DecoderInfo address for the chip (Gestalt `snhw` is then `awgc`),
@@ -836,7 +978,10 @@ lacks: syshm says to install it again (and a window offers to update it).
     the 8.5 CD's System refuses to start from a writable drive, as from a
     copy of the CD), and a host folder (`--share`; see Shared folder),
     whose blocks come from `src/share.c` rather than a file; and a floppy
-    drive (`--floppy`; see Floppies), whose disk comes and goes.
+    drive (`--floppy`): the floppy and CD-ROM drives' discs come and go
+    (see Floppies and CDs). CD-ROM drives answer as Apple's CD-ROM driver
+    (`src/cdrom.c`: the table of contents, audio, icons), their discs
+    plain images or cue sheets (`src/cdimage.c`).
     An Apple partition map gives one drive per HFS partition; otherwise the
     file is one volume. (When there's a map entry at offset 512, entries are
     512 bytes apart and count 512-byte blocks even if the driver descriptor
@@ -941,8 +1086,8 @@ lacks: syshm says to install it again (and a window offers to update it).
   (a PNG on the Desktop, or in the current directory without one, named
   for when it was taken); fullscreen (at the desktop's resolution); the
   status bar; whether the pointer is captured while the Mac hides its
-  cursor; and with a floppy drive, what's in it, Eject, and the floppy
-  images to put in (see Floppies). In real time guest time doesn't count
+  cursor; and what's in the floppy and CD-ROM drives, each with Eject (see
+  Floppies and CDs). In real time guest time doesn't count
   the pause, so the Mac's clock is that much behind afterwards.
   The status bar (shown unless `--no-status-bar`; the menu toggles it) sits
   below the screen, so the window grows by its height rather than covering
@@ -1074,8 +1219,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    Findings, "Showing the screen").
 
 future.md has ideas not planned yet: a modem, infrared, 3D sound, sound
-input, AltiVec, printing, game controllers, and more CD formats with CD
-audio.
+input, AltiVec, printing, game controllers, and more CD formats.
 
 ## Build and test
 
@@ -1105,6 +1249,9 @@ build/syshm boot --rom MOS.rom --cdrom 85.iso --window   # interactive
 build/syshm boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
 build/syshm boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
 build/syshm boot --rom MOS.rom --cdrom 85.iso --floppy disk1.img --floppy disk2.img --window   # a floppy drive
+build/syshm boot --disk hd.img --cdrom-drive --window       # an empty CD-ROM drive: drop CD images on the window
+build/syshm boot --disk hd.img --cdrom "Game.cue" --window  # a CD with audio tracks
+build/syshm disk toc "Game.cue"                             # its tracks, as its CD-ROM drive gives them
 build/syshm disk create blank.img 1440K "Untitled"          # a blank floppy
 build/syshm run-raw code.bin 1000                # SYSHM_TRACE=1 logs every instruction
 ```
@@ -1125,12 +1272,14 @@ counts, for example:
 3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
 0 tools install                  # the answer to the offer to install the guest tools (or "later")
 3900000000 floppy insert Disk 2.img
+3950000000 cdrom insert Game CD 2.iso
 4000000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)
 4100000000 print-clipboard       # prints the host's clipboard, with what Mac OS copied since
 ```
 
-(`floppy insert` takes the rest of its line as the image's path, comments
-included; `floppy eject` takes it out: see Floppies.)
+(`floppy insert` and `cdrom insert` take the rest of their line as the
+image's path, comments included; `floppy eject` and `cdrom eject` take one
+out: see Floppies and CDs.)
 
 `clipboard` and `print-clipboard` stand in for the host's clipboard (a
 scripted run leaves the window's alone), for syshm Enhancements to share
@@ -1153,8 +1302,7 @@ its interrupt enabled, while sound DMA moves, or after something touched
 them. Kernel calls made in place, without an exit, only happen while an
 exit would do none of that; device register accesses made in place update
 devices as their exits would. An access on the last instruction before a
-sync point still exits, after which the loop goes on to the next sync
-point without servicing that one, as it always has.) Tracing and trap logging use the
+sync point still exits, and the loop then services that sync point.) Tracing and trap logging use the
 interpreter.
 
 Debugging `boot`: `--trace-from N --trace-reg 24` logs instructions with the
@@ -1163,12 +1311,12 @@ the guest makes to a page (the kernel's own writes there, such as disk
 reads, go through unseen, so a watched run goes as any other), `--traps N
 [--traps-after M]` logs 68k Toolbox/OS traps, interpreted or recompiled
 (see Idle; with the driver name for `_Open`), `--log-hostcalls` logs the native drivers'
-requests, `--dump-ram FILE` saves RAM at the end, `--max N` limits the run.
+requests (a CD-ROM drive's calls with their parameters in and out, and what it plays), `--dump-ram FILE` saves RAM at the end, `--max N` limits the run.
 `--trace-range LO:HI [--trace-insn WORD]` logs only instructions in an
 address range (optionally only one instruction word), with instruction
 counts and r3-r5/LR, cheaply enough for whole boots. `SYSHM_LOG_SOUND=1`
 logs the sound chip's register accesses, and `SYSHM_SOUND_WAV=FILE` records
-what it plays (also in instruction time). `SYSHM_LOG_USB=1` logs the USB
+what it plays (also in instruction time; CD audio included). `SYSHM_LOG_USB=1` logs the USB
 controller's register accesses (not the frame number, which drivers poll),
 `SYSHM_LOG_PCI=1` configuration space accesses.
 `--io-ram` backs unmodelled I/O pages with plain RAM. Under gdb, `handle
@@ -1227,12 +1375,15 @@ the one in the startup disk's System Folder.
 src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           ppc.c + ppc_exec.inc + ppc_fp.c (interpreter), jit.c + a64.h
           (AArch64 JIT), nk.c (native kernel), mp.c (its Multiprocessing
-          Services, NanoKernel 2's),
+          Services, NanoKernel 2's), priv.c (supervisor mode: the skeleton key),
           bootinfo.c + devtree.c (Trampoline replacement, device tree),
           rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
           dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
           (configuration space), nvram.c (devices), ndrv.c (PEF driver generator),
           video.c, disk.c (native drivers), floppy.c (floppy images),
+          drives.c (removable drives: where images go, the menu),
+          cdrom.c (the CD-ROM driver's calls), cdimage.c (CD images: cue
+          sheets, the table of contents), cdaudio.c (the drive's player),
           net.c (Ethernet's lanLib,
           libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
           reader: the startup disk's ROM file), share.c (shared folder),

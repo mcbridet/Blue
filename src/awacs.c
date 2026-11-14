@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "be.h"
+
 enum {
 	REG_CONTROL = 0x00,
 	REG_CODEC_CONTROL = 0x10,
@@ -21,6 +23,7 @@ enum {
 
 #define FRAME_BYTES 4u
 #define MAX_CREDIT (FRAME_BYTES * 4096u)        /* about 0.1 s at 44.1 kHz */
+#define MIX_FRAMES 256u
 
 static const unsigned rates[8] = { 44100, 29400, 22050, 17640, 14700, 11025, 8820, 7350 };
 
@@ -40,9 +43,12 @@ static const uint16_t attenuation[16] = {
  * Each has an attenuation register (left in bits 6-9, right in 0-3) and a
  * mute bit in register 1, which Mac OS fades around when muting.
  */
-enum { CODEC_MUTES = 1, CODEC_OUT_A = 2, CODEC_OUT_C = 4 };
+enum { CODEC_INPUT = 0, CODEC_MUTES = 1, CODEC_OUT_A = 2, CODEC_OUT_C = 4 };
 #define MUTE_A 0x200u
 #define MUTE_C 0x080u
+#define LOOP_THROUGH 0x040u             /* (register 1) */
+#define INPUT_CD 0x200u                 /* register 0's input selector: CD, microphone, line in */
+#define INPUT_SELECT 0xE00u
 
 void awacs_gain(const struct awacs *a, unsigned *left, unsigned *right)
 {
@@ -58,9 +64,46 @@ void awacs_gain(const struct awacs *a, unsigned *left, unsigned *right)
 	}
 }
 
+bool awacs_through(const struct awacs *a)
+{
+	unsigned in = a->codec[CODEC_INPUT] & INPUT_SELECT;
+	return !in || ((in & INPUT_CD) && (a->codec[CODEC_MUTES] & LOOP_THROUGH));
+}
+
 static uint64_t frames_at(const struct awacs *a, uint64_t time)
 {
 	return a->base + (time - a->since) * awacs_rate(a) / a->time_hz;
+}
+
+/* Frames to the sink (NULL: the DMA's silent), with the analog input if it's played through */
+static void out(struct awacs *a, const uint8_t *frames, uint64_t count)
+{
+	unsigned rate = awacs_rate(a);
+	if (!a->input.pull) {
+		if (a->sink && frames)
+			a->sink(a->sink_ctx, frames, (unsigned)count, rate);
+		return;
+	}
+	if (frames)
+		a->input_mixed += count;
+	while (count) {
+		unsigned n = count < MIX_FRAMES ? (unsigned)count : MIX_FRAMES;
+		int16_t in[2 * MIX_FRAMES];
+		uint8_t mixed[MIX_FRAMES * FRAME_BYTES];
+		bool through = a->input.pull(a->input.ctx, in, n, rate) && awacs_through(a);
+		if (through) {
+			for (unsigned k = 0; k < 2 * n; k++) {
+				int v = (frames ? (int16_t)be16(frames + 2 * k) : 0) + in[k];
+				put_be16(mixed + 2 * k, (uint16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v));
+			}
+			a->frames_through += n;
+		}
+		if (a->sink && (through || frames))
+			a->sink(a->sink_ctx, through ? mixed : frames, n, rate);
+		if (frames)
+			frames += (size_t)n * FRAME_BYTES;
+		count -= n;
+	}
 }
 
 static void emit(struct awacs *a, const uint8_t *data, uint32_t len)
@@ -74,14 +117,12 @@ static void emit(struct awacs *a, const uint8_t *data, uint32_t len)
 			return;
 		a->npartial = 0;
 		a->frames_played++;
-		if (a->sink)
-			a->sink(a->sink_ctx, a->partial, 1, awacs_rate(a));
+		out(a, a->partial, 1);
 	}
 	unsigned whole = len / FRAME_BYTES;
 	if (whole) {
 		a->frames_played += whole;
-		if (a->sink)
-			a->sink(a->sink_ctx, data, whole, awacs_rate(a));
+		out(a, data, whole);
 	}
 	a->npartial = len % FRAME_BYTES;
 	memcpy(a->partial, data + whole * FRAME_BYTES, a->npartial);
@@ -127,14 +168,19 @@ static bool channel_moving(const struct awacs *a, unsigned n)
 	return (c->status & (DBDMA_RUN | DBDMA_ACTIVE)) == (DBDMA_RUN | DBDMA_ACTIVE) && !c->idle;
 }
 
+static bool input_active(const struct awacs *a)
+{
+	return a->input.active && a->input.active(a->input.ctx);
+}
+
 bool awacs_playing(const struct awacs *a)
 {
-	return channel_moving(a, AWACS_DMA_OUT);
+	return channel_moving(a, AWACS_DMA_OUT) || input_active(a);
 }
 
 bool awacs_moving(const struct awacs *a)
 {
-	return channel_moving(a, AWACS_DMA_OUT) || channel_moving(a, AWACS_DMA_IN);
+	return channel_moving(a, AWACS_DMA_OUT) || channel_moving(a, AWACS_DMA_IN) || input_active(a);
 }
 
 /* A channel gets the bytes of `due` frames to move; one that isn't moving gets none (the time is past). */
@@ -160,8 +206,13 @@ void awacs_set_time(struct awacs *a, uint64_t time)
 	a->frames = f;
 	if (!due)
 		return;
+	if (a->input.run)
+		a->input.run(a->input.ctx, time);
+	a->input_mixed = 0;
 	advance(a, AWACS_DMA_OUT, &a->out_credit, due);
 	advance(a, AWACS_DMA_IN, &a->in_credit, due);
+	if (a->input.pull && !channel_moving(a, AWACS_DMA_OUT) && due > a->input_mixed)
+		out(a, NULL, due - a->input_mixed);     /* the analog input alone */
 }
 
 static uint32_t reg_value(struct awacs *a, unsigned reg)
