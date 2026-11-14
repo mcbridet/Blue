@@ -571,9 +571,73 @@ static void test_formatted(void)
 	unlink(path);
 }
 
+/* hfsread_list(): a folder's files and folders in catalog order, across leaves; stopping early */
+struct listing {
+	unsigned count, folders, stop_at;
+	char names[40][16];
+	uint32_t ids[40], types[40];
+};
+
+static int list_one(void *ctx, const struct hfsread_entry *e)
+{
+	struct listing *l = ctx;
+	if (l->count < 40) {
+		snprintf(l->names[l->count], sizeof l->names[0], "%s", e->name);
+		l->ids[l->count] = e->id;
+		l->types[l->count] = e->type;
+	}
+	l->folders += e->folder;
+	return ++l->count == l->stop_at ? 7 : 0;
+}
+
+static void test_list(void)
+{
+	char path[256];
+	int fd = temp_file(path, sizeof path);
+	CHECK(fd >= 0);
+	if (fd < 0)
+		return;
+	for (int plus = 0; plus < 2; plus++) {
+		uint8_t *vol = make_volume(plus, SYSTEM_ID);
+		CHECK(ftruncate(fd, 0) == 0);
+		CHECK(pwrite(fd, vol, VOLUME_BYTES, 0) == (ssize_t)VOLUME_BYTES);
+		free(vol);
+		struct hfsread_volume v;
+		CHECK_EQ(hfsread_open(&v, fd, 0, VOLUME_BYTES), 0);
+
+		struct listing l = { 0 };
+		CHECK_EQ(hfsread_list(&v, ROOT_ID, list_one, &l), 0);
+		CHECK_EQ(l.count, 3);
+		CHECK_EQ(l.folders, 2);
+		CHECK(strcmp(l.names[0], "Decoy") == 0 && l.types[0] == TBXI);
+		CHECK(strcmp(l.names[1], "System Folder") == 0 && l.ids[1] == SYSTEM_ID);
+		CHECK(strcmp(l.names[2], "Zeta") == 0 && l.ids[2] == OTHER_ID);
+
+		memset(&l, 0, sizeof l);
+		CHECK_EQ(hfsread_list(&v, SYSTEM_ID, list_one, &l), 0);  /* (over several leaves) */
+		CHECK_EQ(l.count, 32);
+		CHECK_EQ(l.folders, 0);
+		CHECK(strcmp(l.names[0], "File 00") == 0 && l.ids[0] == 100);
+		CHECK(strcmp(l.names[29], "File 29") == 0);
+		CHECK(strcmp(l.names[30], "Mac OS ROM") == 0 && l.ids[30] == ROM_ID);
+		CHECK(strcmp(l.names[31], "Zz ROM") == 0);
+
+		memset(&l, 0, sizeof l);
+		l.stop_at = 5;
+		CHECK_EQ(hfsread_list(&v, SYSTEM_ID, list_one, &l), 7);
+		CHECK_EQ(l.count, 5);
+		memset(&l, 0, sizeof l);
+		CHECK_EQ(hfsread_list(&v, 99, list_one, &l), 0);
+		CHECK_EQ(l.count, 0);
+	}
+	close(fd);
+	unlink(path);
+}
+
 void test_hfsread(void)
 {
 	test_volumes();
 	test_startup_disk();
 	test_formatted();
+	test_list();
 }

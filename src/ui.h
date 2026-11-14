@@ -37,9 +37,9 @@ struct ui_renderer {
 
 enum ui_key { UI_KEY_TAB, UI_KEY_LEFT, UI_KEY_RIGHT, UI_KEY_UP, UI_KEY_DOWN, UI_KEY_SPACE, UI_KEY_ENTER };
 
-/* What the user chose in the menu */
+/* What the user chose in the menu (or a prompt's buttons) */
 enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI_FULLSCREEN, UI_STATUS_BAR,
-		 UI_CAPTURE_MOUSE, UI_RELEASE_MOUSE };
+		 UI_CAPTURE_MOUSE, UI_RELEASE_MOUSE, UI_PROMPT_YES, UI_PROMPT_NO };
 
 /* What becomes of the mouse after the menu */
 enum ui_mouse {
@@ -75,6 +75,8 @@ struct ui_state {
 	bool fullscreen;
 	enum ui_mouse mouse;
 	const char *news;               /* (where a screenshot went, say), or NULL */
+	/* a question or news over the screen (the guest runs on), or NULL: its buttons (`no` may be NULL) */
+	const char *prompt, *prompt_yes, *prompt_no;
 };
 
 #define UI_STATUS_BAR_HEIGHT 24         /* in the window's units */
@@ -89,9 +91,9 @@ void ui_mouse_wheel(struct ui *u, float dx, float dy);
 void ui_key(struct ui *u, enum ui_key key, bool down);
 
 /*
- * Draws the status bar and the menu (whichever are shown) over what the
- * renderer has drawn so far, in a window of w x h units at `density` pixels
- * each, `seconds` after the last time.
+ * Draws the status bar, a prompt and the menu (whichever are shown) over what
+ * the renderer has drawn so far, in a window of w x h units at `density`
+ * pixels each, `seconds` after the last time.
  */
 enum ui_action ui_draw(struct ui *u, const struct ui_state *s, int w, int h, float density, double seconds);
 

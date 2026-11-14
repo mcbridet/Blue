@@ -563,3 +563,87 @@ int hfsread_system_file(const char *const *paths, unsigned count, uint32_t type,
 	}
 	return 0;
 }
+
+/* ---- folders ---------------------------------------------------------------- */
+
+#define CAT_FOLDER 1
+#define HFS_FOLDER_SIZE 70u
+#define PLUS_FOLDER_SIZE 88u
+
+int hfsread_list(const struct hfsread_volume *v, uint32_t folder, int (*each)(void *ctx, const struct hfsread_entry *e),
+		 void *ctx)
+{
+	const struct hfsread_tree *t = &v->catalog;
+	const struct target target = { true, folder, 0, 0 };
+	uint8_t *node = malloc(t->node_size);
+	struct hfsread_entry *e = malloc(sizeof *e);
+	int rc = -1;
+	if (!node || !e)
+		goto out;
+	int k = search(v, t, &target, node);
+	if (k == -2)
+		goto out;
+	/* (as in hfsread_find(): the folder's records follow its thread record) */
+	for (unsigned visited = 0, at = (unsigned)(k + 1); visited < t->nodes;) {
+		if (at >= be16(node + 10)) {
+			uint32_t n = be32(node);
+			if (!n) {
+				rc = 0;
+				break;
+			}
+			if (read_node(v, t, n, node) || node[8] != NODE_LEAF)
+				break;
+			at = 0;
+			visited++;
+			continue;
+		}
+		const uint8_t *data, *end, *key = record(v, t, node, at++, &data, &end);
+		if (!key)
+			break;
+		uint32_t parent = be32(key + 2);
+		if (parent > folder) {
+			rc = 0;
+			break;
+		}
+		int kind = record_type(v, data);
+		if (parent < folder || (kind != CAT_FILE && kind != CAT_FOLDER))
+			continue;
+		size_t need = kind == CAT_FILE ? (v->plus ? PLUS_FILE_SIZE : HFS_FILE_SIZE) :
+						 (v->plus ? PLUS_FOLDER_SIZE : HFS_FOLDER_SIZE);
+		if ((size_t)(end - data) < need || !name_fits(v, key, data))
+			break;
+		memset(e, 0, sizeof *e);
+		if (kind == CAT_FILE) {
+			struct hfsread_file f;
+			file_from(v, key, data, &f);
+			memcpy(e->name, f.name, sizeof e->name);
+			e->id = f.id;
+			e->type = f.type;
+			e->creator = f.creator;
+			e->finder_flags = be16(data + (v->plus ? 56 : 12));
+			e->data = f.data;
+			e->rsrc = f.rsrc;
+		} else {
+			if (v->plus)
+				name_utf8(true, key + 8, be16(key + 6), e->name, sizeof e->name);
+			else
+				name_utf8(false, key + 7, key[6], e->name, sizeof e->name);
+			e->folder = true;
+			e->id = be32(data + (v->plus ? 8 : 6));
+		}
+		int r = each(ctx, e);
+		if (r) {
+			rc = r;
+			break;
+		}
+	}
+out:
+	free(e);
+	free(node);
+	return rc;
+}
+
+void hfsread_roman_utf8(const uint8_t *s, size_t n, char *out, size_t len)
+{
+	name_utf8(false, s, n, out, len);
+}
