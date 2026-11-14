@@ -240,7 +240,7 @@ NVRAM is the same 8 KB that RTAS serves 8.5–9.0.4, kept in the same
 file goes with an install whichever ROM starts it. 9.1 reads NVRAM at
 startup and keeps its changes in memory until it shuts down or restarts,
 when it writes them to the chip, as on an iMac: changes since startup are
-lost when syshm quits otherwise (closing the window, or Shut down in its
+lost when syshm quits otherwise (closing the window, or Turn off in its
 menu). The end-of-run statistics count the chip's reads and writes.
 
 Not done yet: installing 9.1 onto a disk image with its installer and
@@ -323,7 +323,7 @@ share: 1 new, 1 changed, 0 moved or renamed, 0 deleted; the host's old ones are 
 ```
 
 If the run ends without Mac OS having put the volume away (the window
-closed, or Shut down in syshm's menu, rather than Mac OS's Shut Down),
+closed, or Turn off in syshm's menu, rather than Mac OS shutting down),
 nothing is written back, as the volume may be half-written; if anything
 of the user's had changed on it, it is saved as a disk image in the
 recovery folder instead (attach it with `--disk` to get at what's on it;
@@ -721,9 +721,13 @@ lacks: syshm says to install it again from the tools volume.
   F12 opens the menu (Dear ImGui's, from `third_party/imgui`, drawn over
   the screen through the same run-time SDL2 by `src/ui.cpp`; SDL 2.0.18 or
   later), and the guest is paused while it's open. In it: Resume (F12 and
-  Esc too); Restart and Shut down (straight away: they're the Mac's own
-  restart and power switch, so work not saved in Mac OS is lost; Shut down
-  keeps NVRAM, as closing the window does); a screenshot of the Mac's screen
+  Esc too); Restart (straight away: the Mac's own reset, so work not saved
+  in Mac OS is lost); Shut down, which presses the keyboard's power key, so
+  Mac OS asks "Are you sure you want to shut down your computer now?" and
+  shuts down properly if told to (applications ask to save, NVRAM and a
+  shared folder are written, and the run ends when the Mac turns itself
+  off); Turn off, the power switch, for a Mac that doesn't answer (straight
+  away; it keeps NVRAM, as closing the window does); a screenshot of the Mac's screen
   (a PNG on the Desktop, or in the current directory without one, named
   for when it was taken); fullscreen (at the desktop's resolution); the
   status bar; and whether the pointer is captured while the Mac hides its
@@ -888,6 +892,7 @@ counts, for example:
 3500000000 motion 40 -10         # the mouse moved 40 right, 10 up (through the ADB mouse, as games read it)
 3600000000 screenshot after.png
 3700000000 clock 800             # guest time at 800 million instructions a second from here
+3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
 ```
 
 `clock N` keeps a run reproducible while making guest time pass as on a

@@ -128,6 +128,21 @@ static void test_adb_bus(void)
 	adb_command(&b, 0x00, NULL, 0, r);                      /* bus reset: back to 2 */
 	CHECK_EQ(b.kbd.addr, 2);
 
+	/* the power key: 7F 7F pressed, FF FF released, never split across reports */
+	adb_key(&b, 0x31, true);
+	adb_power_key(&b, true);
+	adb_power_key(&b, false);
+	CHECK_EQ(adb_command(&b, 0x2C, NULL, 0, r), 2);
+	CHECK_EQ(r[0], 0x31);
+	CHECK_EQ(r[1], 0xFF);
+	CHECK_EQ(adb_command(&b, 0x2C, NULL, 0, r), 2);
+	CHECK_EQ(r[0], 0x7F);
+	CHECK_EQ(r[1], 0x7F);
+	CHECK_EQ(adb_command(&b, 0x2C, NULL, 0, r), 2);
+	CHECK_EQ(r[0], 0xFF);
+	CHECK_EQ(r[1], 0xFF);
+	CHECK_EQ(adb_command(&b, 0x2C, NULL, 0, r), -1);
+
 	/* mouse: a quick click is two reports; motion is clamped per report */
 	adb_mouse_button(&b, true);
 	adb_mouse_button(&b, false);
