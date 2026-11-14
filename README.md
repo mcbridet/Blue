@@ -749,7 +749,9 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 
 ## Next steps
 
-1. 3D: Glide, and OpenGL with Mac OS 9. (The RAVE engine draws with the
+1. 3D: Glide, then OpenGL with Mac OS 9: docs/glide-plan.md and
+   docs/opengl-plan.md (what Mac OS 9.1's OpenGL is and what games link
+   to, the design, and why Glide first). (The RAVE engine draws with the
    host's GPU; what's left there, such as reading back less of each frame,
    is in docs/gpu-plan.md.)
 2. Networking: host ports forwarded to the guest (so it can serve).
@@ -917,7 +919,9 @@ tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
           devtree.py (device-tree copy dumper), disasm.py (disassembler)
-docs/     gpu-plan.md (the 3D engine's OpenGL backend), nk2-reference.md
-          (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2 does)
+docs/     gpu-plan.md (the 3D engine's OpenGL backend), glide-plan.md and
+          opengl-plan.md (3dfx Glide and Mac OS 9's OpenGL, planned),
+          nk2-reference.md (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2
+          does)
 third_party/imgui/  Dear ImGui 1.93.0 (MIT; its core files only, as released)
 ```
