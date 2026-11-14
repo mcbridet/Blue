@@ -852,8 +852,7 @@ Facts later tasks need, added as they are found.
   (Open Transport busy: ten AARP probes 0.2 s apart, then six ZIP
   GetNetInfo 0.5 s apart, then NBP), and the CD's 18 MB of transfers take
   4.5 s at 4 MB/s. When the ROM file comes from a startup disk, its
-  partition is the one to name (`boot_disk`, `boot_map_entry` in
-  `struct bootinfo_machine`).
+  partition is the one named (if it has boot blocks).
 - **BlockMove on the host isn't worth it.** InterfaceLib has BlockMove,
   BlockMoveData, BlockZero and their Uncached forms (`MOS.rom`
   `0xFFD2CCA0`-`0xFFD2D0EB`; the same code at the same code-section
