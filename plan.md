@@ -99,12 +99,16 @@ shown anything on screen.
   https://github.com/elliotnunn/NanoKernel`.
 - **Parcels and ROM files:** tbxi (`github.com/elliotnunn/tbxi`),
   `tbxi/parcels_dump.py` for the flags.
-- **Disassembling:** syshm has no disassembler. One that works: a Python
-  virtual environment with `pip install capstone machfs` in a temporary
-  directory. Capstone does PowerPC (`CS_ARCH_PPC`, big-endian) and 68k
-  (`CS_ARCH_M68K`); machfs reads the CDs' HFS volumes. `build/syshm rom
-  extract MOS91.rom img91.bin` writes the 4 MB image (address
-  `0xFFC00000 + offset`), `--dump-ram FILE` saves RAM.
+- **Disassembling:** `tools/disasm.py MOS91.rom 0xFFCE2700 [COUNT]` (or
+  `ADDR:END`, or a symbol such as `MPCreateTask`) disassembles PowerPC or 68k
+  code from a ROM file's image and/or a `--dump-ram` file (`disasm.py
+  ram.bin MOS91.rom 0x28D70`), naming the fragment an address is in (the
+  image's PEF containers, the parcels' libraries, their copies in RAM) with
+  exports, imports and MP call numbers; `--list` shows what is where. It
+  needs capstone: a Python virtual environment with `pip install capstone
+  machfs` in a temporary directory (machfs reads the CDs' HFS volumes).
+  `build/syshm rom extract MOS91.rom img91.bin` writes the 4 MB image
+  (address `0xFFC00000 + offset`), `--dump-ram FILE` saves RAM.
 - **Tracing a run:** `--trace-from N --trace-reg 24 --interp` (r24 is the
   68k PC), `--traps N` (68k traps), `--watch ADDR`, `--trace-range LO:HI`.
   Instruction counts are the same with and without the JIT.
@@ -268,7 +272,8 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 7. A disassembly helper (optional)
 
-- **Status:** not started.
+- **Status:** done: `tools/disasm.py` (usage in its docstring and under
+  References).
 - **Owns:** new files in `tools/`.
 - **Goal:** one command to disassemble PowerPC or 68k code at a guest
   address, from a ROM file (its image) or a RAM dump, naming the code

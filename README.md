@@ -660,6 +660,13 @@ on macOS, `settings set platform.plugin.darwin.ignored-exceptions
 EXC_BAD_ACCESS` (before `run`) and `process handle -s false -n false -p true
 SIGBUS` (or set `SYSHM_JIT_FASTMEM=0`).
 
+`tools/disasm.py` disassembles guest code (PowerPC or 68k, with Python's
+capstone) from a ROM file's image or a `--dump-ram` file, and names the code
+fragment an address is in: the image's PEF containers, the parcels' libraries
+and their copies in RAM, with their exports, entry points and imports.
+`tools/disasm.py MOS91.rom 0xFFCE2700`, `tools/disasm.py ram.bin MOS91.rom
+0x28D70`; `--list` shows what is where.
+
 ## QEMU reference
 
 Stock QEMU can't boot a 1.x ROM: its machines aren't models the ROM supports.
@@ -708,7 +715,7 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
-          devtree.py (device-tree copy dumper)
+          devtree.py (device-tree copy dumper), disasm.py (disassembler)
 docs/     gpu-plan.md (the 3D engine's OpenGL backend)
 third_party/imgui/  Dear ImGui 1.93.0 (MIT; its core files only, as released)
 ```
