@@ -18,6 +18,8 @@ int main(int argc, char **argv)
 		{ "mmio", test_mmio },
 		{ "dbdma", test_dbdma },
 		{ "awacs", test_awacs },
+		{ "cdimage", test_cdimage },
+		{ "cdaudio", test_cdaudio },
 		{ "ohci", test_ohci },
 		{ "drivers", test_drivers },
 		{ "net", test_net },

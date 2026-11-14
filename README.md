@@ -44,7 +44,9 @@ through the host (in real time). Games run accelerated by the guest tools'
 3D, Game Sprockets) reached about 100 frames per second in play on an M1
 Max, with music (it needs URL Access, which comes with Mac OS 8.6 and
 later). The built-in Ethernet reaches the host's
-network, so Internet Explorer loads web pages.
+network, so Internet Explorer loads web pages. CD-ROM drives play audio CDs
+and games' CD soundtracks (cue sheets) through the sound chip, as the iMac's
+drive did.
 
 ```
 build/syshm disk create hd.img 2G "Macintosh HD"      # an empty HFS volume
@@ -449,24 +451,88 @@ disks). Input scripts have `floppy insert FILE` and `cdrom insert FILE` (the
 rest of the line), `floppy eject` and `cdrom eject` (the first CD-ROM drive
 whose disc Mac OS isn't using), which follow the same rules.
 
-CD-ROM drives look as they did before (Mac OS shows a CD as a disk, or
-with its own icon, the same in at startup or put in later) but say their
-disc is ejectable, and that a restart keeps it in. A CD-ROM drive gives
+CD-ROM drives answer as CD-ROM drives (see CDs: audio and cue sheets
+below), and the swappable ones say their disc is ejectable, and that a
+restart keeps it in. A CD-ROM drive gives
 Mac OS a drive for each HFS partition of the disc in it at startup (one if
 it's empty); a disc put in later with more shows its first ones, and a
 disc comes out once none of its volumes is in use. A CD put in while Mac OS runs is never
 the startup disk (it's shown to Mac OS once applications run); one in at
 startup may be, as before, and Mac OS won't eject the startup disk ("The
-startup disk cannot be removed from the desktop"). CD images are raw: an
-`.iso`, `.toast`, `.cdr` or `.img` with or without a partition map;
-compressed ones, UDIF `.dmg` (`hdiutil convert -format UDTO` makes a raw
-`.cdr`) and raw 2352-byte sectors (`.bin`/`.cue`) are refused, saying what
-they are. Ejectable drives change what Mac OS does all along (it looks at
+startup disk cannot be removed from the desktop"). CD images are raw (an
+`.iso`, `.toast`, `.cdr` or `.img`, with or without a partition map) or cue
+sheets (below); compressed ones and UDIF `.dmg` (`hdiutil convert -format
+UDTO` makes a raw `.cdr`) are refused, saying what they are, and so is a
+`.bin` of raw sectors given without its `.cue` (when it starts with a data
+track; one that starts with audio can't be told from a plain image). Ejectable drives change what Mac OS does all along (it looks at
 the drives' flags as it runs), so CD-ROM drives are ejectable only where
 discs can be swapped: in a window or real time, with `--cdrom-drive`, or
 with an input script that swaps CDs (`cdrom` commands); other
 instruction-time runs keep them fixed, as before, the same instruction for
 instruction.
+
+#### CDs: audio and cue sheets
+
+A CD-ROM drive (every one, swappable or not) answers Mac OS as Apple's
+CD-ROM driver does on a real Mac (`src/cdrom.c`, after Apple's Technical
+Note DV22): its driver is named `.AppleCD`, DriverGestalt says `cdrm`, and
+it has the calls that AppleCD Audio Player, the Control Strip's CD module,
+Audio CD Access, QuickTime and games make: the table of contents
+(ReadTOC), where the drive is (AudioStatus, the Q subchannel), playing
+(AudioPlay, AudioTrackSearch, AudioPause, AudioStop, AudioScan), the
+drive's volume and channels (AudioControl, ReadAudioVolume), the track
+play lists the driver plays itself (AppleCD Audio Player's shuffle and
+programs, with repeat), reading audio digitally (ReadAudio, with the Q or
+all of the subchannel). The Finder shows a CD and a CD-ROM drive icon (a
+disc's own volume icon, if it has one, goes before them), and Get Info says
+"syshm CD-ROM drive".
+
+Images with audio come as cue sheets (`.cue`, with `.bin` files, as most
+CD rips are): tracks in raw 2352-byte sectors (audio; mode 1 or mode 2
+data), in 2048- or 2336-byte data sectors, or in WAVE or AIFF files (44.1
+kHz, 16-bit stereo); `BINARY` and `MOTOROLA` files, one for the disc or one
+a track; `INDEX 00` pregaps in the file and `PREGAP`/`POSTGAP` silence that
+isn't; several sessions (`REM SESSION`, as on CD-Extra discs); `CATALOG` and
+`ISRC`. The disc's own addresses are worked out as a drive has them (track 1
+at 00:02:00). `syshm disk toc FILE` lists what the drive will say:
+
+```
+$ build/syshm disk toc "Quake [1996].cue"
+Quake [1996].cue: 11 tracks, 1 session, lead-out at 61:47:11 (LBA 277886)
+   1  mode 1  00:02:00  LBA      0  02:47:20  (Mac OS sees its data)
+   2  audio   02:51:20  LBA  12695  05:08:38  (pregap 00:02:00)
+   3  audio   07:59:65  LBA  35840  02:25:60  (pregap 00:00:07)
+   ...
+```
+
+Mac OS mounts the data track (the first one): an HFS volume, with or
+without a partition map, or ISO 9660 with ISO 9660 File Access (in an
+installed system: the PC Quake CD shows up as QUAKE106). A disc of audio
+alone reads as blank data, and Foreign File Access with Audio CD Access
+mounts it as "Audio CD 1", its tracks as documents (on 8.5; AppleCD Audio
+Player opens them, QuickTime's MoviePlayer converts them to AIFF files,
+reading them digitally).
+
+The drive plays audio as the iMac's did: into the sound chip's analog input,
+which Mac OS sets to play the CD through to the outputs (8.5 selects the CD
+and turns loop-through on; with no input selected, as Mac OS 9 leaves it
+here, it plays through too). So CD audio is mixed with Mac OS's own sound
+and follows its volume and mute (Monitors & Sound), as on the real machine,
+and the drive's own volume (AudioControl) comes before. It's paced by guest
+time: where the drive is follows from where and when play started, so
+instruction-time runs are reproducible, and `SYSHM_SOUND_WAV` records it.
+To play a music CD's or a game's soundtrack, start Mac OS with the cue
+sheet, or drop it on the window:
+
+```
+build/syshm boot --disk hd.img --cdrom "Quake [1996].cue" --window    # then AppleCD Audio Player, in the Apple menu
+```
+
+On an installed 8.5, the Control Strip's CD module plays a disc that's in at
+startup by itself (its AutoPlay); for one put in later it keeps the table of
+contents it read at startup (none) and doesn't, while AppleCD Audio Player
+plays either. AppleCD Audio Player numbers a mixed disc's audio tracks from
+1 (on the Quake CD, its Track 1 is the disc's track 2).
 
 #### Floppies
 
@@ -869,7 +935,11 @@ lacks: syshm says to install it again (and a window offers to update it).
   DAVAudioLib, the GCAwacs hardware plug-in and the 'awgc' sound output and
   port components; Mac OS 9's has a DMA plug-in in DAVAudioLib's place). Output takes 16-bit stereo frames from DMA channel 8 at
   the sample rate of guest time, so guest-visible behaviour never depends on
-  the host; input (channel 9) records silence. The codec's attenuation and
+  the host; input (channel 9) records silence. The codec's analog input
+  carries the CD-ROM drives' audio (`src/cdaudio.c`), played through to
+  the outputs when the input selector has the CD and loop-through is on
+  (or no input was selected), mixed with the DMA's frames or alone,
+  resampled to the codec's rate. The codec's attenuation and
   mute bits are applied before the frames go to the host, so the volume
   slider and Mute in Monitors & Sound work. What it took for Mac OS to use
   it: a DecoderInfo address for the chip (Gestalt `snhw` is then `awgc`),
@@ -909,7 +979,9 @@ lacks: syshm says to install it again (and a window offers to update it).
     copy of the CD), and a host folder (`--share`; see Shared folder),
     whose blocks come from `src/share.c` rather than a file; and a floppy
     drive (`--floppy`): the floppy and CD-ROM drives' discs come and go
-    (see Floppies and CDs).
+    (see Floppies and CDs). CD-ROM drives answer as Apple's CD-ROM driver
+    (`src/cdrom.c`: the table of contents, audio, icons), their discs
+    plain images or cue sheets (`src/cdimage.c`).
     An Apple partition map gives one drive per HFS partition; otherwise the
     file is one volume. (When there's a map entry at offset 512, entries are
     512 bytes apart and count 512-byte blocks even if the driver descriptor
@@ -1147,8 +1219,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    Findings, "Showing the screen").
 
 future.md has ideas not planned yet: a modem, infrared, 3D sound, sound
-input, AltiVec, printing, game controllers, and more CD formats with CD
-audio.
+input, AltiVec, printing, game controllers, and more CD formats.
 
 ## Build and test
 
@@ -1179,6 +1250,8 @@ build/syshm boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot find
 build/syshm boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
 build/syshm boot --rom MOS.rom --cdrom 85.iso --floppy disk1.img --floppy disk2.img --window   # a floppy drive
 build/syshm boot --disk hd.img --cdrom-drive --window       # an empty CD-ROM drive: drop CD images on the window
+build/syshm boot --disk hd.img --cdrom "Game.cue" --window  # a CD with audio tracks
+build/syshm disk toc "Game.cue"                             # its tracks, as its CD-ROM drive gives them
 build/syshm disk create blank.img 1440K "Untitled"          # a blank floppy
 build/syshm run-raw code.bin 1000                # SYSHM_TRACE=1 logs every instruction
 ```
@@ -1238,12 +1311,12 @@ the guest makes to a page (the kernel's own writes there, such as disk
 reads, go through unseen, so a watched run goes as any other), `--traps N
 [--traps-after M]` logs 68k Toolbox/OS traps, interpreted or recompiled
 (see Idle; with the driver name for `_Open`), `--log-hostcalls` logs the native drivers'
-requests, `--dump-ram FILE` saves RAM at the end, `--max N` limits the run.
+requests (a CD-ROM drive's calls with their parameters in and out, and what it plays), `--dump-ram FILE` saves RAM at the end, `--max N` limits the run.
 `--trace-range LO:HI [--trace-insn WORD]` logs only instructions in an
 address range (optionally only one instruction word), with instruction
 counts and r3-r5/LR, cheaply enough for whole boots. `SYSHM_LOG_SOUND=1`
 logs the sound chip's register accesses, and `SYSHM_SOUND_WAV=FILE` records
-what it plays (also in instruction time). `SYSHM_LOG_USB=1` logs the USB
+what it plays (also in instruction time; CD audio included). `SYSHM_LOG_USB=1` logs the USB
 controller's register accesses (not the frame number, which drivers poll),
 `SYSHM_LOG_PCI=1` configuration space accesses.
 `--io-ram` backs unmodelled I/O pages with plain RAM. Under gdb, `handle
@@ -1309,6 +1382,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           (configuration space), nvram.c (devices), ndrv.c (PEF driver generator),
           video.c, disk.c (native drivers), floppy.c (floppy images),
           drives.c (removable drives: where images go, the menu),
+          cdrom.c (the CD-ROM driver's calls), cdimage.c (CD images: cue
+          sheets, the table of contents), cdaudio.c (the drive's player),
           net.c (Ethernet's lanLib,
           libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
           reader: the startup disk's ROM file), share.c (shared folder),

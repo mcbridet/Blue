@@ -29,8 +29,10 @@ struct disk *drives_pick(const struct drives *dr, const char *path, enum drives_
 {
 	char reason[400], name[24];
 	struct stat st;
-	if (kind == DRIVES_ANY)
-		kind = stat(path, &st) == 0 && (uint64_t)st.st_size <= FLOPPY_MAX ? DRIVES_FLOPPY : DRIVES_CD;
+	if (kind == DRIVES_ANY) {               /* (a cue sheet is small, but a CD's) */
+		bool small = stat(path, &st) == 0 && (uint64_t)st.st_size <= FLOPPY_MAX;
+		kind = small && !cdimage_is_cue(path) ? DRIVES_FLOPPY : DRIVES_CD;
+	}
 	if (kind == DRIVES_FLOPPY) {
 		struct disk *d = dr->floppy;
 		if (!d) {

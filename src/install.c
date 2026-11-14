@@ -105,11 +105,12 @@ int install_check(const char *path, unsigned part, struct install_check *ck, cha
 	struct look l = { .ck = ck, .files = files };
 	struct hfsread_volume v;
 	struct disk d;
+	struct disk_reader reader = { &d, part };
 
 	memset(ck, 0, sizeof *ck);
 	if (tools_files(files))
 		return fail(err, errlen, "cannot make the tools");
-	if (disk_open(&d, NULL, path, true, true))
+	if (disk_open(&d, NULL, path, true, cdimage_is_cue(path)))      /* (any image, read-only) */
 		return fail(err, errlen, "%s: cannot open it", path);
 	int rc = -1;
 	l.v = &v;
@@ -117,7 +118,7 @@ int install_check(const char *path, unsigned part, struct install_check *ck, cha
 	l.sub = malloc(MAX_FOLDERS * sizeof *l.sub);
 	if (!l.buf || !l.sub) {
 		fail(err, errlen, "out of memory");
-	} else if (part >= d.partitions || hfsread_open(&v, d.fd, d.part[part].offset, d.part[part].size)) {
+	} else if (part >= d.partitions || hfsread_open_with(&v, disk_read, &reader, d.part[part].size)) {
 		fail(err, errlen, "%s: no HFS volume there", path);
 	} else if (!v.blessed) {
 		fail(err, errlen, "%s: no System Folder", path);

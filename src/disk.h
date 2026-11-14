@@ -11,6 +11,12 @@
  * disk_open_floppy()) and CD-ROM drives whose discs can be swapped (see
  * disk_open_cdrom()): images go in and come out while the machine runs,
  * and Mac OS ejects them through the driver.
+ *
+ * CD-ROM drives (`cdrom`, swappable or not) answer as Apple's CD-ROM driver
+ * does (cdrom.h): DriverGestalt 'devt' 'cdrm', the disc's table of contents,
+ * playing and reading audio, a CD-ROM drive's icons. Their images are plain
+ * (2048-byte sectors) or cue sheets (cdimage.h), whose data track Mac OS
+ * mounts; a disc of audio alone has a drive whose reads fail.
  */
 #ifndef SYSHM_DISK_H
 #define SYSHM_DISK_H
@@ -19,6 +25,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "cdimage.h"
+#include "cdrom.h"
 #include "floppy.h"
 #include "mem.h"
 #include "ndrv.h"
@@ -83,13 +91,30 @@ struct disk {
 	unsigned media_parts;           /* the drives the image has partitions for (the others are empty) */
 	struct floppy_image image;
 	char media_path[1024];
+	/* a CD-ROM drive's: the disc's tracks (its data through disc_data for a cue sheet), the drive's state */
+	struct cdimage *disc;
+	struct disk_backend disc_data;
+	struct cdrom *cd;               /* (made at the driver's first call) */
 	bool dirty;                     /* written since last flushed (and a DC42 image's checksums worked out) */
 	uint64_t written_tb;            /* ... last, at this timebase */
 	unsigned long ejects;           /* by Mac OS */
 };
 
-/* Opens the backing file and reads its partition map; returns 0 on success. */
+/*
+ * Opens the backing file and reads its partition map; returns 0 on success.
+ * A CD (`cdrom`, then read-only) may be a cue sheet too.
+ */
 int disk_open(struct disk *d, struct mem *mem, const char *path, bool read_only, bool cdrom);
+
+/*
+ * Reads `len` bytes at `at` of a partition's (a `struct disk_reader`):
+ * the image's data, whatever it's in (for hfsread_open_with()). 0, or -1.
+ */
+struct disk_reader {
+	const struct disk *d;
+	unsigned part;
+};
+int disk_read(void *reader, void *buf, size_t len, uint64_t at);
 void disk_close(struct disk *d);
 
 /* Attaches a drive whose blocks come from `b`; returns 0 on success. */

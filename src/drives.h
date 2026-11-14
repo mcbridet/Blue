@@ -26,7 +26,7 @@ enum drives_for { DRIVES_ANY, DRIVES_FLOPPY, DRIVES_CD };
 
 /*
  * The drive an image goes in: images of a floppy's size (2880K or less) in
- * the floppy drive, others in a CD-ROM drive, an empty one or else one
+ * the floppy drive, others (and cue sheets) in a CD-ROM drive, an empty one or else one
  * whose disc Mac OS isn't using. NULL, with why in `why`, if it can't go
  * in (no such drive, Mac OS using the disc in it, not an image it takes).
  */

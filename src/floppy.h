@@ -55,4 +55,7 @@ int floppy_erase(int fd, const struct floppy_image *img);
 #define FLOPPY_ICNS_SIZE (8u + 8u + 256u + 8u + 1024u + 8u + 64u + 8u + 256u)
 void floppy_icons(uint8_t *media_icn, uint8_t *drive_icn, uint8_t *media_icns, uint8_t *drive_icns);
 
+/* An icon family from drawings in characters (see floppy.c), 32 and 16 pixels square: other drives' icons */
+void floppy_icon_family(const char *const *art32, const char *const *art16, uint8_t *icn, uint8_t *icns);
+
 #endif
