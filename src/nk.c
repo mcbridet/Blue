@@ -886,6 +886,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 			mp_add_area(&m->mp, regions[k].logical, regions[k].size, regions[k].writable);
 		/* a new task's entry point returns into the kernel's data page, which can't run: that ends it (see nk_boot()) */
 		m->mp.task_return = ci->la_kernel_data;
+		m->mp.emulator_data = mem_ptr(&m->mem, ci->la_emulator_data);
+		m->mp.ecb = ci->ecb_offset;
 		/*
 		 * NanoKernel 2 starts its free page list with 18 pages and one per 8 MB
 		 * of RAM, from outside Mac OS's (for its own pool, and the page
@@ -1764,25 +1766,45 @@ static uint32_t *system_cr(struct machine *m)
 }
 
 /*
- * The priority NanoKernel 2 gives the blue task for its 68k interrupt mask,
- * which the emulator keeps in its context's r25 (SchFiddlePriorityShifty):
- * critical with all interrupts masked (7), latency-protected at or above
- * the emulator's level (the low bits of its context block's PriorityShifty
- * word; 2 if they're 0), else as it is.
+ * The priority NanoKernel 2 gives the blue task, while it runs, for its 68k
+ * interrupt mask, which the emulator keeps in its context's r25
+ * (SchFiddlePriorityShifty): critical with all interrupts masked (7),
+ * latency-protected at or above the emulator's level (the low bits of its
+ * context block's PriorityShifty word; 2 if they're 0), else as it is.
+ * Boosted, or interrupted (update_interrupts(), post_software_interrupt()),
+ * the word gets SHIFTY_YIELD, which has the emulator yield (MPYieldWithHint,
+ * hint 1) when it next unmasks all interrupts; once it has yielded or napped
+ * (SHIFTY_YIELDED), the next evaluation leaves its priority as it is.
  */
+#define SHIFTY_YIELD 0x100u
+#define SHIFTY_YIELDED 0x80000000u
+#define SHIFTY_CLEARED 0x300u           /* (when it yields or naps) */
+
+static void set_shifty(struct machine *m, uint32_t set, uint32_t clear)
+{
+	uint32_t at = m->system_cb + CB_PRIORITY_SHIFTY;
+	mem_w32(&m->mem, at, (mem_r32(&m->mem, at) & ~clear) | set);
+}
+
 static unsigned blue_boost(struct machine *m)
 {
-	uint32_t r25;
-	if (!m->system)
-		r25 = mem_r32(&m->mem, m->system_cb + CB_GPR + 8 * 25 + 4);
-	else if (blue_running(m))
-		r25 = m->cpu.gpr[25];
-	else
-		r25 = mp_regs(&m->mp, m->mp.blue_task)->gpr[25];
-	unsigned mask = r25 & 7, level = mem_r32(&m->mem, m->system_cb + CB_PRIORITY_SHIFTY) & 0xF;
+	if (!blue_running(m))
+		return MP_AS_IS;
+	uint32_t shifty = mem_r32(&m->mem, m->system_cb + CB_PRIORITY_SHIFTY);
+	if (shifty & SHIFTY_YIELDED) {
+		set_shifty(m, 0, SHIFTY_YIELDED);
+		return MP_AS_IS;
+	}
+	uint32_t r25 = m->system ? m->cpu.gpr[25] : mem_r32(&m->mem, m->system_cb + CB_GPR + 8 * 25 + 4);
+	unsigned mask = r25 & 7, level = shifty & 0xF, boost;
 	if (mask == 7)
-		return MP_CRITICAL;
-	return mask >= (level ? level : 2) ? MP_LATENCY_PROTECTED : MP_AS_IS;
+		boost = MP_CRITICAL;
+	else if (mask >= (level ? level : 2))
+		boost = MP_LATENCY_PROTECTED;
+	else
+		return MP_AS_IS;
+	set_shifty(m, SHIFTY_YIELD, 0);
+	return boost;
 }
 
 /*
@@ -1803,7 +1825,8 @@ static unsigned blue_boost(struct machine *m)
  * the NanoKernel then ends that context with exception 0 so the emulator can
  * take the interrupt, and the emulator resumes it afterwards. (While a task
  * other than the blue one runs, that waits until the blue task is back,
- * which with Multiprocessing Services is next: see mp_interrupt().)
+ * which with Multiprocessing Services is next: see mp_interrupt(), and
+ * blue_boost() for how it gives up being critical.)
  */
 static void update_interrupts(struct machine *m, bool force)
 {
@@ -1848,8 +1871,34 @@ static void update_interrupts(struct machine *m, bool force)
 		mem_w32(&m->mem, m->system_cb + CB_CR, cr);
 	if (post && !m->system)
 		m->preempt = true;
-	if (post && m->mp_kernel)
+	if (post && m->mp_kernel) {
 		mp_interrupt(&m->mp, m->cpu.tb);
+		set_shifty(m, SHIFTY_YIELD, 0);
+	}
+}
+
+/*
+ * A software interrupt from Multiprocessing Services (see mp.c's
+ * raise_swi()) is posted to the blue task's emulator as NanoKernel 2 posts
+ * it when the task next runs: ConfigInfo's Post mask, less the bits its
+ * Clear mask clears (those that say an external interrupt is pending), is
+ * ORed into the System context's CR, and native code running is ended as
+ * for an external interrupt. The emulator then takes the highest level
+ * waiting above its 68k interrupt mask (vector 0x58, the event group
+ * pushed), and looks again whenever its mask is set.
+ */
+static void post_software_interrupt(struct machine *m)
+{
+	m->mp.swi = false;
+	uint32_t bits = ci32(m->rom, CI_POST_INT_MASK) & ci32(m->rom, CI_CLEAR_INT_MASK);
+	uint32_t *live = system_cr(m);
+	if (live)
+		*live |= bits;
+	else
+		mem_w32(&m->mem, m->system_cb + CB_CR, mem_r32(&m->mem, m->system_cb + CB_CR) | bits);
+	if (!m->system)
+		m->preempt = true;
+	set_shifty(m, SHIFTY_YIELD, 0);
 }
 
 static uint32_t trap_table(const struct machine *m)
@@ -2269,8 +2318,12 @@ static void perf_report(struct machine *m)
  * Manager (its ProcessMgrSupport fragment) makes when nothing needs to
  * run, to sleep until the next process wake time (r3:r4, an AbsoluteTime;
  * the result is ignored). The processor naps until then, or until an
- * interrupt, as for PowerDispatch (see blue_naps()).
+ * interrupt, as for PowerDispatch (see blue_naps()). With a NanoKernel 2's
+ * blue task (mp_kernel), MPYieldWithHint (13), and a nap with no interrupt
+ * pending, mark the emulator's PriorityShifty word as having yielded (see
+ * blue_boost()).
  */
+#define MP_YIELD_WITH_HINT 13u
 #define MP_DELAY_UNTIL 55u
 
 /* Their names, after the reverse-engineered NanoKernel 2 (github.com/elliotnunn/powermac-rom) */
@@ -2373,6 +2426,9 @@ static void blue_naps(struct machine *m, uint64_t until)
 static const char *kcall_mp_dispatch(struct machine *m, uint32_t next_pc)
 {
 	struct ppc_cpu *cpu = &m->cpu;
+	bool yields = cpu->gpr[0] == MP_YIELD_WITH_HINT || (cpu->gpr[0] == MP_DELAY_UNTIL && !m->ipl);
+	if (m->mp_kernel && yields && blue_running(m))
+		set_shifty(m, SHIFTY_YIELDED, SHIFTY_CLEARED);
 	if (cpu->gpr[0] == MP_DELAY_UNTIL && blue_running(m)) {
 		blue_naps(m, (uint64_t)cpu->gpr[3] << 32 | cpu->gpr[4]);
 		cpu->gpr[3] = 0;                /* noErr */
@@ -2384,11 +2440,6 @@ static const char *kcall_mp_dispatch(struct machine *m, uint32_t next_pc)
 		       cpu->gpr[0], mp_call_name(cpu->gpr[0]), cpu->gpr[3], cpu->gpr[4], cpu->gpr[5], cpu->gpr[6],
 		       cpu->pc, cpu->lr);
 		return "unimplemented Multiprocessing Services call";
-	}
-	if (m->mp.swi_raised) {
-		printf("MPDispatch: call %u set event group 0x%08X, which raises a software interrupt\n",
-		       cpu->gpr[0], m->mp.swi_raised);
-		return "software interrupts from Multiprocessing Services aren't delivered yet";
 	}
 	uint8_t *count = m->kdp + KDP_NK_INFO + NKI_TASK_COUNT;
 	if (be32(count) != m->mp.tasks) {
@@ -2901,14 +2952,10 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			why = ppc_exit_name(e);
 			break;
 		}
-		if (m.mp_kernel && !why && !debug_exit && mp_due(&m.mp, cpu->tb)) {
-			mp_tick(&m.mp, cpu->tb, blue_boost(&m));
-			if (m.mp.swi_raised) {
-				printf("MPDispatch: a timer set event group 0x%08X, which raises a software interrupt\n",
-				       m.mp.swi_raised);
-				why = "software interrupts from Multiprocessing Services aren't delivered yet";
-			}
-		}
+		if (m.mp_kernel && !why && !debug_exit && mp_due(&m.mp, cpu->tb))
+			mp_tick(&m.mp, cpu->tb, mp_fires(&m.mp, cpu->tb) ? blue_boost(&m) : MP_AS_IS);
+		if (m.mp.swi)
+			post_software_interrupt(&m);
 		if (m.mp.yield && !why)         /* (Multiprocessing Services: the task to run may change) */
 			switch_task(&m, mp_next(&m.mp, blue_boost(&m)));
 		if (!dev_clean)

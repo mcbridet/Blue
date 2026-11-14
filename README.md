@@ -128,28 +128,33 @@ task. For these ROM files syshm's kernel reports one (NanoKernelInfo's
 version 2 fields; the ROM checks that the blue process has ID 1, the first
 one a NanoKernel 2 makes), and takes their calls (`sc`, or kernel call 8,
 with the call number in r0; `src/mp.c`): queues, semaphores, critical
-regions, event groups (setting one that raises a 68k software interrupt
-stops the run, as it isn't delivered yet), notifications, the areas
-startup's address space is made of (Mac OS's RAM and the page map's
-regions), and timers, which fire on the guest timebase.
-`SYSHM_LOG_MP=1` logs them, the switches between tasks, and timers firing.
+regions, event groups (setting one that's marked for it raises a 68k
+software interrupt, which the emulator takes much as it does a device's),
+notifications, the areas startup's address space is made of (Mac OS's RAM
+and the page map's regions), and timers, which fire on the guest timebase.
+`SYSHM_LOG_MP=1` logs them, the switches between tasks, timers firing and
+software interrupts raised.
 
 Tasks besides the blue one run on the same processor, one at a time: each
 has its registers saved while another runs, and the blue task's stay as
 its NanoKernel 1 contexts left them. They're scheduled as NanoKernel 2
 does it: by priority (a task woken by what it waited for goes ahead of the
 blue task; the blue task goes ahead of all once an interrupt is posted to
-it, or while its 68k code has interrupts masked), and in time slices
+it, or while its 68k code has interrupts masked, and gives that up when
+the emulator yields once its 68k code unmasks them), and in time slices
 shared by weight, measured on the guest timebase so that runs stay
 reproducible. A task that waits blocks, and makes its call again once
 what it waits for comes, or its timeout; tasks can also wait for a time.
 The blue task may not wait, and polls instead, letting other tasks run,
 or naps while they do. Startup makes three tasks, which first run once the
-68k code unmasks interrupts: one that waits for other tasks to end, one
-for the debugger's queue, and the page ager, which then waits for 3
-seconds. Soon after, the first of the Time Manager's timers fires, setting
-an event group that raises a 68k software interrupt, and the run stops
-there, before anything is on the screen.
+68k code has unmasked interrupts: one that waits for other tasks to end,
+one for the debugger's queue, and the page ager, which then waits for 3
+seconds. Meanwhile the Time Manager's timers fire, each setting an event
+group that raises a level-1 software interrupt; the 68k handler takes the
+group's flags and the Time Manager carries on, and so does startup. When
+the page ager's 3 seconds are up it looks through the areas for pages to
+age, asking for each area's details, which syshm doesn't give yet: the run
+stops there, with the screen still blank.
 
 ### Networking
 

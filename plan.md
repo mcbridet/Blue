@@ -36,13 +36,12 @@ Done:
   far: tasks (7-10, 126; see below), queues (15-18, 39), semaphores
   (20-23), critical regions (25-28), event groups (49-52, 54),
   notifications (64-67, 128), task queries (11, 12, 14, 56, 59, 63),
-  `MPYieldWithHint` (13), areas (77, 80; one per startup region plus Mac
-  OS's RAM), the page ager's (82, 100, and 116 for an invalid process),
-  timers (40, 41, 30, 31, 32), delays (33, and 55 for tasks), and `sc`
-  with r0 -1 and -2 (`system_call()`: is the current task the blue one).
-  `SYSHM_LOG_MP=1` logs each, the task switches and timers firing. Setting
-  an event group that raises a 68k software interrupt stops the run (not
-  delivered yet).
+  `MPYieldWithHint` (13), `MPGetNextID` (37), areas (77, 80; one per
+  startup region plus Mac OS's RAM), the page ager's (82, 100, and 116 for
+  an invalid process), timers (40, 41, 30, 31, 32), delays (33, and 55 for
+  tasks), and `sc` with r0 -1 and -2 (`system_call()`: is the current task
+  the blue one). `SYSHM_LOG_MP=1` logs each, the task switches, timers
+  firing and software interrupts raised.
 - **Tasks** (Task 1): tasks other than the blue one are made, started,
   terminated and deleted, and run on the one processor: registers saved
   in `struct mp`, swapped by `switch_task()`.
@@ -55,26 +54,38 @@ Done:
   real kernel's idle task.
 - **Timers and delays** (Task 3): timeouts on waits, `MPDelayUntil`, and
   timer objects firing (`mp_tick()`), all on the guest timebase.
+- **Software interrupts** (Task 5): setting an event group marked by
+  `MPSetSWIEvent` puts it in the emulator's table and raises its 68k level
+  (`raise_swi()` in `mp.c`), posted to the emulator like an external
+  interrupt (`post_software_interrupt()` in `nk.c`); the 68k handler's
+  `MPWaitForEvent` takes it out (`swi_taken()`). The emulator's
+  PriorityShifty bits (0x100, the top bit) are kept as NanoKernel 2 keeps
+  them, so the emulator yields its boost when it unmasks interrupts.
 
 Where it stops:
 
 ```
 build/syshm boot MOS91.rom --cdrom 91.iso --max 20000000000
-MPDispatch: a timer set event group 0x00160001, which raises a software interrupt
-stopped: software interrupts from Multiprocessing Services aren't delivered yet (system context)
+MPDispatch: call 78 (unnamed; r3=0x00040001 r4=0x00000001 r5=0x00000000 r6=0x00068D28) at pc 0xFFCE2AF4, lr 0xFFCE1FB0
+stopped: unimplemented Multiprocessing Services call (task 0x00230001)
 ```
 
-Startup's three tasks first run at instruction 53,900,000, once the 68k
-code unmasks interrupts (as with the real kernel, `docs/nk2-reference.md`):
-'deth' and 'dbgr' block on their queues; 'ager' sets itself up (100, 64,
-15, 39, 49, 66, 66, 82, 116, 100, the real kernel's sequence) and blocks in
-`MPWaitForEvent` with a 3 s timeout. The first of the Time Manager's timers
-armed for real (0x00450001, due at timebase 54,143,452) then fires at
-instruction 54,160,000 and sets the level-1 software interrupt group:
-that's Task 5's (on the real kernel too the first software interrupt comes
-17 ms after the tasks first run). Nothing is on the screen yet. Without
-Task 3's timers the blue task idled to the limit (21 million naps) with
-the grey desktop pattern.
+The first of the Time Manager's timers armed for real (0x00450001) fires
+at instruction 54,160,000 and raises the level-1 software interrupt; the
+emulator takes it 20 instructions later (vector 0x58, group 0x00160001
+pushed), and its handler's `MPWaitForEvent` gets flags 8, then the Time
+Manager's loop runs (18, 31, 13, 18 → -29296, as on the real kernel). From
+then on one comes about every 17 ms of guest time (186 to the stop). When
+the 68k code unmasks interrupts the emulator yields (13), so the blue task
+keeps the processor until its time slice ends and startup's three tasks
+first run at instruction 54,320,000: 'deth' and 'dbgr' block on their
+queues; 'ager' sets itself up (100, 64, 15, 39, 49, 66, 66, 82, 116, 100,
+the real kernel's sequence) and waits 3 s in `MPWaitForEvent`. The blue
+task carries on with startup (68k traps all along; syshm's display driver
+is opened, the screen stays white) until the page ager's 3 s are up at
+instruction 104,444,849: it walks the areas for pages to age,
+`MPGetNextID` (37) for the first area (0x00040001, Mac OS's RAM), then
+call 78 (the area's details: Task 8's, see Findings).
 
 ## Ground rules for every task
 
@@ -263,8 +274,8 @@ the kernel); 8 onwards as the boot progresses.
   returning `kMPTimeoutErr`; `MPDelayUntil` (33, and 55 for tasks) blocks
   until a time; timers (40 records the time made, 41 deletes, 31 arms with
   NanoKernel 2's options) fire in `mp_tick()`: queue, semaphore and event
-  group as call 30 set, then deleted unless kept. The run loop stops when
-  one sets a software interrupt group. `idle_wait()` wakes for them in real
+  group as call 30 set, then deleted unless kept (an event group may raise
+  a software interrupt: Task 5). `idle_wait()` wakes for them in real
   time (`mp_next_due()`). `tests/test_mp.c` covers it. See Findings.
 - **Owns:** `src/mp.c`, `src/mp.h`.
 - **Goal:** timeouts on waits, `MPDelayUntil` (33) for tasks, timer
@@ -290,7 +301,16 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 5. Software interrupts to the 68k emulator
 
-- **Status:** not started. **Needs:** 2 (a task usually sets the event).
+- **Status:** done. `raise_swi()` (in `set_event()`) and `swi_taken()` (in
+  `MPWaitForEvent`) in `mp.c` keep the emulator's table and level as
+  `SetEvent` and `MPWaitForEvent` do (with or without the table); a napping
+  blue task is woken critical; `post_software_interrupt()` in `nk.c` posts
+  it (CR, `preempt`) as `update_interrupts()` does external ones. The
+  PriorityShifty bits are modelled (`blue_boost()`, `set_shifty()`; see
+  Findings), and `MPGetNextID` (37) added for the page ager.
+  `tests/test_mp.c` covers the bookkeeping. The 68k handler runs (each
+  software interrupt is followed by its `MPWaitForEvent` through kernel
+  call 8, the `FE1F` glue). See Findings.
 - **Owns:** `set_event()` in `src/mp.c`, `update_interrupts()` and nearby
   in `src/nk.c`.
 - **Goal:** setting an event group marked by `MPSetSWIEvent` (54) raises
@@ -346,7 +366,8 @@ the kernel); 8 onwards as the boot progresses.
     81, `MPHoldPages` 89 and friends, `MPGetPageSize` 69, `NKLocateInfoRecord`
     107; follow `NKAddressSpaces.s` and `NKPaging.s`). Virtual memory stays
     off: every page is mapped, so page faults to a backing provider
-    shouldn't happen.
+    shouldn't happen. First: the page ager's area record (78) and page ages
+    (93, 94), every 3 s (see Findings, "The page ager's pass").
   - The parcels' libraries being prepared and registered (the 68k code at
     `0xFFC015E0`/`0xFFC016B0` walks `Devices:device-tree:AAPL,CodePrepare`
     and `AAPL,CodeRegister`): check they load.
@@ -466,7 +487,7 @@ Facts later tasks need, added as they are found.
   does for notifications), 31 arms it (options: see "Timers in syshm"
   below), 32 returns the time left in r4:r5 and disarms. TimeManagerLib's
   timers set event group 0x160001, the level-1 software interrupt group,
-  when they fire: Task 5 is needed for that.
+  when they fire (Task 5 delivers the interrupt).
 - **The scheduler in syshm (Task 2, `mp.c`):** one ready queue in arrival
   order (`mp->ready`, the blue task included when it's ready but not
   running); `mp_next()` (NanoKernel 2's `SchEval`) keeps the running task
@@ -516,15 +537,66 @@ Facts later tasks need, added as they are found.
   but come back a critical slice later (the decrementer skips
   `TimerDispatch`: no time slices or timers while the 68k has interrupts
   off). Mask at or above the ECB's PriorityShifty level (+0xCC, low
-  nybble; 0 in syshm, so 2): latency-protected. In syshm's run the mask is
-  7 from instruction 1.1 million to about 53.88 million, right after
-  TimeManagerLib arms its timers; the tasks then run at the next sync. No
-  kernel call 4 comes with it (the real one comes because an interrupt is
-  pending). Not modelled: PriorityShifty's 0x100 bit (the kernel sets it
-  when it boosts the blue task; the emulator then calls `MPYieldWithHint`
-  on its wait path) and high bit, so syshm doesn't see call 13 from the
-  emulator; call 13 is implemented after `MPYieldWithHint` (r3 returned
-  unchanged).
+  nybble; 0 in syshm, so 2; nothing in the run writes it): latency-protected.
+  In syshm's run the mask is 7 from instruction 1.1 million to about 53.88
+  million, right after TimeManagerLib arms its timers. No kernel call 4
+  comes with it (the real one comes because an interrupt is pending).
+- **PriorityShifty's other bits** (Task 5, `set_shifty()` in `nk.c`): the
+  kernel sets 0x100 whenever it boosts the blue task for its mask, and when
+  it posts an interrupt to it (external or software). The emulator's
+  set-SR routine (`0x6806C410`, which MOVE to SR, RTE and the like go
+  through) then calls `MPYieldWithHint(1)` (`sc` at `0x6806C480`) when the
+  new mask is 0, unless an external interrupt above it is pending (that
+  path makes kernel call 4 instead). `MPYieldWithHint` and `MPDelayUntilSys`
+  from the blue task clear 0x300 and set the top bit, which has the next
+  evaluation clear it and leave the blue task's priority alone.
+  Evaluations are `mp_next()` (SchEval) and an `mp_tick()` that ends
+  something (`mp_fires()`: the decrementer), not every `mp_tick()` (every
+  MP call makes one due). syshm's run makes call 13 about as the real one
+  does: twice at the start, then once per Time Manager interrupt (after its
+  `MPArmTimer`). The yield when the mask drops to 0 at 53.88 million leaves
+  the blue task nominal at the front, so it keeps the processor to the end
+  of its slice and the tasks first run at 54,320,000. 0x200
+  (latency-protected whatever the mask) isn't modelled: nothing sets it.
+- **Software interrupts** (Task 5): `MPSetSWIEvent` (54) marks a group
+  0x10 | level (1-8, else 1). The emulator puts its table's offset, 0xAE0,
+  at ECB+0xC8 itself at startup (`0x6806DDFC`): entries are at
+  EmulatorData+0xAE0 + 4 × level. Setting the group (`SetEvent`,
+  `raise_swi()`): if its level's entry is taken, nothing more (the flags
+  are just ORed in); else the group goes there and, unless a higher level
+  (7 down to 1) is in the table, ECB+0xD0 = its level and the blue task is
+  to be interrupted (napping: critical, at the front; else its priority
+  stays). The post ORs ConfigInfo's Post & Clear masks, 0x00800000 (cr2.lt
+  only; an external interrupt also sets 0x00600000), into the System
+  context's CR. The emulator (`0x6806D114` when cr2.lt is set, then
+  `0x6806D3E4`): if ECB+0xD0's level is above its mask and no higher
+  external interrupt is pending (cr2.gt, level at EmulatorData+0x71), it
+  reads the table at that level, counts in EmulatorData+0xC0, raises its
+  mask to the level and takes vector 0x58 (format 2) with the group pushed.
+  It never clears the table or ECB+0xD0; whenever its SR is set with
+  ECB+0xD0 nonzero it sets cr2.lt again, so a lower level waiting is taken
+  once the mask drops. The ROM's handler (vector 0x58 = `0xFFC04A64`,
+  dispatcher `0xFFC0FCD0`) calls `MPWaitForEvent(group, 0)` through the
+  `FE1F` glue (kernel call 8, 68k pc `0xFFC10BB0`): with flags set, the
+  kernel clears the group's entry (if it's that group's) and puts the
+  highest level left, or 0, in ECB+0xD0 (`swi_taken()`). Without a table
+  (ECB+0xC8 0), ECB+0xD0 holds the group itself, one at a time. Deleting a
+  group leaves its entry (as NanoKernel 2 does).
+- **The page ager's pass** (every 3 s; Task 8): it walks the areas with
+  `MPGetNextID` (37: class r3, 0 any; the previous ID r4, 0 from the
+  first; the next ID in r4, `kMPInvalidIDErr` after the last, when it
+  starts again from 0: with no areas it would spin) and asks for each
+  one's record with call 78 (`MPCall_78` in `NKAddressSpaces.s`: area r3,
+  r4 must be 1, r5 the offset, 0x00/0x10/0x20/0x30/0x3C; four words back
+  in r6-r9, their byte count in r10). The record, from the Area structure
+  (`NKOpaque.a`): 1, ProcessID, AddressSpaceID, ParentAreaID;
+  BackingProviderID, PTEConfig, FlagsAndMinAlign, LogicalBase; Length,
+  LogicalSeparation, Counter, BytesMapped; PageSize, +0x80, +0x84 (12
+  bytes). The ager skips aliases (ParentAreaID) and areas with 0x8000 in
+  FlagsAndMinAlign, and ages the rest's pages (LogicalBase, Length,
+  PageSize) with 93/94 (`MPGetPageAge`/`MPSetPageAge`: area r3, address r4,
+  age r5, 15 bits); the real kernel's boot makes 520 of each, on the RAM
+  area.
 - **The page ager:** `MPGetFreePageCount` (100) returns `mp->free_pages`,
   NanoKernel 2's primed free list size, 18 + RAM pages / 2048 (34 at
   128 MB; the real kernel said 16 at 256 MB, its pool having taken some).

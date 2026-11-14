@@ -12,6 +12,13 @@
 #define TIMER_KEEP 1u                   /* MPArmTimer's options: kMPPreserveTimerIDMask */
 #define TIMER_DELTA 2u                  /* ... kMPTimeIsDeltaMask */
 #define TIMER_DURATION 4u               /* ... kMPTimeIsDurationMask */
+#define SWI_LEVELS 8u                   /* a software interrupt's 68k levels: 1-8 */
+
+/* The 68k emulator's context block: software interrupts (EmulatorPublic.a) */
+enum {
+	ECB_SWI_TABLE = 0x0C8,          /* EDPOffsetSWIRelated: where in EmulatorData its table of event groups by level is (0: none) */
+	ECB_SWI = 0x0D0,                /* SWIEventGroupID: the highest level in the table (without one, the event group) */
+};
 
 /* Timebase ticks in a Duration (NanoKernel 2's TimebaseTicksPerPeriod): milliseconds, or (negative) microseconds */
 static uint64_t duration_ticks(const struct mp *mp, int32_t d)
@@ -109,6 +116,17 @@ struct mp_object *mp_lookup(struct mp *mp, uint32_t id, enum mp_class class)
 static const struct mp_object *task_at(const struct mp *mp, uint32_t id)
 {
 	return mp_lookup((struct mp *)mp, id, MP_TASK);
+}
+
+/* The ID of the next object after `id` (0: from the first) of a class (0: any), in their slots' order; 0 if none. */
+static uint32_t next_id(const struct mp *mp, uint32_t class, uint32_t id)
+{
+	for (unsigned k = id ? (id >> 16) + 1 : 0; k < mp->slots; k++) {
+		const struct mp_object *o = &mp->obj[k];
+		if (o->class != MP_FREE && (!class || o->class == class))
+			return (uint32_t)k << 16 | o->uses;
+	}
+	return 0;
 }
 
 /* Makes an object, its ID to *id; returns the status. */
@@ -415,6 +433,80 @@ static int32_t signal_semaphore(struct mp *mp, uint32_t sem)
 	return MP_NO_ERR;
 }
 
+/* The emulator's table of software interrupts' event groups, by level, or NULL if it has none (or one out of its page). */
+static uint8_t *swi_table(const struct mp *mp)
+{
+	uint32_t at = be32(mp->emulator_data + mp->ecb + ECB_SWI_TABLE);
+	return at && at <= MEM_PAGE_SIZE - 4 * (SWI_LEVELS + 1) ? mp->emulator_data + at : NULL;
+}
+
+/* The highest level, 1-7, with an event group in the table; 0 if none. */
+static uint32_t swi_top(const uint8_t *table)
+{
+	uint32_t level = 7;
+	while (level && !be32(table + 4 * level))
+		level--;
+	return level;
+}
+
+/*
+ * Event group `event`, marked to raise software interrupt `swi` (0x10 |
+ * its level), has been set (NanoKernel 2's SetEvent): it goes in the
+ * emulator's table at its level, unless one is waiting there already, and
+ * unless a higher level is waiting, its level is the one for the emulator
+ * to take (without a table, the group itself is, unless one is waiting).
+ * Then the blue task is to be interrupted (mp->swi): if it's napping, it's
+ * critical and runs next; else when it next runs.
+ */
+static void raise_swi(struct mp *mp, uint32_t event, uint32_t swi)
+{
+	if (!mp->emulator_data)
+		return;
+	uint8_t *ecb = mp->emulator_data + mp->ecb, *table = swi_table(mp);
+	uint32_t level = swi & 0xF;
+	if (!table) {
+		if (be32(ecb + ECB_SWI))
+			return;
+		put_be32(ecb + ECB_SWI, event);
+	} else {
+		if (be32(table + 4 * level))
+			return;
+		put_be32(table + 4 * level, event);
+		if (level < swi_top(table))
+			return;
+		put_be32(ecb + ECB_SWI, level);
+	}
+	if (mp->log)
+		printf("mp: event group 0x%08X raises software interrupt %u\n", event, level);
+	struct mp_object *blue = mp_lookup(mp, mp->blue_task, MP_TASK);
+	if (blue->task.state == MP_TASK_BLOCKED) {
+		blue->task.priority = MP_CRITICAL;
+		make_ready(mp, mp->blue_task, true);
+	}
+	mp->swi = true;
+	mp->yield = true;
+}
+
+/*
+ * The flags of a software interrupt's event group have been taken (by its
+ * 68k handler, with MPWaitForEvent): the interrupt no longer waits, and
+ * the emulator is to take the highest level still waiting, if any.
+ */
+static void swi_taken(struct mp *mp, uint32_t event, uint32_t swi)
+{
+	if (!mp->emulator_data)
+		return;
+	uint8_t *ecb = mp->emulator_data + mp->ecb, *table = swi_table(mp);
+	uint32_t level = swi & 0xF;
+	if (!table) {
+		if (be32(ecb + ECB_SWI) == event)
+			put_be32(ecb + ECB_SWI, 0);
+	} else if (be32(table + 4 * level) == event) {
+		put_be32(table + 4 * level, 0);
+		put_be32(ecb + ECB_SWI, swi_top(table));
+	}
+}
+
 static int32_t set_event(struct mp *mp, uint32_t event, uint32_t flags)
 {
 	struct mp_object *o = mp_lookup(mp, event, MP_EVENT_GROUP);
@@ -424,7 +516,7 @@ static int32_t set_event(struct mp *mp, uint32_t event, uint32_t flags)
 	available(mp, event);
 	wake_first(mp, event, BLOCKED);
 	if (o->event.swi)
-		mp->swi_raised = event;
+		raise_swi(mp, event, o->event.swi);
 	return MP_NO_ERR;
 }
 
@@ -552,6 +644,11 @@ uint64_t mp_next_due(const struct mp *mp)
 	return time;
 }
 
+bool mp_fires(const struct mp *mp, uint64_t now)
+{
+	return (task_at(mp, mp->current)->task.state == MP_TASK_RUNNING && now >= mp->slice_end) || mp_next_due(mp) <= now;
+}
+
 int32_t mp_terminate(struct mp *mp, uint32_t task, uint32_t result)
 {
 	struct mp_object *o = mp_lookup(mp, task, MP_TASK);
@@ -668,6 +765,11 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 		}
 		break;
 	}
+	case 37:        /* MPGetNextID(class r3, 0: any; ID r4, 0: from the first) -> the next r4 */
+		r[4] = next_id(mp, r[3], r[4]);
+		if (!r[4])
+			status = MP_INVALID_ID_ERR;
+		break;
 	case 39:        /* MPSetQueueReserve(r3, count r4): notifications that can't fail for want of memory */
 		if (!(o = mp_lookup(mp, r[3], MP_QUEUE)))
 			status = MP_INVALID_ID_ERR;
@@ -779,12 +881,14 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 	case 51:        /* MPSetEvent(r3, flags r4) */
 		status = set_event(mp, r[3], r[4]);
 		break;
-	case 52:        /* MPWaitForEvent(r3, timeout r5) -> flags r4 */
+	case 52:        /* MPWaitForEvent(r3, timeout r5) -> flags r4; a software interrupt's handler takes it so */
 		if (!(o = mp_lookup(mp, r[3], MP_EVENT_GROUP))) {
 			status = MP_INVALID_ID_ERR;
 		} else if (o->event.flags) {
 			r[4] = o->event.flags;
 			o->event.flags = 0;
+			if (o->event.swi)
+				swi_taken(mp, r[3], o->event.swi);
 		} else {
 			status = unavailable(mp, r[3], r[5], cpu->tb);
 		}

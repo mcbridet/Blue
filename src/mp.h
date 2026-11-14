@@ -22,6 +22,14 @@
  * naps, while tasks run. Time is the guest timebase: timeouts, delays,
  * timers and time slices end at timebase values, checked by mp_tick().
  *
+ * Setting an event group that MPSetSWIEvent marked raises a 68k software
+ * interrupt in the blue task, as NanoKernel 2 does: the group goes in the
+ * emulator's table (in its data page) at the interrupt's level, and the
+ * highest level waiting in its context block, which the emulator takes
+ * once its 68k interrupt mask is below it; nk.c posts it as it does
+ * external interrupts. The 68k handler's MPWaitForEvent on the group
+ * takes it out again.
+ *
  * Objects have NanoKernel 2's opaque IDs (a slot number << 16 | the count
  * of the slot's uses), and its classes. After the reverse-engineered
  * NanoKernel 2 (github.com/elliotnunn/powermac-rom).
@@ -114,7 +122,9 @@ struct mp {
 	unsigned messages;
 	uint32_t blue_process, blue_task, page_queue, space;
 	uint32_t debugger;              /* a queue for tasks' exceptions (call 59), or 0 */
-	uint32_t swi_raised;            /* an event group set that raises a software interrupt (not delivered yet) */
+	uint8_t *emulator_data;         /* the 68k emulator's data page (EmulatorData), where software interrupts go, or NULL */
+	uint32_t ecb;                   /* ... and its context block's offset in it */
+	bool swi;                       /* a software interrupt is to be posted to the blue task's emulator (see nk.c) */
 	struct { uint32_t id; struct mp_regs regs; } task[MP_MAX_TASKS];        /* (id 0: a free entry) */
 	unsigned tasks;                 /* tasks there are (NanoKernelInfo's count) */
 	uint32_t ready[MP_MAX_TASKS];   /* tasks that are ready, in the order they came (the running one isn't) */
@@ -202,6 +212,13 @@ static inline bool mp_due(const struct mp *mp, uint64_t now)
 {
 	return now >= mp->next_tb;
 }
+
+/*
+ * Whether by `now` the current task's time slice ends, or a timer,
+ * timeout, delay or nap (NanoKernel 2's decrementer fires); else mp_tick()
+ * only works out when it next has something to do.
+ */
+bool mp_fires(const struct mp *mp, uint64_t now);
 
 /*
  * Ends what ends by `now`: the current task's time slice (a critical or

@@ -605,7 +605,11 @@ static void test_timers(void)
 	CHECK_EQ(call(41, 1, del), MP_NO_ERR);
 	CHECK_EQ(call(41, 1, del), MP_INVALID_ID_ERR);
 
-	/* one that sets an event group raising a software interrupt says so */
+	/* one that sets an event group raising a software interrupt raises it */
+	static uint8_t edp[4096];
+	mp.emulator_data = edp;
+	mp.ecb = 0x100;
+	put_be32(edp + 0x100 + 0xC8, 0xAE0);
 	uint32_t swi[] = { event, 1 };
 	CHECK_EQ(call(54, 2, swi), MP_NO_ERR);
 	CHECK_EQ(call(40, 0, NULL), MP_NO_ERR);
@@ -613,9 +617,110 @@ static void test_timers(void)
 	CHECK_EQ(call(30, 3, to_event), MP_NO_ERR);
 	arm[2] = 950000;
 	CHECK_EQ(call(31, 4, arm), MP_NO_ERR);
-	CHECK_EQ(mp.swi_raised, 0);
+	CHECK(!mp.swi);
 	mp_tick(&mp, 950000, MP_AS_IS);
-	CHECK_EQ(mp.swi_raised, event);
+	CHECK(mp.swi);
+	CHECK_EQ(be32(edp + 0xAE0 + 4), event);
+	CHECK_EQ(be32(edp + 0x100 + 0xD0), 1);
+}
+
+/* Event groups raising the 68k emulator's software interrupts (EmulatorData: the context block at 0x100, the table at 0xAE0) */
+static void test_swi(void)
+{
+	static uint8_t edp[4096];
+	memset(edp, 0, sizeof edp);
+	mp_init(&mp, TB_HZ);
+	mp.emulator_data = edp;
+	mp.ecb = 0x100;
+	put_be32(edp + 0x100 + 0xC8, 0xAE0);
+	uint32_t blue = mp.blue_task;
+	uint32_t group[3];
+	for (unsigned k = 0; k < 3; k++) {
+		CHECK_EQ(call(49, 0, NULL), MP_NO_ERR);
+		group[k] = cpu.gpr[4];
+	}
+	uint32_t level1[] = { group[0], 1 }, level7[] = { group[1], 7 }, plain[] = { group[2], 0 };
+	CHECK_EQ(call(54, 2, level1), MP_NO_ERR);
+	CHECK_EQ(call(54, 2, level7), MP_NO_ERR);
+	CHECK_EQ(call(54, 2, plain), MP_NO_ERR);       /* (0, or above 8: level 1) */
+	CHECK_EQ(mp_lookup(&mp, group[2], MP_EVENT_GROUP)->event.swi, 0x11);
+
+	/* set, it goes in the table at its level, which is the one to take; the blue task is to be interrupted */
+	uint32_t set1[] = { group[0], 8 }, set7[] = { group[1], 0x80000000u }, set_plain[] = { group[2], 2 };
+	CHECK_EQ(call(51, 2, set1), MP_NO_ERR);
+	CHECK(mp.swi);
+	CHECK(mp.yield);
+	CHECK_EQ(be32(edp + 0xAE0 + 4), group[0]);
+	CHECK_EQ(be32(edp + 0x1D0), 1);
+	CHECK_EQ(priority(blue), MP_NOMINAL);           /* (running: its priority stays) */
+	CHECK_EQ(schedule(0), blue);
+
+	/* only one waits at each level */
+	mp.swi = false;
+	CHECK_EQ(call(51, 2, set_plain), MP_NO_ERR);
+	CHECK(!mp.swi);
+	CHECK_EQ(be32(edp + 0xAE0 + 4), group[0]);
+
+	/* a higher level is taken first; a lower one set meanwhile waits in the table */
+	CHECK_EQ(call(51, 2, set7), MP_NO_ERR);
+	CHECK(mp.swi);
+	CHECK_EQ(be32(edp + 0xAE0 + 28), group[1]);
+	CHECK_EQ(be32(edp + 0x1D0), 7);
+
+	/* the handler takes the group's flags: the level comes out of the table, and the next is to be taken */
+	uint32_t take7[] = { group[1], 0, 0 }, take1[] = { group[0], 0, 0 };
+	CHECK_EQ(call(52, 3, take7), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], 0x80000000u);
+	CHECK_EQ(be32(edp + 0xAE0 + 28), 0);
+	CHECK_EQ(be32(edp + 0x1D0), 1);
+	CHECK_EQ(call(52, 3, take7), MP_TIMEOUT_ERR);   /* (no flags: nothing changes) */
+	CHECK_EQ(be32(edp + 0x1D0), 1);
+	CHECK_EQ(call(52, 3, take1), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], 8);
+	CHECK_EQ(be32(edp + 0xAE0 + 4), 0);
+	CHECK_EQ(be32(edp + 0x1D0), 0);
+
+	/* the blue task napping: its nap ends, and it's critical, ahead of tasks woken */
+	CHECK_EQ(call(15, 0, NULL), MP_NO_ERR);
+	uint32_t queue = cpu.gpr[4];
+	uint32_t task = start_task(queue);
+	CHECK_EQ(mp_nap(&mp, UINT64_MAX), MP_NAP_YIELDED);
+	CHECK_EQ(schedule(0), task);
+	mp.swi = false;
+	CHECK_EQ(call(51, 2, set1), MP_NO_ERR);
+	CHECK(mp.swi);
+	CHECK_EQ(state(blue), MP_TASK_READY);
+	CHECK_EQ(priority(blue), MP_CRITICAL);
+	CHECK_EQ(mp.ready[0], blue);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(call(52, 3, take1), MP_NO_ERR);
+
+	/* without the table, the context block holds the group to take, one at a time */
+	put_be32(edp + 0x100 + 0xC8, 0);
+	mp.swi = false;
+	CHECK_EQ(call(51, 2, set7), MP_NO_ERR);
+	CHECK(mp.swi);
+	CHECK_EQ(be32(edp + 0x1D0), group[1]);
+	mp.swi = false;
+	CHECK_EQ(call(51, 2, set1), MP_NO_ERR);
+	CHECK(!mp.swi);
+	CHECK_EQ(call(52, 3, take1), MP_NO_ERR);
+	CHECK_EQ(be32(edp + 0x1D0), group[1]);
+	CHECK_EQ(call(52, 3, take7), MP_NO_ERR);
+	CHECK_EQ(be32(edp + 0x1D0), 0);
+
+	/* MPGetNextID: the objects of a class (0: any) in turn */
+	uint32_t first[] = { MP_EVENT_GROUP, 0 };
+	CHECK_EQ(call(37, 2, first), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], group[0]);
+	uint32_t next[] = { MP_EVENT_GROUP, group[2] };
+	CHECK_EQ(call(37, 2, next), MP_INVALID_ID_ERR);
+	uint32_t any[] = { 0, 0 };
+	CHECK_EQ(call(37, 2, any), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], mp.blue_process);
+	any[1] = mp.blue_process;
+	CHECK_EQ(call(37, 2, any), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], blue);
 }
 
 void test_mp(void)
@@ -625,4 +730,5 @@ void test_mp(void)
 	test_slices();
 	test_naps();
 	test_timers();
+	test_swi();
 }
