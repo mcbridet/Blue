@@ -105,6 +105,10 @@ Done:
   (`ut.iso` out, `86.iso` in, by script), 9.1 and 8.5 still start up from
   ejectable CDs, and runs where discs can't be swapped are the same as
   before. See Findings, "Ejectable drives".
+- **CD audio** (Task 16; `src/cdimage.c`, `src/cdaudio.c`, `src/cdrom.c`):
+  CD-ROM drives answer as Apple's CD-ROM driver, with CD icons; cue sheets
+  with audio tracks; the drive's audio played through the sound chip's
+  input and read digitally. See Findings, "CD audio".
 
 Where it stops:
 
@@ -573,9 +577,90 @@ the kernel); 8 onwards as the boot progresses.
   runs are unchanged. Measurements in Findings. Open: presenting on a
   thread of its own; tracking framebuffer writes instead of comparing.
 
+### 16. CD audio
+
+- **Status:** done (8.5; 9.1 has no installed image here to try
+  AppleCD Audio Player on). CD images with audio as cue sheets
+  (`src/cdimage.c`: `.bin` in raw, 2048- or 2336-byte sectors, `MOTOROLA`,
+  WAVE and AIFF tracks, `INDEX 00` and `PREGAP`/`POSTGAP`, sessions; the
+  table of contents, the data track's 2048 bytes a sector as a
+  `disk_backend`, raw sectors, the Q and P-W subchannel; `syshm disk toc`
+  lists it). The drive's player (`src/cdaudio.c`): ranges or the driver's
+  play lists, pause, stop, scan, volume, channel routing, its position a
+  function of guest time; frames in a FIFO taken by the sound chip's analog
+  input (`struct awacs_input` in `src/awacs.c`), mixed with the DMA's or
+  alone, resampled to the codec's rate, through when the codec selects the
+  CD with loop-through (or nothing). Every CD-ROM drive answers as Apple's
+  CD-ROM driver (`src/cdrom.c`, after Technical Note DV22: ReadTOC 1-6,
+  ReadTheQSubcode, ReadHeader, AudioTrackSearch, AudioPlay, AudioPause,
+  AudioStop, AudioStatus, AudioScan, AudioControl, ReadMCN, ReadISRC,
+  ReadAudioVolume, spindle speed, ReadAudio, the play lists 122-126;
+  GetDriveType, GetBlockSize, ReturnDeviceIdent, GetCDFeatures,
+  Get2KOffset), named `.AppleCD`, with DriverGestalt `devt` `cdrm`,
+  `intf`, `dvrf`, `minf`, and a CD and CD-ROM drive icon (Control 21/22,
+  `mics`/`dics`/`mnam`; drawn in `src/cdrom.c` with the floppy's palette).
+  Tests: `tests/test_cd.c` (synthetic discs: an HFS data track made with
+  `hfs_format()` read back with hfsread, audio tracks of patterns in each
+  kind of file; the player's positions, pauses, lists, volume, pacing by
+  guest time, resampling, through the codec), `tests/test_awacs.c` (the
+  analog input with and without DMA), `tests/test_drives.c` (the driver
+  calls on a cue sheet's disc). Checked on an installed 8.5 with the real
+  Quake CD (`Quake [1996].cue`): the ISO 9660 data track mounts
+  (QUAKE106), AppleCD Audio Player lists the 10 audio tracks with their
+  lengths and plays, shuffles and scans them; `SYSHM_SOUND_WAV` holds
+  track 2's samples bit for bit (scaled by Mac OS's volume), in
+  instruction time (reproducibly) and in real time; a synthetic audio disc
+  mounts as "Audio CD 1", and MoviePlayer's conversion of a track to AIFF
+  holds its samples bit for bit. Instruction-time runs of the 8.5 and 9.1
+  CDs reach the Finder as before, but for the CD icon (on the desktop and
+  in the window's title). Open: see future.md, "More CD formats".
+
 ## Findings
 
 Facts later tasks need, added as they are found.
+
+- **CD audio, Apple's CD-ROM driver** (Technical Note DV22, "CD-ROM Driver
+  Calls", developer.apple.com/library/archive/technotes/dv/dv_22.html):
+  csParam layouts as in the note; addresses are a type word and a long (0
+  LBA, 1 MSF `0x00MMSSFF` in BCD, 2 a track in BCD, 3 a play-list entry in
+  BCD, from 0); a track number as a stop address means the end of that
+  track (AppleCD Audio Player stops "at" the last track, 0x11 on the Quake
+  CD; AudioStop with track 0, which it sends at launch, means none);
+  AudioStop with an address sets the stop for the next play too (the
+  Control Strip's module sets it, then plays). DriveStatus's disc-in-place
+  byte is 1 with a disc, as the note has it, whatever the drive queue's
+  flags say (AppleCD Audio Player polls DriveStatus with drive 0 and wants
+  exactly 1; a fixed drive's flags say 8). ReadAudio returns samples
+  little-endian, as drives do; QuickTime's import reads 75 sectors and
+  moves on 68 (its jitter correction finds the overlap by content, so a
+  periodic test tone fools it: test with aperiodic audio).
+- **CD audio, who asks what (8.5):** AppleCD Audio Player 2.2 walks the unit
+  table from unit 32; for drivers with `dCtlFlags` bit 2 (DriverGestalt)
+  it asks `devt` (`cdrm` or `dvdr`) and ReturnDeviceIdent (120), for others
+  it compares the DRVR name with `.AppleCD`; its parameter block's
+  ioVRefNum is 0. It numbers a mixed disc's audio tracks from 1. The
+  Control Strip's CD module (CDStrip) asks `devt` of every DriverGestalt
+  driver (drive 0) about every second, `intf` (`atpi` or `scsi`, then 120
+  for "SCSI ID n"), reads the table of contents at startup and, with its
+  AutoPlay, plays from the first audio track when a disc mounts, with the
+  table it read at startup. Foreign File Access tries its file systems
+  when MountVol fails (reads of an audio-only disc must succeed: with
+  ioErr it gives up and the Finder offers to initialize); Audio CD Access
+  4.0 then reads ReadTOC 5, 3, 1, 2, 3 and mounts "Audio CD n" with
+  'trak'/'aucd' documents. ISO 9660 File Access reads 2048-byte sectors at
+  32768. The Device Manager shows a native driver's name at
+  `dCtlDriver + 18` (unit 49 `.AppleCD`), so `OpenDriver(".AppleCD")`
+  finds it; Apple CD/DVD Driver 1.0.1 (68k DRVRs `.AppleCD` for SCSI and
+  ATAPI) finds no drives of its own and leaves it alone.
+- **CD audio, the codec:** Mac OS 8.5's sound driver writes register 0 =
+  0x233 (input: the CD, gain 3) and register 1 = 0x8C0 (loop-through on,
+  the speaker muted); Mac OS 9.1 here writes 0x000 and 0x880 (no input
+  selected, no loop-through: its input component isn't loaded, see Mac OS
+  9), so the CD plays through when nothing is selected too. Output
+  attenuation 0x249 (9 steps, 13851/65536) applies to the CD as to DMA
+  sound. In instruction time CD audio costs about 1 s per 8 billion
+  instructions with 385 s of it playing (an installed 8.5 boot: 4.85 s
+  against 3.83 s); the player reads 16 sectors at a time.
 
 - **ID format:** slot << 16 | the slot's use count; the first ID made is
   1 (the blue process). Classes (`NKOpaque.a`): process 1, task 2, timer
