@@ -340,9 +340,34 @@ the Locked checkbox aren't written back.
 
 ### Guest tools
 
-Some things only code inside Mac OS can do. `--tools` attaches a small
-read-only volume, "syshm Tools", holding it (`syshm tools create FILE` writes
-the same volume to a file):
+Some things only code inside Mac OS can do: syshm Enhancements and syshm
+3D Engine (below). In a window, syshm offers to install them: before Mac OS
+starts it looks in the startup disk's System Folder (its folders,
+Extensions whatever its name and Extensions (Disabled) among them) for
+them, and once the Finder is up, if one is missing or isn't this syshm's
+(both forks compared with what it makes), a box over the screen says so,
+with Install (or Update) and Not Now; Mac OS runs on meanwhile. On
+Install, Mac OS writes the files itself (see Findings in plan.md): each
+goes to a temporary file in the folder it belongs in, which then takes the
+old copy's place, so an error (a full or locked disk) leaves nothing half
+written; a disabled copy is updated where it is and stays disabled.
+syshm Enhancements starts at once (an older one running is asked to quit
+first), and programs opened from then on find the 3D engine, without a
+restart. The outcome is shown and printed:
+
+```
+tools: installed syshm Enhancements and syshm 3D Engine in "Macintosh HD:System Folder:Extensions". syshm Enhancements is running. Programs opened from now on find the 3D engine.
+```
+
+Nothing is offered when the startup disk is a CD, an image attached
+read-only, or a locked volume, nor without a window: an input script can
+answer instead (`tools install`, `tools later`), and that turns the check
+on. The startup disk is the partition the ROM file came from (with
+`--rom`, the first with boot blocks).
+
+They can still be installed by hand: `--tools` attaches a small read-only
+volume, "syshm Tools", holding them (`syshm tools create FILE` writes the
+same volume to a file):
 
 - **syshm Enhancements**: drag it onto the System Folder (the Finder puts it in
   Extensions) and restart. From then on, resizing the window changes the
@@ -354,13 +379,14 @@ the same volume to a file):
   screen. On high-density displays a screen pixel is a point, so Mac OS
   appears at the size of other programs; with `--integer-scale` it is a
   whole number of pixels instead (2 at 1.7x), for the crispest pixels. It
-  also shares the clipboard (below). Its data carries its version, as the
-  3D engine's does: one installed by a syshm from before the clipboard
-  still switches modes, and syshm says to install it again (drag the new
-  one onto the System Folder, replacing the old, and restart). An `appe`
-  only starts from Extensions, so a CD's system can't run it; to try it
-  there, `SYSHM_TOOLS_APPL=1` makes the tools volume's copy an application
-  the Finder opens with a double-click.
+  also shares the clipboard (below). One installed by a syshm from before
+  the clipboard isn't this syshm's (so in a window syshm offers to update
+  it), and it still switches modes until then: its data carries its
+  version, as the 3D engine's does, so that syshm finds the older copy's
+  data where it is, and says so. An `appe` only starts from Extensions, so
+  a CD's system can't run it; to try it there, `SYSHM_TOOLS_APPL=1` makes
+  the tools volume's copy an application the Finder opens with a
+  double-click.
 - **Clipboard** (with syshm Enhancements, in a window in real time): text
   copied in Mac OS is on the host's clipboard, and text copied on the host
   is what Command-V pastes in Mac OS, in the front application, without
@@ -445,7 +471,7 @@ vertices' specular fields (ks: u/w, v/w, 1/w); both renderers do that,
 filtering the lightmap bilinearly, clamped (the other tags UT sets then,
 always the same, are taken to mean that). The engine's data carries
 its version, so one installed by an older syshm isn't asked for what it
-lacks: syshm says to install it again from the tools volume.
+lacks: syshm says to install it again (and a window offers to update it).
 
 - `syshm rom` decodes NewWorld bootinfo files and raw 4 MB ROMs, verifies the
   checksum, extracts the Toolbox image and Trampoline, and decodes the
@@ -783,8 +809,9 @@ lacks: syshm says to install it again from the tools volume.
   idle sleep). Beside that is its speed: millions of instructions a second of
   the time actually spent running them, as a clock rate (the Mac thinks it
   has a 266 MHz G3, which runs about one instruction a cycle), worked out
-  once a second from a random 1 in 32 runs (timing each costs too much)
-  and left as it was when the guest is busy less than a tenth of the time.
+  once a second from a random 1 in 32 runs (timing each costs too much),
+  and not shown while the guest naps (busy less than a tenth of the time)
+  or the menu pauses it.
   In narrow windows (640 wide, say) the names are shortened and the text
   made smaller to fit.
   SDL2 sound output (`src/audio.c`; in real time, `--no-sound` turns it
@@ -930,6 +957,7 @@ counts, for example:
 3600000000 screenshot after.png
 3700000000 clock 800             # guest time at 800 million instructions a second from here
 3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
+0 tools install                  # the answer to the offer to install the guest tools (or "later")
 3900000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)
 4000000000 print-clipboard       # prints the host's clipboard, with what Mac OS copied since
 ```
@@ -1037,10 +1065,11 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           video.c, disk.c (native drivers), net.c (Ethernet's lanLib,
           libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
           reader: the startup disk's ROM file), share.c (shared folder),
-          rsrc.c (resource forks), tools.c (guest tools), clip.c (the
-          clipboard they share with the host), rave.c + raster.c
+          rsrc.c (resource forks), tools.c (guest tools), install.c
+          (installing them from inside Mac OS), clip.c (the clipboard they
+          share with the host), rave.c + raster.c
           + gpu.c + gl.c (3D engine: software and OpenGL), display.c (SDL2
-          window), ui.cpp (its menu, with Dear ImGui), audio.c (SDL2 sound), png.c,
+          window), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), main.c
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results

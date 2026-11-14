@@ -560,8 +560,11 @@ static void test_helper_clipboard(void)
 	patch_step(&h, &clip, &c, 3, event);                   /* (nothing more to put there) */
 	CHECK(c.done);
 
-	/* quitting: the patches go */
-	quit(&h, &clip, event);
+	/* quitting (asked by syshm, to be replaced): the patches go */
+	memset(mem_ptr(&mem, event), 0, 16);
+	h.quit = true;
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK(c.done && !h.running && !h.quit && !h.patched);
 	CHECK_EQ(mem_r32(&mem, ZERO_SCRAP_ENTRY), 0x1111);
 	CHECK_EQ(mem_r32(&mem, PUT_SCRAP_ENTRY), 0x2222);
 	CHECK_EQ(mem_r32(&mem, JGNE_FILTER), 0x3333);

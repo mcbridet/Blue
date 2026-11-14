@@ -251,8 +251,8 @@ static void helper_main(struct helper *h, struct ndrv_call *c, struct clip *clip
 	h->launches++;
 	if (!current(h, c)) {
 		h->old = true;
-		printf("enhancements: the guest's syshm Enhancements is older than this syshm: install it again from "
-		       "the syshm Tools volume (--tools) into the System Folder, and restart\n");
+		printf("enhancements: the guest's syshm Enhancements is older than this syshm (no clipboard): update it "
+		       "(syshm offers to, in a window), or install it again from the syshm Tools volume (--tools)\n");
 		fflush(stdout);
 	} else if (clip->enabled && !h->patched && patch(h, c, true)) {
 		h->patched = true;
@@ -412,9 +412,11 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct 
 	switch (step) {
 	case STEP_WAITED: {
 		uint32_t ev = data + (old ? V1_DATA_EVENT : DATA_EVENT), mode, depth;
-		if (mem_r16(m, ev) == HIGH_LEVEL_EVENT && mem_r32(m, ev + 2) == FOURCC('a', 'e', 'v', 't') &&
-		    mem_r32(m, ev + 10) == FOURCC('q', 'u', 'i', 't')) {
-			/* the Process Manager asks us to quit (shutting down): the patches go first */
+		if (h->quit || (mem_r16(m, ev) == HIGH_LEVEL_EVENT && mem_r32(m, ev + 2) == FOURCC('a', 'e', 'v', 't') &&
+				mem_r32(m, ev + 10) == FOURCC('q', 'u', 'i', 't'))) {
+			/* the Process Manager asks us to quit (shutting down), or syshm does (to replace us):
+			 * the patches go first */
+			h->quit = false;
 			if (h->patched && c->toc == h->patched_toc) {
 				patch(h, c, false);
 				h->patched = false;
@@ -485,7 +487,7 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct 
 
 /* ---- the volume -------------------------------------------------------------- */
 
-int tools_create(const char *path)
+int tools_files(struct hfs_file files[TOOLS_FILES])
 {
 	static uint8_t helper[8192], helper_rsrc[1024], engine[8192], engine_rsrc[1024];
 	struct ndrv_layout layout;
@@ -511,22 +513,30 @@ int tools_create(const char *path)
 	if (!helper_len || !rsrc_len || !engine_len || !engine_rsrc_len)
 		return -1;
 
+	files[TOOLS_ENHANCEMENTS] = (struct hfs_file){
+		"syshm Enhancements", FOURCC('a', 'p', 'p', 'e'), FOURCC('s', 'y', 'H', 'p'), 0, 40, 60,
+		helper, helper_rsrc, (uint32_t)helper_len, (uint32_t)rsrc_len };
+	files[TOOLS_3D_ENGINE] = (struct hfs_file){
+		"syshm 3D Engine", FOURCC('s', 'h', 'l', 'b'), FOURCC('t', 'n', 's', 'l'), 0, 40, 160,
+		engine, engine_rsrc, (uint32_t)engine_len, (uint32_t)engine_rsrc_len };
+	return 0;
+}
+
+int tools_create(const char *path)
+{
+	struct hfs_file files[TOOLS_FILES];
+	if (tools_files(files))
+		return -1;
 	const char *appl = getenv("SYSHM_TOOLS_APPL");          /* (see tools.h) */
-	uint32_t helper_type = appl && strcmp(appl, "0") ? FOURCC('A', 'P', 'P', 'L') : FOURCC('a', 'p', 'p', 'e');
-	const struct hfs_file files[] = {
-		{ "syshm Enhancements", helper_type, FOURCC('s', 'y', 'H', 'p'), 0, 40, 60,
-		  helper, helper_rsrc, (uint32_t)helper_len, (uint32_t)rsrc_len },
-		{ "syshm 3D Engine", FOURCC('s', 'h', 'l', 'b'), FOURCC('t', 'n', 's', 'l'), 0, 40, 160,
-		  engine, engine_rsrc, (uint32_t)engine_len, (uint32_t)engine_rsrc_len },
-	};
+	if (appl && strcmp(appl, "0"))
+		files[TOOLS_ENHANCEMENTS].type = FOURCC('A', 'P', 'P', 'L');
 	int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
 	if (fd < 0) {
 		fprintf(stderr, "%s: %s\n", path, strerror(errno));
 		return -1;
 	}
 	int err = ftruncate(fd, TOOLS_VOLUME_SIZE) ? -1 :
-		  hfs_format(fd, TOOLS_VOLUME_SIZE, "syshm Tools", hfs_mac_time_now(), files,
-			     sizeof files / sizeof files[0]);
+		  hfs_format(fd, TOOLS_VOLUME_SIZE, "syshm Tools", hfs_mac_time_now(), files, TOOLS_FILES);
 	if (close(fd))
 		err = -1;
 	if (err)

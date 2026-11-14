@@ -23,6 +23,7 @@ int main(int argc, char **argv)
 		{ "net", test_net },
 		{ "hfs", test_hfs },
 		{ "hfsread", test_hfsread },
+		{ "install", test_install },
 		{ "share", test_share },
 		{ "tools", test_tools },
 		{ "clip", test_clip },
