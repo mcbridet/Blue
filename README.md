@@ -301,12 +301,17 @@ build/syshm disk create hd922.img 2G "Macintosh HD"
 build/syshm boot --disk hd922.img --cdrom 922.iso --window --nvram syshm.nvram
 ```
 
-In Apple Software Restore, click Switch Disk until the destination disk is
-"Macintosh HD", then Restore, and OK. A scripted run restored 671 MB in
-under 20 billion instructions; the volume is then called MacOS9Lives. Then
-`build/syshm boot --disk hd922.img --window --nvram syshm.nvram` starts it,
-to the Finder in real time. In instruction time (scripted runs) its startup
-waits before the Finder until a key is pressed (plan.md, Findings).
+In Apple Software Restore (open it from the CD's window), click Switch Disk
+until the destination disk is "Macintosh HD", then Restore, and OK. A
+scripted run restored 671 MB in under 20 billion instructions; the volume is
+then called MacOS9Lives. Then `build/syshm boot --disk hd922.img --window
+--nvram syshm.nvram` starts it, to the Finder (the first time, with the
+Setup Assistant over it), in real time and in instruction time. In
+instruction time its startup used to stop short of the Finder until a key
+was pressed: a Time Manager software interrupt the 68k emulator never took,
+and nothing else to interrupt the native code it then napped in. The
+display's vertical blank interrupts it 60 times a second now, as an iMac's
+does (plan.md, Findings).
 
 ### Networking
 
@@ -840,7 +845,7 @@ lacks: syshm says to install it again (and a window offers to update it).
     instructions and cycles per guest instruction; a total at the end.
 - Idle: the Process Manager calls `_SynchIdleTime` when no process can run,
   and in real time the kernel then sleeps until the next VIA timer
-  interrupt, window frame or input. An idle Finder costs a few percent of
+  interrupt or vertical blank, window frame or input. An idle Finder costs a few percent of
   one core (`--no-idle` turns it off). The 68k emulator dispatches traps
   it interprets through its dispatch table, so the kernel watches the entry
   for `_SynchIdleTime` there; but code its dynamic recompiler has
@@ -912,7 +917,8 @@ lacks: syshm says to install it again (and a window offers to update it).
   (kind 10) does it: `PendingInts` in HWInfo, the 68k level at
   EmulatorData`+0x70`, and the CR post/clear masks. Latched pulses (DMA
   channels) are acknowledged in the controller when delivered and stay in
-  `PendingInts` until the next PrioritizeInterrupts (see interrupt sets).
+  `PendingInts` until a PrioritizeInterrupts after Mac OS has handled them
+  (see interrupt sets).
 - Devices: RTAS (clock, NVRAM, power), a 6522 VIA with timers, the Cuda (time,
   PRAM, power, ADB with autopoll), an ADB keyboard and mouse, a Heathrow-style
   interrupt controller and a Z8530 SCC with nothing attached (LocalTalk sees an
@@ -958,9 +964,22 @@ lacks: syshm says to install it again (and a window offers to update it).
   the device tree, so Mac OS loads them like any PCI card's driver. Their code
   is a loop around a host call; the driver logic is C (`src/video.c`,
   `src/disk.c`), and the stub can call Mac OS services on its behalf
-  (`IOCommandIsComplete`, `SetInterruptTimer`, Video Services' VBL service).
+  (`IOCommandIsComplete`, `SetInterruptTimer`, Driver Services' interrupt
+  sets, Video Services' VBL service).
   - Display: 640x480 to 1280x1024 at 1-32 bits per pixel, CLUT and gamma
-    calls, timer-driven VBL interrupts (which the cursor needs). Two more
+    calls, and a vertical-blank (VBL) interrupt, as the iMac's ATI chip
+    has: 60 times a second of guest time, a device event on the timebase
+    (vertical blank n at n/60 s), on the chip's line into the interrupt
+    controller (source 22, level 2) while the driver has it on. At Open the
+    driver installs its handler in the display node's interrupt set (its
+    `driver-ist`), keeping the set's enabler and disabler, makes the Video
+    Services Library's VBL service and turns the interrupt on; SetInterrupt
+    (Control 7) turns it off and on. The handler acknowledges the vertical
+    blank in the chip and queues a secondary interrupt handler, which runs
+    Mac OS's VBL tasks for the screen (`VSLDoInterruptService`: the cursor's,
+    games' page flips). Vertical blanks the guest doesn't get to in time
+    are one interrupt. It used to be a Driver Services timer, which ran on
+    the Time Manager and so stopped whenever that did. Two more
     modes take the host window's size on request (up to what the 16 MB
     framebuffer holds at 32 bits per pixel), for syshm Enhancements (a guest
     tool) to switch between; each is listed only while in use.
@@ -1036,7 +1055,12 @@ lacks: syshm says to install it again (and a window offers to update it).
   `AAPL,interrupt-priorities`: parallel arrays of up to 3 interrupts each,
   `AAPL,interrupts` (numbers, which the device names in its own
   `AAPL,interrupts`; here the sources), `AAPL,interrupt-priorities` (68k
-  levels) and `AAPL,interrupt-vectors` (sources). The USB controller, the
+  levels) and `AAPL,interrupt-vectors` (sources). Mac OS 9.2's ROM files
+  build them in DriverServicesLib instead, and only for nodes that also
+  have `AAPL,interrupt-index` (the source's entry in the controller's table:
+  the source again); only the display has it so far, so on 9.2.2 the
+  others still have no sets (no sound output, the USB controller without
+  interrupts, lanLib polling). The display, the USB controller, the
   sound chip and the Ethernet node have them (the Ethernet node only for
   its receive DMA channel, lanLib's: with all three of its interrupts, Open
   Transport stalled for half a minute or more in some startups of Mac OS 9,
@@ -1044,8 +1068,13 @@ lacks: syshm says to install it again (and a window offers to update it).
   unmask the source but never clear a latched pulse in the controller, so
   the kernel takes pulses itself when it delivers them, as the NanoKernel's
   handler would: they stay in `PendingInts` until Mac OS has handled them
-  and calls PrioritizeInterrupts (which re-evaluates them). Otherwise a DMA
-  interrupt fired forever.
+  (cleared them in the controller, as Mac OS 8.5's sound driver does, or
+  masked their source) and calls PrioritizeInterrupts (which re-evaluates
+  them). Otherwise a DMA interrupt fired forever. One it hasn't handled
+  stays through one PrioritizeInterrupts more: Mac OS also calls it when it
+  lowers its 68k interrupt mask, and at the end of a dispatch that began
+  before the pulse came, and dropping the pulse there lost it (Unreal
+  Tournament's sound stopped and the game waited for it forever).
 - Host side: an SDL2 window loaded at run time (`src/display.c`; no build
   dependency, headless without it; on macOS also found in Homebrew's and
   MacPorts' directories, which aren't searched for bare library names;
@@ -1142,8 +1171,9 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
   Heathrow-style interrupt controller (`+0x10`), DMA channels (`+0x8000`,
   0x100 bytes each), SCC (`+0x12000`), VIA1 with Cuda (`+0x16000`).
   Interrupt sources use Heathrow numbers (DMA channel n is source n,
-  Ethernet 14, SCC A 15, SCC B 16, sound 17, VIA1 18, USB 28); levels: VIA1
-  1, sound, Ethernet, USB and their DMA 2, SCC 4. Configuration space is at
+  Ethernet 14, SCC A 15, SCC B 16, sound 17, VIA1 18, the display 22, as the
+  iMac's ATI chip, USB 28); levels: VIA1
+  1, the display, sound, Ethernet, USB and their DMA 2, SCC 4. Configuration space is at
   `0xFEC00000` (`CONFIG_ADDR`) and `0xFEE00000` (`CONFIG_DATA`).
 - Sound: `davbus` at Mac I/O `+0x14000` (DMA channels 8 and 9), with a
   `sound` child; DecoderInfo long 39 holds the chip's address.

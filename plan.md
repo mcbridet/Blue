@@ -109,6 +109,12 @@ Done:
   CD-ROM drives answer as Apple's CD-ROM driver, with CD icons; cue sheets
   with audio tracks; the drive's audio played through the sound chip's
   input and read digitally. See Findings, "CD audio".
+- **The display's VBL interrupt** (Task 17; `src/video.c`, `src/macio.c`,
+  `src/bootinfo.c`, `src/nk.c`): a 60 Hz vertical-blank interrupt on the
+  iMac's ATI line (source 22), through the display node's interrupt set,
+  in place of the Driver Services timer. The restored 9.2.2 reaches the
+  Finder in instruction time without a key. See Findings, "The display's
+  interrupt".
 
 Where it stops:
 
@@ -141,9 +147,10 @@ real time with fast start the Finder is up after 13.2 s of guest time (0.9
 s on the host), and the host then sleeps 25 s of 30. Its installer, Apple
 Software Restore, restores the CD's image onto a blank disk from `disk
 create` (671 MB, by instruction 40 billion of a scripted run), and the
-restored system starts up to the Finder in real time; in instruction time
-it waits before the Finder until a key is pressed (Findings, "The restored
-9.2.2 waits for a key"). After half an hour of idling the power manager
+restored system starts up to the Finder (the Setup Assistant over it the
+first time), in real time and, since the display has its vertical-blank
+interrupt, in instruction time too (Findings, "The restored 9.2.2 waits
+for a key"). After half an hour of idling the power manager
 dozes (PowerDispatch
 1, CacheDispatch 4), and at 55 minutes its 'powr' task stops and restarts
 scheduling around a sleep that doesn't happen; the system carries on.
@@ -475,8 +482,10 @@ the kernel); 8 onwards as the boot progresses.
   the floppy controller's cell (`empty_cell_ops`, `setup_machine()`);
   syshm's lanLib kept over the ROM file's `bmac+` one (`build_tree()`).
   `tests/test_mp.c` and `tests/test_nvram.c` cover them. Open: Apple's own
-  9.2/9.2.2 CDs (not tried: none here); the installed system's wait for a
-  key in instruction time (see Findings).
+  9.2/9.2.2 CDs (not tried: none here); interrupt sets for the USB
+  controller, the sound chip and lanLib on 9.2.2 (they need
+  `AAPL,interrupt-index`: see Findings, "The display's interrupt"). The
+  installed system's wait for a key in instruction time is gone (Task 17).
 - **Goal:** their ROM files (newer parcels, possibly newer kernel
   features) on the same path. Find out first whether they list `iMac,1`
   in `<COMPATIBLE>`.
@@ -614,6 +623,56 @@ the kernel); 8 onwards as the boot progresses.
   holds its samples bit for bit. Instruction-time runs of the 8.5 and 9.1
   CDs reach the Finder as before, but for the CD icon (on the desktop and
   in the window's title). Open: see future.md, "More CD formats".
+
+### 17. The display's VBL interrupt
+
+- **Status:** done. The display interrupts at each vertical blank, as the
+  iMac's ATI chip does, instead of the driver's Driver Services timer
+  (which ran on the Time Manager, so stopped with it). The chip
+  (`src/video.c`: `video_set_time()`, `video_next_vbl()`, `video_irq()`)
+  counts vertical blanks on the timebase, n at n/60 s rounded up, so 60
+  a guest second exactly and the same in every run; each latches its VBL
+  status, which holds the display's line (source 22, level 2: `bootinfo.h`,
+  `bootinfo_level_masks()`) while the interrupt is on, until the driver
+  acknowledges it. The kernel brings it up to date with the other devices
+  (`update_device_time()`, `device_next_tb()`, `update_interrupts()`, and
+  `idle_wait()` wakes for it in real time). The display node has
+  `interrupts` and an interrupt set (`interrupt_set()` in `bootinfo.c`, with
+  `AAPL,interrupt-index` for 9.2's ROM files). The driver
+  (`video_driver_call()`, `open_step()`) at Open: RegistryPropertyGet of
+  `driver-ist`, GetInterruptFunctions, InstallInterruptFunctions with its
+  handler (entry 1) and the set's refCon, enabler and disabler,
+  VSLNewInterruptService, the chip's interrupt on and the set's enabler;
+  without an interrupt set, no VBL service. The handler acknowledges the
+  vertical blank (kIsrIsNotComplete if there was none) and queues the
+  secondary handler (entry 2) unless it's queued already; that calls
+  VSLDoInterruptService. SetInterrupt (Control 7) turns the chip's
+  interrupt off and on (a vertical blank from while it was off doesn't
+  count). The timer path is gone: every system here has interrupt sets.
+  With more level-2 interrupts, latched DMA pulses got lost (see Findings,
+  "Pulses lost at PrioritizeInterrupts"): `macio_release()` keeps one Mac
+  OS hasn't handled for one more re-evaluation. Tests: `tests/test_video.c`
+  (the timing: 60 in a guest second, 276,666 or 276,667 ticks apart, one
+  interrupt for several unacknowledged; the driver's Open with and without
+  a set, the handler, the secondary handler, SetInterrupt),
+  `tests/test_nvram.c` (the display node's properties),
+  `tests/test_dbdma.c` (pulses kept and released). Checked (instruction
+  time, against main): the 8.5 CD, installed 8.5 and 8.6, the 9.1 and
+  9.2.2 CDs reach the Finder as before, two runs identical but for the JIT's
+  links; VBLs 59 a guest second (14,298 in the 8.5 CD's 4 billion
+  instructions, 241 s; main's timer: 13,750), fewer where Mac OS keeps
+  interrupts masked longer than a frame (Unreal Tournament: 52); the restored
+  9.2.2 reaches the Setup Assistant over the Finder in all of 6 runs with
+  different `--fixed-time`s (main: stuck in 3, stalled 17-25 s in the
+  others); Unreal Tournament (8.6, with its CD) plays its intro with sound
+  (main, merged: black screen, sound stopped, waiting for it); the hardware
+  cursor follows the pointer in window runs (8.5 and 9.2.2 CDs); fast start
+  in real time as main's (8.5 CD 13.8 s of guest time, 9.1 16.2 s, 9.2.2
+  13.1 s, 8.6 installed 18.5-18.7 s); host time the same within noise.
+- **Open:** on the restored 9.2.2's first startup (a disk Apple Software
+  Restore left unmounted), quitting the Setup Assistant leaves the desktop
+  without a menu bar, idle (with the VBL interrupt kept off too, and with
+  the old timer); quitting it on a cleanly unmounted restore works.
 
 ## Findings
 
@@ -1532,7 +1591,63 @@ Facts later tasks need, added as they are found.
   native code within 16 ms, while syshm's VBL is a Driver Services timer
   that itself needs the Time Manager. Options: a VBL interrupt from the
   display device (`video.c`, its node's interrupt set), or timers firing at
-  their exact time in instruction time.
+  their exact time in instruction time. **Resolved** by the first (Task
+  17); see the next.
+- **The display's interrupt** (Task 17): on the iMac the ATI chip's PCI
+  interrupt goes to Paddington's source 22 (MAME's `imacg3.cpp` wires its
+  Rage IIc there; its OHCI is source 28, as syshm's, and NetBSD on a Bondi
+  iMac says the same of the OHCI; QEMU's g3beige wires Grackle's four PCI
+  lines to Heathrow's 21-24). Real NDRVs install their handler in the
+  node's `driver-ist` set and either call VSLDoInterruptService there
+  (QemuMacDrivers' QemuVga, `USE_PCI_IRQ`) or from a secondary handler, as
+  syshm's does; VSLDoInterruptService runs the screen's VBL tasks (the
+  cursor's) and was called from a Driver Services timer's secondary
+  handler before, so either level works. Mac OS 9.2's ROM file (10.2f1)
+  has no InterruptTreeNew: DriverServicesLib builds the sets itself
+  (`0xFFD860F4`: a RegistryEntrySearch for `AAPL,interrupt-priorities`,
+  then four RegistryPropertyGets, each failing the node:
+  `AAPL,interrupt-priorities`, `-vectors`, `-index`, `AAPL,interrupts`),
+  one set per 68k level with members numbered in order, adding each to the
+  node's `driver-ist` (`0xFFD85E24`). `AAPL,interrupt-index` is the
+  source's entry in its table of 32-byte entries (above 0x3F: a cascaded
+  controller's, from CascadeInfo; the real Trampoline makes the property).
+  Without it no node had a set on 9.2.2: the display's Open got
+  nrNotFoundErr, USB's UIM never enables its interrupts, the sound DMA
+  plug-in doesn't start (no codec writes) and lanLib polls. With it on all
+  of them, 9.2.2 plays sound (and keeps its DMA running, which holds fast
+  start back: the CD's Finder at 22 s of guest time instead of 13, and
+  the host idles less), so only the display has it for now.
+- **The restored 9.2.2's hang, resolved:** reproduced with a restore whose
+  run was stopped without quitting Apple Software Restore (its first
+  startup then differs; a cleanly unmounted one didn't hang). On main, of
+  6 runs to 8 billion with `--fixed-time` 1.0-1.5 billion, 3 stopped short
+  of the Finder for good (a level-1 software interrupt never taken; 1679
+  later raises dropped as "already set") and 3 stalled 17-25 s the same
+  way before going on. With the vertical blank: none, the longest a
+  software interrupt waited 18 ms, and all 6 reach the Setup Assistant (the
+  restore's first startup). The same build with the chip's interrupt kept
+  off stalls as main does, so it's the VBL that ends them: each one ends
+  the native code the blue task naps in (exception 0), and the emulator,
+  taking it, takes the waiting software interrupt too. A software
+  interrupt dropped on purpose (its CR bits never posted) at 250 s of
+  guest time waited 22.5 s without the VBL, under 18 ms with it; at 30 s,
+  forever without.
+- **Pulses lost at PrioritizeInterrupts** (Task 17): `macio_release()`
+  dropped every taken pulse at each PrioritizeInterrupts, but Mac OS calls
+  that not only once it has handled what it dispatched: also when it
+  lowers its 68k interrupt mask, and at the end of a dispatch that began
+  before the pulse came. A DMA pulse taken in between was dropped unseen.
+  With the display's level-2 interrupts it happened often enough that
+  Unreal Tournament's sound DMA (8.6, its CD) stopped after 12 s, and the
+  game waited for it in SndChannelStatus at a black screen (merged main
+  does that too, by its timing). Mac OS 8.5-8.6's sound driver
+  clears its pulse in the controller and masks and unmasks its source;
+  Mac OS 9's interrupt sets mask and unmask. So a taken pulse now goes once
+  it's been cleared or masked, or at the PrioritizeInterrupts after the one
+  that found it unhandled. In that UT run a PrioritizeInterrupts found one
+  not handled yet 4,435 times (of 44,568 sound interrupts), none stayed
+  unhandled to the next, and the sound plays on (22.8 million frames by
+  instruction 20 billion, against 0.57 million before it stopped).
 - **The clock with `--fixed-time 1000000000`** reads an hour later on the
   9.2.2 CD than on 9.1's or 8.5's (12:50 PM against 11:50 AM): September
   2001, summer time in the northern hemisphere but not where this host is
