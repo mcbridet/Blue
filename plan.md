@@ -436,6 +436,25 @@ the kernel); 8 onwards as the boot progresses.
   `--rom MOS91.rom`. `rom info 91.iso` (and the other `rom` commands) read
   a disk image's the same way. `tests/test_hfsread.c` covers the reader.
 
+### 12. Shared folder
+
+- **Status:** done. `--share DIR` attaches a host folder as an HFS volume
+  (`src/share.c`): metadata made in memory by `hfs_build()` (`src/hfs.c`,
+  now with folders, B-trees of any depth, map nodes and Mac OS's name
+  order), file data read from the host's files on demand, Mac OS's writes
+  in an overlay; written back at the end of the run if Mac OS put the
+  volume away, the host's deleted or replaced files moved to
+  `DIR/.syshm-recovery/<date>/`, else the volume kept there as an image.
+  The disk driver takes a `struct disk_backend` (read and write callbacks)
+  in place of a file. `hfsread` reads through a callback too, and walks
+  the whole catalog (`hfsread_walk()`). `tests/test_share.c` covers names,
+  volumes (checked with hfsutils, and on Linux Apple's `fsck_hfs` from
+  hfsprogs), and writing back. 8.5 and 9.1 from their CDs and 8.6 from a
+  disk show the volume; Finder copies, new folders, renames, moves,
+  deletions and a SimpleText save came back to the folder. Open: writing
+  back when the volume is ejected, and offering the folder again as new
+  media (needs the disk driver's removable media).
+
 ## Findings
 
 Facts later tasks need, added as they are found.
@@ -911,3 +930,23 @@ Facts later tasks need, added as they are found.
   before. 0.28 million still exit (devices dirty, or the limit passed).
   9.1: kernel exits 8.33 → 1.53 million, host time 1.43 → 1.32 s
   (main 1.50); 8.5: 2.83 → 1.11 million, 1.03 → 1.02 s.
+- **Mac OS and a shared volume's MDB:** 8.5, 8.6 and 9.1 write the MDB
+  with the unmounted attribute (`drAtrb` bit 8) clear as their first write
+  after mounting a volume, before anything else, and with it set when they
+  put it away (Shut Down, Restart, Put Away). A volume that was written
+  but whose MDB doesn't say so wasn't put away (the run ended under it).
+  The Finder makes `Desktop DB` and `Desktop DF` on every writable volume
+  it mounts, and Desktop Printing (8.6) an invisible `DesktopPrinters DB`;
+  the Trash and the `Desktop Folder` come when used.
+- **The catalog's order of names** is Apple's FastRelString (the HFS code
+  in Apple's open-source `hfs`, `UCStringCompareData.h`'s `gCompareTable`):
+  case-insensitive, each accented letter after its plain one, a
+  non-breaking space equal to a space. hfsutils' `hfs_charorder` and
+  Linux's `caseorder` order the same (checked for all 65536 pairs);
+  `hfs.c` keeps the ranks. Linux's hfsprogs `fsck.hfs` (Apple's
+  fsck_hfs 540) checks HFS volumes, map nodes and order included;
+  hfsutils' `hfsck -n` fails to read any image, so the test runs it
+  without `-n` on a copy.
+- **Keys in input scripts:** in 9.1's Finder, Return held for 10 million
+  instructions didn't start editing an icon's name; held for 1 million it
+  does (8.5 took Command-D held 20 million).
