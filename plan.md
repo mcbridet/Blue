@@ -794,12 +794,29 @@ Facts later tasks need, added as they are found.
   Mode's r0 -1 (`0xFFCF8DB8`). The kernel's answer (`system_call()`)
   never counted the `sc` as retired, and an exit for it only services
   devices and Multiprocessing Services when they're due (or something
-  touched the devices since the last update); `quick_calls()` gives the
+  touched the devices since the last update); `in_place()` gives the
   engines the answers and a time-base limit (the earlier of the next
-  device event and `mp->next_tb`; 0 when devices are dirty, a switch or
-  software interrupt waits, with `clock`, or before trap logging starts)
-  for each main-loop run, so the run stays the same instruction for
-  instruction. 0.56 million still exit because the devices were dirty
-  (after each sync point and each real MP call), 0.07 million because
-  the limit had passed. Kernel exits 11.66 → 8.33 million, host time
-  1.53 → 1.44 s.
+  device event and `mp->next_tb`; 0 when devices are dirty, a switch,
+  software interrupt or preemption waits, with `clock`, or before trap
+  logging starts) for each main-loop run, so the run stays the same
+  instruction for instruction. 0.56 million still exit because the devices
+  were dirty (after each sync point and each real MP call), 0.07 million
+  because the limit had passed. Kernel exits 11.66 → 8.33 million, host
+  time 1.53 → 1.44 s.
+- **Kernel calls 0 and 1 in place:** most of the rest were the 68k
+  emulator's switches to native code and back (3.5 million
+  RunAlternateContext, 5 of them with an interrupt pending, and 3.5
+  million ReturnFromException, all but one with verdict 32-255; 8.5: 1.4
+  and 1.4 million). The engines call the
+  kernel's `kcall_in_place()` for `twi 31,r31,n` while the time base is
+  below the same limit and the blue task runs; it makes the call with
+  `kernel_call()` itself (the same code as at an exit) when it can't fail
+  and there's no interrupt pending (RunAlternateContext's `r4 & cr`), and
+  declines anything else (verdict 1, bad verdicts, unusable context
+  blocks, other calls), which then exits as before. Generated code
+  settles the lazy FPSCR first, and goes on through the block table, but
+  not as a branch (the `_SynchIdleTime` hook doesn't stop there, as it
+  doesn't after an exit). Counts in the end-of-run statistics are as
+  before. 0.28 million still exit (devices dirty, or the limit passed).
+  9.1: kernel exits 8.33 → 1.53 million, host time 1.43 → 1.32 s
+  (main 1.50); 8.5: 2.83 → 1.11 million, 1.03 → 1.02 s.

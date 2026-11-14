@@ -93,6 +93,16 @@ struct ppc_cpu {
 	 */
 	uint64_t sc_until;
 	uint32_t sc_blue, sc_word;
+	/*
+	 * Kernel calls (twi 31,r31,n) the kernel makes without an exit, while
+	 * the time base is below kcall_until (0: never): kcall(cpu, n), with
+	 * pc at the call (but the time base and instruction count not
+	 * current), makes it, leaving pc where to go on, or returns false
+	 * having changed nothing (the call exits then, as any other). That
+	 * retires nothing either.
+	 */
+	uint64_t kcall_until;
+	bool (*kcall)(struct ppc_cpu *cpu, unsigned n);
 
 	struct mem *mem;
 	struct jit *jit;        /* translate to host code (NULL: interpret) */

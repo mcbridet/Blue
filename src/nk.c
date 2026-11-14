@@ -545,6 +545,7 @@ struct machine {
 	bool system;                    /* is the System context running? */
 	uint32_t flags;                 /* context flags; exception code in the top byte */
 	uint32_t enables;               /* exception enables of the running context */
+	unsigned long kcalls_in_place[2];       /* kernel calls 0 and 1 the engines made (see kcall_in_place()) */
 	unsigned long exceptions[32];
 	uint8_t kdp[MEM_PAGE_SIZE];     /* kernel's copy of the KernelData page */
 	bool mp_kernel;                 /* the ROM wants Multiprocessing Services from the kernel (see init_info_records()) */
@@ -2669,26 +2670,6 @@ static const char *system_call(struct machine *m)
 	return NULL;
 }
 
-/*
- * The engines answer the quick calls themselves (see ppc.h), for the main
- * loop's runs (`on`), as long as that changes nothing else the kernel
- * would do at the exit: not once devices are to be updated or
- * Multiprocessing Services' tick is due, nor with a task switch or a
- * software interrupt waiting, nor with `clock` (each exit sets the time
- * base then).
- */
-static void quick_calls(struct machine *m, bool on)
-{
-	struct ppc_cpu *cpu = &m->cpu;
-	const struct mp_object *task = m->mp_kernel ? mp_lookup(&m->mp, m->mp.current, MP_TASK) : NULL;
-	cpu->sc_until = 0;
-	if (!on || !task || m->clock_mips || m->dev_dirty || m->mp.swi || m->mp.yield)
-		return;
-	cpu->sc_until = m->dev_next_tb < m->mp.next_tb ? m->dev_next_tb : m->mp.next_tb;
-	cpu->sc_blue = blue_running(m) ? NK2_FLAG_BLUE : 0;
-	cpu->sc_word = task->task.label;
-}
-
 /* Calls made through the emulator's trap table return to LR; others to the next instruction. */
 static uint32_t kcall_return_pc(const struct machine *m)
 {
@@ -2755,6 +2736,59 @@ static const char *kernel_call(struct machine *m, unsigned n)
 
 	cpu->pc = kcall_return_pc(m);
 	return NULL;
+}
+
+/*
+ * Kernel calls the engines have made in place (see ppc.h): 0 and 1 in
+ * their common cases, RunAlternateContext with no interrupt pending, and
+ * ReturnFromException resuming (verdict 0) or ending the alternate
+ * context (32-255), which can't fail; anything else exits.
+ */
+static bool kcall_in_place(struct ppc_cpu *cpu, unsigned n)
+{
+	struct machine *m = (struct machine *)((char *)cpu - offsetof(struct machine, cpu));
+	uint32_t r3 = cpu->gpr[3];
+	bool common;
+	if (n == 1)
+		common = !(cpu->gpr[4] & cpu->cr) && mem_ok(&m->mem, r3, CB_SIZE, MEM_RW);
+	else
+		common = n == 0 && (r3 == 0 || (r3 >= 32 && r3 < 256 && !m->system &&
+						 mem_ok(&m->mem, m->system_cb, CB_SIZE, MEM_RW)));
+	if (!common)
+		return false;
+	kernel_call(m, n);
+	cpu->exit_insn = TWI_KCALL | n;         /* (as the exit would leave it) */
+	m->kcalls_in_place[n]++;
+	return true;
+}
+
+/*
+ * What the engines may do in place (see ppc.h) in the main loop's runs
+ * (`on`): what changes nothing else the kernel would do at the exit, so
+ * not once devices are to be updated or Multiprocessing Services' tick is
+ * due, nor with a task switch, a software interrupt or a preemption
+ * waiting, nor with `clock` (each exit sets the time base then). Kernel
+ * calls only while the blue task runs (the others' stop the run).
+ */
+static void in_place(struct machine *m, bool on)
+{
+	struct ppc_cpu *cpu = &m->cpu;
+	const struct mp_object *task = m->mp_kernel ? mp_lookup(&m->mp, m->mp.current, MP_TASK) : NULL;
+	cpu->sc_until = cpu->kcall_until = 0;
+	if (!on || m->clock_mips || m->dev_dirty || m->mp.swi || m->mp.yield || m->preempt)
+		return;
+	uint64_t until = m->dev_next_tb;
+	if (m->mp_kernel && m->mp.next_tb < until)
+		until = m->mp.next_tb;
+	if (task) {
+		cpu->sc_until = until;
+		cpu->sc_blue = blue_running(m) ? NK2_FLAG_BLUE : 0;
+		cpu->sc_word = task->task.label;
+	}
+	if (blue_running(m)) {
+		cpu->kcall_until = until;
+		cpu->kcall = kcall_in_place;
+	}
 }
 
 /*
@@ -3007,7 +3041,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		}
 		if (opt->watch)
 			watch_protect(&m, opt->watch, true);
-		quick_calls(&m, !opt->trap_log || trap_log_armed);      /* (trap logging starts at the same exit) */
+		in_place(&m, !opt->trap_log || trap_log_armed);         /* (trap logging starts at the same exit) */
 		/* (a random one in RUN_SAMPLE timed, for the status bar's speed: see status_lights()) */
 		m.run_sample = m.run_sample * 1664525u + 1013904223u;
 		bool timed = m.display && m.run_sample < UINT32_MAX / RUN_SAMPLE;
@@ -3017,7 +3051,11 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			m.run_ns += host_ns() - run_from;
 			m.run_insns += cpu->icount - insns_from;
 		}
-		quick_calls(&m, false);
+		in_place(&m, false);
+		for (unsigned n = 0; n < 2; n++) {
+			kcalls[n] += m.kcalls_in_place[n];
+			m.kcalls_in_place[n] = 0;
+		}
 		if (opt->watch)
 			watch_protect(&m, opt->watch, false);
 		sync = cpu->icount >= next_sync;
