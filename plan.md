@@ -455,6 +455,25 @@ the kernel); 8 onwards as the boot progresses.
   back when the volume is ejected, and offering the folder again as new
   media (needs the disk driver's removable media).
 
+### 13. Installing the guest tools
+
+- **Status:** done (8.5, 8.6; 9.1 untested: no installed 9.1 image). In
+  window runs, syshm looks for the guest tools in the startup disk's
+  System Folder before Mac OS starts (`install_check()` in
+  `src/install.c`: the System Folder's folders, whatever their names, for
+  files of the tools' type and creator whose code makes the tool's host
+  call; current if both forks are the bytes this syshm makes). Once the
+  Finder is up, if one is missing or differs (and the disk is writable
+  and not locked), a box over the screen offers to install or update them;
+  Mac OS runs on meanwhile. On yes, Mac OS writes them itself: syshm
+  diverts the next `_SynchIdleTime` to a 68k bootstrap that prepares a
+  generated installer fragment with the Code Fragment Manager and calls it
+  (see Findings). Input scripts answer with `tools install` or `tools
+  later` (and turn the check on without a window). `tests/test_install.c`
+  covers the check on HFS volumes made with `hfs_build()`, the offer, and
+  the installer against a File Manager of its own. Open: "don't ask
+  again"; 9.1 on an installed disk.
+
 ## Findings
 
 Facts later tasks need, added as they are found.
@@ -988,3 +1007,41 @@ Facts later tasks need, added as they are found.
 - **Keys in input scripts:** in 9.1's Finder, Return held for 10 million
   instructions didn't start editing an icon's name; held for 1 million it
   does (8.5 took Command-D held 20 million).
+- **Running code of syshm's in Mac OS on demand** (installing the guest
+  tools): the Toolbox trap table is in low memory as on 68k Macs (entry
+  `0x0E00 + 4 × (trap & 0x3FF)`), and the 68k emulator dispatches through
+  it on every call, interpreted or recompiled. `_SynchIdleTime` (ABF7),
+  where the idle hook stops, is called from a `_SystemTask` patch in the
+  system heap (r24 points 8 bytes into `_SystemTask`'s entry, on 8.5 and
+  8.6): application time, in the current application's context (often
+  the Finder's), inside its WaitNextEvent. At that hook syshm points the
+  entry at 68k code of its own, in 64 KB it maps at `0x5E000000`, outside
+  everything Mac OS knows of; the dispatch under way goes there. The code
+  puts the entry back first, saves d0-d7/a0-a6, and calls
+  `_CodeFragmentDispatch` (AA5A, a routine descriptor to the native CFM;
+  selector 3 GetMemFragment, 4 CloseConnection, pushed as a word, Pascal
+  conventions) on a PEF container made like the drivers, with
+  `kPrivateCFragCopy`: its InterfaceLib imports resolve, and memory outside
+  RAM is fine for the container. Its main routine is called through a
+  routine descriptor (procInfo 0, ISA 1, the TVector from GetMemFragment
+  written in by the 68k code) by a plain `jsr`, so Mixed Mode switches
+  to native code as for any 68k caller, and back for each File Manager
+  trap. Then CloseConnection, the registers, and a `jmp` to the trap's
+  own routine. FindFolder, PBHGetVInfoSync, PBGetCatInfoSync, the FSp
+  calls, FSWrite and FSClose all work there, and so does
+  LaunchApplication (`launchContinue | launchNoFileFlags |
+  launchDontSwitch`) of a background-only application: Enhancements runs
+  at once (its launches count 2 in the run's statistics). Disk First Aid
+  finds the volume sound afterwards. (hfsutils' `hdel` on an installed
+  8.6 disk leaves something it can't repair; `hattrib` doesn't.)
+- **A running Enhancements can't be replaced** (its resource fork is open:
+  `fBsyErr`), so syshm has it quit first (`helper.quit`: its main
+  routine returns at its next WaitNextEvent, as for a quit Apple event)
+  and goes on once it's gone (0.1 s later; 5 s at most), and starts it
+  again if it couldn't be replaced after all.
+- **RAVE finds engines per program:** QuickDraw 3D RAVE looks through the
+  Extensions folder when a program loads it, so programs opened after the
+  3D engine is installed find it without a restart, even after an earlier
+  program loaded RAVE (SimpleText opening the Teapot from the QuickDraw 3D
+  folder, quit, the engine installed, opened again: 19 calls to the
+  engine). Programs already running don't.
