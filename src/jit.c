@@ -1852,13 +1852,8 @@ static void build_settle(struct tx *t)
 			continue;
 		if (!t->overflow)
 			table[k] = a64_b(false, (int32_t)((t->p - &table[k]) * 4));
-		unsigned h[3] = { 0, 7, 0 };            /* (fp_compute() and fp_inexact() leave these alone) */
-		if (xo5 >= 28)
-			h[1] = 4, h[2] = 7;
-		else if (xo5 == 25)
-			h[2] = 7;
-		else if (xo5 == 24 || xo5 == 26)
-			h[1] = 0;
+		/* (registers fp_compute() and fp_inexact() leave alone for each) */
+		unsigned h[3] = { 0, xo5 >= 28 ? 4 : xo5 == 24 || xo5 == 26 ? 0 : 7, 7 };
 		for (unsigned r = 0; r < 3; r++)
 			if (uses[r])
 				emit(t, a64_fp_ldst(true, true, h[r], R_STATE, (unsigned)offsetof(struct jit_state, fp_ops) + 8 * r));
