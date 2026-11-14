@@ -35,29 +35,39 @@ Done:
   `sc` (only when `mp_kernel`) or kernel call 8, call number in r0. Done so
   far: tasks (7-10, 126; see below), queues (15-18, 39), semaphores
   (20-23), critical regions (25-28), event groups (49-52, 54),
-  notifications (64-67, 128), task queries (11, 12, 14, 56, 59, 63), areas
-  (77, 80; one per startup region plus Mac OS's RAM), timers (40, 30, 31,
-  32: made, set and armed, but they never fire), and `sc` with r0 -1 and -2
-  (`system_call()`: is the current task the blue one). `SYSHM_LOG_MP=1`
-  logs each, and the task switches. Setting an event group that raises a
-  68k software interrupt stops the run (not delivered yet).
+  notifications (64-67, 128), task queries (11, 12, 14, 56, 59, 63),
+  `MPYieldWithHint` (13), areas (77, 80; one per startup region plus Mac
+  OS's RAM), the page ager's (82, 100, and 116 for an invalid process),
+  timers (40, 30, 31, 32: made, set and armed, but they never fire), and
+  `sc` with r0 -1 and -2 (`system_call()`: is the current task the blue
+  one). `SYSHM_LOG_MP=1` logs each, and the task switches. Setting an event
+  group that raises a 68k software interrupt stops the run (not delivered
+  yet).
 - **Tasks** (Task 1): tasks other than the blue one are made, started,
   terminated and deleted, and run on the one processor: registers saved
-  in `struct mp`, swapped by `switch_task()`. A started task runs when the
-  blue task polls or naps, until it blocks or ends; blocked tasks are never
-  woken yet (Task 2).
+  in `struct mp`, swapped by `switch_task()`.
+- **Scheduling** (Task 2): NanoKernel 2's priorities, ready queue and time
+  slices (`mp_next()`, `mp_switch()`, `mp_tick()`), waits that block and
+  wake (see Findings), the blue task's polls (yield) and naps (tasks run
+  meanwhile), interrupts making the blue task critical
+  (`mp_interrupt()`), and its 68k interrupt mask setting its priority
+  (`blue_boost()`). NanoKernelInfo's task count starts at 2, as with the
+  real kernel's idle task.
 
 Where it stops:
 
 ```
 build/syshm boot MOS91.rom --cdrom 91.iso --max 20000000000
-MPDispatch: call 100 (MPGetFreePageCount; r3=0x00000000 r4=0x00000000 r5=0x00000000 r6=0x00000000) at pc 0xFFCE2DDC, lr 0xFFCE24AC
-stopped: unimplemented Multiprocessing Services call (task 0x00230001)
+stopped: instruction limit reached (native context)
 ```
 
-That's the third task startup makes, the page ager ('ager'), at instruction
-116,381,235, right after it starts (`MPGetFreePageCount`, NanoKernel 2's
-`PSA.FreePageCount`). The screen shows the grey desktop pattern.
+Startup's three tasks first run at instruction 53,900,000, once the 68k
+code unmasks interrupts (as with the real kernel, `docs/nk2-reference.md`):
+'deth' and 'dbgr' block on their queues; 'ager' sets itself up (100, 64,
+15, 39, 49, 66, 66, 82, 116, 100, the real kernel's sequence) and blocks in
+`MPWaitForEvent` with a 3 s timeout. The blue task then idles to the limit
+(21 million naps), waiting for timers to fire (Task 3). The screen shows
+the grey desktop pattern.
 
 ## Ground rules for every task
 
@@ -137,7 +147,7 @@ That's the third task startup makes, the page ager ('ager'), at instruction
   then is ended with exception 0 (`m->preempt`) so the emulator takes it.
 - Idle: `idle_wait(m, deadline)` (PowerDispatch naps, the `_SynchIdleTime`
   hook, MP call 55) sleeps in real time; in instruction time it returns at
-  once. With tasks ready, they run instead (`blue_yields()`).
+  once. With tasks ready, they run instead (`blue_naps()`).
 - `src/mp.c` holds the Multiprocessing Services objects (`struct mp`):
   IDs as NanoKernel 2 makes them (slot << 16 | the slot's use count), the
   blue process, task, page queue and address space, the tasks' saved
@@ -210,7 +220,14 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 2. Scheduler, blocking and waking
 
-- **Status:** not started. **Needs:** 1.
+- **Status:** done. Priorities, ready queue and time slices after
+  `NKScheduler.s` (`mp_next()`, `mp_switch()`, `mp_tick()` in `mp.c`;
+  `switch_task()`, `blue_naps()`, `blue_boost()` and the run loop in
+  `nk.c`); waits on queues, semaphores, event groups and critical regions
+  block and are woken (and deletions wake them with `kMPDeletedErr`);
+  `MPYieldWithHint` (13); the page ager's calls (82, 100, 116). Finite
+  timeouts block like infinite ones until Task 3. `tests/test_mp.c`
+  covers it. See Findings.
 - **Owns:** `src/mp.c`, `src/mp.h`, the run loop in `src/nk.c`.
 - **Goal:** waits block MP tasks and wake them; the blue task and MP
   tasks share the processor fairly and deterministically.
@@ -427,11 +444,84 @@ Facts later tasks need, added as they are found.
   saved registers when it was in the System context), and `preempt` waits
   until the blue task is back. Kernel calls other than 8 and exceptions in
   other tasks stop the run (Task 4). The switch happens in `nk_boot()`'s
-  loop after an exit is handled, when `mp.yield` is set (by a poll, a
-  block, an end, or `blue_yields()` in place of a nap).
+  loop after an exit is handled, when `mp.yield` is set (see the
+  scheduler's finding below).
 - **Timers:** 40 makes one (ID in r4), 30 sets what firing does (as 66
   does for notifications), 31 records an absolute time (options 2 and 4,
   delta and duration, are left unimplemented), 32 returns the time left in
   r4:r5 and disarms. None fire. When they do (Task 3), TimeManagerLib's
   timers set event group 0x160001, the level-1 software interrupt group:
   Task 5 is needed then too.
+- **The scheduler in syshm (Task 2, `mp.c`):** one ready queue in arrival
+  order (`mp->ready`, the blue task included when it's ready but not
+  running); `mp_next()` (NanoKernel 2's `SchEval`) keeps the running task
+  unless a ready one is strictly more urgent, else takes the first of the
+  most urgent priority, else (all blocked) the blue task. Priorities 0
+  critical, 1 latency-protected, 2 nominal (new tasks and the blue task),
+  3 idle. A task woken by what it waits for becomes latency-protected and
+  goes to the back (`SchRdyTaskNow`); a preempted or yielding one goes to
+  the back too. Time slices (`start_slice()`): the task's weight's share of
+  its priority's cake, with the ready tasks of that priority (cakes:
+  `TimebaseTicksPerPeriod(-1042)` = 17193 ticks, times 8 per priority);
+  at its end (`mp_tick()`, the decrementer) a critical or latency-protected
+  task becomes nominal and yields. A running nominal task keeps its slice
+  when re-evaluated; more urgent ones get a new one (as NanoKernel 2's
+  `major_0x148ec`). `mp->yield` is NanoKernel 2's SchEvalFlag: set by
+  anything that readies, blocks, ends or yields; the loop then calls
+  `mp_next()` and `switch_task()` (which also settles a task that yielded
+  and was chosen again). `mp_tick()` runs when `mp_due()` (`mp->next_tb`;
+  every call sets it to 0), only at exits that aren't for debugging.
+- **Blocking and waking:** a task that waits blocks with its PC on the `sc`
+  (`waiting` = the object, `since` = the order it blocked in; the first to
+  block is woken first). Queues, event groups and critical regions wake
+  their first waiter to make the call again (`EnqueueMessage`, `SetEvent`,
+  `MPExitCriticalRegion` rewind the PC by 4); a semaphore passes straight
+  to its first waiter, whose call then returns noErr without taking it
+  again (`SignalSemaphore` leaves the value alone); deleting an object
+  wakes every waiter with `kMPDeletedErr` (priority unchanged). Such
+  statuses are kept in `task.resume`: the call made again returns it at
+  once (`mp_call()`), which is also how timeouts will end waits (Task 3).
+- **The blue task:** a poll (`kMPBlueBlockingErr`) yields to tasks as
+  urgent and records the object (`mp->polled`, NanoKernel 2's
+  `BlueSpinningOn`); when that object becomes available, a napping blue
+  task wakes (latency-protected), else its next nap is skipped
+  (`UnblockBlueIfCouldBePolling`, `MPDelayUntilSys`). A nap (call 55, the
+  `_SynchIdleTime` hook, PowerDispatch: `blue_naps()`) with tasks ready
+  blocks the blue task until its time (then latency-protected, like
+  `TimerFire1`), an interrupt, or nothing else is ready (then the rest of
+  the nap is `idle_wait()`); with none ready it's `idle_wait()` as before;
+  with an interrupt pending, neither. A posted interrupt
+  (`update_interrupts()` → `mp_interrupt()`) makes the blue task critical
+  and puts it at the front (the PIH's `SchRdyTaskLater`).
+- **The 68k interrupt mask** (`blue_boost()`, NanoKernel 2's
+  `SchFiddlePriorityShifty` and `IntDecrementer`): the emulator keeps the
+  68k SR's upper byte in its context's r25 (0x27 masked, 0x20 not; read
+  live while the System context runs, from the ECB otherwise). Mask 7: the
+  blue task is critical at every evaluation, and `mp_tick()` does nothing
+  but come back a critical slice later (the decrementer skips
+  `TimerDispatch`: no time slices or timers while the 68k has interrupts
+  off). Mask at or above the ECB's PriorityShifty level (+0xCC, low
+  nybble; 0 in syshm, so 2): latency-protected. In syshm's run the mask is
+  7 from instruction 1.1 million to about 53.88 million, right after
+  TimeManagerLib arms its timers; the tasks then run at the next sync. No
+  kernel call 4 comes with it (the real one comes because an interrupt is
+  pending). Not modelled: PriorityShifty's 0x100 bit (the kernel sets it
+  when it boosts the blue task; the emulator then calls `MPYieldWithHint`
+  on its wait path) and high bit, so syshm doesn't see call 13 from the
+  emulator; call 13 is implemented after `MPYieldWithHint` (r3 returned
+  unchanged).
+- **The page ager:** `MPGetFreePageCount` (100) returns `mp->free_pages`,
+  NanoKernel 2's primed free list size, 18 + RAM pages / 2048 (34 at
+  128 MB; the real kernel said 16 at 256 MB, its pool having taken some).
+  The ager's thresholds are 5 and 10 pages (MPLibrary globals, at
+  0x35978, which its TOC points to at -0x1C, and its TOC + 0x774 =
+  0x3597C): below 10 it looks for pages to take (the routine at
+  `0xFFCE220C`; probably `MPFindVictimPage` 95, then 128 and 67 on the RAM
+  area's backing provider, which the real kernel's boot makes 45 times
+  each), and below 5 its wait shrinks by 0.1 s a pass, down to 0.3 s
+  (growing back to 3 s at 10 or more). `MPRegisterAger` (82)
+  keeps the notification (`mp->ager`; `MPGetFreePage` would set its event
+  group when pages run out). `MPGetNextIDOwnedByProcess` (116) is called
+  with process 0 and returns `kMPInvalidIDErr`, as on the real kernel;
+  other uses are unimplemented. NanoKernelInfo.TaskCount starts at 2
+  (`mp->tasks`), so the page-fault queue's reserves are 2, 3, 4, 5.

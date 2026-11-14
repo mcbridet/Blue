@@ -3,6 +3,8 @@
 #include "../src/mp.h"
 #include "test.h"
 
+#define TB_HZ 16600000u
+
 static struct mp mp;
 static struct ppc_cpu cpu;
 
@@ -15,14 +17,44 @@ static int32_t call(unsigned n, unsigned count, const uint32_t *args)
 	return (int32_t)cpu.gpr[3];
 }
 
-void test_mp(void)
+/* Puts mp_next()'s choice on the processor at timebase `now`; returns it. */
+static uint32_t schedule(uint64_t now)
 {
-	mp_init(&mp);
+	uint32_t next = mp_next(&mp, MP_AS_IS);
+	mp_switch(&mp, next, now);
+	return next;
+}
+
+static uint8_t state(uint32_t task)
+{
+	return mp_lookup(&mp, task, MP_TASK)->task.state;
+}
+
+static uint8_t priority(uint32_t task)
+{
+	return mp_lookup(&mp, task, MP_TASK)->task.priority;
+}
+
+/* Makes and starts a task (termination queue `queue`); returns its ID. */
+static uint32_t start_task(uint32_t queue)
+{
+	uint32_t create[] = { mp.blue_process, queue, 0, 0x64218, 0x35520, 0xFFCE03A0u, 0x35208 };
+	CHECK_EQ(call(7, 7, create), MP_NO_ERR);
+	uint32_t task = cpu.gpr[10];
+	uint32_t start[] = { task, 0x74657374, 0x64218, 0x11, 0x22, 0x64218, 0x63E18 };
+	CHECK_EQ(call(8, 7, start), MP_NO_ERR);
+	return task;
+}
+
+/* Creating, starting, ending and deleting tasks */
+static void test_tasks(void)
+{
+	mp_init(&mp, TB_HZ);
 	mp.task_return = 0x68FFE000u;
 	uint32_t blue = mp.blue_task;
 	CHECK_EQ(mp.current, blue);
-	CHECK_EQ(mp.tasks, 1);
-	CHECK_EQ(mp_next(&mp), blue);
+	CHECK_EQ(mp.tasks, 2);          /* (the idle task too) */
+	CHECK_EQ(mp_next(&mp, MP_AS_IS), blue);
 
 	CHECK_EQ(call(15, 0, NULL), MP_NO_ERR);         /* the termination queue */
 	uint32_t queue = cpu.gpr[4];
@@ -36,7 +68,7 @@ void test_mp(void)
 	uint32_t create[] = { mp.blue_process, queue, 0, 0x64218, 0x35520, 0xFFCE03A0u, 0x35208 };
 	CHECK_EQ(call(7, 7, create), MP_NO_ERR);
 	uint32_t task = cpu.gpr[10];
-	CHECK_EQ(mp.tasks, 2);
+	CHECK_EQ(mp.tasks, 3);
 	struct mp_regs *regs = mp_regs(&mp, task);
 	CHECK(regs != NULL);
 	CHECK_EQ(regs->pc, 0xFFCE03A0u);
@@ -45,24 +77,25 @@ void test_mp(void)
 	CHECK_EQ(regs->lr, mp.task_return);
 	CHECK(!mp_ready(&mp));
 
-	/* starting: (task, name, its r3, termination message words, its r1, its stack's end) */
+	/* starting: (task, name, its r3, termination message words, its r1, its stack's end); it doesn't preempt the blue task */
 	uint32_t start[] = { task, 0x64657468, 0x64218, 0x11, 0x22, 0x64218, 0x63E18 };
 	CHECK_EQ(call(8, 7, start), MP_NO_ERR);
 	CHECK_EQ(regs->gpr[3], 0x64218);
 	CHECK_EQ(regs->gpr[1], 0x64218);
 	CHECK(mp_ready(&mp));
-	CHECK_EQ(mp_next(&mp), task);
+	CHECK_EQ(priority(task), MP_NOMINAL);
+	CHECK_EQ(mp_next(&mp, MP_AS_IS), blue);
 	CHECK_EQ(call(8, 7, start), MP_INSUFFICIENT_RESOURCES_ERR);
 
-	/* the blue task polls: it yields, and doesn't block */
+	/* the blue task polls: it doesn't block, and yields */
 	uint32_t wait[] = { queue, 0, 0, 0, 0x7FFFFFFF };
 	CHECK_EQ(call(18, 5, wait), MP_BLUE_BLOCKING_ERR);
 	CHECK(mp.yield);
-	mp_switch(&mp, task);
+	CHECK_EQ(schedule(0), task);
 	CHECK(!mp.yield);
 	CHECK_EQ(mp.current, task);
 	CHECK(!mp_ready(&mp));
-	CHECK_EQ(mp_next(&mp), blue);
+	CHECK_EQ(state(blue), MP_TASK_READY);
 
 	uint32_t none[] = { 0 };
 	CHECK_EQ(call(11, 1, none), 0);
@@ -76,36 +109,33 @@ void test_mp(void)
 	CHECK(mp_call(&mp, &cpu, NULL));
 	CHECK_EQ(cpu.gpr[3], queue);
 	CHECK(mp.yield);
-	CHECK_EQ(mp_lookup(&mp, task, MP_TASK)->task.state, MP_TASK_BLOCKED);
-	CHECK_EQ(mp_next(&mp), blue);
-	mp_switch(&mp, blue);
-	CHECK_EQ(mp_lookup(&mp, task, MP_TASK)->task.state, MP_TASK_BLOCKED);
+	CHECK_EQ(state(task), MP_TASK_BLOCKED);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(state(task), MP_TASK_BLOCKED);
 
 	/* terminating it sends its message, with the result, to the queue */
 	uint32_t term[] = { task, 0x1234 };
 	CHECK_EQ(call(10, 1, term), MP_INSUFFICIENT_RESOURCES_ERR);    /* (not terminated yet) */
 	CHECK_EQ(call(9, 2, term), MP_NO_ERR);
 	CHECK_EQ(call(9, 2, term), MP_INSUFFICIENT_RESOURCES_ERR);
+	CHECK(!mp_ready(&mp));
 	CHECK_EQ(call(18, 5, wait), MP_NO_ERR);
 	CHECK_EQ(cpu.gpr[4], 0x11);
 	CHECK_EQ(cpu.gpr[5], 0x22);
 	CHECK_EQ(cpu.gpr[6], 0x1234);
 	CHECK_EQ(call(10, 1, term), MP_NO_ERR);
-	CHECK_EQ(mp.tasks, 1);
+	CHECK_EQ(mp.tasks, 2);
 	CHECK(mp_regs(&mp, task) == NULL);
 
 	/* a task that ends itself gives up the processor */
-	CHECK_EQ(call(7, 7, create), MP_NO_ERR);
-	task = cpu.gpr[10];
-	start[0] = task;
-	CHECK_EQ(call(8, 7, start), MP_NO_ERR);
-	mp_switch(&mp, task);
+	task = start_task(queue);
+	CHECK_EQ(call(13, 1, none), 0);         /* (MPYield: the blue task to the back) */
+	CHECK_EQ(schedule(0), task);
 	term[0] = task;
 	CHECK_EQ(call(9, 2, term), MP_NO_ERR);
 	CHECK(mp.yield);
-	CHECK_EQ(mp_lookup(&mp, task, MP_TASK)->task.state, MP_TASK_TERMINATED);
-	CHECK_EQ(mp_next(&mp), blue);
-	mp_switch(&mp, blue);
+	CHECK_EQ(state(task), MP_TASK_TERMINATED);
+	CHECK_EQ(schedule(0), blue);
 	CHECK_EQ(call(18, 5, wait), MP_NO_ERR);
 	CHECK_EQ(cpu.gpr[6], 0x1234);
 
@@ -117,4 +147,270 @@ void test_mp(void)
 	CHECK_EQ(cpu.gpr[6], 0x55);
 	CHECK_EQ(mp_terminate(&mp, blue, 0), MP_INSUFFICIENT_RESOURCES_ERR);
 	CHECK(!mp.yield);
+}
+
+/* Waits block tasks; what they wait for wakes them, latency-protected, ahead of the blue task */
+static void test_waking(void)
+{
+	mp_init(&mp, TB_HZ);
+	uint32_t blue = mp.blue_task;
+	CHECK_EQ(call(15, 0, NULL), MP_NO_ERR);
+	uint32_t queue = cpu.gpr[4];
+	uint32_t task = start_task(queue);
+	uint32_t yield[] = { 0 };
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(0), task);
+
+	/* a queue: the message wakes the task, which takes it when it makes its call again */
+	uint32_t wait[] = { queue, 0, 0, 0, 0x7FFFFFFF };
+	CHECK_EQ(call(18, 5, wait), (int32_t)queue);
+	CHECK_EQ(state(task), MP_TASK_BLOCKED);
+	CHECK_EQ(schedule(0), blue);
+	uint32_t notify[] = { queue, 1, 2, 3 };
+	CHECK_EQ(call(17, 4, notify), MP_NO_ERR);
+	CHECK(mp.yield);
+	CHECK_EQ(state(task), MP_TASK_READY);
+	CHECK_EQ(priority(task), MP_LATENCY_PROTECTED);
+	CHECK_EQ(schedule(0), task);    /* (it preempts the blue task, nominal) */
+	CHECK_EQ(state(blue), MP_TASK_READY);
+	CHECK_EQ(call(18, 5, wait), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], 1);
+	CHECK_EQ(cpu.gpr[6], 3);
+
+	/* a semaphore: signalled, it passes straight to the waiting task */
+	uint32_t sem_args[] = { 1, 0 };
+	CHECK_EQ(call(20, 2, sem_args), MP_NO_ERR);
+	uint32_t sem = cpu.gpr[5];
+	uint32_t sem_wait[] = { sem, 0x7FFFFFFF };
+	CHECK_EQ(call(23, 2, sem_wait), (int32_t)sem);
+	CHECK_EQ(schedule(0), blue);
+	uint32_t signal[] = { sem };
+	CHECK_EQ(call(22, 1, signal), MP_NO_ERR);
+	CHECK_EQ(mp_lookup(&mp, sem, MP_SEMAPHORE)->sem.value, 0);
+	CHECK_EQ(schedule(0), task);
+	CHECK_EQ(call(23, 2, sem_wait), MP_NO_ERR);
+	CHECK_EQ(mp_lookup(&mp, sem, MP_SEMAPHORE)->sem.value, 0);
+	CHECK_EQ(call(23, 2, sem_wait), (int32_t)sem);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(call(21, 1, signal), MP_NO_ERR);       /* (deleting it wakes the task: its call returns kMPDeletedErr) */
+	CHECK_EQ(priority(task), MP_LATENCY_PROTECTED);
+	CHECK_EQ(schedule(0), task);
+	CHECK_EQ(call(23, 2, sem_wait), MP_DELETED_ERR);
+
+	/* an event group: the task gets the flags set */
+	CHECK_EQ(call(49, 0, NULL), MP_NO_ERR);
+	uint32_t event = cpu.gpr[4];
+	uint32_t event_wait[] = { event, 0, 0x7FFFFFFF };
+	CHECK_EQ(call(52, 3, event_wait), (int32_t)event);
+	CHECK_EQ(schedule(0), blue);
+	uint32_t set[] = { event, 5 };
+	CHECK_EQ(call(51, 2, set), MP_NO_ERR);
+	CHECK_EQ(schedule(0), task);
+	CHECK_EQ(call(52, 3, event_wait), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], 5);
+	CHECK_EQ(mp_lookup(&mp, event, MP_EVENT_GROUP)->event.flags, 0);
+
+	/* a critical region: the task gets in once the blue task is out; the blue task polls */
+	CHECK_EQ(call(25, 0, NULL), MP_NO_ERR);
+	uint32_t region = cpu.gpr[4];
+	uint32_t enter[] = { region, 0x7FFFFFFF, mp.blue_process }, leave[] = { region, mp.blue_process };
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(call(27, 3, enter), MP_NO_ERR);
+	CHECK_EQ(call(27, 3, enter), MP_NO_ERR);        /* (again: it's the blue task's) */
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(0), task);
+	CHECK_EQ(call(28, 2, leave), MP_INSUFFICIENT_RESOURCES_ERR);   /* (not the task's) */
+	enter[1] = 0;
+	CHECK_EQ(call(27, 3, enter), MP_TIMEOUT_ERR);
+	enter[1] = 0x7FFFFFFF;
+	CHECK_EQ(call(27, 3, enter), (int32_t)region);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(call(28, 2, leave), MP_NO_ERR);
+	CHECK_EQ(state(task), MP_TASK_BLOCKED);
+	CHECK_EQ(call(28, 2, leave), MP_NO_ERR);
+	CHECK_EQ(state(task), MP_TASK_READY);
+	CHECK_EQ(schedule(0), task);
+	CHECK_EQ(call(27, 3, enter), MP_NO_ERR);
+	CHECK_EQ(mp_lookup(&mp, region, MP_CRITICAL_REGION)->region.owner, task);
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(call(27, 3, enter), MP_BLUE_BLOCKING_ERR);
+	CHECK_EQ(mp.polled, region);
+
+	/* the first to block is the first woken */
+	uint32_t second = start_task(queue);
+	CHECK_EQ(schedule(0), task);
+	CHECK_EQ(call(18, 5, wait), (int32_t)queue);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(0), second);
+	CHECK_EQ(call(18, 5, wait), (int32_t)queue);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(call(17, 4, notify), MP_NO_ERR);
+	CHECK_EQ(state(task), MP_TASK_READY);
+	CHECK_EQ(state(second), MP_TASK_BLOCKED);
+	uint32_t del[] = { queue };
+	CHECK_EQ(call(16, 1, del), MP_NO_ERR);
+	CHECK_EQ(state(second), MP_TASK_READY);
+	CHECK_EQ(schedule(0), task);
+	CHECK_EQ(call(18, 5, wait), MP_INVALID_ID_ERR);         /* (the queue is gone, message and all) */
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(0), second);
+	CHECK_EQ(call(18, 5, wait), MP_DELETED_ERR);
+}
+
+/* Time slices, interrupts and the 68k's interrupt mask */
+static void test_slices(void)
+{
+	mp_init(&mp, TB_HZ);
+	uint32_t blue = mp.blue_task;
+	CHECK_EQ(mp.cake[MP_CRITICAL], 17193);          /* (NanoKernel 2's, about 1 ms) */
+	CHECK_EQ(mp.cake[MP_NOMINAL], 17193 * 64);
+	CHECK_EQ(call(15, 0, NULL), MP_NO_ERR);
+	uint32_t queue = cpu.gpr[4];
+
+	/* the blue task alone: a new time slice when one ends */
+	CHECK(mp_due(&mp, 0));
+	mp_tick(&mp, 0, MP_AS_IS);
+	CHECK(mp.yield);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(mp.slice_end, mp.cake[MP_NOMINAL]);
+	mp_tick(&mp, 0, MP_AS_IS);
+	CHECK(!mp.yield);
+	CHECK_EQ(mp.next_tb, mp.slice_end);
+
+	/* tasks as urgent share the processor by weight (the blue task 200, others 100) */
+	uint32_t one = start_task(queue), two = start_task(queue);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(mp.slice_end, mp.cake[MP_NOMINAL]);
+	uint64_t now = mp.slice_end;
+	CHECK(mp_due(&mp, now));
+	mp_tick(&mp, now, MP_AS_IS);
+	CHECK_EQ(schedule(now), one);
+	CHECK_EQ(mp.slice_end, now + mp.cake[MP_NOMINAL] * 100 / 400);
+	now = mp.slice_end;
+	mp_tick(&mp, now, MP_AS_IS);
+	CHECK_EQ(schedule(now), two);
+	now = mp.slice_end;
+	mp_tick(&mp, now, MP_AS_IS);
+	CHECK_EQ(schedule(now), blue);
+	CHECK_EQ(mp.slice_end, now + mp.cake[MP_NOMINAL] * 200 / 400);
+
+	/* while the blue task runs with its 68k interrupts masked, nothing ends: it's critical */
+	now = mp.slice_end;
+	mp_tick(&mp, now, MP_CRITICAL);
+	CHECK(!mp.yield);
+	CHECK_EQ(priority(blue), MP_CRITICAL);
+	CHECK_EQ(mp.next_tb, now + mp.cake[MP_CRITICAL]);
+	now += 1000;
+	mp_tick(&mp, now, MP_AS_IS);    /* (unmasked: its time slice is over, it's nominal again) */
+	CHECK(mp.yield);
+	CHECK_EQ(priority(blue), MP_NOMINAL);
+	CHECK_EQ(schedule(now), one);
+
+	/* an interrupt for the blue task: it's critical, and runs next */
+	mp_interrupt(&mp, now);
+	CHECK_EQ(priority(blue), MP_CRITICAL);
+	CHECK_EQ(schedule(now), blue);
+	CHECK_EQ(mp.slice_end, now + mp.cake[MP_CRITICAL]);
+	CHECK_EQ(mp_next(&mp, MP_LATENCY_PROTECTED), blue);     /* (its 68k mask makes it latency-protected) */
+	CHECK_EQ(priority(blue), MP_LATENCY_PROTECTED);
+	CHECK_EQ(mp_next(&mp, MP_AS_IS), blue);
+	CHECK_EQ(priority(blue), MP_LATENCY_PROTECTED);
+	now = mp.slice_end;
+	mp_tick(&mp, now, MP_AS_IS);
+	CHECK_EQ(priority(blue), MP_NOMINAL);
+	CHECK_EQ(schedule(now), two);
+}
+
+/* The blue task's naps, and MPYieldWithHint */
+static void test_naps(void)
+{
+	mp_init(&mp, TB_HZ);
+	uint32_t blue = mp.blue_task;
+	CHECK_EQ(call(15, 0, NULL), MP_NO_ERR);
+	uint32_t queue = cpu.gpr[4];
+	uint32_t one = start_task(queue), two = start_task(queue);
+
+	/* tasks run while the blue task naps, until they're all blocked */
+	CHECK_EQ(mp_nap(&mp, 1000000), MP_NAP_YIELDED);
+	CHECK(mp_napping(&mp));
+	CHECK_EQ(schedule(0), one);
+	uint32_t wait[] = { queue, 0, 0, 0, 0x7FFFFFFF };
+	CHECK_EQ(call(18, 5, wait), (int32_t)queue);
+	CHECK_EQ(schedule(0), two);
+	CHECK_EQ(call(18, 5, wait), (int32_t)queue);
+	CHECK_EQ(mp_next(&mp, MP_AS_IS), blue);
+	CHECK(mp_napping(&mp));
+	CHECK_EQ(schedule(0), blue);
+	CHECK(!mp_napping(&mp));
+	CHECK_EQ(mp_nap(&mp, UINT64_MAX), MP_NAP_IDLE);         /* (nothing else to run) */
+
+	/* a nap ends at its time (the blue task latency-protected, ahead of nominal tasks) */
+	uint32_t three = start_task(queue);
+	CHECK_EQ(mp_nap(&mp, 1000), MP_NAP_YIELDED);
+	CHECK_EQ(schedule(0), three);
+	CHECK_EQ(mp.next_tb, 0);
+	mp_tick(&mp, 0, MP_AS_IS);
+	CHECK_EQ(mp.next_tb, 1000);
+	mp_tick(&mp, 1000, MP_AS_IS);
+	CHECK_EQ(state(blue), MP_TASK_READY);
+	CHECK_EQ(priority(blue), MP_LATENCY_PROTECTED);
+	CHECK_EQ(schedule(1000), blue);
+
+	/* ... at an interrupt */
+	CHECK_EQ(mp_nap(&mp, UINT64_MAX), MP_NAP_YIELDED);
+	CHECK_EQ(schedule(1000), three);
+	mp_interrupt(&mp, 1000);
+	CHECK_EQ(schedule(1000), blue);
+
+	/* ... or when what it polled last is there */
+	CHECK_EQ(call(18, 5, wait), MP_BLUE_BLOCKING_ERR);
+	CHECK_EQ(schedule(1000), blue);         /* (critical) */
+	CHECK_EQ(mp_nap(&mp, UINT64_MAX), MP_NAP_YIELDED);
+	CHECK_EQ(schedule(1000), three);
+	uint32_t notify[] = { queue, 1, 2, 3 };
+	CHECK_EQ(call(17, 4, notify), MP_NO_ERR);
+	CHECK_EQ(state(blue), MP_TASK_READY);
+	CHECK_EQ(priority(blue), MP_LATENCY_PROTECTED);
+	CHECK_EQ(state(one), MP_TASK_READY);
+	CHECK_EQ(schedule(1000), blue);
+
+	/* if it's there before the nap, there's none */
+	mp_init(&mp, TB_HZ);
+	blue = mp.blue_task;
+	uint32_t sem_args[] = { 1, 0 };
+	CHECK_EQ(call(20, 2, sem_args), MP_NO_ERR);
+	uint32_t sem = cpu.gpr[5];
+	uint32_t task = start_task(0);
+	uint32_t sem_wait[] = { sem, 0x7FFFFFFF }, signal[] = { sem }, yield[] = { 0 };
+	CHECK_EQ(call(23, 2, sem_wait), MP_BLUE_BLOCKING_ERR);
+	CHECK_EQ(schedule(0), task);
+	CHECK_EQ(call(22, 1, signal), MP_NO_ERR);
+	CHECK_EQ(schedule(0), task);
+	CHECK_EQ(call(13, 1, yield), 0);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(mp_nap(&mp, UINT64_MAX), MP_NAP_SKIPPED);
+	CHECK_EQ(mp_nap(&mp, UINT64_MAX), MP_NAP_YIELDED);
+
+	/* MPYieldWithHint: the blue task, more urgent, becomes nominal at the front */
+	CHECK_EQ(schedule(0), task);
+	mp_interrupt(&mp, 0);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(mp_next(&mp, MP_LATENCY_PROTECTED), blue);
+	uint32_t hint[] = { 1 };
+	CHECK_EQ(call(13, 1, hint), 1);
+	CHECK_EQ(priority(blue), MP_NOMINAL);
+	CHECK_EQ(schedule(0), blue);
+	CHECK_EQ(call(13, 1, hint), 1);
+	CHECK(!mp.yield);
+}
+
+void test_mp(void)
+{
+	test_tasks();
+	test_waking();
+	test_slices();
+	test_naps();
 }

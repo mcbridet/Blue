@@ -125,6 +125,7 @@ enum {
 	CB_FAULT_SRC_LR = 0x088 + 4,
 	CB_FAULT_SRC_R3 = 0x090 + 4,
 	CB_FAULT_SRC_R4 = 0x098 + 4,
+	CB_PRIORITY_SHIFTY = 0x0CC,     /* (NanoKernel 2's: see blue_boost()) */
 	CB_XER = 0x0D0 + 4,
 	CB_CR = 0x0D8 + 4,
 	CB_FPSCR = 0x0E0 + 4,
@@ -876,7 +877,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->mp_kernel = m->rom->format == ROM_FORMAT_PARCELS;
 	if (m->mp_kernel) {
 		m->mp.log = getenv("SYSHM_LOG_MP") != NULL;
-		mp_init(&m->mp);
+		mp_init(&m->mp, TIMEBASE_HZ);
 		/* the areas a NanoKernel 2 makes from the page map: Mac OS's RAM, then the rest */
 		struct nk_region regions[NK_MAX_REGIONS];
 		int n = nk_user_regions(m->rom, &m->ci, regions, NK_MAX_REGIONS);
@@ -885,6 +886,12 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 			mp_add_area(&m->mp, regions[k].logical, regions[k].size, regions[k].writable);
 		/* a new task's entry point returns into the kernel's data page, which can't run: that ends it (see nk_boot()) */
 		m->mp.task_return = ci->la_kernel_data;
+		/*
+		 * NanoKernel 2 starts its free page list with 18 pages and one per 8 MB
+		 * of RAM, from outside Mac OS's (for its own pool, and the page
+		 * ager's reserve). syshm's kernel needs none of them.
+		 */
+		m->mp.free_pages = 18 + (m->ram_size >> MEM_PAGE_SHIFT) / 2048;
 	}
 	init_info_records(m);
 	kdp_sync(m);
@@ -1754,6 +1761,28 @@ static uint32_t *system_cr(struct machine *m)
 }
 
 /*
+ * The priority NanoKernel 2 gives the blue task for its 68k interrupt mask,
+ * which the emulator keeps in its context's r25 (SchFiddlePriorityShifty):
+ * critical with all interrupts masked (7), latency-protected at or above
+ * the emulator's level (the low bits of its context block's PriorityShifty
+ * word; 2 if they're 0), else as it is.
+ */
+static unsigned blue_boost(struct machine *m)
+{
+	uint32_t r25;
+	if (!m->system)
+		r25 = mem_r32(&m->mem, m->system_cb + CB_GPR + 8 * 25 + 4);
+	else if (blue_running(m))
+		r25 = m->cpu.gpr[25];
+	else
+		r25 = mp_regs(&m->mp, m->mp.blue_task)->gpr[25];
+	unsigned mask = r25 & 7, level = mem_r32(&m->mem, m->system_cb + CB_PRIORITY_SHIFTY) & 0xF;
+	if (mask == 7)
+		return MP_CRITICAL;
+	return mask >= (level ? level : 2) ? MP_LATENCY_PROTECTED : MP_AS_IS;
+}
+
+/*
  * Delivers external interrupts the way the NanoKernel's Heathrow handler
  * does: pending = mask & levels per bank, reported in HWInfo.PendingInts,
  * where latched pulses (DMA channels) are acknowledged once posted and stay
@@ -1770,7 +1799,8 @@ static uint32_t *system_cr(struct machine *m)
  * Posting while native code (the alternate context) runs sets `preempt`:
  * the NanoKernel then ends that context with exception 0 so the emulator can
  * take the interrupt, and the emulator resumes it afterwards. (While a task
- * other than the blue one runs, that waits until the blue task is back.)
+ * other than the blue one runs, that waits until the blue task is back,
+ * which with Multiprocessing Services is next: see mp_interrupt().)
  */
 static void update_interrupts(struct machine *m, bool force)
 {
@@ -1815,6 +1845,8 @@ static void update_interrupts(struct machine *m, bool force)
 		mem_w32(&m->mem, m->system_cb + CB_CR, cr);
 	if (post && !m->system)
 		m->preempt = true;
+	if (post && m->mp_kernel)
+		mp_interrupt(&m->mp, m->cpu.tb);
 }
 
 static uint32_t trap_table(const struct machine *m)
@@ -2230,11 +2262,11 @@ static void perf_report(struct machine *m)
  * number in r0), through `sc` or kernel call 8. As syshm's kernel reports
  * itself as 2.28 (see NK_INFO_VERSION), Mac OS 8.6 and later make some;
  * ROM files from Mac OS 9.1 on, for which syshm reports a blue task too
- * (mp_kernel), make more. Implemented so far: call 55, which 8.6's Process
+ * (mp_kernel), make more (see mp.h). Call 55 is the one 8.6's Process
  * Manager (its ProcessMgrSupport fragment) makes when nothing needs to
  * run, to sleep until the next process wake time (r3:r4, an AbsoluteTime;
  * the result is ignored). The processor naps until then, or until an
- * interrupt, as for PowerDispatch.
+ * interrupt, as for PowerDispatch (see blue_naps()).
  */
 #define MP_DELAY_UNTIL 55u
 
@@ -2281,13 +2313,20 @@ static const char *mp_call_name(unsigned n)
 }
 
 /*
- * Puts task `to` on the processor in place of the current one: their
- * registers change places (the blue task's NanoKernel 1 state stays where
- * it is: see blue_running()).
+ * Puts task `to` (mp_next()'s) on the processor in place of the current
+ * one: their registers change places (the blue task's NanoKernel 1 state
+ * stays where it is: see blue_running()). If it's the blue task, napping
+ * with nothing else to run, the rest of its nap is idle.
  */
 static void switch_task(struct machine *m, uint32_t to)
 {
 	struct ppc_cpu *cpu = &m->cpu;
+	if (to == m->mp.blue_task && mp_napping(&m->mp))
+		idle_wait(m, m->mp.nap_until);
+	if (to == m->mp.current) {
+		mp_switch(&m->mp, to, cpu->tb);
+		return;
+	}
 	struct mp_regs *out = mp_regs(&m->mp, m->mp.current), *in = mp_regs(&m->mp, to);
 	if (m->mp.log)
 		printf("mp: task 0x%08X -> 0x%08X (pc 0x%08X -> 0x%08X) @%llu\n", m->mp.current, to, cpu->pc, in->pc,
@@ -2311,55 +2350,50 @@ static void switch_task(struct machine *m, uint32_t to)
 	cpu->pc = in->pc;
 	ppc_fp_set_fpscr(cpu, in->fpscr);
 	cpu->resv_valid = false;
-	mp_switch(&m->mp, to);
+	mp_switch(&m->mp, to, cpu->tb);
 }
 
 /*
- * The blue task naps or polls: tasks that are ready run first, until they
- * block or end, and the blue task then carries on as if it had napped
- * until then. Whether there are any.
+ * The blue task naps until guest time `until` (UINT64_MAX: an interrupt):
+ * Multiprocessing Services' tasks that are ready run meanwhile (see
+ * mp_nap()), else the processor idles. Not while an interrupt waits for
+ * it.
  */
-static bool blue_yields(struct machine *m)
+static void blue_naps(struct machine *m, uint64_t until)
 {
-	if (!m->mp_kernel || !blue_running(m) || !mp_ready(&m->mp))
-		return false;
-	m->mp.yield = true;
-	return true;
+	if (m->mp_kernel && blue_running(m) && !m->ipl && mp_nap(&m->mp, until) != MP_NAP_IDLE)
+		return;
+	idle_wait(m, until);
 }
 
 /* Makes call r0; the caller resumes at next_pc once it's done (a task that blocks in it makes it again). */
 static const char *kcall_mp_dispatch(struct machine *m, uint32_t next_pc)
 {
 	struct ppc_cpu *cpu = &m->cpu;
-	switch (cpu->gpr[0]) {
-	case MP_DELAY_UNTIL:
-		if (!blue_yields(m))
-			idle_wait(m, (uint64_t)cpu->gpr[3] << 32 | cpu->gpr[4]);
+	if (cpu->gpr[0] == MP_DELAY_UNTIL && blue_running(m)) {
+		blue_naps(m, (uint64_t)cpu->gpr[3] << 32 | cpu->gpr[4]);
 		cpu->gpr[3] = 0;                /* noErr */
-		break;
-	default: {
-		if (!m->mp_kernel || !mp_call(&m->mp, cpu, &m->mem)) {
-			printf("MPDispatch: call %u (%s; r3=0x%08X r4=0x%08X r5=0x%08X r6=0x%08X) at pc 0x%08X, lr 0x%08X\n",
-			       cpu->gpr[0], mp_call_name(cpu->gpr[0]), cpu->gpr[3], cpu->gpr[4], cpu->gpr[5], cpu->gpr[6],
-			       cpu->pc, cpu->lr);
-			return "unimplemented Multiprocessing Services call";
-		}
-		if (m->mp.swi_raised) {
-			printf("MPDispatch: call %u set event group 0x%08X, which raises a software interrupt\n",
-			       cpu->gpr[0], m->mp.swi_raised);
-			return "software interrupts from Multiprocessing Services aren't delivered yet";
-		}
-		uint8_t *count = m->kdp + KDP_NK_INFO + NKI_TASK_COUNT;
-		if (be32(count) != m->mp.tasks) {
-			put_be32(count, m->mp.tasks);
-			kdp_sync(m);
-		}
-		if (mp_lookup(&m->mp, m->mp.current, MP_TASK)->task.state == MP_TASK_BLOCKED)
-			return NULL;
-		break;
+		cpu->pc = next_pc;
+		return NULL;
 	}
+	if (!m->mp_kernel || !mp_call(&m->mp, cpu, &m->mem)) {
+		printf("MPDispatch: call %u (%s; r3=0x%08X r4=0x%08X r5=0x%08X r6=0x%08X) at pc 0x%08X, lr 0x%08X\n",
+		       cpu->gpr[0], mp_call_name(cpu->gpr[0]), cpu->gpr[3], cpu->gpr[4], cpu->gpr[5], cpu->gpr[6],
+		       cpu->pc, cpu->lr);
+		return "unimplemented Multiprocessing Services call";
 	}
-	cpu->pc = next_pc;
+	if (m->mp.swi_raised) {
+		printf("MPDispatch: call %u set event group 0x%08X, which raises a software interrupt\n",
+		       cpu->gpr[0], m->mp.swi_raised);
+		return "software interrupts from Multiprocessing Services aren't delivered yet";
+	}
+	uint8_t *count = m->kdp + KDP_NK_INFO + NKI_TASK_COUNT;
+	if (be32(count) != m->mp.tasks) {
+		put_be32(count, m->mp.tasks);
+		kdp_sync(m);
+	}
+	if (mp_lookup(&m->mp, m->mp.current, MP_TASK)->task.state != MP_TASK_BLOCKED)
+		cpu->pc = next_pc;
 	return NULL;
 }
 
@@ -2434,8 +2468,8 @@ static const char *kernel_call(struct machine *m, unsigned n)
 			cpu->gpr[3] = 0xFFFFFFFFu;
 			break;
 		}
-		if (cpu->gpr[3] <= 7 && !(cpu->gpr[4] & cpu->cr) && !blue_yields(m))
-			idle_wait(m, UINT64_MAX);       /* until an interrupt: there's no processor state to lose */
+		if (cpu->gpr[3] <= 7 && !(cpu->gpr[4] & cpu->cr))
+			blue_naps(m, UINT64_MAX);       /* until an interrupt: there's no processor state to lose */
 		cpu->gpr[3] = 0;
 		break;
 	case 6:     /* RTASDispatch: r3 = argument block; returns 0, or -1 if unusable */
@@ -2757,8 +2791,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			why = host_call(&m, cpu->exit_insn & 0x03FFFFFFu);
 			break;
 		case PPC_EXIT_HOOK:
-			if (!blue_yields(&m))
-				idle_wait(&m, UINT64_MAX);
+			blue_naps(&m, UINT64_MAX);
 			if (opt->realtime)
 				sync = true;    /* catch up with the host clock now */
 			break;
@@ -2865,11 +2898,10 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			why = ppc_exit_name(e);
 			break;
 		}
-		if (m.mp.yield && !why) {       /* (Multiprocessing Services: the current task gives up the processor) */
-			m.mp.yield = false;
-			if (mp_next(&m.mp) != m.mp.current)
-				switch_task(&m, mp_next(&m.mp));
-		}
+		if (m.mp_kernel && !why && !debug_exit && mp_due(&m.mp, cpu->tb))
+			mp_tick(&m.mp, cpu->tb, blue_boost(&m));
+		if (m.mp.yield && !why)         /* (Multiprocessing Services: the task to run may change) */
+			switch_task(&m, mp_next(&m.mp, blue_boost(&m)));
 		if (!dev_clean)
 			m.dev_dirty = true;
 		if (why && (m.rtas.reboot || m.cuda.reset)) {

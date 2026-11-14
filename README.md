@@ -136,14 +136,19 @@ regions), and timers (made, set and armed, but they don't fire yet).
 
 Tasks besides the blue one run on the same processor, one at a time: each
 has its registers saved while another runs, and the blue task's stay as
-its NanoKernel 1 contexts left them. A task that's been started runs once
-the blue task naps or polls (waits for something that isn't there, which
-the blue task may not do), until it waits itself (it blocks, to make the
-call again later; nothing wakes it yet) or ends. Startup makes three: one
-that waits for other tasks to end, one for the debugger's queue, and the
-page ager. The first two run and wait; the third asks for the count of
-free pages (call 100), which isn't there yet, and the run stops there,
-with the grey desktop pattern on the screen.
+its NanoKernel 1 contexts left them. They're scheduled as NanoKernel 2
+does it: by priority (a task woken by what it waited for goes ahead of the
+blue task; the blue task goes ahead of all once an interrupt is posted to
+it, or while its 68k code has interrupts masked), and in time slices
+shared by weight, measured on the guest timebase so that runs stay
+reproducible. A task that waits blocks, and makes its call again once
+what it waits for comes; the blue task may not wait, and polls instead,
+letting other tasks run, or naps while they do. Startup makes three tasks,
+which first run once the 68k code unmasks interrupts: one that waits for
+other tasks to end, one for the debugger's queue, and the page ager, which
+then waits for 3 seconds. With nothing to wake them yet (timers don't
+fire), Mac OS idles from there on, with the grey desktop pattern on the
+screen.
 
 ### Networking
 
