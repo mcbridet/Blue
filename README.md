@@ -604,7 +604,8 @@ arithmetic on special values); the score weighs them like a harmonic
 mean, so the log factorials (60% of it on syshm) count most. Headless in
 real time on an M5 (`--realtime`, a script in seconds; medians of 4 runs,
 interleaved) it scored 7,085 before the JIT's floating-point work above
-and 16,616 after (the Processor test's code runs as fast as before); see
+and 16,616 after (in a later session, 6,250 and 14,700: the host's speed
+varies), while the Processor test's code runs as fast as before; see
 Findings in plan.md.
 
 ### Guest tools

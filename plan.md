@@ -1764,8 +1764,8 @@ Facts later tasks need, added as they are found.
   (`fp_keeps_w5()`); stw, stw, lfd of those words built from the registers
   (`forward_double()`). Per part after: 5.4, 6.2, 1.7, 3.4 and 5.1
   billion; real time 7,085 → 16,616 (medians of 4 headless runs,
-  interleaved; single runs on a loaded host ranged from 4,660 to 8,826 for
-  the same binary). The 8.5 and 9.1 CD checks, and the test's own
+  interleaved; in a later session 6,250 → 14,700, main merged; single
+  runs on a loaded host ranged from 4,660 to 8,826 for the same binary). The 8.5 and 9.1 CD checks, and the test's own
   instruction-time run to 70 billion, end exactly as before. Left: the log
   factorials are still two thirds of what remains (MathLib code at 8-15
   host instructions an FP operation, the range checks and the XX test
