@@ -1,0 +1,408 @@
+/*
+ * The guest tools and what they're made with: resource forks, HFS volumes
+ * with files, application fragments, the display's custom modes and the
+ * helper's mode switching (driven here as the guest would drive it).
+ */
+#include <fcntl.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <unistd.h>
+
+#include "../src/be.h"
+#include "../src/hfs.h"
+#include "../src/rsrc.h"
+#include "../src/tools.h"
+#include "../src/video.h"
+#include "test.h"
+
+#define FOURCC(a, b, c, d) ((uint32_t)(a) << 24 | (uint32_t)(b) << 16 | (uint32_t)(c) << 8 | (uint32_t)(d))
+
+/* A resource of the given type and ID in a fork, or NULL (with its length in *len) */
+static const uint8_t *find_resource(const uint8_t *fork, uint32_t type, int16_t id, uint32_t *len)
+{
+	const uint8_t *data = fork + be32(fork), *map = fork + be32(fork + 4);
+	const uint8_t *types = map + be16(map + 24);
+	for (unsigned t = 0; t <= be16(types); t++) {
+		const uint8_t *e = types + 2 + 8 * t;
+		if (be32(e) != type)
+			continue;
+		for (unsigned k = 0; k <= be16(e + 4); k++) {
+			const uint8_t *ref = types + be16(e + 6) + 12 * k;
+			if ((int16_t)be16(ref) == id) {
+				const uint8_t *r = data + (be32(ref + 4) & 0xFFFFFF);
+				*len = be32(r);
+				return r + 4;
+			}
+		}
+	}
+	return NULL;
+}
+
+static void test_rsrc(void)
+{
+	static const uint8_t a[3] = { 1, 2, 3 }, b[5] = { 4, 5, 6, 7, 8 }, c[1] = { 9 };
+	const struct rsrc r[] = {
+		{ FOURCC('S', 'I', 'Z', 'E'), -1, a, sizeof a },
+		{ FOURCC('c', 'f', 'r', 'g'), 0, b, sizeof b },
+		{ FOURCC('c', 'f', 'r', 'g'), 1, c, sizeof c },
+	};
+	uint8_t fork[512];
+	CHECK_EQ(rsrc_build(r, 3, fork, 100), 0);
+	size_t n = rsrc_build(r, 3, fork, sizeof fork);
+	CHECK(n > 256);
+	uint32_t len = 0;
+	const uint8_t *p = find_resource(fork, FOURCC('c', 'f', 'r', 'g'), 1, &len);
+	CHECK(p && len == 1 && p[0] == 9);
+	p = find_resource(fork, FOURCC('S', 'I', 'Z', 'E'), -1, &len);
+	CHECK(p && len == 3 && !memcmp(p, a, 3));
+	CHECK(!find_resource(fork, FOURCC('c', 'f', 'r', 'g'), 2, &len));
+	CHECK_EQ(be16(fork + be32(fork + 4) + 28), 1);  /* two types */
+}
+
+static int temp_file(char *path, size_t len)
+{
+	const char *dir = getenv("TMPDIR");
+	snprintf(path, len, "%s/syshm-test-XXXXXX", dir ? dir : "/tmp");
+	return mkstemp(path);
+}
+
+/* Enough files for several catalog leaves under an index node */
+static void test_hfs_files(void)
+{
+	char path[256];
+	int fd = temp_file(path, sizeof path);
+	CHECK(fd >= 0);
+	if (fd < 0)
+		return;
+	static char names[12][32];
+	static uint8_t data[12][700];
+	struct hfs_file files[12];
+	for (unsigned k = 0; k < 12; k++) {
+		static const char *const fruit[3] = { "apple %u", "Banana %u", "cherry %u" };  /* (case matters not) */
+		snprintf(names[k], sizeof names[k], fruit[k % 3], 12 - k);
+		memset(data[k], (int)k + 1, sizeof data[k]);
+		files[k] = (struct hfs_file){ names[k], FOURCC('T', 'E', 'X', 'T'), FOURCC('t', 't', 'x', 't'), 0, 0, 0,
+					      data[k], data[k], 600 + k, k };
+	}
+	const uint64_t size = 2u << 20;
+	CHECK(ftruncate(fd, (off_t)size) == 0);
+	struct hfs_file bad = files[0];
+	bad.name = "a:b";
+	CHECK(hfs_format(fd, size, "Files", 0, &bad, 1) != 0);
+	struct hfs_file twice[2] = { files[0], files[0] };
+	CHECK(hfs_format(fd, size, "Files", 0, twice, 2) != 0);
+	CHECK_EQ(hfs_format(fd, size, "Files", 0x12345678u, files, 12), 0);
+
+	uint8_t mdb[512], node[512];
+	CHECK(pread(fd, mdb, 512, 1024) == 512);
+	CHECK_EQ(be16(mdb + 12), 12);                           /* files in the root */
+	CHECK_EQ(be32(mdb + 84), 12);                           /* files on the volume */
+	CHECK_EQ(be32(mdb + 30), 16 + 12);                      /* next catalog node ID */
+	uint32_t al_bl_st = be16(mdb + 28), al_siz = be32(mdb + 20);
+	off_t cat = (off_t)al_bl_st * 512 + (off_t)be16(mdb + 150) * al_siz;
+	CHECK(pread(fd, node, 512, cat) == 512);
+	CHECK_EQ(be16(node + 14), 2);                           /* depth: an index node over the leaves */
+	CHECK_EQ(be32(node + 14 + 6), 14);                      /* leaf records */
+	uint32_t leaf = be32(node + 14 + 10), last = be32(node + 14 + 14), root = be32(node + 14 + 2);
+	CHECK_EQ(leaf, 1);
+	CHECK(last > 1);
+	CHECK_EQ(root, last + 1);
+
+	/* walk the leaves: records in key order, and each file's data where its extent says */
+	char prev[32] = "";
+	unsigned records = 0, found = 0;
+	while (leaf) {
+		CHECK(pread(fd, node, 512, cat + (off_t)leaf * 512) == 512);
+		CHECK_EQ(node[8], 0xFF);
+		for (unsigned r = 0; r < be16(node + 10); r++, records++) {
+			const uint8_t *rec = node + be16(node + 510 - 2 * r);
+			if (be32(rec + 2) != 2 || !rec[6])
+				continue;
+			char name[32] = { 0 };
+			memcpy(name, rec + 7, rec[6]);
+			CHECK(strcasecmp(prev, name) < 0);
+			strcpy(prev, name);
+			const uint8_t *f = rec + ((7 + rec[6] + 1) & ~1);
+			CHECK_EQ(f[0], 2);
+			unsigned k = 0;
+			while (k < 12 && strcmp(names[k], name))
+				k++;
+			CHECK(k < 12);
+			if (k == 12)
+				continue;
+			found++;
+			CHECK_EQ(be32(f + 26), 600 + k);               /* data fork length */
+			CHECK_EQ(be32(f + 36), k);                      /* resource fork length */
+			uint8_t buf[700];
+			CHECK(pread(fd, buf, 600 + k, (off_t)al_bl_st * 512 + (off_t)be16(f + 74) * al_siz) ==
+			      (ssize_t)(600 + k));
+			CHECK(!memcmp(buf, data[k], 600 + k));
+		}
+		leaf = be32(node);
+	}
+	CHECK_EQ(records, 14);
+	CHECK_EQ(found, 12);
+	close(fd);
+	unlink(path);
+}
+
+static void test_fragments(void)
+{
+	static const struct ndrv_import imports[] = { { "InterfaceLib", "WaitNextEvent" } };
+	for (int kind = FRAG_APPLICATION; kind <= FRAG_LIBRARY; kind++) {
+		struct ndrv_spec spec = { .kind = (enum frag_kind)kind, .entries = 3, .hostcall = 9,
+					  .imports = imports, .import_count = 1 };
+		static uint8_t buf[4096];
+		struct ndrv_layout l;
+		CHECK(ndrv_build(&spec, buf, sizeof buf, &l) > 0);
+		const uint8_t *code = buf + be32(buf + 40 + 20);
+		const uint8_t *ld = buf + be32(buf + 40 + 56 + 20);
+		CHECK_EQ(be32(code + 16), 0x39600002u);                 /* entry 2: li r11,2 */
+		CHECK_EQ(be32(code + 20), 0x48000004u);                 /* ... b common */
+		CHECK_EQ(be32(code + 24 + 16), 0x18000009u);            /* the host call */
+		CHECK_EQ(be32(ld + (kind == FRAG_APPLICATION ? 0 : 8)), 1);     /* main or init: data section */
+		CHECK_EQ(be32(ld + (kind == FRAG_APPLICATION ? 4 : 12)), l.entry[0]);
+		CHECK_EQ(be32(ld + (kind == FRAG_APPLICATION ? 8 : 0)), 0xFFFFFFFFu);
+		CHECK_EQ(be32(ld + 52), 0);                             /* no exports */
+		CHECK_EQ(l.extra, l.entry[2] + 8);                      /* no driver description */
+	}
+}
+
+/* A library's named exports: TVectors of their entries, found through the hash chain */
+static void test_exports(void)
+{
+	static const struct ndrv_export exports[] = { { .name = "First", .entry = 1 }, { .name = "SecondOne", .entry = 0 } };
+	struct ndrv_spec spec = { .kind = FRAG_LIBRARY, .entries = 2, .init_entry = -1, .hostcall = 3,
+				  .exports = exports, .export_count = 2 };
+	static uint8_t buf[4096];
+	struct ndrv_layout l;
+	CHECK(ndrv_build(&spec, buf, sizeof buf, &l) > 0);
+	const uint8_t *ld = buf + be32(buf + 40 + 56 + 20);
+	CHECK_EQ(be32(ld + 8), 0xFFFFFFFFu);                    /* no init routine */
+	CHECK_EQ(be32(ld + 24), 0);                             /* no imports */
+	CHECK_EQ(be32(ld + 52), 2);
+	const uint8_t *strings = ld + be32(ld + 40), *hash = ld + be32(ld + 44);
+	CHECK_EQ(be32(hash), 2u << 18);                         /* one chain, both exports */
+	const uint8_t *keys = hash + 4, *syms = keys + 8;
+	for (unsigned k = 0; k < 2; k++) {
+		size_t n = strlen(exports[k].name);
+		CHECK_EQ(be32(keys + 4 * k), pef_hash_word(exports[k].name, n));
+		CHECK_EQ(syms[10 * k], 2);                      /* TVector */
+		CHECK(!memcmp(strings + (be32(syms + 10 * k) & 0xFFFFFF), exports[k].name, n));
+		CHECK_EQ(be32(syms + 10 * k + 4), l.entry[exports[k].entry]);
+		CHECK_EQ(be16(syms + 10 * k + 8), 1);           /* in the data section */
+	}
+	const uint8_t *relocs = ld + be32(ld + 36);
+	CHECK_EQ(be16(relocs), 0x4601);                         /* just the two TVectors */
+}
+
+static void test_volume(void)
+{
+	char path[256];
+	int fd = temp_file(path, sizeof path);
+	CHECK(fd >= 0);
+	if (fd < 0)
+		return;
+	close(fd);
+	CHECK_EQ(tools_create(path), 0);
+	fd = open(path, O_RDONLY);
+	uint8_t mdb[512], node[512];
+	CHECK(pread(fd, mdb, 512, 1024) == 512);
+	CHECK(!memcmp(mdb + 37, "syshm Tools", 11));
+	uint32_t al_bl_st = be16(mdb + 28), al_siz = be32(mdb + 20);
+	off_t cat = (off_t)al_bl_st * 512 + (off_t)be16(mdb + 150) * al_siz;
+	CHECK(pread(fd, node, 512, cat + 512) == 512);
+	const uint8_t *rec = NULL;                              /* the helper's catalog record */
+	for (unsigned k = 0; k < be16(node + 10) && !rec; k++) {
+		const uint8_t *r = node + be16(node + 510 - 2 * k);
+		if (r[6] == 12 && !memcmp(r + 7, "syshm Helper", 12))
+			rec = r;
+	}
+	CHECK(rec != NULL);
+	if (!rec) {
+		close(fd);
+		return;
+	}
+	const uint8_t *f = rec + ((7 + 12 + 1) & ~1);
+	CHECK_EQ(be32(f + 4), FOURCC('a', 'p', 'p', 'e'));
+	uint8_t pef[16], fork[1024];
+	CHECK(pread(fd, pef, 16, (off_t)al_bl_st * 512 + (off_t)be16(f + 74) * al_siz) == 16);
+	CHECK(!memcmp(pef, "Joy!peffpwpc", 12));
+	CHECK_EQ(be16(mdb + 12), 3);                            /* and the URL Access stub, the 3D engine */
+	uint32_t rlen = be32(f + 36), len = 0;
+	CHECK(rlen <= sizeof fork);
+	CHECK(pread(fd, fork, rlen, (off_t)al_bl_st * 512 + (off_t)be16(f + 86) * al_siz) == (ssize_t)rlen);
+	const uint8_t *cfrg = find_resource(fork, FOURCC('c', 'f', 'r', 'g'), 0, &len);
+	CHECK(cfrg && !memcmp(cfrg + 32, "pwpc", 4) && cfrg[32 + 22] == 1 && cfrg[32 + 23] == 1);
+	CHECK(cfrg && !memcmp(cfrg + 32 + 43, "syshm Helper", 12));
+	const uint8_t *size = find_resource(fork, FOURCC('S', 'I', 'Z', 'E'), -1, &len);
+	CHECK(size && (be16(size) & 0x0400));                  /* background only */
+	close(fd);
+	unlink(path);
+}
+
+/* Guest memory for driver and helper calls */
+#define TOC 0x10000u
+#define FRAME 0x20000u
+#define PB 0x30000u
+#define PARAM 0x30100u
+#define TVECTORS 0x40000u
+#define FB 0x1000000u
+#define FB_SIZE (8u << 20)
+
+static struct mem mem;
+static struct video video;
+
+static void driver(struct video *v, unsigned code, unsigned cs, uint32_t param, int32_t want)
+{
+	struct ndrv_call c = { .mem = &mem, .entry = 0, .toc = TOC, .frame = FRAME };
+	c.arg[2] = PB;
+	c.arg[3] = code;
+	c.arg[4] = NDRV_KIND_IMMEDIATE;
+	mem_w16(&mem, PB + 26, (uint16_t)cs);
+	mem_w32(&mem, PB + 28, param);
+	video_driver_call(v, &c, 16600000);
+	CHECK(c.done);
+	CHECK_EQ(c.result, (uint32_t)want);
+}
+
+static uint32_t timing_flags(struct video *v, uint32_t mode_id)
+{
+	mem_w32(&mem, PARAM, mode_id);
+	driver(v, NDRV_STATUS, 13, PARAM, 0);
+	return mem_r32(&mem, PARAM + 16);
+}
+
+static void test_custom_modes(void)
+{
+	struct video *v = &video;
+	video_init(v, &mem, FB, FB_SIZE);
+	unsigned fixed = video_mode_count;
+	uint32_t id, depth;
+
+	CHECK(!video_take_request(v, &id, &depth));
+	CHECK(!video_request_size(v, 800, 600));                /* the screen's size already */
+	CHECK(video_request_size(v, 1003, 701));
+	CHECK_EQ(v->custom[0].width, 1000);                     /* whole bytes even at 1 bit per pixel */
+	CHECK_EQ(v->custom[0].height, 701);
+	CHECK(timing_flags(v, fixed + 1) & 1);                  /* valid while requested ... */
+	CHECK_EQ(timing_flags(v, fixed + 2), 0);                /* ... the other one isn't */
+	CHECK(video_take_request(v, &id, &depth));
+	CHECK_EQ(id, fixed + 1);
+	CHECK_EQ(depth, 0x83);                                  /* 8 bits per pixel */
+	CHECK(!video_take_request(v, &id, &depth));
+	CHECK(timing_flags(v, fixed + 1) & 1);                  /* ... and while switching */
+	CHECK(!video_request_size(v, 900, 600));                /* (one switch at a time) */
+
+	/* the Display Manager switches (VDSwitchInfoRec: depth, mode ID, page, base) */
+	mem_w16(&mem, PARAM, (uint16_t)depth);
+	mem_w32(&mem, PARAM + 2, id);
+	mem_w16(&mem, PARAM + 6, 0);
+	driver(v, NDRV_CONTROL, 10, PARAM, 0);
+	video_request_done(v);
+	CHECK_EQ(video_width(v), 1000);
+	CHECK_EQ(video_height(v), 701);
+
+	/* GetVideoParameters for it: row bytes and bounds */
+	mem_w32(&mem, PARAM, id);
+	mem_w16(&mem, PARAM + 4, 0x85);                         /* 32 bits per pixel */
+	mem_w32(&mem, PARAM + 6, PARAM + 64);
+	driver(v, NDRV_STATUS, 18, PARAM, 0);
+	CHECK_EQ(mem_r16(&mem, PARAM + 64 + 4), 4000);
+	CHECK_EQ(mem_r16(&mem, PARAM + 64 + 10), 701);
+	CHECK_EQ(mem_r16(&mem, PARAM + 64 + 12), 1000);
+
+	/* the next request takes the other custom mode; sizes are kept sensible */
+	CHECK(video_request_size(v, 100, 100));
+	CHECK(video_take_request(v, &id, &depth));
+	CHECK_EQ(id, fixed + 2);
+	CHECK_EQ(v->custom[1].width, 512);
+	CHECK_EQ(v->custom[1].height, 384);
+	video_request_done(v);
+	CHECK(video_request_size(v, 8000, 6000));
+	CHECK((uint64_t)v->custom[1].width * v->custom[1].height * 4 <= FB_SIZE);
+	CHECK_EQ(v->custom[1].width % 8, 0);
+	CHECK_EQ(timing_flags(v, fixed + 1), 1 | 2);            /* the current one */
+
+	/* GetNextResolution lists every mode, custom ones included */
+	unsigned listed = 0;
+	mem_w32(&mem, PARAM, 0xFFFFFFFEu);
+	for (;;) {
+		driver(v, NDRV_STATUS, 17, PARAM, 0);
+		if (mem_r32(&mem, PARAM + 4) == 0xFFFFFFFDu)
+			break;
+		listed++;
+		mem_w32(&mem, PARAM, mem_r32(&mem, PARAM + 4));
+	}
+	CHECK_EQ(listed, fixed + VIDEO_CUSTOM_MODES);
+}
+
+/* The helper as the guest drives it: main, then resumptions after each callout */
+static void helper_step(struct helper *h, struct ndrv_call *c, uint32_t entry, uint32_t result)
+{
+	*c = (struct ndrv_call){ .mem = &mem, .entry = entry, .toc = TOC, .frame = FRAME };
+	c->arg[0] = result;
+	helper_call(h, c, &video);
+}
+
+static void test_helper(void)
+{
+	struct helper h;
+	helper_init(&h);
+	video_init(&video, &mem, FB, FB_SIZE);
+	for (unsigned k = 0; k < 3; k++)                        /* the imports' TVectors */
+		mem_w32(&mem, TOC + h.layout.import[k], TVECTORS + 8 * k);
+	const uint32_t event = TOC + h.layout.extra;
+	struct ndrv_call c;
+
+	helper_step(&h, &c, 0, 0);
+	CHECK(h.running && !c.done);
+	CHECK_EQ(c.tvector, TVECTORS);                          /* WaitNextEvent(everyEvent, &event, sleep, NULL) */
+	CHECK_EQ(c.out[0], 0xFFFF);
+	CHECK_EQ(c.out[1], event);
+	memset(mem_ptr(&mem, event), 0, 16);
+	helper_step(&h, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c.tvector, TVECTORS);                          /* nothing to do: wait again */
+
+	video_request_size(&video, 1024, 640);
+	helper_step(&h, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c.tvector, TVECTORS + 8);                      /* GetMainDevice() */
+	helper_step(&h, &c, NDRV_ENTRY_RESUME, 0x5000);
+	CHECK_EQ(c.tvector, TVECTORS + 16);                     /* DMSetDisplayMode(gd, mode, &depth, 0, NULL) */
+	CHECK_EQ(c.out[0], 0x5000);
+	CHECK_EQ(c.out[1], video_mode_count + 1);
+	CHECK_EQ(mem_r32(&mem, c.out[2]), 0x83);
+	CHECK_EQ(c.out[3], 0);
+	CHECK_EQ(c.out[4], 0);
+	helper_step(&h, &c, NDRV_ENTRY_RESUME, (uint32_t)-50);  /* paramErr */
+	CHECK_EQ(c.tvector, TVECTORS);
+	CHECK_EQ(h.failures, 1);
+	CHECK_EQ(h.last_error, -50);
+	CHECK_EQ(video.switching, -1);
+
+	/* quit: main returns */
+	mem_w16(&mem, event, 23);
+	mem_w32(&mem, event + 2, FOURCC('a', 'e', 'v', 't'));
+	mem_w32(&mem, event + 10, FOURCC('q', 'u', 'i', 't'));
+	helper_step(&h, &c, NDRV_ENTRY_RESUME, 1);
+	CHECK(c.done && !h.running);
+}
+
+void test_tools(void)
+{
+	test_rsrc();
+	test_hfs_files();
+	test_fragments();
+	test_exports();
+	test_volume();
+	if (mem_init(&mem)) {
+		CHECK(!"mem_init");
+		return;
+	}
+	mem_map(&mem, 0, 0x100000, MEM_RW);
+	mem_map(&mem, FB, FB_SIZE, MEM_RW);
+	test_custom_modes();
+	test_helper();
+	mem_free(&mem);
+}

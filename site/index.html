@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>syshm: classic Mac OS on a native kernel</title>
+<meta name="description" content="Run classic Mac OS on arbitrary hardware by replacing the bottom of the OS instead of emulating a whole Power Mac. For macOS and Linux, on AArch64 (Apple silicon) and x86_64.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="syshm">
+<meta property="og:description" content="Run classic Mac OS on arbitrary hardware by replacing the bottom of the OS instead of emulating a whole Power Mac. For macOS and Linux, on AArch64 (Apple silicon) and x86_64.">
+<meta name="theme-color" content="#dddddd">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="main.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-logo" viewBox="0 0 32 32">
+    <g stroke="#000" stroke-linejoin="round">
+      <path d="M16 15 29 21.5 16 28 3 21.5Z" fill="#6666cc"/>
+      <path d="M3 21.5 16 28V31L3 24.5Z" fill="#4d4daa"/>
+      <path d="M16 28 29 21.5V24.5L16 31Z" fill="#333388"/>
+      <path d="M16 9 29 15.5 16 22 3 15.5Z" fill="#ccccff"/>
+      <path d="M3 15.5 16 22V25L3 18.5Z" fill="#9999dd"/>
+      <path d="M16 22 29 15.5V18.5L16 25Z" fill="#7777bb"/>
+      <path d="M16 3 29 9.5 16 16 3 9.5Z" fill="#fff"/>
+      <path d="M3 9.5 16 16V19L3 12.5Z" fill="#ccc"/>
+      <path d="M16 16 29 9.5V12.5L16 19Z" fill="#999"/>
+    </g>
+  </symbol>
+  <symbol id="i-hd" viewBox="0 0 32 32">
+    <g stroke="#000" stroke-linejoin="round">
+      <path d="M3.5 14.5 7.5 9.5H29.5L25.5 14.5Z" fill="#eee"/>
+      <path d="M25.5 14.5 29.5 9.5V19.5L25.5 24.5Z" fill="#999"/>
+      <rect x="3.5" y="14.5" width="22" height="10" fill="#ddd"/>
+    </g>
+    <rect x="6" y="20" width="3" height="2" fill="#00a000"/>
+    <path d="M12 21.5H23" stroke="#888"/>
+  </symbol>
+  <symbol id="i-chip" viewBox="0 0 32 32">
+    <path d="M11 4v5M14.5 4v5M18 4v5M21.5 4v5M11 23v5M14.5 23v5M18 23v5M21.5 23v5M4 11h5M4 14.5h5M4 18h5M4 21.5h5M23 11h5M23 14.5h5M23 18h5M23 21.5h5" stroke="#888" stroke-width="2"/>
+    <rect x="8.5" y="8.5" width="15" height="15" fill="#444" stroke="#000"/>
+    <path d="M17.5 10.5 12 17h3.5L14 22l6-7h-3.5l1.5-4.5Z" fill="#fc0"/>
+  </symbol>
+  <symbol id="i-speaker" viewBox="0 0 32 32">
+    <path d="M4.5 12.5h5l7-6v19l-7-6h-5Z" fill="#ddd" stroke="#000" stroke-linejoin="round"/>
+    <path d="M20 11.5c2 2.5 2 6.5 0 9M23.5 8.5c3.5 4.5 3.5 10.5 0 15" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-globe" viewBox="0 0 32 32">
+    <circle cx="16" cy="16" r="12.5" fill="#99ccff" stroke="#000"/>
+    <path d="M16 3.5v25M3.5 16h25M5.7 9H26.3M5.7 23H26.3" fill="none" stroke="#036"/>
+    <ellipse cx="16" cy="16" rx="5.5" ry="12.5" fill="none" stroke="#036"/>
+  </symbol>
+  <symbol id="i-cube" viewBox="0 0 32 32">
+    <g stroke="#000" stroke-linejoin="round">
+      <path d="M16 3.5 27.5 9.5 16 15.5 4.5 9.5Z" fill="#ffe680"/>
+      <path d="M4.5 9.5 16 15.5V28.5L4.5 22.5Z" fill="#ffb84d"/>
+      <path d="M16 15.5 27.5 9.5V22.5L16 28.5Z" fill="#e07020"/>
+    </g>
+  </symbol>
+  <symbol id="i-doc" viewBox="0 0 32 32">
+    <path d="M6.5 2.5h13l6 6v21h-19Z" fill="#fff" stroke="#000" stroke-linejoin="round"/>
+    <path d="M19.5 2.5v6h6" fill="#ddd" stroke="#000" stroke-linejoin="round"/>
+    <path d="M9 12h11M9 15h13M9 18h13M9 21h9M9 24h12" stroke="#888"/>
+  </symbol>
+  <symbol id="i-folder" viewBox="0 0 32 32">
+    <g stroke="#000" stroke-linejoin="round">
+      <path d="M2.5 7.5h9l2 2h16v4h-27Z" fill="#9999dd"/>
+      <rect x="2.5" y="12.5" width="27" height="15" fill="#ccccff"/>
+    </g>
+    <path d="M3.5 14h25" stroke="#eef"/>
+  </symbol>
+  <symbol id="i-sysfolder" viewBox="0 0 32 32">
+    <g stroke="#000" stroke-linejoin="round">
+      <path d="M2.5 7.5h9l2 2h16v4h-27Z" fill="#9999dd"/>
+      <rect x="2.5" y="12.5" width="27" height="15" fill="#ccccff"/>
+      <rect x="11.5" y="15.5" width="9" height="8" fill="#ddd"/>
+      <rect x="13.5" y="17.5" width="5" height="4" fill="#6066a8"/>
+    </g>
+  </symbol>
+  <symbol id="i-box" viewBox="0 0 32 32">
+    <g stroke="#000" stroke-linejoin="round">
+      <path d="M4.5 16.5 1.5 12.5h8l3 4M27.5 16.5l3-4h-8l-3 4" fill="#c9a56b"/>
+      <rect x="4.5" y="16.5" width="23" height="12" fill="#d9b77e"/>
+      <path d="M13.5 2.5h5v7h4l-6.5 7-6.5-7h4Z" fill="#33aa33"/>
+    </g>
+  </symbol>
+</svg>
+
+<ul class="desk-icons" aria-label="Links">
+  <li><a href="#top"><svg aria-hidden="true"><use href="#i-hd"/></svg><span>Macintosh HD</span></a></li>
+  <li><a href="https://github.com/__REPO__#readme"><svg aria-hidden="true"><use href="#i-doc"/></svg><span>Read Me</span></a></li>
+  <li><a href="https://github.com/__REPO__"><svg aria-hidden="true"><use href="#i-folder"/></svg><span>Source</span></a></li>
+  <li><a href="https://github.com/__REPO__/releases/latest"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Downloads</span></a></li>
+</ul>
+
+<main id="main" class="desktop">
+
+  <section class="hero" id="top" aria-labelledby="hero-title">
+    <div class="splash">
+      <div class="splash-inner">
+        <svg class="splash-logo" aria-hidden="true"><use href="#i-logo"/></svg>
+        <p class="splash-welcome">Welcome to</p>
+        <h1 id="hero-title">syshm</h1>
+        <p class="tagline">Run classic Mac OS on arbitrary hardware by replacing the bottom of the OS instead of emulating a whole Power Mac.</p>
+        <p class="platforms">For macOS and Linux, on AArch64 (Apple silicon) and x86_64.</p>
+      </div>
+      <div class="splash-buttons">
+        <a class="button" href="https://github.com/__REPO__">View on GitHub</a>
+        <a class="button default" href="#start">Get Started</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="window" id="how" aria-labelledby="how-title">
+    <div class="titlebar">
+      <span class="box close" aria-hidden="true"></span>
+      <h2 class="title" id="how-title">How It Works</h2>
+      <span class="box zoom" aria-hidden="true"></span>
+      <button class="box shade" type="button" aria-expanded="true" aria-label="Collapse window"></button>
+    </div>
+    <div class="window-content">
+      <div class="window-body">
+        <div class="doc how">
+          <p>On a real Power Mac only the NanoKernel runs in supervisor mode. The 68k emulator, the Toolbox, applications and drivers all run in PowerPC user mode and reach the kernel through a small interface.</p>
+          <p>syshm runs all of that Apple code unmodified, as the guest, and supplies everything below the interface as an ordinary program on the host.</p>
+          <p>Where Mac OS looks to the machine for drivers, syshm puts its own in the device tree, as a Mac’s firmware would. They’re thin: the work is done on the host. The guest tools, on a disk of their own, work the same way: a helper that resizes the screen with the window, a 3D engine and a URL Access stub.</p>
+          <figure class="arch">
+            <div class="zone guest">
+              <p class="zone-label">Guest</p>
+              <div class="abox apple">
+                <p class="abox-title">Mac OS</p>
+                <div class="guest-parts">
+                  <span class="part">68k apps and Toolbox code</span>
+                  <span class="part">Apple’s 68k emulator, from the ROM</span>
+                  <span class="part ppc">PowerPC apps, Toolbox and drivers</span>
+                </div>
+                <p class="abox-foot">Apple code, unmodified, in PowerPC user mode</p>
+              </div>
+              <div class="abox syshm guest-syshm">
+                <p class="abox-title">System helpers</p>
+                <span class="part svc"><strong>Drivers</strong> Display, disks and CDs, Ethernet, in the device tree</span>
+                <span class="part svc"><strong>Guest tools</strong> Helper, 3D engine, URL Access stub</span>
+              </div>
+            </div>
+            <div class="iface">
+              <div class="iface-part">
+                <span class="iface-arrow" aria-hidden="true">⇄</span>
+                <p class="iface-title">NanoKernel interface</p>
+                <p>kernel calls (<code>twi</code>, and <code>sc</code> on v2), exceptions, interrupts</p>
+              </div>
+              <div class="iface-part">
+                <span class="iface-arrow" aria-hidden="true">⇄</span>
+                <p class="iface-title">Host calls</p>
+                <p>from syshm’s drivers and tools</p>
+              </div>
+            </div>
+            <div class="zone host">
+              <p class="zone-label">Host</p>
+              <div class="host-row">
+                <div class="abox syshm">
+                  <p class="abox-title">syshm</p>
+                  <span class="part svc"><strong>CPU</strong> PowerPC JIT and interpreter</span>
+                  <span class="part svc"><strong>Kernel</strong> Memory, interrupts, Multiprocessing Services</span>
+                  <span class="part svc"><strong>Devices</strong> An iMac’s: ADB, timers, sound, Ethernet, USB, NVRAM</span>
+                  <span class="part svc"><strong>Drivers</strong> Display, disks and CDs, Ethernet, 3D</span>
+                  <span class="part svc"><strong>Loader</strong> ROM and its parcels, tables, device tree</span>
+                </div>
+                <span class="arch-arrow" aria-hidden="true">→</span>
+                <div class="abox os">
+                  <p class="abox-title">macOS or Linux</p>
+                  <span class="part svc"><strong>SDL2</strong> Window, input and sound</span>
+                  <span class="part svc"><strong>OpenGL</strong> 3D on the GPU (over Metal on Apple silicon)</span>
+                  <span class="part svc"><strong>libslirp</strong> Network: NAT and DHCP</span>
+                  <span class="part svc"><strong>Files</strong> Disks, CDs and NVRAM</span>
+                </div>
+              </div>
+            </div>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="window" id="status" aria-labelledby="status-title">
+    <div class="titlebar">
+      <span class="box close" aria-hidden="true"></span>
+      <h2 class="title" id="status-title">Status</h2>
+      <span class="box zoom" aria-hidden="true"></span>
+      <button class="box shade" type="button" aria-expanded="true" aria-label="Collapse window"></button>
+    </div>
+    <div class="window-content">
+      <div class="finder-header"><span>7 items</span></div>
+      <div class="window-body list">
+        <div class="list-head" aria-hidden="true"><span class="sorted">Name</span><span>Notes</span></div>
+        <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-sysfolder"/></svg>Mac OS 8.5–9.0.4</span>
+          <span class="notes">Working, on the NanoKernel v1 interface.</span>
+        </div>
+        <div class="row progress">
+          <span class="name"><svg aria-hidden="true"><use href="#i-sysfolder"/></svg>Mac OS 9.1–9.2.2</span>
+          <span class="notes">In progress. These need the NanoKernel v2 interface: syshm loads their ROM files, now packed in parcels, and is adding the kernel’s Multiprocessing Services: message queues, semaphores, critical regions, event groups and notifications.</span>
+        </div>
+        <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-speaker"/></svg>Sound and input</span>
+          <span class="notes">Sound output through an AWACS chip, as in the iMac. Keyboard and mouse over ADB.</span>
+        </div>
+        <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-globe"/></svg>Networking</span>
+          <span class="notes">Built-in Ethernet (BMac+, as in the iMac) working, through the host’s connection. Needs libslirp.</span>
+        </div>
+        <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-cube"/></svg>3D</span>
+          <span class="notes">QuickDraw 3D and RAVE working, through a RAVE engine games see as an ATI Rage 128. Drawn with OpenGL on the host’s GPU (over Metal on Apple silicon), or in software.</span>
+        </div>
+        <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-chip"/></svg>CPU</span>
+          <span class="notes">PowerPC G3 (750) equivalent. JIT on Apple silicon and ARM64 (AArch64) Linux; interpreter only on x86_64. Fast start speeds through startup timeouts. Supports napping.</span>
+        </div>
+        <div class="row unsupported">
+          <span class="name"><svg aria-hidden="true"><use href="#i-chip"/></svg>AltiVec</span>
+          <span class="notes">Not yet.</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="window" id="start" aria-labelledby="start-title">
+    <div class="titlebar">
+      <span class="box close" aria-hidden="true"></span>
+      <h2 class="title" id="start-title">Get Started</h2>
+      <span class="box zoom" aria-hidden="true"></span>
+      <button class="box shade" type="button" aria-expanded="true" aria-label="Collapse window"></button>
+    </div>
+    <div class="window-content">
+      <div class="window-body">
+        <div class="doc">
+          <p>syshm doesn’t include any Apple software. You’ll need your own <code>MOS.rom</code>, a 1.x NewWorld “Mac OS ROM” file, and an image of a Mac OS CD from 8.5 to 9.0.4.</p>
+
+          <h3>Download</h3>
+          <div class="downloads">
+            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/syshm-macos-aarch64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>macOS<small>Apple silicon</small></span></a>
+            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/syshm-macos-x86_64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>macOS<small>Intel (x86_64)</small></span></a>
+            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/syshm-linux-aarch64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Linux<small>AArch64</small></span></a>
+            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/syshm-linux-x86_64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Linux<small>x86_64</small></span></a>
+          </div>
+          <p class="fineprint">Or build it with <code>make</code>. SDL2 (window and sound) and libslirp (networking) are used if they’re installed. The JIT runs on AArch64, on Apple silicon Macs and Linux alike; x86_64 hosts interpret.</p>
+
+          <h3>Install Mac OS</h3>
+<pre class="code">./syshm disk create hd.img 2G "Macintosh HD"
+./syshm boot MOS.rom --disk hd.img --cdrom 85.iso --window --nvram syshm.nvram</pre>
+          <p>In the installer’s Options, turn off “Update Apple Hard Disk Drivers”.</p>
+
+          <h3>Start up</h3>
+<pre class="code">./syshm boot MOS.rom --disk hd.img --window --nvram syshm.nvram</pre>
+          <p>Add <code>--tools</code> for a disk of guest tools: a helper that resizes the screen with the window, the 3D engine, and a URL Access stub. The <a href="https://github.com/__REPO__#readme">README</a> has the rest.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="footer-box">
+    <ul class="footer-links">
+      <li><a href="https://github.com/__REPO__">Source</a></li>
+      <li><a href="https://github.com/__REPO__/releases">Releases</a></li>
+      <li><a href="https://github.com/__REPO__#readme">Read Me</a></li>
+      <li><a href="https://github.com/__REPO__/issues">Issues</a></li>
+    </ul>
+    <p class="legal">syshm is not affiliated with Apple. Mac OS, Macintosh, Power Mac and QuickDraw are trademarks of Apple Inc.</p>
+  </div>
+</footer>
+</body>
+</html>

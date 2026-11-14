@@ -1,0 +1,9 @@
+build/
+*.rom
+*.iso
+*.img
+*.toast
+*.dmg
+*.nvram
+__pycache__/
+.DS_Store

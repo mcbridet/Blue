@@ -1,0 +1,41 @@
+#include <string.h>
+
+#include "test.h"
+
+int test_failures;
+
+int main(int argc, char **argv)
+{
+	struct {
+		const char *name;
+		void (*fn)(void);
+	} suites[] = {
+		{ "lzss", test_lzss },
+		{ "parcels", test_parcels },
+		{ "ppc", test_ppc },
+		{ "rom", test_rom },
+		{ "cuda", test_cuda },
+		{ "mmio", test_mmio },
+		{ "dbdma", test_dbdma },
+		{ "awacs", test_awacs },
+		{ "ohci", test_ohci },
+		{ "drivers", test_drivers },
+		{ "net", test_net },
+		{ "hfs", test_hfs },
+		{ "tools", test_tools },
+		{ "raster", test_raster },
+		{ "rave", test_rave },
+		{ "gpu", test_gpu },
+		{ "display", test_display },
+		{ "jit", test_jit },
+	};
+
+	for (size_t s = 0; s < sizeof suites / sizeof suites[0]; s++) {
+		if (argc > 1 && strcmp(argv[1], suites[s].name) != 0)
+			continue;
+		int before = test_failures;
+		suites[s].fn();
+		printf("%-6s %s\n", suites[s].name, test_failures == before ? "ok" : "FAILED");
+	}
+	return test_failures ? 1 : 0;
+}
