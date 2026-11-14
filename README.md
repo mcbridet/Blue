@@ -21,7 +21,8 @@ Linux today; other hosts / bare metal later
 - **ROM:** the "Mac OS ROM" file from the startup disk's System Folder, as
   a New World Mac's firmware starts it (see Status); `--rom` for one of your
   own. Tested: 8.5's own (Toolbox release 0x44F3), 8.6's (0x44B5), 9.1's
-  (6.1f9, in parcels), and `MOS.rom`, a 1.x file (0x44F1, compatible with
+  (6.1f9, in parcels), MacOS9Lives 9.2.2's (10.2f1, in parcels, 0x45F6),
+  and `MOS.rom`, a 1.x file (0x44F1, compatible with
   `iMac,1 PowerMac1,1 PowerBook1,1`; the family SheepShaver uses).
 - **OS:** the retail Mac OS 8.5 CD (`85.iso`). It boots with the ROM file it
   carries itself (1.1.x, no `<COMPATIBLE>` list) or with `MOS.rom`.
@@ -29,7 +30,8 @@ Linux today; other hosts / bare metal later
   builds. Retail 8.5 predates the Blue & White G3, so an iMac identity is the
   safer first choice; B&W G3 (`PowerMac1,1`) for 8.5.1 and later.
 - **OS ladder:** 8.5 → 8.6 → 9.0.4 on the NanoKernel v1 interface, then the
-  v2 interface for 9.2.2.
+  v2 interface for 9.1 and 9.2.2 (both CDs start up to the Finder; see
+  below).
 
 ## Status
 
@@ -245,6 +247,64 @@ menu). The end-of-run statistics count the chip's reads and writes.
 
 Not done yet: installing 9.1 onto a disk image with its installer and
 starting up from that.
+
+### Mac OS 9.2.2 (from its CD)
+
+The MacOS9Lives 9.2.2 CD (`922.iso`, "Mac OS 9.2.2 Universal", for Macs
+Apple's 9.2.2 doesn't support; its ROM file is Mac OS ROM 10.2f1, a
+modified 10.2.1 compatible with any `MacRISC` model) starts up to the
+Finder on the same kernel, and opens its Read Me in SimpleText, as under
+QEMU:
+
+```
+build/syshm boot --cdrom 922.iso --max 3000000000 --screenshot finder.png
+```
+
+The Finder is up by instruction 1.5 billion; in real time with fast start
+after 13 s of guest time (0.9 s on the host), and then the host sleeps
+most of the time. Its ROM file carries NanoKernel 2.28 (the version
+syshm's kernel reports), and wants a few things 9.1's doesn't:
+
+- The info records as NanoKernel 2.28 has them: HWInfo version 0x0108 (0xC0
+  bytes), ProcessorInfo 0x0112 (0xA0 bytes, with the processor's clock
+  rates) and SystemInfo 0x0107. The ROM's 68k startup reads HWInfo's new
+  CascadeInfo pointer (`+0xA8`: interrupt controllers cascaded from an
+  OpenPIC, none on an iMac); with the old, shorter record it read the end of
+  RAM instead and stopped. Earlier ROMs still get NanoKernel 1's records.
+- Multiprocessing Services calls 62 (`MPGetNextCpuID`), 44 and 45
+  (`MPStartScheduling`, `MPStopScheduling`: the power manager stops the
+  other processors before it sleeps; the one the kernel started on can't
+  be) and 132 (`NKSetClockDriftCorrection`). The kernel now has the
+  machine's coherence group and processor, as a NanoKernel 2 has them
+  before its first call, so the blue task, page queue and address space
+  have the real kernel's IDs.
+- A task ('accu') that measures the timebase's drift against KeyLargo's
+  counter at Mac I/O `+0x15038`. On the iMac's Mac I/O that's the floppy
+  controller's cell, which now reads as zeros (it faulted before): the task
+  finds the counter stopped and corrects nothing.
+- Its ROM file has a lanLib for the iMac's own Ethernet controller (BMAC+),
+  which the Trampoline puts in the Ethernet node in place of the firmware's.
+  syshm has no BMAC, so its own lanLib stays.
+- Kernel call 7 (CacheDispatch) with a selector for no cache (4), from the
+  power manager as it dozes after half an hour of idling: -2, as both
+  NanoKernels answer.
+
+The CD installs with Apple Software Restore (its Read Me says how), which
+copies the CD's disk image onto a volume, erasing it. Drive Setup, which
+opens too, lists no drives (it knows Apple's own ATA and SCSI drives only)
+and isn't needed:
+
+```
+build/syshm disk create hd922.img 2G "Macintosh HD"
+build/syshm boot --disk hd922.img --cdrom 922.iso --window --nvram syshm.nvram
+```
+
+In Apple Software Restore, click Switch Disk until the destination disk is
+"Macintosh HD", then Restore, and OK. A scripted run restored 671 MB in
+under 20 billion instructions; the volume is then called MacOS9Lives. Then
+`build/syshm boot --disk hd922.img --window --nvram syshm.nvram` starts it,
+to the Finder in real time. In instruction time (scripted runs) its startup
+waits before the Finder until a key is pressed (plan.md, Findings).
 
 ### Networking
 
@@ -712,7 +772,10 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
   `sound` child; DecoderInfo long 39 holds the chip's address.
 - Ethernet: `ethernet` at Mac I/O `+0x11000` (`bmac+`, DMA channels 2 and 3;
   nothing answers at those addresses, lanLib being the driver's way to the
-  hardware), station address 52:54:00:12:34:56.
+  hardware), station address 52:54:00:12:34:56. Its lanLib is syshm's even
+  when the ROM file has one for `bmac+` (9.2.2's).
+- Mac I/O's floppy controller cell (`+0x15000`), for ROM files with parcels
+  only: reads as zeros, writes are ignored (the iMac has no floppy drive).
 - NVRAM, for ROM files with parcels only: `nvram` at Mac I/O `+0x60000`
   (`device_type` and `compatible` `nvram`, `reg` 0x60000 0x20000, `#bytes`
   0x2000, `AAPL,address`), as on Heathrow and Paddington Macs: 8 KB, byte k
@@ -736,6 +799,10 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 - The ROM installs SCSI Manager 4.3 (no buses), as on real machines; the
   Apple CD/DVD Driver extension needs `_SCSIAtomic` to exist.
 - The boot-info area (`0xFF800000`) holds the tables and the device tree.
+- Info records: NanoKernel 1's versions and lengths, or for ROM files with
+  parcels NanoKernel 2.28's (HWInfo 0x0108 with CascadeInfo, a table of no
+  cascaded interrupt controllers, ProcessorInfo 0x0112 with clock rates,
+  SystemInfo 0x0107), all in the one InfoRecord page.
 - Quiet writes: ConfigInfo maps the ROM write-through and read-only (PP 3),
   which the NanoKernel takes to mean that stores to it are dropped rather
   than raising an exception (and counted in NanoKernelInfo's

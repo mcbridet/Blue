@@ -40,9 +40,11 @@ void mp_init(struct mp *mp, uint32_t tb_hz)
 	for (unsigned p = MP_CRITICAL; p <= MP_IDLE; p++)
 		mp->cake[p] = duration_ticks(mp, -1042) << 3 * p;
 	mp->blue_process = mp_make(mp, MP_PROCESS);
-	mp->blue_task = mp_make(mp, MP_TASK);
-	mp->page_queue = mp_make(mp, MP_QUEUE);
+	mp->coherence_group = mp_make(mp, MP_COHERENCE_GROUP);
+	mp->cpu = mp_make(mp, MP_CPU);
 	mp->space = mp_make(mp, MP_ADDRESS_SPACE);
+	mp->page_queue = mp_make(mp, MP_QUEUE);
+	mp->blue_task = mp_make(mp, MP_TASK);
 	mp_lookup(mp, mp->blue_process, MP_PROCESS)->proc.space = mp->space;
 
 	struct mp_object *blue = mp_lookup(mp, mp->blue_task, MP_TASK);
@@ -864,6 +866,21 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 		if (!r[4])
 			status = MP_INVALID_ID_ERR;
 		break;
+	case 62: {      /* MPGetNextCpuID(coherence group r3, 0: the current processor's; CPU r4, 0: from the first) -> the next r4 in it */
+		uint32_t next = next_id(mp, MP_CPU, r[4]);
+		if ((r[3] && !mp_lookup(mp, r[3], MP_COHERENCE_GROUP)) || !next)
+			status = MP_INVALID_ID_ERR;
+		else
+			r[4] = next;
+		break;
+	}
+	case 44:        /* MPStartScheduling(CPU r3): it's scheduling already */
+	case 45:        /* MPStopScheduling(CPU r3): not the processor the kernel started on, the only one */
+		if (!mp_lookup(mp, r[3], MP_CPU))
+			status = MP_INVALID_ID_ERR;
+		else if (r[0] == 45)
+			status = MP_INSUFFICIENT_RESOURCES_ERR;
+		break;
 	case 39:        /* MPSetQueueReserve(r3, count r4): notifications that can't fail for want of memory */
 		if (!(o = mp_lookup(mp, r[3], MP_QUEUE)))
 			status = MP_INVALID_ID_ERR;
@@ -1082,6 +1099,8 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 	}
 	case 100:       /* MPGetFreePageCount -> r3 (not a status) */
 		status = (int32_t)mp->free_pages;
+		break;
+	case 132:       /* NKSetClockDriftCorrection(parts per billion r3, 0: none): NanoKernel 2 then steps the timebase now and then; syshm's keeps time */
 		break;
 	case 82:        /* MPRegisterAger(notification r3): once */
 		if (mp->ager)

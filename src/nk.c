@@ -104,6 +104,8 @@ enum {
 	KDP_HW_INFO = 0xB80,
 	KDP_SYS_INFO = 0xC20,
 	KDP_DIAG_INFO = 0xD60,
+	KDP_HW_INFO_2 = 0xE60,          /* (NanoKernel 2's longer HWInfo and ProcessorInfo, for mp_kernel) */
+	KDP_PROC_INFO_2 = 0xF20,
 	KDP_PROC_INFO = 0xF60,
 	KDP_INFO_PTRS = 0xFC0,
 };
@@ -551,6 +553,7 @@ struct machine {
 	unsigned long kcalls_in_place[2];       /* kernel calls 0 and 1 the engines made (see kcall_in_place()) */
 	unsigned long exceptions[32];
 	uint8_t kdp[MEM_PAGE_SIZE];     /* kernel's copy of the KernelData page */
+	uint32_t hw_info;               /* ... where HWInfo is in it (see init_info_records()) */
 	bool mp_kernel;                 /* the ROM wants Multiprocessing Services from the kernel (see init_info_records()) */
 	struct mp mp;                   /* ... which are these */
 };
@@ -588,15 +591,25 @@ static void init_info_records(struct machine *m)
 
 	memset(k, 0, sizeof m->kdp);
 
-	/* Pointer table at InfoRecord+0xFC0; versions/lengths as NanoKernel v1 reports them */
+	/*
+	 * Pointer table at InfoRecord+0xFC0; versions/lengths as NanoKernel v1
+	 * reports them, or for ROM files with parcels as NanoKernel 2.28 does
+	 * (the kernel in Mac OS 9.2.2's): HWInfo 0x0108, 0xC0 bytes;
+	 * ProcessorInfo 0x0112, 0xA0 bytes, with clock rates; SystemInfo
+	 * 0x0107. Mac OS 9.2.2's ROM reads HWInfo's 0x0108 fields.
+	 */
+	uint32_t proc_info = m->mp_kernel ? KDP_PROC_INFO_2 : KDP_PROC_INFO;
+	uint16_t proc_info_version = m->mp_kernel ? 0x0112 : 0x0101;
+	uint16_t proc_info_length = m->mp_kernel ? 0xA0 : 0x60;
+	m->hw_info = m->mp_kernel ? KDP_HW_INFO_2 : KDP_HW_INFO;
 	put_be32(k + KDP_INFO_PTRS, m->ci.la_info_record + KDP_INFO_PTRS);
 	kdp_info_ptr(m, 0xFC8, KDP_PROC_STATE, 0x0100, 0x80);
-	kdp_info_ptr(m, 0xFD0, KDP_HW_INFO, 0x0103, 0xA0);
-	kdp_info_ptr(m, 0xFD8, KDP_PROC_INFO, 0x0101, 0x60);
+	kdp_info_ptr(m, 0xFD0, m->hw_info, m->mp_kernel ? 0x0108 : 0x0103, m->mp_kernel ? 0xC0 : 0xA0);
+	kdp_info_ptr(m, 0xFD8, proc_info, proc_info_version, proc_info_length);
 	kdp_info_ptr(m, 0xFE0, KDP_NK_INFO, NK_INFO_VERSION, NK_INFO_LENGTH);
 	kdp_info_ptr(m, 0xFE8, KDP_DIAG_INFO, 0x0100, 0x100);
-	kdp_info_ptr(m, 0xFF0, KDP_SYS_INFO, 0x0105, 0x140);
-	kdp_info_ptr(m, 0xFF8, KDP_PROC_INFO, 0x0101, 0x60);
+	kdp_info_ptr(m, 0xFF0, KDP_SYS_INFO, m->mp_kernel ? 0x0107 : 0x0105, 0x140);
+	kdp_info_ptr(m, 0xFF8, proc_info, proc_info_version, proc_info_length);
 	put_be32(k + KDP_EMU_TRAP_TABLE, m->ci.la_emulator_code + m->ci.kernel_trap_table_offset);
 
 	/*
@@ -614,7 +627,7 @@ static void init_info_records(struct machine *m)
 	}
 
 	/* ProcessorInfo: a 266 MHz PowerPC 750 on a 66 MHz bus */
-	uint8_t *pi = k + KDP_PROC_INFO;
+	uint8_t *pi = k + proc_info;
 	put_be32(pi + 0x00, CPU_PVR);
 	put_be32(pi + 0x04, CPU_HZ);
 	put_be32(pi + 0x08, BUS_HZ);
@@ -634,6 +647,11 @@ static void init_info_records(struct machine *m)
 	put_be16(pi + 0x30, 128);               /* TLB entries */
 	put_be16(pi + 0x32, 2);                 /* TLB associativity */
 	put_be32(pi + 0x48, 7);                 /* ProcessorFlags: L2CR, PLRU L1, TAU */
+	if (m->mp_kernel) {                     /* ClockRates, the first step's */
+		put_be32(pi + 0x60, CPU_HZ);
+		put_be32(pi + 0x64, BUS_HZ);
+		put_be32(pi + 0x68, TIMEBASE_HZ);
+	}
 
 	/* SystemInfo: one bank of RAM at 0, no L2 */
 	uint8_t *si = k + KDP_SYS_INFO;
@@ -647,7 +665,7 @@ static void init_info_records(struct machine *m)
 	put_be32(si + 0x100, MACIO_INTCTL);     /* IntCntrBaseAddr */
 
 	/* HWInfo: built by our Trampoline replacement */
-	bootinfo_hwinfo(&m->bootinfo, k + KDP_HW_INFO);
+	bootinfo_hwinfo(&m->bootinfo, k + m->hw_info);
 }
 
 /*
@@ -697,6 +715,20 @@ static void dma_interrupt(void *ctx, unsigned source)
 {
 	macio_pulse(ctx, source);
 }
+
+/* A Mac I/O cell with nothing behind it here: its registers read as zeros and ignore writes */
+static uint32_t empty_cell_read(void *ctx, uint32_t offset, unsigned size)
+{
+	(void)ctx, (void)offset, (void)size;
+	return 0;
+}
+
+static void empty_cell_write(void *ctx, uint32_t offset, unsigned size, uint32_t value)
+{
+	(void)ctx, (void)offset, (void)size, (void)value;
+}
+
+static const struct mmio_ops empty_cell_ops = { empty_cell_read, empty_cell_write };
 
 /*
  * Generated code reaches guest memory through host page protection (see
@@ -922,6 +954,13 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	if (m->mp_kernel) {
 		nvram_init(&m->nvram, m->rtas.nvram, RTAS_NVRAM_SIZE);
 		mmio_add(&m->bus, MACIO_NVRAM, MACIO_NVRAM_SIZE, &nvram_mmio_ops, &m->nvram, "nvram");
+		/*
+		 * The floppy controller's cell (SWIM3), with no drive on the iMac.
+		 * Mac OS 9.2.2's clock task ('accu') reads mac-io +0x15038, where
+		 * KeyLargo has a counter to measure the timebase's drift by; with
+		 * zeros it finds the counter stopped and corrects nothing.
+		 */
+		mmio_add(&m->bus, MACIO_SWIM3, MACIO_SWIM3_SIZE, &empty_cell_ops, NULL, "swim3");
 		m->mp.log = getenv("SYSHM_LOG_MP") != NULL;
 		mp_init(&m->mp, TIMEBASE_HZ);
 		/* the areas a NanoKernel 2 makes from the page map: Mac OS's RAM, then the rest */
@@ -1892,8 +1931,8 @@ static bool update_interrupts(struct machine *m, bool force)
 	if (changed) {
 		m->pending[0] = p0;
 		m->pending[1] = p1;
-		put_be32(m->kdp + KDP_HW_INFO + 0x28, p0);      /* PendingInts */
-		put_be32(m->kdp + KDP_HW_INFO + 0x2C, p1);
+		put_be32(m->kdp + m->hw_info + 0x28, p0);       /* PendingInts */
+		put_be32(m->kdp + m->hw_info + 0x2C, p1);
 		kdp_sync(m);
 	}
 
@@ -2611,7 +2650,7 @@ static int32_t cpu_plugin_register(struct machine *m)
 	struct mp *mp = &m->mp;
 	if ((r[4] | r[5]) & (MEM_PAGE_SIZE - 1) || !r[5])
 		return MP_INSUFFICIENT_RESOURCES_ERR;
-	if (r[3])                       /* (there's no coherence group but the machine's) */
+	if (r[3] && r[3] != mp->coherence_group)        /* (0: the machine's, the only one) */
 		return MP_INVALID_ID_ERR;
 	if (!r[6]) {
 		mp->plugin.desc = 0;
@@ -2817,6 +2856,16 @@ static const char *kernel_call(struct machine *m, unsigned n)
 			return "guest powered off";
 		if (m->rtas.reboot)
 			return "guest restarted";
+		break;
+	case 7:     /* CacheDispatch(flags << 16 | cache r3: 1 L1, 2 L2) */
+		if ((cpu->gpr[3] & 0xFFFFu) <= 2)
+			return "unimplemented kernel call";
+		/*
+		 * A selector above 2 (Mac OS 9.2.2's Power Manager asks for 4 as it
+		 * dozes): both NanoKernels answer -2, in the low half; the high
+		 * half is the caller's r23's, which their return path ANDs in.
+		 */
+		cpu->gpr[3] = (cpu->gpr[23] & 0xFFFF0000u) | 0xFFFEu;
 		break;
 	case 8:     /* MPDispatch: Multiprocessing Services, NanoKernel 2's (call r0) */
 		return kcall_mp_dispatch(m, kcall_return_pc(m));

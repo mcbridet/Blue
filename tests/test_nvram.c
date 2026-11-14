@@ -115,5 +115,45 @@ void test_nvram(void)
 		CHECK(path && len == sizeof want && memcmp(path, want, len) == 0);
 	}
 	CHECK(flat_find(tree, NULL, "syshm,disk", "pci") != NULL);
+
+	/*
+	 * NanoKernel 2's HWInfo (0x0108): CascadeInfo at +0xA8, no cascaded
+	 * interrupt controllers; and a parcel's lanLib for bmac+ (Mac OS
+	 * 9.2.2's) leaves the firmware's in the Ethernet node
+	 */
+	uint8_t hwinfo[0xC0];
+	memset(hwinfo, 0xAA, sizeof hwinfo);
+	bootinfo_hwinfo(&bi, hwinfo);
+	CHECK_EQ(be32(hwinfo + 0x70), 0x486E666Fu);
+	CHECK_EQ(be32(hwinfo + 0xA0), 0);
+	CHECK_EQ(be32(hwinfo + 0xA8), bi.cascade_info);
+	CHECK(bi.cascade_info != 0 && be32(mem_ptr(&mem, bi.cascade_info)) == 0);
+	static uint8_t ours[] = { 1, 2, 3, 4 }, theirs[] = { 9, 9 };
+	struct parcel_blob lanlib = { .type = "shlb", .flags = 6, .name = "lanLib,AAPL,MacOS,PowerPC",
+				      .data = theirs, .size = sizeof theirs };
+	struct parcel bmac = { .type = "prop", .flags = PARCEL_MATCH_TYPE | PARCEL_MATCH_COMPATIBLE,
+			       .a = "bmac+", .b = "network", .blobs = &lanlib, .count = 1 };
+	struct parcels some = { &bmac, 1 };
+	hw.parcels = &some;
+	hw.lanlib = ours;
+	hw.lanlib_size = sizeof ours;
+	CHECK(bootinfo_build(&mem, &bi, &hw) == 0);
+	CHECK_EQ(bi.parcel_props, 1);
+	node = flat_find(mem_ptr(&mem, bi.device_tree), NULL, "ethernet", "mac-io");
+	CHECK(node != NULL);
+	if (node) {
+		uint32_t len;
+		const uint8_t *lib = flat_prop(node, "lanLib,AAPL,MacOS,PowerPC", &len);
+		CHECK(lib && len == sizeof ours && memcmp(lib, ours, len) == 0);
+	}
+
+	/* earlier ROMs: HWInfo is 0xA0 bytes */
+	hw.parcels = NULL;
+	CHECK(bootinfo_build(&mem, &bi, &hw) == 0);
+	CHECK_EQ(bi.cascade_info, 0);
+	memset(hwinfo, 0xAA, sizeof hwinfo);
+	bootinfo_hwinfo(&bi, hwinfo);
+	CHECK_EQ(hwinfo[0x9F], 0);
+	CHECK_EQ(hwinfo[0xA0], 0xAA);
 	mem_free(&mem);
 }

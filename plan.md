@@ -78,6 +78,13 @@ Done:
   selectors by which StartLib finds that drive, so the Start Manager takes
   it at once instead of after 25 s. See Findings, "The Start Manager's
   wait".
+- **Mac OS 9.2.2** (Task 10): the MacOS9Lives 9.2.2 CD starts up to the
+  Finder. For ROM files with parcels the info records are NanoKernel
+  2.28's (HWInfo 0x0108 with CascadeInfo, ProcessorInfo 0x0112, SystemInfo
+  0x0107); the kernel has the coherence group and processor objects, and
+  calls 44, 45, 62 and 132; kernel call 7 answers unknown selectors; the
+  floppy controller's Mac I/O cell reads as zeros; syshm's lanLib stays in
+  the Ethernet node. See Findings, "Mac OS 9.2.2: the CD" and after.
 
 Where it stops:
 
@@ -102,6 +109,20 @@ image as the destination. In real time with fast start the Finder is up
 after 16 s of guest time (1.3 s on the host; it was 41 s before the
 startup disk was found at once), against 13.8 s for the 8.5 CD: what's
 left is mostly AppleTalk on Ethernet (5 s) and the CD's transfers.
+
+The 9.2.2 CD (`build/syshm boot --cdrom 922.iso --max 4000000000`) has the
+Finder up by instruction 1.5 billion, with the CD's Read Me open in
+SimpleText (as under QEMU), and idles there; two runs are identical. In
+real time with fast start the Finder is up after 13.2 s of guest time (0.9
+s on the host), and the host then sleeps 25 s of 30. Its installer, Apple
+Software Restore, restores the CD's image onto a blank disk from `disk
+create` (671 MB, by instruction 40 billion of a scripted run), and the
+restored system starts up to the Finder in real time; in instruction time
+it waits before the Finder until a key is pressed (Findings, "The restored
+9.2.2 waits for a key"). After half an hour of idling the power manager
+dozes (PowerDispatch
+1, CacheDispatch 4), and at 55 minutes its 'powr' task stops and restarts
+scheduling around a sleep that doesn't happen; the system carries on.
 
 ## Ground rules for every task
 
@@ -419,7 +440,19 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 10. Mac OS 9.2–9.2.2
 
-- **Status:** not started. **Needs:** 8, and their CDs from the user.
+- **Status:** the MacOS9Lives 9.2.2 CD (`922.iso`) starts up to the Finder,
+  and its Apple Software Restore installs onto a blank disk image. Done:
+  NanoKernel 2.28's info records for ROM files with parcels
+  (`init_info_records()` in `nk.c`, `bootinfo_hwinfo()`, `bootinfo_build()`
+  in `bootinfo.c`); the coherence group and processor objects
+  (`mp_init()`), `MPGetNextCpuID` (62), `MPStartScheduling` (44),
+  `MPStopScheduling` (45), `NKSetClockDriftCorrection` (132) in `mp.c`;
+  CacheDispatch (kernel call 7) for selectors above 2 (`kernel_call()`);
+  the floppy controller's cell (`empty_cell_ops`, `setup_machine()`);
+  syshm's lanLib kept over the ROM file's `bmac+` one (`build_tree()`).
+  `tests/test_mp.c` and `tests/test_nvram.c` cover them. Open: Apple's own
+  9.2/9.2.2 CDs (not tried: none here); the installed system's wait for a
+  key in instruction time (see Findings).
 - **Goal:** their ROM files (newer parcels, possibly newer kernel
   features) on the same path. Find out first whether they list `iMac,1`
   in `<COMPATIBLE>`.
@@ -949,3 +982,120 @@ Facts later tasks need, added as they are found.
   device exits 1.64 million → 36,000, host time 1.00 → 0.96 s; 8.5
   installed 0.87 → 0.86 s, 8.6 1.24 → 1.21 s, 9.1 CD 1.04 → 1.03 s
   (medians of 9 alternating runs on a shared machine, ±1-2%).
+- **Mac OS 9.2.2: the CD** (Task 10): MacOS9Lives' "Mac OS 9.2.2
+  Universal" (`922.iso`, volume MacOS9Lives in the partition "Toast 5.2 HFS
+  Optimizer"), for Macs Apple's 9.2.2 doesn't support. Its ROM file is
+  10.2f1 (its Read Me: "Modified Mac ROM 10.2.1MR"), `<COMPATIBLE>` MacRISC
+  to MacRISC4 (no model check stops it), Toolbox release 0x45F6, 31 parcels
+  (no MotherBoardHAL among CodePrepare's; AGPLib and EtherPrintfLib in
+  CodeRegister; drivers for `bmac+`, KeyLargo, Kauai, UniNorth...), and
+  NanoKernel 2.28. Under QEMU (`tools/qemu-ref/run91.sh 922.iso`, `mac99`)
+  it reaches the Finder with its Read Me open in SimpleText within a
+  minute. Its installer is Apple Software Restore 2.2.5, which restores
+  `MacOS9LivesMR.img` from the CD onto a volume (erasing it, as Mac OS
+  Extended); Drive Setup opens too and lists no drives.
+- **NanoKernel 2.28's info records** (QEMU, 9.2.2 at the Finder): the
+  InfoRecord page (`0x5FFFE000`) is a page of its own (10 pages below the
+  KDP), no longer the KDP. ProcessorState `0x68FFDB30` (PSA) 0x0100/0x80;
+  HWInfo `0x5FFFEF00` 0x0108/0xC0; ProcessorInfo `0x68FFEF20` (KDP)
+  0x0112/0xA0; NanoKernelInfo `0x68FFEDC0` 0x0228/0x160; DiagInfo
+  `0x68FFDA30` 0x0100/0x100; SystemInfo `0x5FFFEDC0` 0x0107/0x140. HWInfo's
+  0x0108 fields, from the Trampoline (`rom trampoline 922.iso`): +0x9C a
+  halfword, 0x41 with an OpenPIC (which also gets spurious vector 0x40 at
+  +0x74; nothing without one); +0xA0 the device tree's checksum over the
+  `psum` parcel's properties (0xDA424865 there); +0xA8 CascadeInfo, a
+  pointer to a 0x204-byte table the Trampoline copies into the ConfigInfo
+  page (`0x68FEFCFC`): the count of interrupt controllers cascaded from the
+  OpenPIC first (0 on QEMU), their entries from +0x148 (0x20 bytes each).
+  SystemInfo 0x0107 adds bytes from NVRAM at +0x128 and +0x129 (Mac OS
+  offset +0xAF, the RAM disk's size, and +0xB1) and a long at +0x12A for the
+  RAM disk. ProcessorInfo 0x0112 adds ClockRates at +0x60 (CPU, bus,
+  decrementer Hz; the kernel copies them from +0x04-+0x0C; call 108 sets
+  other steps). For ROM files with parcels syshm now gives those versions
+  and lengths, still in its one page (HWInfo at +0xE60, ProcessorInfo at
+  +0xF20, the rest where NanoKernel 1's are), CascadeInfo with no
+  controllers (boot-info area +0x51100), the checksum and RAM disk fields 0,
+  and the clock rates. The 9.1 CD's run is unchanged by it.
+- **What 9.2.2's ROM reads there:** its 68k startup (`0xFFC0F0AC`, the
+  only new use of NKHWInfoPtr) does `movea.l ([$68FFEFD0],$A8),a1; tst.l
+  (a1)`, and with a count patches handlers from a table ProductInfo +0x50
+  leads to. With syshm's HWInfo 0x0103/0xA0, +0xA8 was SystemInfo's
+  logical RAM size, read as a pointer: exception 18 at the end of RAM at
+  instruction 954,597. A System fragment checks ProcessorInfo's version
+  (at least 0x0111) before starting 'accu' (below).
+- **Calls 9.2.2 makes that 9.1 doesn't** (QEMU, `-d int`, 75 s): 62
+  `MPGetNextCpuID` (from MPLibrary, `0xFFCD6ED0`: coherence group r3, 0 the
+  current processor's; previous CPU r4 → next r4; kMPInvalidIDErr after the
+  last, r4 left), 132 `NKSetClockDriftCorrection` (parts per billion r3; 0
+  turns it off: then nothing but noErr; else the kernel's drift timer steps
+  the timebase by one tick every so often; kMPInsufficientResourcesErr
+  without that timer or with more than one processor scheduled. syshm's
+  timebase keeps time: noErr), 95 `MPFindVictimPage` (86 times: QEMU's free
+  page count went low; syshm's doesn't), and `sc` -3 (16,815 times, all
+  from the kernel's own code at physical `0x00F15920`). No 11
+  (`MPIsTaskBlue`): Mixed Mode's `sc` -1 does it. Later, idle, 44 and 45.
+- **The startup objects** (`NKInit.s`, and QEMU's index): process 1,
+  coherence group 0x00010001, CPU 0x00020001 (Flags 0xF: scheduled, and
+  bit 31, the processor the kernel started on), address space 0x00030001,
+  page queue 0x00040001, blue task 0x00050001, then semaphores, the idle
+  task, another address space and the areas. syshm now makes the first six
+  so (`mp_init()`); MPRegisterCpuPlugin takes the group's ID as well as 0.
+  `MPStopScheduling` (45) on the starting processor is
+  kMPInsufficientResourcesErr; `MPStartScheduling` (44) on a scheduled one
+  noErr. The 9.1 CD's run to 4 billion is the same with the new IDs (its
+  screen and every count but the JIT's links).
+- **'accu', the clock's drift** (9.2.2): a PEF fragment the System loads
+  (with a 68k loader; imports NameRegistryLib and MPLibrary) calls
+  `NKSetClockDriftCorrection(0)`, checks ProcessorInfo's version, finds the
+  Name Registry node named `mac-io` and its `AAPL,address`, and starts task
+  'accu'. Every 120 s (an `MPWaitOnSemaphore` timeout; the semaphore starts
+  at 1, so the first pass is at once) it reads the timebase and the 64-bit
+  counter at mac-io +0x15038 (`lwbrx`, KeyLargo's timer), and when the
+  counter has moved, sets a correction in ppb against ProcessorInfo's
+  decrementer rate; else it sets 0. On an iMac's Paddington that address is
+  in the floppy controller's (SWIM3) cell. syshm had nothing there: the
+  task faulted (exception 18 in a task: Task 4). The cell now reads zeros
+  (`setup_machine()`, `empty_cell_ops`, for ROM files with parcels).
+- **The ROM file's lanLib for `bmac+`** (9.2.2's parcel flags 0xC, blob
+  flags 6, not keep-existing) took the place of syshm's in the Ethernet
+  node, and its first store to the BMAC registers (Mac I/O +0x11180) made
+  the Finder quit. `build_tree()` puts syshm's back after the parcels.
+- **The power manager when idle** (9.2.2's CD): after half an hour of guest
+  time without input, PowerDispatch 9 once, then PowerDispatch 1 (doze
+  until an interrupt) in a loop, with CacheDispatch (kernel call 7) and r3
+  = 4 now and then. Both NanoKernels (`MOS.rom` `0xFFF15F78`, 10.2f1
+  `0xFFF1A8CC`) answer a selector above 2 with -2 in the low half, the high
+  half being the caller's r23's (their return path ANDs it in); syshm does
+  the same, and still stops for 0-2 (the caches; not seen). At 55 minutes
+  the 'powr' task calls 62, 45 (refused), 62, 44, as around a sleep; no
+  PowerDispatch 8 comes, and the system carries on (input brings it back
+  from dozing). 9.1's CD doesn't doze in 70 minutes.
+- **The restored 9.2.2 waits for a key, in instruction time:** started from
+  the disk Apple Software Restore made, it shows "Mac OS 9.2" and the
+  desktop by instruction 2.1 billion, then no 68k code runs: the blue task
+  stays in native code (MPLibrary `0xFFCD696C`), napping with call 55, the
+  menu-bar clock stopped and the watch cursor up. A key (or Command held
+  from startup) and it goes on to the Finder; in real time it starts up
+  normally (13.5 s of guest time). The last level-1 software interrupt
+  (Time Manager) was posted at a sync point while the emulator ran (68k mask
+  0, `0x6806E44C`, in its path that saves the context block on the stack
+  around a call and restores it, `0x6806E2A0`-`0x6806E454`); the emulator
+  yielded (call 13) and went on into native code without taking it. ECB
+  +0xD0 stays 1 and the table's level-1 entry stays taken, so later timers
+  raise nothing (SetEvent's "already set"), the Time Manager stops, and the
+  native code waits for time that never passes. RunAlternateContext's test
+  mask (TestIntMaskInit 0x00200000, cr2.eq) doesn't stop it for a software
+  interrupt (cr2.lt), on NanoKernel 2 too, and NanoKernel 2 delivers the
+  same way (SetEvent flags the blue task; SchEval ORs the bits into the
+  running emulator's CR). What differs is likely when timers fire (syshm:
+  at sync points, every 20,000 instructions) and that a real iMac has a
+  periodic external interrupt, the display's VBL, which would end the
+  native code within 16 ms, while syshm's VBL is a Driver Services timer
+  that itself needs the Time Manager. Options: a VBL interrupt from the
+  display device (`video.c`, its node's interrupt set), or timers firing at
+  their exact time in instruction time.
+- **The clock with `--fixed-time 1000000000`** reads an hour later on the
+  9.2.2 CD than on 9.1's or 8.5's (12:50 PM against 11:50 AM): September
+  2001, summer time in the northern hemisphere but not where this host is
+  (Australia). The CD's Date & Time sets daylight-saving time itself; the
+  restored system shows the host's local time like the others.
