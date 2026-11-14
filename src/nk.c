@@ -10,6 +10,7 @@
 #include "awacs.h"
 #include "be.h"
 #include "bootinfo.h"
+#include "clip.h"
 #include "cuda.h"
 #include "dbdma.h"
 #include "disk.h"
@@ -467,6 +468,7 @@ struct machine {
 	struct scc scc;
 	struct video video;
 	struct helper helper;           /* the guest tools' helper application */
+	struct clip clip;               /* ... and the clipboard it shares (the window's, or a script's) */
 	struct rave rave;               /* ... and their 3D engine */
 	struct install install;         /* ... and installing them (see tools_startup()) */
 	bool tools_offer;               /* ... which is offered in this run */
@@ -809,6 +811,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	mem_map(&m->mem, FB_BASE, FB_SIZE, MEM_RW);
 	video_init(&m->video, &m->mem, FB_BASE, FB_SIZE);
 	helper_init(&m->helper);
+	clip_guest_reset(&m->clip);
 	rave_init(&m->rave, &m->mem);
 	m->rave.gpu = m->gpu;
 	m->rave.log = getenv("SYSHM_LOG_RAVE") != NULL;
@@ -1683,6 +1686,17 @@ static void display_frame(struct machine *m, uint64_t now)
 	}
 	display_update(m->display);
 	display_input(m, now);
+	if (m->clip.enabled && !m->scripted) {          /* what Mac OS copied, to the host */
+		const char *text = clip_take(&m->clip);
+		uint8_t key;
+		bool down;
+		if (text)
+			display_set_clipboard(m->display, text);
+		while (clip_held_key(&m->clip, now, &key, &down)) {
+			adb_key(&m->cuda.adb, key, down);
+			fast_start_input(m, key & 0x7F, down);
+		}
+	}
 	if (m->paused)
 		stay_paused(m);
 }
@@ -1729,7 +1743,8 @@ static void display_input(struct machine *m, uint64_t now)
 			break;
 		/* (a script drives scripted runs: the host's input would change what they do) */
 		case DISPLAY_EVENT_KEY:
-			if (!m->scripted) {
+			/* (held a moment while Mac OS hears of the host's new clipboard: see clip_hold_key()) */
+			if (!m->scripted && !clip_hold_key(&m->clip, ev.adb_key, ev.down, now)) {
 				adb_key(&m->cuda.adb, ev.adb_key, ev.down);
 				fast_start_input(m, ev.adb_key & 0x7F, ev.down);
 			}
@@ -1765,6 +1780,13 @@ static void display_input(struct machine *m, uint64_t now)
 			break;
 		case DISPLAY_EVENT_EXPOSE:
 			m->redraw = true;
+			break;
+		case DISPLAY_EVENT_CLIPBOARD:
+			if (m->clip.enabled && !m->scripted) {
+				char *text = display_clipboard(m->display);
+				clip_host_text(&m->clip, text);
+				free(text);
+			}
 			break;
 		case DISPLAY_EVENT_RESIZE:      /* see follow_window(); scripted runs keep their screen */
 			m->redraw = true;
@@ -1812,6 +1834,23 @@ static int script_cmp(const void *x, const void *y)
 	return a->at < b->at ? -1 : a->at > b->at;
 }
 
+/* The text after a command (and a space): \n, \r and \\ stand for a newline, a CR and a backslash */
+static void script_text(const char *rest, char *out, size_t size)
+{
+	size_t n = 0;
+	if (*rest == ' ')
+		rest++;
+	for (; *rest && *rest != '\n' && n + 1 < size; rest++) {
+		char ch = *rest;
+		if (ch == '\\' && (rest[1] == 'n' || rest[1] == 'r' || rest[1] == '\\')) {
+			rest++;
+			ch = *rest == 'n' ? '\n' : *rest == 'r' ? '\r' : '\\';
+		}
+		out[n++] = ch;
+	}
+	out[n] = '\0';
+}
+
 static int script_load(struct script *s, const char *path)
 {
 	FILE *f = fopen(path, "r");
@@ -1843,6 +1882,8 @@ static int script_load(struct script *s, const char *path)
 		const char *rest = strstr(line, e.cmd) + strlen(e.cmd);
 		if (strcmp(e.cmd, "screenshot") == 0 || strcmp(e.cmd, "tools") == 0) {
 			sscanf(rest, " %255s", e.arg);
+		} else if (strcmp(e.cmd, "clipboard") == 0) {
+			script_text(rest, e.arg, sizeof e.arg);
 		} else if (strcmp(e.cmd, "key") == 0) {
 			sscanf(rest, " %x %255s", (unsigned *)&e.a, e.arg);
 		} else if (strcmp(e.cmd, "floppy") == 0) {      /* floppy insert FILE (the rest of the line), eject */
@@ -1939,6 +1980,18 @@ static void script_run(struct machine *m, struct script *s)
 				m->want_h = (unsigned)e->b;
 				m->want_ns = 0;
 			}
+		} else if (strcmp(e->cmd, "clipboard") == 0) {         /* as if copied on the host */
+			clip_host_text(&m->clip, e->arg);
+		} else if (strcmp(e->cmd, "print-clipboard") == 0) {   /* what the host would have */
+			clip_take(&m->clip);
+			printf("clipboard at instruction %llu: \"", (unsigned long long)m->cpu.icount);
+			for (const char *p = m->clip.host ? m->clip.host : ""; *p; p++) {
+				if (*p == '\n' || *p == '\\')
+					fputs(*p == '\n' ? "\\n" : "\\\\", stdout);
+				else
+					putchar(*p);
+			}
+			printf("\"\n");
 		} else if (strcmp(e->cmd, "screenshot") == 0) {
 			if (video_screenshot(&m->video, e->arg))
 				fprintf(stderr, "cannot write %s\n", e->arg);
@@ -2698,7 +2751,7 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		video_driver_call(&m->video, &c, TIMEBASE_HZ);
 		break;
 	case HOSTCALL_TOOLS_HELPER:
-		helper_call(&m->helper, &c, &m->video);
+		helper_call(&m->helper, &c, &m->video, &m->clip);
 		break;
 	case HOSTCALL_TOOLS_RAVE:
 		rave_call(&m->rave, &c);
@@ -3348,6 +3401,9 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	if (opt->input_script && script_load(&script, opt->input_script))
 		return 1;
 	m.scripted = opt->input_script != NULL;
+	for (size_t k = 0; k < script.count; k++)       /* (a script's clipboard stands in for the host's) */
+		m.clip.enabled |= strcmp(script.ev[k].cmd, "clipboard") == 0 ||
+				  strcmp(script.ev[k].cmd, "print-clipboard") == 0;
 
 	m.start_ns = host_ns();
 	m.idle_sleep = opt->realtime && !opt->no_idle;
@@ -3363,6 +3419,12 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			display_status_bar(m.display, true);
 		if (m.display && opt->realtime && !opt->no_sound)
 			m.audio = audio_open();         /* (in instruction time, sound would be too fast or slow) */
+		if (m.display && opt->realtime && !m.scripted) {
+			char *text = display_clipboard(m.display);
+			m.clip.enabled = true;
+			clip_host_text(&m.clip, text);
+			free(text);
+		}
 	}
 	m.tools_offer = opt->window;
 	for (size_t k = 0; k < script.count; k++)
@@ -3710,6 +3772,9 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		printf("\nenhancements: %s, %lu launches, %lu mode switches, %lu failed (last error %d)",
 		       m.helper.running ? "running" : "quit", m.helper.launches, m.helper.switches, m.helper.failures,
 		       m.helper.last_error);
+	if (m.helper.launches && m.clip.enabled)
+		printf("; clipboard: %lu scrap calls, %lu texts to Mac OS, %lu from it", m.helper.scrap_calls,
+		       m.clip.to_mac, m.clip.to_host);
 	if (m.rave.calls)
 		printf("\n3d engine: %lu calls, %lu contexts, %lu textures, %lu frames, %lu triangles (%lu back-facing)",
 		       m.rave.calls, m.rave.contexts, m.rave.textures, m.rave.frames, m.rave.triangles, m.rave.backfacing);
@@ -3776,5 +3841,6 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	free(script.ev);
 	for (unsigned k = 0; k < m.floppy_count; k++)
 		free(m.floppy_list[k]);
+	clip_free(&m.clip);
 	return 0;
 }

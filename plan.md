@@ -482,6 +482,31 @@ the kernel); 8 onwards as the boot progresses.
   the installer against a File Manager of its own. Open: "don't ask
   again"; 9.1 on an installed disk.
 
+### 14. Clipboard
+
+- **Status:** done. Text is shared by Mac OS and the host's clipboard in
+  window runs in real time: `src/clip.c` (conversions; which side's text
+  is newer), syshm Enhancements in `src/tools.c` (the guest side), and
+  SDL2's text clipboard in `src/display.c`, on the window's thread, which
+  is the emulation's. Enhancements (version 2 in its data: the installer
+  tells an older copy on disk by its bytes, the version tells syshm where
+  a running older copy's data is, which still switches modes) writes
+  routine descriptors for ZeroScrap and PutScrap into the trap table and
+  puts a GetNextEvent filter in `jGNEFilter`; when the host's text changes
+  it posts the front application a resume event with convertClipboard, and
+  keys typed in the window wait for that (at most 0.5 s). Input scripts'
+  `clipboard` and `print-clipboard` stand in for the host's clipboard.
+  `tests/test_clip.c` covers the conversions, echoes and held keys,
+  `tests/test_tools.c` the patches. Scripted both ways on the 8.5 and 9.1
+  CDs (SimpleText; `SYSHM_TOOLS_APPL=1` lets the Finder open Enhancements
+  from the tools volume) and on a copy of an 8.5 install (Note Pad,
+  Scrapbook, the Finder's names, Internet Explorer 4.01's address field);
+  there `tools install` replaced the older Enhancements (`helper.quit`
+  takes the patches out too) and the new one pasted in Note Pad. Open:
+  pictures (see Findings), styles, applications that put their copy in the
+  scrap only at a suspend, and the real host clipboard, which only a
+  window run by hand uses.
+
 ## Findings
 
 Facts later tasks need, added as they are found.
@@ -1083,3 +1108,43 @@ Facts later tasks need, added as they are found.
   floppies" says it needs a drive that can make 720K/1440K disks, without
   a call to the driver: it looks for other drives, the Sony driver's
   presumably), though it offers to make an image of one put in.
+- **Each application has its own scrap:** its scrap handle is in its
+  heap, and the low-memory scrap globals (`0x960`) are switched with it;
+  the Process Manager hands the front application's scrap to the next one
+  brought to the front. A background application never sees another's
+  copy: after SimpleText's Copy on the 8.5 CD, syshm Enhancements'
+  InfoScrap count and size were as before. So Enhancements can't poll the
+  scrap: it sees copies in PutScrap, and puts the host's text into the
+  front application's scrap in that application's context.
+- **An application's patches are its own:** NSetTrapAddress from an
+  application patched the trap only while that application ran (the
+  Process Manager swapped the trap table entry at every switch, even with
+  the routine descriptor in the system heap). Written into the trap table
+  (`0x0E00` + 4 × the Toolbox trap's number), as an extension's patch is
+  at startup, it's everyone's and stays. InterfaceLib's glue for the Scrap
+  Manager reads the trap table at each call (`lwz r0,0x15F4(0)`, then
+  CallUniversalProc), so PowerPC applications go through it too.
+  `jGNEFilter` (`0x29A`) isn't switched either.
+- **Applications that don't ask:** Note Pad (68k) pastes from TextEdit's
+  private scrap, which it fills from the desk scrap on a resume event with
+  convertClipboard; at a paste it only asks `GetScrap(nil, 'TEXT')` (the
+  length). Scrapbook (68k) makes no Scrap Manager call after it starts: it
+  reads the scrap's size in low memory to enable Paste. Hence the filter
+  (the host's text is in the front application's scrap before its next
+  event) and the posted resume event (an `osEvt` with
+  suspendResumeMessage, resumeFlag and convertClipboardFlag, which
+  PostEvent puts in the queue, ahead of keys typed after it). Patching
+  WaitNextEvent and GetNextEvent instead, calling the Process Manager's
+  (which switches processes inside them) through CallUniversalProc, left
+  applications without their windows.
+- **Pictures (not done):** Mac OS to host, the scrap's `PICT` is QuickDraw
+  drawing: simplest to have Mac OS draw it (DrawPicture into a GWorld,
+  from Enhancements) and hand the host the pixels. Host to Mac OS: decode
+  PNG (needs an inflater: zlib, or stb_image in third_party) and make a
+  PICT of one DirectBitsRect (32-bit pixels), mind the 4 MB limit. The host
+  side is the bigger part: SDL2's clipboard is text only. SDL3's
+  (`SDL_SetClipboardData` and MIME types) would do X11, Wayland and macOS
+  alike; without it, NSPasteboard through the Objective-C runtime on
+  macOS, and on Linux the X11 CLIPBOARD selection (an `image/png` target,
+  answering SelectionRequest events) and a Wayland data source, each
+  separately.

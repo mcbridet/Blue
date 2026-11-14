@@ -26,6 +26,7 @@ enum display_event_type {
 	DISPLAY_EVENT_MENU,             /* the menu's to open or close (F12; or Esc or Resume, open) */
 	DISPLAY_EVENT_MENU_ACTION,      /* something chosen in the menu: action (but Resume, Fullscreen, Status bar) */
 	DISPLAY_EVENT_DROP_FILE,        /* a file was dropped on the window: path (until the next event) */
+	DISPLAY_EVENT_CLIPBOARD,        /* the host's clipboard may have changed (or the window got the focus) */
 };
 
 struct display_event {
@@ -112,6 +113,13 @@ bool display_prompt(struct display *d, const char *text, const char *yes, const 
 void display_status_bar(struct display *d, bool on);
 void display_status(struct display *d, const struct ui_status *s);
 void display_update(struct display *d);
+
+/*
+ * The host clipboard's text (UTF-8, to free(); NULL if SDL can't say), and
+ * setting it. Only on the thread that runs the window (as SDL requires).
+ */
+char *display_clipboard(struct display *d);
+void display_set_clipboard(struct display *d, const char *text);
 
 /* Returns false when there are no more events. */
 bool display_poll(struct display *d, struct display_event *ev);

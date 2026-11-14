@@ -40,6 +40,7 @@ void test_floppy(void);
 void test_install(void);
 void test_share(void);
 void test_tools(void);
+void test_clip(void);
 void test_raster(void);
 void test_rave(void);
 void test_gpu(void);

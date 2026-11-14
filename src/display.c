@@ -32,6 +32,7 @@
 #define SDL_WINDOWEVENT_EXPOSED 3u
 #define SDL_WINDOWEVENT_RESIZED 5u      /* by the user or the window manager, not by us */
 #define SDL_WINDOWEVENT_SIZE_CHANGED 6u /* by anyone */
+#define SDL_WINDOWEVENT_FOCUS_GAINED 12u
 #define SDL_WINDOWEVENT_FOCUS_LOST 13u
 #define SDL_KEYDOWN 0x300u
 #define SDL_KEYUP 0x301u
@@ -40,6 +41,7 @@
 #define SDL_MOUSEBUTTONUP 0x402u
 #define SDL_MOUSEWHEEL 0x403u
 #define SDL_MOUSEWHEEL_FLIPPED 1u
+#define SDL_CLIPBOARDUPDATE 0x900u
 #define SDL_RENDER_TARGETS_RESET 0x2000u /* (render targets lost what was drawn in them) */
 #define SDL_DROPFILE 0x1000u
 #define SDL_DROPTEXT 0x1001u
@@ -134,6 +136,8 @@ struct sdl {
 	void (*SetWindowSize)(void *, int, int);
 	void (*GetWindowSize)(void *, int *, int *);
 	uint32_t (*GetWindowFlags)(void *);
+	char *(*GetClipboardText)(void);        /* (these may be missing) */
+	int (*SetClipboardText)(const char *);
 	void (*free)(void *);
 };
 
@@ -247,6 +251,9 @@ static bool load_sdl(struct sdl *s)
 	SYM(GetWindowFlags, "SDL_GetWindowFlags");
 	SYM(free, "SDL_free");
 #undef SYM
+	*(void **)&s->GetClipboardText = dlsym(s->lib, "SDL_GetClipboardText");
+	*(void **)&s->SetClipboardText = dlsym(s->lib, "SDL_SetClipboardText");
+	*(void **)&s->free = dlsym(s->lib, "SDL_free");
 	return true;
 }
 
@@ -613,7 +620,14 @@ bool display_poll(struct display *d, struct display_event *ev)
 			d->scaled_stale = true;
 			ev->type = DISPLAY_EVENT_EXPOSE;
 			return true;
+		case SDL_CLIPBOARDUPDATE:
+			ev->type = DISPLAY_EVENT_CLIPBOARD;
+			return true;
 		case SDL_WINDOWEVENT: {
+			if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+				ev->type = DISPLAY_EVENT_CLIPBOARD;
+				return true;
+			}
 			if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
 				/* (keys let go elsewhere aren't seen) */
 				d->ctrl[0] = d->ctrl[1] = d->alt[0] = d->alt[1] = false;
@@ -820,6 +834,21 @@ void display_update(struct display *d)
 {
 	if (d->bar_stale || d->prompt)  /* (a prompt answers the pointer, every frame) */
 		draw(d);
+}
+
+char *display_clipboard(struct display *d)
+{
+	if (!d->sdl.GetClipboardText || !d->sdl.free)
+		return NULL;
+	char *text = d->sdl.GetClipboardText(), *copy = text ? strdup(text) : NULL;
+	d->sdl.free(text);
+	return copy;
+}
+
+void display_set_clipboard(struct display *d, const char *text)
+{
+	if (d->sdl.SetClipboardText)
+		d->sdl.SetClipboardText(text);
 }
 
 uint8_t display_hid_to_adb(unsigned usage)
