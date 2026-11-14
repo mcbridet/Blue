@@ -40,6 +40,7 @@ int adb_command(struct adb_bus *b, uint8_t cmd, const uint8_t *data, unsigned le
 int adb_pending(const struct adb_bus *b, uint16_t mask);
 
 void adb_key(struct adb_bus *b, uint8_t code, bool down);
+void adb_power_key(struct adb_bus *b, bool down);       /* the keyboard's power key (Mac OS asks to shut down) */
 void adb_mouse_move(struct adb_bus *b, int dx, int dy);
 void adb_mouse_button(struct adb_bus *b, bool down);
 

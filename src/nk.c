@@ -1359,11 +1359,18 @@ static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
 {
 	switch (action) {
 	case UI_RESTART:
-	case UI_SHUT_DOWN:
+	case UI_TURN_OFF:
 		if (action == UI_RESTART)
 			m->restart = true;
 		else
 			m->shut_down = m->quit = true;
+		m->paused = false;
+		display_menu(m->display, false);
+		follow_cursor(m, now);
+		break;
+	case UI_SHUT_DOWN:      /* the power key: Mac OS asks, and shuts down if told to (the run ends then) */
+		adb_power_key(&m->cuda.adb, true);
+		adb_power_key(&m->cuda.adb, false);
 		m->paused = false;
 		display_menu(m->display, false);
 		follow_cursor(m, now);
@@ -1723,6 +1730,9 @@ static void script_run(struct machine *m, struct script *s)
 				adb_key(&m->cuda.adb, (uint8_t)e->a, false);
 				fast_start_input(m, e->a & 0x7F, false);
 			}
+		} else if (strcmp(e->cmd, "power") == 0) {     /* the power key, pressed and released */
+			adb_power_key(&m->cuda.adb, true);
+			adb_power_key(&m->cuda.adb, false);
 		} else if (strcmp(e->cmd, "clock") == 0) {
 			/*
 			 * From here on, guest time passes at a guest processor speed of
@@ -3170,7 +3180,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 				display_frame(&m, now);
 				m.next_frame_ns = now + 1000000000u / 60;
 				if (m.quit) {
-					why = m.shut_down ? "shut down from the menu" : "window closed";
+					why = m.shut_down ? "turned off from the menu" : "window closed";
 					break;
 				}
 				if (m.restart) {

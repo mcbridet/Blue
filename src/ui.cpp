@@ -183,8 +183,12 @@ static enum ui_action menu(const struct ui_state *s)
 	ImGui::SetItemDefaultFocus();
 	if (ImGui::Button("Restart", wide))
 		action = UI_RESTART;
-	if (ImGui::Button("Shut down", wide))
+	if (ImGui::Button("Shut down...", wide))
 		action = UI_SHUT_DOWN;
+	if (ImGui::Button("Turn off", wide))
+		action = UI_TURN_OFF;
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("At once, as if the power went: unsaved work is lost");
 
 	ImGui::Separator();
 	if (ImGui::Button("Screenshot", wide))
