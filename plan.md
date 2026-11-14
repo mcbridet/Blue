@@ -728,3 +728,18 @@ Facts later tasks need, added as they are found.
   an NVRAM node (and device) for 9.1 only, or a different way.
 - **Task 4** (exceptions in tasks other than the blue one) wasn't needed
   to reach the Finder: no task faulted.
+- **Quiet writes** (Mac OS 8.5's own ROM file): ConfigInfo maps the ROM
+  (BAT lower `0xFFCF3253`, PMDT attributes 0x353; the 9.1 Trampoline's
+  BAT too, WIMG 0b1010) write-through and PP 3, which NanoKernel 1 and 2
+  treat as quiet: MemRetry skips a store to such a page and counts it in
+  NanoKernelInfo.QuietWriteCount (+0xD0) (`MRDataStorageInt` in
+  NanoKernel 1's `MRInts.s`, `MemRetryDSI` in `NKInterrupts.s`). The 8.5
+  CD's ROM file (release 0x44F3) has a 'thng' resource in the ROM (-16600
+  "DAV Audio Component", 'daud' 'dav ' 'appl', data at `0xFFDD4290`) that
+  `MOS.rom` doesn't; the Component Manager registers it (the 'thng' loop at
+  `0xFFC517E0`, then `0xFFC4F87E`) and copies its ComponentDescription onto
+  itself: five stores at 68k pc `0xFFC4F8A6`, from instruction 321,370,799
+  of a `--fixed-time` CD boot. syshm faulted on the first (exception 21, a
+  68k bus error during Starting Up). `quiet_store()` in `nk.c` now runs
+  such a store with the page writable and puts the page back, so the rest
+  of the instruction (update forms, other pages) happens as under MemRetry.

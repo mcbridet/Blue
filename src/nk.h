@@ -67,6 +67,7 @@ struct nk_region {
 	uint32_t rom_offset;    /* NK_REGION_ROM */
 	uint32_t physical;      /* NK_REGION_IO / NK_REGION_PHYS */
 	bool writable;
+	bool quiet;             /* read-only, and stores are dropped (write-through and PP 3: the ROM) */
 	const char *source;     /* "BAT" or "PMDT" */
 };
 

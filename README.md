@@ -21,8 +21,9 @@ Linux today; other hosts / bare metal later
 - **ROM:** `MOS.rom`, a 1.x NewWorld `Mac OS ROM` file (NanoKernel ID
   `NewWorld v1.0`, compatible with `iMac,1 PowerMac1,1 PowerBook1,1`). Same
   family SheepShaver uses; ships with Mac OS 8.5–8.6.
-- **OS:** the retail Mac OS 8.5 CD (`85.iso`). It boots, and carries its own
-  older ROM file (1.1.x, no `<COMPATIBLE>` list) which we don't use.
+- **OS:** the retail Mac OS 8.5 CD (`85.iso`). It boots, with `MOS.rom` or
+  with the older ROM file it carries itself (1.1.x, no `<COMPATIBLE>` list;
+  see Status).
 - **Machine identity:** to be decided by the universal info tables syshm
   builds. Retail 8.5 predates the Blue & White G3, so an iMac identity is the
   safer first choice; B&W G3 (`PowerMac1,1`) for 8.5.1 and later.
@@ -57,6 +58,14 @@ Restart starts the machine over in the same window, from the ROM with
 memory and devices reset as on a real Mac (NVRAM is kept, and so are guest
 time and the instruction count, which input scripts and `--max` go by).
 Shut Down quits.
+
+Mac OS 8.5 also starts up with the ROM file from its own System Folder
+(the data fork of "Mac OS ROM", release 0x44F3), from the CD or from a
+system installed from it. That ROM has the DAV audio component's 'thng'
+resource in it, and registering the component copies the resource's
+description onto itself, in the ROM. The NanoKernel drops such stores
+(quiet writes; see Virtual machine description); until syshm's kernel did
+too, startup stopped there with a bus error.
 
 ### Mac OS 9
 
@@ -598,6 +607,11 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 - The ROM installs SCSI Manager 4.3 (no buses), as on real machines; the
   Apple CD/DVD Driver extension needs `_SCSIAtomic` to exist.
 - The boot-info area (`0xFF800000`) holds the tables and the device tree.
+- Quiet writes: ConfigInfo maps the ROM write-through and read-only (PP 3),
+  which the NanoKernel takes to mean that stores to it are dropped rather
+  than raising an exception (and counted in NanoKernelInfo's
+  QuietWriteCount). syshm's kernel does the same; a run's summary says
+  `quiet writes: N` when there were any.
 - The ROM maps a few regions as single 4 KB pages (the kernel's and the
   emulator's data, the info records). The pages next to them, up to 16 KB
   boundaries, read as zeros rather than faulting, so that hosts with 16 KB

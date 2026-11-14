@@ -78,8 +78,22 @@ enum {
 	PATTR_NOT_PTE = 0x800,
 	PATTR_PTE_SINGLE = 0x400,
 	PATTR_PTE_REL = 0x200,      /* RPN is ConfigInfo-relative */
+	PTE_W = 0x040,              /* write-through */
 	PTE_I = 0x020,              /* cache inhibited */
+	PTE_PP = 0x003,
 };
+
+/*
+ * Pages mapped write-through and read-only (PP 3), as the ROM is: the
+ * NanoKernel drops stores to them (counting them in NanoKernelInfo's
+ * QuietWriteCount) instead of raising an exception. Mac OS 8.5's own ROM
+ * file has a 'thng' resource in it (the DAV audio component's), whose
+ * description the Component Manager copies onto itself when it registers it.
+ */
+static bool quiet_attr(uint32_t attr)
+{
+	return (attr & (PTE_W | PTE_PP)) == (PTE_W | PTE_PP);
+}
 
 /* Kernel Data Page layout: PowerPC info records sit just below 0xFC0. */
 enum {
@@ -103,6 +117,7 @@ enum {
  */
 #define NK_INFO_VERSION 0x0228u
 #define NK_INFO_LENGTH 0x160u
+#define NKI_QUIET_WRITES 0x0D0u         /* NanoKernelInfo's QuietWriteCount (see quiet_attr()) */
 
 /* NanoKernelInfo's version 2 fields */
 enum {
@@ -241,7 +256,7 @@ static int default_regions(const struct nk_config *ci, struct nk_region *out, in
 	    table < 0 || table + ci->opcode_table_size > ROM_IMAGE_SIZE)
 		return 0;
 	const struct nk_region r[] = {
-		{ .kind = NK_REGION_ROM, .logical = ROM_BASE, .size = ROM_IMAGE_SIZE },
+		{ .kind = NK_REGION_ROM, .logical = ROM_BASE, .size = ROM_IMAGE_SIZE, .quiet = true },
 		/* the emulator's code and dispatch table, in the megabyte of the image around them */
 		{ .kind = NK_REGION_ROM, .logical = ci->la_emulator_code & 0xFFF00000u, .size = 0x100000,
 		  .rom_offset = (uint32_t)code & 0xFFF00000u },
@@ -290,7 +305,8 @@ int nk_user_regions(const struct rom *rom, const struct nk_config *ci, struct nk
 			dup |= out[j].logical == logical && out[j].size == size;
 		if (dup)
 			continue;
-		struct nk_region r = { .logical = logical, .size = size, .writable = (l & 3) == 2, .source = "BAT" };
+		struct nk_region r = { .logical = logical, .size = size, .writable = (l & 3) == 2, .quiet = quiet_attr(l),
+				       .source = "BAT" };
 		if (l & PATTR_PTE_REL) {
 			int64_t off = ci_rel_to_rom((int32_t)(l & 0xFFFFF000u));
 			if (off < 0 || off + size > ROM_IMAGE_SIZE)
@@ -317,6 +333,7 @@ int nk_user_regions(const struct rom *rom, const struct nk_config *ci, struct nk
 				.logical = seg << 28 | (uint32_t)idx << 12,
 				.size = (attr & PATTR_PTE_SINGLE) ? MEM_PAGE_SIZE : ((uint32_t)cnt + 1) << 12,
 				.writable = (attr & 3) != 3,
+				.quiet = quiet_attr(attr),
 				.source = "PMDT",
 			};
 			if (o == ci->page_map_irp_offset) {
@@ -2064,6 +2081,54 @@ static const char *exception(struct machine *m, unsigned code, uint32_t pc)
 	return raise_exception(m, code, pc);
 }
 
+/* Whether stores to addr are dropped (see quiet_attr()); BATs come first among the regions, as in translation. */
+static bool quiet_page(struct machine *m, uint32_t addr)
+{
+	if ((m->mem.pageflags[addr >> MEM_PAGE_SHIFT] & (MEM_R | MEM_W)) != MEM_R)
+		return false;
+	struct nk_region regions[NK_MAX_REGIONS];
+	int n = nk_user_regions(m->rom, &m->ci, regions, NK_MAX_REGIONS);
+	for (int k = 0; k < n; k++)
+		if (addr - regions[k].logical < regions[k].size)
+			return regions[k].quiet;
+	return false;
+}
+
+/*
+ * Makes the store that faulted on a quiet page with its pages writable, then
+ * puts them back as they were: the instruction does all else it does (its
+ * base register, bytes on other pages) as under the NanoKernel's MemRetry,
+ * which skips the accesses to quiet pages. False if it faulted otherwise.
+ */
+static bool quiet_store(struct machine *m)
+{
+	struct ppc_cpu *cpu = &m->cpu;
+	uint32_t page[2] = { cpu->fault_addr & ~(MEM_PAGE_SIZE - 1) };
+	page[1] = page[0] + MEM_PAGE_SIZE;      /* (a store is 128 bytes at most) */
+	bool quiet[2];
+	uint8_t saved[2][MEM_PAGE_SIZE];
+	for (int k = 0; k < 2; k++) {
+		quiet[k] = quiet_page(m, page[k]);
+		if (quiet[k]) {
+			memcpy(saved[k], mem_ptr(&m->mem, page[k]), MEM_PAGE_SIZE);
+			m->mem.pageflags[page[k] >> MEM_PAGE_SHIFT] |= MEM_W;
+		}
+	}
+	enum ppc_exit e = ppc_interp(cpu, 1);
+	for (int k = 0; k < 2; k++) {
+		if (quiet[k]) {
+			m->mem.pageflags[page[k] >> MEM_PAGE_SHIFT] &= (uint8_t)~MEM_W;
+			memcpy(mem_ptr(&m->mem, page[k]), saved[k], MEM_PAGE_SIZE);
+		}
+	}
+	if (e != PPC_EXIT_BUDGET)
+		return false;
+	uint8_t *count = m->kdp + KDP_NK_INFO + NKI_QUIET_WRITES;
+	put_be32(count, be32(count) + 1);
+	kdp_sync(m);
+	return true;
+}
+
 static bool is_mfmsr(uint32_t insn)
 {
 	return (insn & 0xFC0007FEu) == 0x7C0000A6u;
@@ -2932,7 +2997,10 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		sync = cpu->icount >= next_sync;
 		bool info_write = e == PPC_EXIT_DSI && cpu->fault_write &&
 				  (cpu->fault_addr >> MEM_PAGE_SHIFT) == (m.ci.la_info_record >> MEM_PAGE_SHIFT);
-		bool debug_exit = e == PPC_EXIT_BREAK || (e == PPC_EXIT_BUDGET && !sync) || (info_write && !sync) ||
+		bool quiet_write = e == PPC_EXIT_DSI && cpu->fault_write && !info_write &&
+				   (quiet_page(&m, cpu->fault_addr) || quiet_page(&m, cpu->fault_addr + 127));
+		bool debug_exit = e == PPC_EXIT_BREAK || (e == PPC_EXIT_BUDGET && !sync) ||
+				  ((info_write || quiet_write) && !sync) ||
 				  (e == PPC_EXIT_HOOK && !sync && !opt->realtime) ||
 				  (e == PPC_EXIT_DSI && opt->watch && cpu->fault_write &&
 				   (cpu->fault_addr >> MEM_PAGE_SHIFT) == (opt->watch >> MEM_PAGE_SHIFT));
@@ -3028,6 +3096,14 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 				}
 				break;
 			}
+			if (quiet_write && quiet_store(&m)) {
+				if (!sync && cpu->icount >= next_sync) {        /* the store ended the chunk */
+					sync = true;
+					update_device_time(&m);
+					update_interrupts(&m, false);
+				}
+				break;
+			}
 			if (opt->watch && cpu->fault_write &&
 			    (cpu->fault_addr >> MEM_PAGE_SHIFT) == (opt->watch >> MEM_PAGE_SHIFT)) {
 				/* step the store (the page is writable again outside ppc_run) */
@@ -3108,6 +3184,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		if (m.exceptions[c])
 			printf(" %u=%lu", c, m.exceptions[c]);
 	printf("\n");
+	if (be32(m.kdp + KDP_NK_INFO + NKI_QUIET_WRITES))
+		printf("quiet writes: %u (stores to the ROM, dropped)\n", be32(m.kdp + KDP_NK_INFO + NKI_QUIET_WRITES));
 	printf("kernel calls:");
 	for (unsigned n = 0; n < 16; n++)
 		if (kcalls[n])

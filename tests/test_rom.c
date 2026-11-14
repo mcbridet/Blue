@@ -49,9 +49,9 @@ void test_rom(void)
 	bool rom_at_top = false, emulator_data = false;
 	for (int k = 0; k < n; k++) {
 		rom_at_top |= regions[k].kind == NK_REGION_ROM && regions[k].logical == ROM_BASE &&
-			      regions[k].size == ROM_IMAGE_SIZE && regions[k].rom_offset == 0;
+			      regions[k].size == ROM_IMAGE_SIZE && regions[k].rom_offset == 0 && regions[k].quiet;
 		emulator_data |= regions[k].kind == NK_REGION_EMULATOR_DATA &&
-				 regions[k].logical == ci.la_emulator_data;
+				 regions[k].logical == ci.la_emulator_data && !regions[k].quiet;
 	}
 	CHECK(rom_at_top);
 	CHECK(emulator_data);
