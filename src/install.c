@@ -4,10 +4,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "be.h"
 #include "disk.h"
+#include "hfs.h"
 #include "ppc.h"
 
 #define FOURCC(a, b, c, d) ((uint32_t)(a) << 24 | (uint32_t)(b) << 16 | (uint32_t)(c) << 8 | (uint32_t)(d))
@@ -36,24 +36,30 @@ struct look {
 	struct install_check *ck;
 	const struct hfs_file *files;
 	uint8_t *buf;                   /* MAX_FORK bytes */
-	struct folder { uint32_t id; char name[HFSREAD_NAME_MAX]; } *sub;
+	struct folder { uint32_t id; char name[HFSREAD_NAME_MAX]; } *sub;      /* the System Folder's folders */
 	unsigned subs;
-	const struct folder *in;        /* the folder being looked through */
+	uint32_t last;                  /* the highest of their IDs */
 };
 
-static int add_folder(void *ctx, const struct hfsread_entry *e)
+#define WALK_STOP 1                     /* (what a walk's function returns to stop it early) */
+
+/* (records go by the ID of the folder they're in, so the System Folder's own come together) */
+static int add_folder(void *ctx, const struct hfsread_file *f)
 {
 	struct look *l = ctx;
-	if (e->folder && l->subs < MAX_FOLDERS) {
-		l->sub[l->subs].id = e->id;
-		memcpy(l->sub[l->subs].name, e->name, sizeof e->name);
+	if (f->parent > l->ck->system_dir)
+		return WALK_STOP;
+	if (f->folder && f->parent == l->ck->system_dir && l->subs < MAX_FOLDERS) {
+		l->sub[l->subs].id = f->id;
+		memcpy(l->sub[l->subs].name, f->name, sizeof f->name);
+		l->last = f->id > l->last ? f->id : l->last;
 		l->subs++;
 	}
 	return 0;
 }
 
 /* Whether a file is this tool: 0 not, 1 another syshm's, 2 this syshm's (both forks the same) */
-static int which_copy(struct look *l, const struct hfsread_entry *e, unsigned t)
+static int which_copy(struct look *l, const struct hfsread_file *e, unsigned t)
 {
 	const struct hfs_file *f = &l->files[t];
 	size_t size = (size_t)e->data.size;
@@ -70,10 +76,15 @@ static int which_copy(struct look *l, const struct hfsread_entry *e, unsigned t)
 	return hfsread_read(l->v, &e->rsrc, 0, l->buf, f->rsrc_len) == 0 && memcmp(l->buf, f->rsrc, f->rsrc_len) == 0 ? 2 : 1;
 }
 
-static int look_at_file(void *ctx, const struct hfsread_entry *e)
+static int look_at_file(void *ctx, const struct hfsread_file *e)
 {
 	struct look *l = ctx;
-	for (unsigned t = 0; t < TOOLS_FILES && !e->folder; t++) {
+	if (e->parent > l->last)
+		return WALK_STOP;
+	unsigned in = 0;
+	while (in < l->subs && l->sub[in].id != e->parent)
+		in++;
+	for (unsigned t = 0; t < TOOLS_FILES && !e->folder && in < l->subs; t++) {
 		struct install_copy *c = &l->ck->tool[t];
 		if (e->type != l->files[t].type || e->creator != l->files[t].creator || c->state == INSTALL_CURRENT)
 			continue;
@@ -81,9 +92,9 @@ static int look_at_file(void *ctx, const struct hfsread_entry *e)
 		if (!copy || (copy == 1 && c->state == INSTALL_DIFFERS))
 			continue;               /* (of several, the current one, or else the first) */
 		c->state = copy == 2 ? INSTALL_CURRENT : INSTALL_DIFFERS;
-		c->dir = l->in->id;
+		c->dir = e->parent;
 		c->id = e->id;
-		memcpy(c->folder, l->in->name, sizeof c->folder);
+		memcpy(c->folder, l->sub[in].name, sizeof c->folder);
 	}
 	return 0;
 }
@@ -110,21 +121,14 @@ int install_check(const char *path, unsigned part, struct install_check *ck, cha
 		fail(err, errlen, "%s: no HFS volume there", path);
 	} else if (!v.blessed) {
 		fail(err, errlen, "%s: no System Folder", path);
-	} else if (hfsread_path(&v, ROOT_ID, ck->volume, sizeof ck->volume) ||
-		   hfsread_path(&v, v.blessed, ck->system, sizeof ck->system) || hfsread_list(&v, v.blessed, add_folder, &l)) {
-		fail(err, errlen, "%s: its catalog is damaged", path);
 	} else {
-		uint8_t h[16];
-		uint64_t header = (v.plus ? v.offset : d.part[part].offset) + 1024;   /* (the MDB, or the HFS+ volume header) */
-		if (pread(d.fd, h, sizeof h, (off_t)header) == (ssize_t)sizeof h)
-			ck->locked = ((v.plus ? be32(h + 4) : be16(h + 10)) & VOLUME_LOCKED) != 0;
 		ck->system_dir = v.blessed;
-		rc = 0;
-		for (unsigned k = 0; k < l.subs && rc == 0; k++) {
-			l.in = &l.sub[k];
-			if (hfsread_list(&v, l.sub[k].id, look_at_file, &l))
-				rc = fail(err, errlen, "%s: its catalog is damaged", path);
-		}
+		ck->locked = (v.attributes & VOLUME_LOCKED) != 0;
+		int walked = hfsread_path(&v, ROOT_ID, ck->volume, sizeof ck->volume) ||
+			     hfsread_path(&v, v.blessed, ck->system, sizeof ck->system) ? -1 : hfsread_walk(&v, add_folder, &l);
+		if (walked >= 0 && l.subs)
+			walked = hfsread_walk(&v, look_at_file, &l);
+		rc = walked < 0 ? fail(err, errlen, "%s: its catalog is damaged", path) : 0;
 	}
 	free(l.buf);
 	free(l.sub);
@@ -198,8 +202,8 @@ static void say_found(struct install *in)
 		if (ck->tool[t].state != INSTALL_CURRENT)
 			add(what, sizeof what, "%s%s %s", joint(k++, todo), tool_name(t),
 			    ck->tool[t].state == INSTALL_MISSING ? "isn't installed" : "is from another version of syshm");
-	snprintf(in->question, sizeof in->question, "syshm's guest tools on \"%s\" need updating: %s. " ABOUT,
-		 ck->volume, what);
+	snprintf(in->question, sizeof in->question, "syshm's guest tools on \"%s\" need updating: %s.", ck->volume,
+		 what);
 	in->yes = "Update";
 }
 
@@ -403,7 +407,7 @@ static void injected(struct install *in, struct mem *m)
 	} else {
 		char msg[256];
 		const uint8_t *s = mem_ptr(m, at(R_ERRMSG));
-		hfsread_roman_utf8(s + 1, s[0], msg, sizeof msg);
+		hfs_to_utf8(s + 1, s[0], msg, sizeof msg);
 		snprintf(in->news, sizeof in->news,
 			 "couldn't install the guest tools: the Code Fragment Manager couldn't prepare the installer "
 			 "(error %d%s%s)", (int32_t)status, msg[0] ? ", " : "", msg);
@@ -578,7 +582,7 @@ static uint32_t param_block(struct install *in, struct mem *m)
 static void roman_name(struct mem *m, uint32_t pstring, char *out, size_t len)
 {
 	const uint8_t *s = mem_ptr(m, pstring);
-	hfsread_roman_utf8(s + 1, s[0], out, len);
+	hfs_to_utf8(s + 1, s[0], out, len);
 }
 
 /* The next of the folder's items, looking for the copy to replace (by its file ID) */
@@ -903,7 +907,8 @@ static void report(struct install *in, struct ndrv_call *c, struct helper *h)
 			add(s, len, " syshm Enhancements starts with Mac OS next time (it couldn't start now: %s).",
 			    error_text(in->launch_error, buf, sizeof buf));
 		else if (r[TOOLS_ENHANCEMENTS].dir != in->ext_dir)
-			add(s, len, " Mac OS starts syshm Enhancements only from \"%s\".", in->ext_name);
+			add(s, len, " It stays in \"%s\": Mac OS starts syshm Enhancements only from \"%s\".",
+			    r[TOOLS_ENHANCEMENTS].folder, in->ext_name);
 		else if (h->running)
 			add(s, len, " (Another copy of syshm Enhancements is running.)");
 	}

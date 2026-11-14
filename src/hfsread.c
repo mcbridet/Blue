@@ -8,6 +8,7 @@
 
 #include "be.h"
 #include "disk.h"
+#include "hfs.h"
 
 #define SECTOR 512u
 #define HEADER_OFFSET 1024u             /* of the MDB or volume header in a volume */
@@ -17,12 +18,12 @@
 
 /* HFS master directory block */
 enum {
-	MDB_NM_AL_BLKS = 18, MDB_AL_BLK_SIZ = 20, MDB_AL_BL_ST = 28, MDB_FNDR_INFO = 92, MDB_EMBED_SIG = 124,
+	MDB_ATRB = 10, MDB_NM_AL_BLKS = 18, MDB_AL_BLK_SIZ = 20, MDB_AL_BL_ST = 28, MDB_FNDR_INFO = 92, MDB_EMBED_SIG = 124,
 	MDB_EMBED_EXTENT = 126, MDB_XT_FL_SIZ = 130, MDB_XT_EXT_REC = 134, MDB_CT_FL_SIZ = 146,
 	MDB_CT_EXT_REC = 150,
 };
 /* HFS+ volume header */
-enum { VH_BLOCK_SIZE = 40, VH_TOTAL_BLOCKS = 44, VH_FINDER_INFO = 80, VH_EXTENTS_FILE = 192, VH_CATALOG_FILE = 272 };
+enum { VH_ATTRIBUTES = 4, VH_BLOCK_SIZE = 40, VH_TOTAL_BLOCKS = 44, VH_FINDER_INFO = 80, VH_EXTENTS_FILE = 192, VH_CATALOG_FILE = 272 };
 
 #define ROOT_PARENT_ID 1u
 #define EXTENTS_FILE_ID 3u
@@ -38,10 +39,13 @@ enum { VH_BLOCK_SIZE = 40, VH_TOTAL_BLOCKS = 44, VH_FINDER_INFO = 80, VH_EXTENTS
 #define MAX_NODE_SIZE 32768u
 
 /* Catalog records */
+#define CAT_FOLDER 1
 #define CAT_FILE 2
 #define CAT_FOLDER_THREAD 3
 #define CAT_FILE_THREAD 4
+#define HFS_FOLDER_SIZE 70u
 #define HFS_FILE_SIZE 102u
+#define PLUS_FOLDER_SIZE 88u
 #define HFS_THREAD_SIZE 46u
 #define PLUS_FILE_SIZE 248u
 #define PLUS_THREAD_MIN 10u
@@ -60,18 +64,6 @@ static int fail(char *err, size_t errlen, const char *fmt, ...)
 
 /* ---- names ----------------------------------------------------------------- */
 
-static const uint16_t mac_roman[128] = {
-	0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1, 0x00E0, 0x00E2, 0x00E4, 0x00E3, 0x00E5, 0x00E7,
-	0x00E9, 0x00E8, 0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3, 0x00F2, 0x00F4, 0x00F6, 0x00F5,
-	0x00FA, 0x00F9, 0x00FB, 0x00FC, 0x2020, 0x00B0, 0x00A2, 0x00A3, 0x00A7, 0x2022, 0x00B6, 0x00DF, 0x00AE, 0x00A9,
-	0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8, 0x221E, 0x00B1, 0x2264, 0x2265, 0x00A5, 0x00B5, 0x2202, 0x2211,
-	0x220F, 0x03C0, 0x222B, 0x00AA, 0x00BA, 0x03A9, 0x00E6, 0x00F8, 0x00BF, 0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248,
-	0x2206, 0x00AB, 0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5, 0x0152, 0x0153, 0x2013, 0x2014, 0x201C, 0x201D,
-	0x2018, 0x2019, 0x00F7, 0x25CA, 0x00FF, 0x0178, 0x2044, 0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02, 0x2021, 0x00B7,
-	0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1, 0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4,
-	0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC, 0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD,
-	0x02DB, 0x02C7,
-};
 
 /* Appends a character in UTF-8 if it fits (with room for the NUL). */
 static void put_utf8(char *out, size_t len, size_t *at, uint32_t c)
@@ -110,7 +102,7 @@ static void name_utf8(bool plus, const uint8_t *s, size_t n, char *out, size_t l
 	for (size_t k = 0; k < n; k++) {
 		uint32_t c = plus ? be16(s + 2 * k) : s[k];
 		if (!plus && c >= 0x80)
-			c = mac_roman[c - 0x80];
+			c = hfs_mac_roman[c - 0x80];
 		else if (plus && c >= 0xD800 && c < 0xDC00 && k + 1 < n && be16(s + 2 * k + 2) >= 0xDC00 &&
 			 be16(s + 2 * k + 2) < 0xE000)
 			c = 0x10000 + ((c - 0xD800) << 10) + (be16(s + 2 * ++k) - 0xDC00);
@@ -120,6 +112,13 @@ static void name_utf8(bool plus, const uint8_t *s, size_t n, char *out, size_t l
 }
 
 /* ---- forks ----------------------------------------------------------------- */
+
+static int vread(const struct hfsread_volume *v, void *buf, size_t n, uint64_t at)
+{
+	if (v->read)
+		return v->read(v->ctx, buf, n, at);
+	return pread(v->fd, buf, n, (off_t)at) == (ssize_t)n ? 0 : -1;
+}
 
 static void hfs_extents(struct hfsread_fork *f, const uint8_t *p)
 {
@@ -178,8 +177,7 @@ int hfsread_read(const struct hfsread_volume *v, const struct hfsread_fork *fork
 		uint64_t n = (uint64_t)run * v->block_size - within;
 		if (n > len)
 			n = len;
-		if (pread(v->fd, p, (size_t)n, (off_t)(v->offset + (uint64_t)phys * v->block_size + within)) !=
-		    (ssize_t)n)
+		if (vread(v, p, (size_t)n, v->offset + (uint64_t)phys * v->block_size + within))
 			return -1;
 		p += n;
 		pos += n;
@@ -290,6 +288,7 @@ static int open_tree(const struct hfsread_volume *v, struct hfsread_tree *t)
 		return -1;
 	const uint8_t *h = node + NODE_DESCRIPTOR;
 	t->root = be32(h + 2);
+	t->first_leaf = be32(h + 10);
 	t->node_size = be16(h + 18);
 	t->max_key = be16(h + 20);
 	t->nodes = be32(h + 22);
@@ -327,14 +326,15 @@ static int extents_lookup(const struct hfsread_volume *v, const struct hfsread_f
 
 /* ---- volumes --------------------------------------------------------------- */
 
-static int open_plus(struct hfsread_volume *v, int fd, uint64_t offset, uint64_t size)
+static int open_plus(struct hfsread_volume *v, uint64_t offset, uint64_t size)
 {
 	uint8_t h[SECTOR];
-	if (size < HEADER_OFFSET + SECTOR || pread(fd, h, SECTOR, (off_t)(offset + HEADER_OFFSET)) != SECTOR ||
+	if (size < HEADER_OFFSET + SECTOR || vread(v, h, SECTOR, offset + HEADER_OFFSET) ||
 	    (be16(h) != SIG_HFS_PLUS && be16(h) != SIG_HFSX))
 		return -1;
 	v->plus = true;
 	v->offset = offset;
+	v->attributes = be32(h + VH_ATTRIBUTES);
 	v->block_size = be32(h + VH_BLOCK_SIZE);
 	v->blocks = be32(h + VH_TOTAL_BLOCKS);
 	v->blessed = be32(h + VH_FINDER_INFO);
@@ -345,12 +345,10 @@ static int open_plus(struct hfsread_volume *v, int fd, uint64_t offset, uint64_t
 	return 0;
 }
 
-int hfsread_open(struct hfsread_volume *v, int fd, uint64_t offset, uint64_t size)
+static int open_volume(struct hfsread_volume *v, uint64_t offset, uint64_t size)
 {
 	uint8_t mdb[SECTOR];
-	memset(v, 0, sizeof *v);
-	v->fd = fd;
-	if (size < HEADER_OFFSET + SECTOR || pread(fd, mdb, SECTOR, (off_t)(offset + HEADER_OFFSET)) != SECTOR)
+	if (size < HEADER_OFFSET + SECTOR || vread(v, mdb, SECTOR, offset + HEADER_OFFSET))
 		return -1;
 	if (be16(mdb) == SIG_HFS) {
 		uint32_t al_blk_siz = be32(mdb + MDB_AL_BLK_SIZ);
@@ -360,7 +358,7 @@ int hfsread_open(struct hfsread_volume *v, int fd, uint64_t offset, uint64_t siz
 		if (be16(mdb + MDB_EMBED_SIG) == SIG_HFS_PLUS) {
 			uint64_t at = first + (uint64_t)be16(mdb + MDB_EMBED_EXTENT) * al_blk_siz;
 			uint64_t len = (uint64_t)be16(mdb + MDB_EMBED_EXTENT + 2) * al_blk_siz;
-			if (at >= size || open_plus(v, fd, offset + at, len < size - at ? len : size - at))
+			if (at >= size || open_plus(v, offset + at, len < size - at ? len : size - at))
 				return -1;
 			v->wrapped = true;
 		} else {
@@ -368,12 +366,13 @@ int hfsread_open(struct hfsread_volume *v, int fd, uint64_t offset, uint64_t siz
 			v->block_size = al_blk_siz;
 			v->blocks = be16(mdb + MDB_NM_AL_BLKS);
 			v->blessed = be32(mdb + MDB_FNDR_INFO);
+			v->attributes = be16(mdb + MDB_ATRB);
 			v->extents.fork.size = be32(mdb + MDB_XT_FL_SIZ);
 			hfs_extents(&v->extents.fork, mdb + MDB_XT_EXT_REC);
 			v->catalog.fork.size = be32(mdb + MDB_CT_FL_SIZ);
 			hfs_extents(&v->catalog.fork, mdb + MDB_CT_EXT_REC);
 		}
-	} else if (open_plus(v, fd, offset, size)) {
+	} else if (open_plus(v, offset, size)) {
 		return -1;
 	}
 	v->extents.fork.id = EXTENTS_FILE_ID;
@@ -382,6 +381,23 @@ int hfsread_open(struct hfsread_volume *v, int fd, uint64_t offset, uint64_t siz
 	if (open_tree(v, &v->extents))
 		v->extents.root = 0;
 	return open_tree(v, &v->catalog);
+}
+
+int hfsread_open(struct hfsread_volume *v, int fd, uint64_t offset, uint64_t size)
+{
+	memset(v, 0, sizeof *v);
+	v->fd = fd;
+	return open_volume(v, offset, size);
+}
+
+int hfsread_open_with(struct hfsread_volume *v, int (*read)(void *ctx, void *buf, size_t len, uint64_t at), void *ctx,
+		      uint64_t size)
+{
+	memset(v, 0, sizeof *v);
+	v->fd = -1;
+	v->read = read;
+	v->ctx = ctx;
+	return open_volume(v, 0, size);
 }
 
 /* A catalog record's type (folder, file, thread), from its first byte (HFS) or halfword */
@@ -394,18 +410,27 @@ static void file_from(const struct hfsread_volume *v, const uint8_t *key, const 
 		      struct hfsread_file *f)
 {
 	memset(f, 0, sizeof *f);
+	f->parent = be32(key + 2);
 	if (v->plus) {
 		name_utf8(true, key + 8, be16(key + 6), f->name, sizeof f->name);
 		f->id = be32(data + 8);
 		f->type = be32(data + 48);
 		f->creator = be32(data + 52);
+		f->created = be32(data + 12);
+		f->modified = be32(data + 16);
+		memcpy(f->finder, data + 48, 32);
 		plus_fork(&f->data, data + 88);
 		plus_fork(&f->rsrc, data + 168);
 	} else {
 		name_utf8(false, key + 7, key[6], f->name, sizeof f->name);
+		memcpy(f->mac_name, key + 6, 1u + key[6]);
 		f->id = be32(data + 20);
 		f->type = be32(data + 4);
 		f->creator = be32(data + 8);
+		f->created = be32(data + 44);
+		f->modified = be32(data + 48);
+		memcpy(f->finder, data + 4, 16);
+		memcpy(f->finder + 16, data + 56, 16);
 		f->data.size = be32(data + 26);
 		hfs_extents(&f->data, data + 74);
 		f->rsrc.size = be32(data + 36);
@@ -413,6 +438,28 @@ static void file_from(const struct hfsread_volume *v, const uint8_t *key, const 
 	}
 	f->data.id = f->rsrc.id = f->id;
 	f->rsrc.type = 0xFF;
+}
+
+static void folder_from(const struct hfsread_volume *v, const uint8_t *key, const uint8_t *data,
+			struct hfsread_file *f)
+{
+	memset(f, 0, sizeof *f);
+	f->parent = be32(key + 2);
+	f->folder = true;
+	if (v->plus) {
+		name_utf8(true, key + 8, be16(key + 6), f->name, sizeof f->name);
+		f->id = be32(data + 8);
+		f->created = be32(data + 12);
+		f->modified = be32(data + 16);
+		memcpy(f->finder, data + 48, 32);
+	} else {
+		name_utf8(false, key + 7, key[6], f->name, sizeof f->name);
+		memcpy(f->mac_name, key + 6, 1u + key[6]);
+		f->id = be32(data + 6);
+		f->created = be32(data + 10);
+		f->modified = be32(data + 14);
+		memcpy(f->finder, data + 22, 32);
+	}
 }
 
 /* Whether a key's name fits in its record (the search only looks at its length) */
@@ -466,6 +513,45 @@ int hfsread_find(const struct hfsread_volume *v, uint32_t folder, uint32_t type,
 	}
 out:
 	free(node);
+	return rc;
+}
+
+int hfsread_walk(const struct hfsread_volume *v, int (*fn)(void *ctx, const struct hfsread_file *f), void *ctx)
+{
+	const struct hfsread_tree *t = &v->catalog;
+	uint8_t *node = malloc(t->node_size);
+	struct hfsread_file *f = malloc(sizeof *f);
+	int rc = -1;
+	if (!node || !f)
+		goto out;
+	uint32_t n = t->first_leaf;
+	for (unsigned visited = 0; n && visited < t->nodes; visited++, n = be32(node)) {
+		if (read_node(v, t, n, node) || node[8] != NODE_LEAF)
+			goto out;
+		for (unsigned k = 0; k < be16(node + 10); k++) {
+			const uint8_t *data, *end, *key = record(v, t, node, k, &data, &end);
+			if (!key)
+				goto out;
+			int type = record_type(v, data);
+			size_t size = (size_t)(end - data);
+			if (type == CAT_FOLDER && size >= (v->plus ? PLUS_FOLDER_SIZE : HFS_FOLDER_SIZE) &&
+			    name_fits(v, key, data))
+				folder_from(v, key, data, f);
+			else if (type == CAT_FILE && size >= (v->plus ? PLUS_FILE_SIZE : HFS_FILE_SIZE) &&
+				 name_fits(v, key, data))
+				file_from(v, key, data, f);
+			else if (type == CAT_FOLDER || type == CAT_FILE)
+				goto out;
+			else
+				continue;
+			if ((rc = fn(ctx, f)))
+				goto out;
+		}
+	}
+	rc = n ? -1 : 0;
+out:
+	free(node);
+	free(f);
 	return rc;
 }
 
@@ -542,7 +628,8 @@ int hfsread_system_file(const char *const *paths, unsigned count, uint32_t type,
 			found->drive = k;
 			found->part = p;
 			snprintf(found->partition, sizeof found->partition, "%s", d.part[p].name);
-			snprintf(found->path, sizeof found->path, "%s:%s", folder, f.name);
+			if (snprintf(found->path, sizeof found->path, "%s:%s", folder, f.name) >= (int)sizeof found->path)
+				memcpy(found->path + sizeof found->path - 4, "...", 4);
 			int rc = 1;
 			if (f.data.size > MAX_FILE_SIZE)
 				rc = fail(err, errlen, "%s: \"%s\" is too big (%llu bytes)", paths[k], found->path,
@@ -562,88 +649,4 @@ int hfsread_system_file(const char *const *paths, unsigned count, uint32_t type,
 		disk_close(&d);
 	}
 	return 0;
-}
-
-/* ---- folders ---------------------------------------------------------------- */
-
-#define CAT_FOLDER 1
-#define HFS_FOLDER_SIZE 70u
-#define PLUS_FOLDER_SIZE 88u
-
-int hfsread_list(const struct hfsread_volume *v, uint32_t folder, int (*each)(void *ctx, const struct hfsread_entry *e),
-		 void *ctx)
-{
-	const struct hfsread_tree *t = &v->catalog;
-	const struct target target = { true, folder, 0, 0 };
-	uint8_t *node = malloc(t->node_size);
-	struct hfsread_entry *e = malloc(sizeof *e);
-	int rc = -1;
-	if (!node || !e)
-		goto out;
-	int k = search(v, t, &target, node);
-	if (k == -2)
-		goto out;
-	/* (as in hfsread_find(): the folder's records follow its thread record) */
-	for (unsigned visited = 0, at = (unsigned)(k + 1); visited < t->nodes;) {
-		if (at >= be16(node + 10)) {
-			uint32_t n = be32(node);
-			if (!n) {
-				rc = 0;
-				break;
-			}
-			if (read_node(v, t, n, node) || node[8] != NODE_LEAF)
-				break;
-			at = 0;
-			visited++;
-			continue;
-		}
-		const uint8_t *data, *end, *key = record(v, t, node, at++, &data, &end);
-		if (!key)
-			break;
-		uint32_t parent = be32(key + 2);
-		if (parent > folder) {
-			rc = 0;
-			break;
-		}
-		int kind = record_type(v, data);
-		if (parent < folder || (kind != CAT_FILE && kind != CAT_FOLDER))
-			continue;
-		size_t need = kind == CAT_FILE ? (v->plus ? PLUS_FILE_SIZE : HFS_FILE_SIZE) :
-						 (v->plus ? PLUS_FOLDER_SIZE : HFS_FOLDER_SIZE);
-		if ((size_t)(end - data) < need || !name_fits(v, key, data))
-			break;
-		memset(e, 0, sizeof *e);
-		if (kind == CAT_FILE) {
-			struct hfsread_file f;
-			file_from(v, key, data, &f);
-			memcpy(e->name, f.name, sizeof e->name);
-			e->id = f.id;
-			e->type = f.type;
-			e->creator = f.creator;
-			e->finder_flags = be16(data + (v->plus ? 56 : 12));
-			e->data = f.data;
-			e->rsrc = f.rsrc;
-		} else {
-			if (v->plus)
-				name_utf8(true, key + 8, be16(key + 6), e->name, sizeof e->name);
-			else
-				name_utf8(false, key + 7, key[6], e->name, sizeof e->name);
-			e->folder = true;
-			e->id = be32(data + (v->plus ? 8 : 6));
-		}
-		int r = each(ctx, e);
-		if (r) {
-			rc = r;
-			break;
-		}
-	}
-out:
-	free(e);
-	free(node);
-	return rc;
-}
-
-void hfsread_roman_utf8(const uint8_t *s, size_t n, char *out, size_t len)
-{
-	name_utf8(false, s, n, out, len);
 }

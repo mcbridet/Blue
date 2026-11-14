@@ -1,8 +1,8 @@
 /*
- * Installing the guest tools: the check of the startup disk (on small HFS+
- * volumes made here: tools missing, current, differing, disabled, in a
- * localized Extensions folder, a locked volume), when they're offered, and
- * the installer driven as Mac OS would drive it, against a small File
+ * Installing the guest tools: the check of the startup disk (on small HFS
+ * volumes made with hfs.c: tools missing, current, differing, disabled, in
+ * a localized Extensions folder, a locked volume), when they're offered,
+ * and the installer driven as Mac OS would drive it, against a small File
  * Manager of the test's own.
  */
 #include <fcntl.h>
@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "../src/be.h"
+#include "../src/hfs.h"
 #include "../src/install.h"
 #include "test.h"
 
@@ -18,16 +19,12 @@
 
 /* ---- volumes ------------------------------------------------------------------- */
 
-#define BLOCK 512u
-#define BLOCKS 256u
-#define NODE 4096u
-#define CATALOG_BLOCK 16u               /* the catalog: a header node and a leaf */
-#define DATA_BLOCK 40u                  /* files' forks from here */
-#define VOLUME_BYTES (BLOCKS * BLOCK)
-#define ROOT 2u
+#define VOLUME_BYTES (1u << 20)
 #define SYSTEM 20u
 #define EXTENSIONS 21u
 #define DISABLED 22u
+#define MDB_ATRB (1024u + 10)
+#define MDB_BLESSED (1024u + 92)          /* (Finder info word 0) */
 
 struct item {
 	uint32_t parent, id;
@@ -43,117 +40,48 @@ static struct item folder(uint32_t parent, uint32_t id, const char *name)
 	return (struct item){ .parent = parent, .id = id, .name = name, .folder = true };
 }
 
-static size_t put_key(uint8_t *p, uint32_t parent, const char *name)
-{
-	size_t n = strlen(name);
-	put_be16(p, (uint16_t)(6 + 2 * n));
-	put_be32(p + 2, parent);
-	put_be16(p + 6, (uint16_t)n);
-	for (size_t k = 0; k < n; k++)
-		put_be16(p + 8 + 2 * k, (uint8_t)name[k]);
-	return 8 + 2 * n;
-}
+static char volume_path[256];
 
-static void put_fork(uint8_t *p, uint32_t len, uint32_t *next, uint8_t *vol, const uint8_t *data)
+/* A volume "Test" whose blessed System Folder (SYSTEM) holds the `items` (folders before what's in them) */
+static void write_volume(const struct item *items, unsigned n, uint16_t attributes)
 {
-	uint32_t blocks = (len + BLOCK - 1) / BLOCK;
-	put_be64(p, len);
-	put_be32(p + 12, blocks);
-	put_be32(p + 16, *next);
-	put_be32(p + 20, blocks);
-	memcpy(vol + (size_t)*next * BLOCK, data, len);
-	*next += blocks;
-}
-
-/* A catalog record: an item's, or a folder's thread (keyed by the folder's ID and no name) */
-struct record {
-	uint32_t parent;
-	const char *name;
-	const struct item *item;
-	bool thread;
-};
-
-static int compare_records(const void *x, const void *y)
-{
-	const struct record *a = x, *b = y;
-	return a->parent != b->parent ? (a->parent < b->parent ? -1 : 1) : strcmp(a->name, b->name);
-}
-
-/* A volume "Test" whose blessed System Folder (SYSTEM) holds the `items`; `attributes` for its header */
-static uint8_t *make_volume(const struct item *items, unsigned n, uint32_t attributes)
-{
-	const struct item root = folder(1, ROOT, "Test"), system = folder(ROOT, SYSTEM, "System Folder");
-	uint8_t *vol = calloc(1, VOLUME_BYTES), *leaf = vol + CATALOG_BLOCK * BLOCK + NODE;
-	struct record r[64];
-	unsigned count = 0;
-	for (unsigned k = 0; k < n + 2; k++) {
-		const struct item *it = k == 0 ? &root : k == 1 ? &system : &items[k - 2];
-		r[count++] = (struct record){ it->parent, it->name, it, false };
-		if (it->folder)
-			r[count++] = (struct record){ it->id, "", it, true };
+	struct hfs_entry e[16] = { { .name = "\x04Test", .folder = true },
+				   { .name = "\x0DSystem Folder", .folder = true, .id = SYSTEM } };
+	CHECK(n + 2 <= 16);
+	for (unsigned k = 0; k < n && k + 2 < 16; k++) {
+		const struct item *it = &items[k];
+		struct hfs_entry *x = &e[k + 2];
+		x->name[0] = (uint8_t)strlen(it->name);
+		memcpy(x->name + 1, it->name, x->name[0]);
+		x->parent = it->parent == SYSTEM ? 1 : 0;
+		for (unsigned j = 0; j < k; j++)
+			if (items[j].folder && items[j].id == it->parent)
+				x->parent = j + 2;
+		x->folder = it->folder;
+		x->id = it->id;
+		put_be32(x->finder, it->type);
+		put_be32(x->finder + 4, it->creator);
+		x->data_len = it->data_len;
+		x->rsrc_len = it->rsrc_len;
 	}
-	qsort(r, count, sizeof r[0], compare_records);
-
-	uint32_t next = DATA_BLOCK;
-	unsigned at = 14;
-	for (unsigned k = 0; k < count; k++) {
-		const struct item *it = r[k].item;
-		put_be16(leaf + NODE - 2 * (k + 1), (uint16_t)at);
-		at += (unsigned)put_key(leaf + at, r[k].parent, r[k].name);
-		uint8_t *d = leaf + at;
-		if (r[k].thread) {
-			size_t len = strlen(it->name);
-			put_be16(d, 3);
-			put_be32(d + 4, it->parent);
-			put_be16(d + 8, (uint16_t)len);
-			for (size_t c = 0; c < len; c++)
-				put_be16(d + 10 + 2 * c, (uint8_t)it->name[c]);
-			at += (unsigned)(10 + 2 * len);
-		} else if (it->folder) {
-			put_be16(d, 1);
-			put_be32(d + 8, it->id);
-			at += 88;
-		} else {
-			put_be16(d, 2);
-			put_be32(d + 8, it->id);
-			put_be32(d + 48, it->type);
-			put_be32(d + 52, it->creator);
-			put_fork(d + 88, it->data_len, &next, vol, it->data);
-			put_fork(d + 168, it->rsrc_len, &next, vol, it->rsrc);
-			at += 248;
-		}
+	struct hfs_layout l;
+	CHECK_EQ(hfs_build(&l, e, n + 2, VOLUME_BYTES, 0, 3000000000u), 0);
+	put_be32(l.meta + MDB_BLESSED, SYSTEM);
+	put_be16(l.meta + MDB_ATRB, be16(l.meta + MDB_ATRB) | attributes);
+	int fd = open(volume_path, O_WRONLY | O_TRUNC);
+	CHECK(fd >= 0 && ftruncate(fd, VOLUME_BYTES) == 0 && pwrite(fd, l.meta, l.meta_len, 0) == (ssize_t)l.meta_len);
+	for (unsigned k = 0; k < n && fd >= 0; k++) {
+		const struct hfs_entry *x = &e[k + 2];
+		if (x->data_len)
+			CHECK(pwrite(fd, items[k].data, x->data_len, (off_t)(l.first_block + (uint64_t)x->data_start *
+										    l.block_size)) == (ssize_t)x->data_len);
+		if (x->rsrc_len)
+			CHECK(pwrite(fd, items[k].rsrc, x->rsrc_len, (off_t)(l.first_block + (uint64_t)x->rsrc_start *
+										    l.block_size)) == (ssize_t)x->rsrc_len);
 	}
-	put_be16(leaf + NODE - 2 * (count + 1), (uint16_t)at);
-	CHECK(at + 2 * (count + 1) <= NODE && next <= BLOCKS);
-	leaf[8] = 0xFF;
-	leaf[9] = 1;
-	put_be16(leaf + 10, (uint16_t)count);
-
-	uint8_t *header = vol + CATALOG_BLOCK * BLOCK, *hr = header + 14;
-	header[8] = 1;
-	put_be16(header + 10, 3);
-	put_be16(hr, 1);                        /* depth */
-	put_be32(hr + 2, 1);                    /* root: the leaf */
-	put_be32(hr + 6, count);
-	put_be32(hr + 10, 1);
-	put_be32(hr + 14, 1);
-	put_be16(hr + 18, NODE);
-	put_be16(hr + 20, 516);
-	put_be32(hr + 22, 2);
-	put_be32(hr + 38, 6);                   /* big keys, variable index keys */
-
-	uint8_t *h = vol + 1024;
-	put_be16(h, 0x482B);
-	put_be16(h + 2, 4);
-	put_be32(h + 4, attributes);
-	put_be32(h + 40, BLOCK);
-	put_be32(h + 44, BLOCKS);
-	put_be32(h + 80, SYSTEM);
-	put_be64(h + 272, 2 * NODE);
-	put_be32(h + 272 + 12, 2 * NODE / BLOCK);
-	put_be32(h + 272 + 16, CATALOG_BLOCK);
-	put_be32(h + 272 + 20, 2 * NODE / BLOCK);
-	return vol;
+	if (fd >= 0)
+		close(fd);
+	hfs_layout_free(&l);
 }
 
 static int temp_file(char *path, size_t len)
@@ -161,18 +89,6 @@ static int temp_file(char *path, size_t len)
 	const char *dir = getenv("TMPDIR");
 	snprintf(path, len, "%s/syshm-test-XXXXXX", dir ? dir : "/tmp");
 	return mkstemp(path);
-}
-
-static char volume_path[256];
-
-static void write_volume(const struct item *items, unsigned n, uint32_t attributes)
-{
-	uint8_t *vol = make_volume(items, n, attributes);
-	int fd = open(volume_path, O_WRONLY | O_TRUNC);
-	CHECK(fd >= 0 && pwrite(fd, vol, VOLUME_BYTES, 0) == (ssize_t)VOLUME_BYTES);
-	if (fd >= 0)
-		close(fd);
-	free(vol);
 }
 
 static struct hfs_file tools[TOOLS_FILES];
@@ -263,12 +179,12 @@ static void test_check(void)
 	CHECK(ck.locked);
 
 	/* nothing blessed */
-	uint8_t *vol = make_volume(none, 4, 0);
-	put_be32(vol + 1024 + 80, 0);
-	int fd = open(volume_path, O_WRONLY | O_TRUNC);
-	CHECK(fd >= 0 && pwrite(fd, vol, VOLUME_BYTES, 0) == (ssize_t)VOLUME_BYTES);
-	close(fd);
-	free(vol);
+	write_volume(none, 4, 0);
+	uint8_t zero[4] = { 0 };
+	int fd = open(volume_path, O_WRONLY);
+	CHECK(fd >= 0 && pwrite(fd, zero, 4, MDB_BLESSED) == 4);
+	if (fd >= 0)
+		close(fd);
 	CHECK(install_check(volume_path, 0, &ck, err, sizeof err) != 0);
 }
 

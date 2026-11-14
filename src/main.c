@@ -11,6 +11,7 @@
 #include "nk.h"
 #include "ppc.h"
 #include "rom.h"
+#include "share.h"
 #include "tools.h"
 
 #define TYPE_TBXI 0x74627869u           /* 'tbxi': the Mac OS ROM file's type */
@@ -33,7 +34,9 @@ static int usage(void)
 		"      --rom <file>             use this Mac OS ROM file or 4 MB ROM image instead\n"
 		"      --ram <MB>               RAM size (default 128)\n"
 		"      --window                 show the screen in a window (keyboard and mouse go to\n"
-		"                               the guest); runs in real time until closed\n"
+		"                               the guest); runs in real time until closed. Once the\n"
+		"                               Finder is up, offers to install the guest tools on the\n"
+		"                               startup disk if they're missing or another syshm's\n"
 		"      --realtime               guest time follows the host clock\n"
 		"      --instruction-time       with --window: guest time counts instructions, as\n"
 		"                               without a window (scripted runs are reproducible)\n"
@@ -57,7 +60,8 @@ static int usage(void)
 		"      --input <file>           scripted input, lines of \"<insn count> <command>\":\n"
 		"                               move X Y, click X Y, dblclick X Y, down, up,\n"
 		"                               motion DX DY (the mouse moved, as games read it),\n"
-		"                               key HEX [down|up], resize W H, screenshot FILE\n"
+		"                               key HEX [down|up], resize W H, screenshot FILE,\n"
+		"                               tools install|later (the answer to that offer)\n"
 		"      --max <n>                stop after n PowerPC instructions (default 500000000)\n");
 	fprintf(stderr,
 		"      --io-ram                 back touched I/O pages with plain RAM and keep going\n"
@@ -75,6 +79,8 @@ static int usage(void)
 		"                               command-line order\n"
 		"      --cdrom <image>          attach an image read-only\n"
 		"      --tools                  attach the guest tools volume (see tools create)\n"
+		"      --share <folder>         show a host folder to Mac OS as a volume; what Mac OS\n"
+		"                               changes on it is written back when it shuts down\n"
 		"      --nvram <file>           keep NVRAM (PRAM, settings) in this file\n"
 		"      --screenshot <file.png>  save the screen when the run ends\n"
 		"      --dump-ram <file>        save guest RAM when the run ends\n"
@@ -312,7 +318,7 @@ static int cmd_boot(int argc, char **argv)
 		.trace_reg = -1,
 	};
 	bool max_given = false, instruction_time = false;
-	const char *rom_path = NULL;
+	const char *rom_path = NULL, *share_dir = NULL;
 	char tools_path[256] = "";
 	for (int k = 0; k < argc; k++) {
 		if (strcmp(argv[k], "--rom") == 0 && k + 1 < argc) {
@@ -387,6 +393,8 @@ static int cmd_boot(int argc, char **argv)
 			}
 			opt.cdrom[opt.disks] = true;
 			opt.disk[opt.disks++] = tools_path;
+		} else if (strcmp(argv[k], "--share") == 0 && k + 1 < argc && !share_dir) {
+			share_dir = argv[++k];
 		} else if (strcmp(argv[k], "--screenshot") == 0 && k + 1 < argc) {
 			opt.screenshot = argv[++k];
 		} else if (strcmp(argv[k], "--log-hostcalls") == 0) {
@@ -448,15 +456,29 @@ static int cmd_boot(int argc, char **argv)
 		else if (!found)
 			printf("rom: %s (Toolbox release 0x%04X, %zu bytes)\n", from, rom_release(&rom), rom.file_size);
 	}
+	struct share *share = NULL;
+	if (!found && share_dir) {
+		if (opt.disks >= NK_MAX_DISKS)
+			fprintf(stderr, "at most %d disks, the shared folder's included\n", NK_MAX_DISKS);
+		else
+			share = share_open(share_dir);
+		if (!share) {
+			rom_free(&rom);
+			found = 1;
+		}
+	}
 	if (found) {
 		if (tools_path[0])
 			unlink(tools_path);
 		return 1;
 	}
+	opt.share = share ? share_disk(share) : NULL;
 	int rc = nk_boot(&rom, &opt);
 	rom_free(&rom);
 	if (tools_path[0])
 		unlink(tools_path);
+	if (share_close(share))
+		rc = 1;
 	return rc;
 }
 
