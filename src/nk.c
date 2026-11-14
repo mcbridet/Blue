@@ -537,6 +537,9 @@ struct machine {
 	unsigned ipl;                   /* last 68k interrupt level posted to the emulator */
 	bool dev_dirty;                 /* devices may have changed since they were last updated */
 	uint64_t dev_next_tb;           /* ... or will by themselves at this timebase (device_next_tb()) */
+	uint64_t mmio_until;            /* device_hook() takes accesses before this instruction count only */
+	bool in_place_on;               /* the main loop's run lets the engines do what they can in place (in_place()) */
+	unsigned long dev_accesses, dev_inline;         /* device register accesses, and those device_hook() did */
 	bool preempt;                   /* end the alternate context for a posted interrupt */
 	bool watch_writable;            /* whether the --watch page is writable (see watch_protect()) */
 	uint32_t ram_size;
@@ -800,9 +803,10 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	bool parcels = m->rom->format == ROM_FORMAT_PARCELS;
 	bool boot = false;
 	unsigned boot_disk = 0, boot_map_entry = 0;
-	for (unsigned k = 0; k < opt->disks && k < NK_MAX_DISKS; k++) {
+	for (unsigned k = 0; k < opt->disks + (opt->share != NULL) && k < NK_MAX_DISKS; k++) {
 		struct disk *d = &m->disk[k];
-		if (disk_open(d, &m->mem, opt->disk[k], opt->cdrom[k], opt->cdrom[k]))
+		if (k < opt->disks ? disk_open(d, &m->mem, opt->disk[k], opt->cdrom[k], opt->cdrom[k]) :
+				     disk_open_backend(d, &m->mem, opt->share))
 			return -1;
 		m->disks = k + 1;
 		d->log = opt->log_hostcalls;
@@ -811,8 +815,9 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		disk_ndrv_size[k] = disk_build_ndrv(d, m->disk_ndrv[k], sizeof m->disk_ndrv[k],
 						    HOSTCALL_DISK_DRIVER + k);
 		for (unsigned p = 0; p < d->partitions; p++) {
-			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, opt->disk[k],
-			       d->read_only ? " (read-only)" : "", (unsigned long long)(d->part[p].size >> 20),
+			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, d->path,
+			       d->backend ? " (shared folder)" : d->read_only ? " (read-only)" : "",
+			       (unsigned long long)(d->part[p].size >> 20),
 			       (unsigned long long)d->part[p].offset, d->part[p].name[0] ? ", partition " : "",
 			       d->part[p].name);
 			if (parcels && !boot && disk_bootable(d, p)) {  /* (where Open Firmware would boot from) */
@@ -1352,11 +1357,18 @@ static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
 {
 	switch (action) {
 	case UI_RESTART:
-	case UI_SHUT_DOWN:
+	case UI_TURN_OFF:
 		if (action == UI_RESTART)
 			m->restart = true;
 		else
 			m->shut_down = m->quit = true;
+		m->paused = false;
+		display_menu(m->display, false);
+		follow_cursor(m, now);
+		break;
+	case UI_SHUT_DOWN:      /* the power key: Mac OS asks, and shuts down if told to (the run ends then) */
+		adb_power_key(&m->cuda.adb, true);
+		adb_power_key(&m->cuda.adb, false);
 		m->paused = false;
 		display_menu(m->display, false);
 		follow_cursor(m, now);
@@ -1748,6 +1760,9 @@ static void script_run(struct machine *m, struct script *s)
 				adb_key(&m->cuda.adb, (uint8_t)e->a, false);
 				fast_start_input(m, e->a & 0x7F, false);
 			}
+		} else if (strcmp(e->cmd, "power") == 0) {     /* the power key, pressed and released */
+			adb_power_key(&m->cuda.adb, true);
+			adb_power_key(&m->cuda.adb, false);
 		} else if (strcmp(e->cmd, "clock") == 0) {
 			/*
 			 * From here on, guest time passes at a guest processor speed of
@@ -1817,7 +1832,8 @@ static void update_device_time(struct machine *m)
 {
 	via_set_time(&m->via, m->cpu.tb * VIA_HZ / TIMEBASE_HZ);
 	ohci_set_time(&m->ohci, m->cpu.tb / TIMEBASE_HZ * OHCI_BIT_HZ + m->cpu.tb % TIMEBASE_HZ * OHCI_BIT_HZ / TIMEBASE_HZ);
-	dbdma_poll(&m->dbdma);
+	if (m->dbdma.poll)
+		dbdma_poll(&m->dbdma);
 	awacs_set_time(&m->awacs, m->cpu.tb);
 }
 
@@ -1925,8 +1941,10 @@ static unsigned blue_boost(struct machine *m)
  * other than the blue one runs, that waits until the blue task is back,
  * which with Multiprocessing Services is next: see mp_interrupt(), and
  * blue_boost() for how it gives up being critical.)
+ *
+ * Returns whether anything changed (what's reported pending, or posted).
  */
-static void update_interrupts(struct machine *m, bool force)
+static bool update_interrupts(struct machine *m, bool force)
 {
 	macio_set_line(&m->macio, IRQ_VIA1, via_irq(&m->via));
 	macio_set_line(&m->macio, IRQ_USB, ohci_irq(&m->ohci));
@@ -1935,7 +1953,8 @@ static void update_interrupts(struct machine *m, bool force)
 
 	uint32_t p0 = macio_pending(&m->macio, 0), p1 = macio_pending(&m->macio, 1);
 	bool new_sources = (p0 & ~m->pending[0]) || (p1 & ~m->pending[1]);
-	if (p0 != m->pending[0] || p1 != m->pending[1]) {
+	bool changed = p0 != m->pending[0] || p1 != m->pending[1];
+	if (changed) {
 		m->pending[0] = p0;
 		m->pending[1] = p1;
 		put_be32(m->kdp + KDP_HW_INFO + 0x28, p0);      /* PendingInts */
@@ -1944,7 +1963,7 @@ static void update_interrupts(struct machine *m, bool force)
 	}
 
 	unsigned level = 0;
-	for (unsigned l = 7; l >= 1 && !level; l--)
+	for (unsigned l = 7; l >= 1 && !level && (p0 | p1); l--)
 		if ((p0 & m->level_mask[0][l]) || (p1 & m->level_mask[1][l]))
 			level = l;
 
@@ -1952,7 +1971,7 @@ static void update_interrupts(struct machine *m, bool force)
 	bool clear = !level && m->ipl;
 	m->ipl = level;
 	if (!post && !clear)
-		return;
+		return changed;
 	if (post)
 		macio_take(&m->macio);
 
@@ -1973,6 +1992,68 @@ static void update_interrupts(struct machine *m, bool force)
 		mp_interrupt(&m->mp, m->cpu.tb);
 		set_shifty(m, SHIFTY_YIELD, 0);
 	}
+	return true;
+}
+
+/*
+ * A device register access: the load or store that faulted (decoded in
+ * `a`) is emulated, with device time brought up to date for it, and
+ * interrupts after it. Returns whether those changed.
+ */
+static bool device_access(struct machine *m, const struct mmio_access *a)
+{
+	update_device_time(m);
+	mmio_perform(a, &m->cpu);
+	bool changed = update_interrupts(m, false);
+	m->dev_next_tb = device_next_tb(m);     /* (all brought up to date) */
+	m->dev_accesses++;
+	return changed;
+}
+
+/* Why a run stops after a device register access, if it does */
+static const char *device_stop(const struct machine *m)
+{
+	return m->cuda.power_off ? "guest powered off (Cuda)" : m->cuda.reset ? "guest restarted (Cuda)" : NULL;
+}
+
+/*
+ * Device registers without leaving ppc_run() (the processor's mmio hook):
+ * the hook does what the loop in nk_boot() does at a device register's DSI
+ * exit, the same way (devices brought up to date as at any exit, then as
+ * for the access), so long as that's all the loop would do. Should there be
+ * more (interrupts that change, a Multiprocessing Services timer due, a
+ * preemption, a stop), the run stops right after the access for the loop
+ * to do the rest (PPC_EXIT_MMIO), as it would after the access at that exit.
+ *
+ * Not on the last instruction before the loop's next stop (mmio_until): an
+ * exit there has the loop skip the sync point it ends at, so that access
+ * still makes its exit; nor while the loop sets guest time at every exit
+ * (the script's "clock"). What the engines may do in place is worked out
+ * again after the access (as the loop would before its next run), device
+ * time having changed.
+ */
+static void in_place(struct machine *m, bool on);
+
+static int device_hook(void *ctx, struct ppc_cpu *cpu)
+{
+	struct machine *m = ctx;
+	struct mmio_access a;
+	if (cpu->icount + 1 >= m->mmio_until || !mmio_decode(&m->bus, cpu, &a))
+		return PPC_MMIO_NO;
+	bool changed = false;
+	if (m->dev_dirty || cpu->tb >= m->dev_next_tb) {        /* (as at every exit) */
+		update_device_time(m);
+		changed = update_interrupts(m, false);
+		m->dev_dirty = false;
+		m->dev_next_tb = device_next_tb(m);
+	}
+	changed |= device_access(m, &a);
+	m->dev_inline++;
+	if (changed || m->preempt || device_stop(m) || m->mp.swi || m->mp.yield ||
+	    (m->mp_kernel && mp_due(&m->mp, cpu->tb)))
+		return PPC_MMIO_STOP;
+	in_place(m, m->in_place_on);            /* (as for the run the loop would start next) */
+	return PPC_MMIO_DONE;
 }
 
 /*
@@ -2848,6 +2929,7 @@ static void in_place(struct machine *m, bool on)
 {
 	struct ppc_cpu *cpu = &m->cpu;
 	const struct mp_object *task = m->mp_kernel ? mp_lookup(&m->mp, m->mp.current, MP_TASK) : NULL;
+	m->in_place_on = on;
 	cpu->sc_until = cpu->kcall_until = 0;
 	if (!on || m->clock_mips || m->dev_dirty || m->mp.swi || m->mp.yield || m->preempt)
 		return;
@@ -2889,6 +2971,8 @@ static int start_machine(struct machine *m, const struct nk_boot_options *opt)
 		m->cpu.tb_step = 0;     /* the host clock or the instruction count sets the timebase between chunks */
 	/* the emulator dispatches 68k opcode X through dispatch_table + 8 * X; see also recompiled_trap_entry() */
 	m->cpu.hook_pc = m->ci.la_dispatch_table + 8u * TRAP_SYNCH_IDLE_TIME;
+	m->cpu.mmio = getenv("SYSHM_DEVICE_EXITS") ? NULL : device_hook;      /* (for comparisons: each access exits) */
+	m->cpu.mmio_ctx = m;
 	uint32_t entry = recompiled_trap_entry(m);
 	m->recompiled_traps = entry;
 	if (entry) {
@@ -2958,6 +3042,8 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->next_frame_ns = old.next_frame_ns;
 	m->idle_calls = old.idle_calls;
 	m->idle_ns = old.idle_ns;
+	m->dev_accesses = old.dev_accesses;
+	m->dev_inline = old.dev_inline;
 	m->net_poll_ns = old.net_poll_ns;
 	memcpy(m->exceptions, old.exceptions, sizeof m->exceptions);
 	if (start_machine(m, opt))
@@ -3035,6 +3121,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	const char *why = NULL;
 	unsigned io_pages = 0;
 	unsigned long kcalls[16] = { 0 };
+	unsigned long dev_stops = 0;
 	unsigned long traps_logged = 0;
 	bool sync = true;               /* at a device sync point (see below) */
 
@@ -3061,7 +3148,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 				display_frame(&m, now);
 				m.next_frame_ns = now + 1000000000u / 60;
 				if (m.quit) {
-					why = m.shut_down ? "shut down from the menu" : "window closed";
+					why = m.shut_down ? "turned off from the menu" : "window closed";
 					break;
 				}
 				if (m.restart) {
@@ -3125,6 +3212,9 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		if (opt->watch)
 			watch_protect(&m, opt->watch, true);
 		in_place(&m, !opt->trap_log || trap_log_armed);         /* (trap logging starts at the same exit) */
+		m.mmio_until = m.clock_mips ? 0 : cpu->icount + chunk;         /* (see device_hook()) */
+		if (opt->trap_log && !trap_log_armed && opt->trap_log_from < m.mmio_until)
+			m.mmio_until = opt->trap_log_from;
 		/* (a random one in RUN_SAMPLE timed, for the status bar's speed: see status_lights()) */
 		m.run_sample = m.run_sample * 1664525u + 1013904223u;
 		bool timed = m.display && m.run_sample < UINT32_MAX / RUN_SAMPLE;
@@ -3135,6 +3225,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			m.run_insns += cpu->icount - insns_from;
 		}
 		in_place(&m, false);
+		m.mmio_until = 0;
 		for (unsigned n = 0; n < 2; n++) {
 			kcalls[n] += m.kcalls_in_place[n];
 			m.kcalls_in_place[n] = 0;
@@ -3151,7 +3242,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 				  (e == PPC_EXIT_HOOK && !sync && !opt->realtime) ||
 				  (e == PPC_EXIT_DSI && opt->watch && cpu->fault_write &&
 				   (cpu->fault_addr >> MEM_PAGE_SHIFT) == (opt->watch >> MEM_PAGE_SHIFT));
-		if (!debug_exit && (sync || m.dev_dirty || cpu->tb >= m.dev_next_tb)) {
+		if (!debug_exit && e != PPC_EXIT_MMIO && (sync || m.dev_dirty || cpu->tb >= m.dev_next_tb)) {
 			update_device_time(&m);
 			update_interrupts(&m, false);
 			m.dev_dirty = false;
@@ -3161,6 +3252,11 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 
 		switch (e) {
 		case PPC_EXIT_BUDGET:
+			break;
+		case PPC_EXIT_MMIO:     /* device_hook() did an access and stopped after it, as below */
+			dev_stops++;
+			dev_clean = true;
+			why = device_stop(&m);
 			break;
 		case PPC_EXIT_TRAP:
 			if ((cpu->exit_insn & TWI_KCALL_MASK) == TWI_KCALL) {
@@ -3271,18 +3367,15 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 				break;
 			}
 			if (mmio_find(&m.bus, cpu->fault_addr)) {
-				update_device_time(&m);
-				if (mmio_emulate(&m.bus, cpu) != MMIO_DONE) {
+				struct mmio_access a;
+				if (!mmio_decode(&m.bus, cpu, &a)) {
+					update_device_time(&m);
 					why = "unsupported instruction form for a device register";
 					break;
 				}
-				update_interrupts(&m, false);
-				m.dev_next_tb = device_next_tb(&m);     /* (all brought up to date) */
+				device_access(&m, &a);
 				dev_clean = true;
-				if (m.cuda.power_off)
-					why = "guest powered off (Cuda)";
-				else if (m.cuda.reset)
-					why = "guest restarted (Cuda)";
+				why = device_stop(&m);
 				break;
 			}
 			if (opt->io_as_ram && cpu->fault_addr >= 0x80000000u &&
@@ -3339,6 +3432,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	for (unsigned n = 0; n < 16; n++)
 		if (kcalls[n])
 			printf(" %s=%lu", nk_kcall_name(n), kcalls[n]);
+	printf("\ndevice registers: %lu accesses, %lu without leaving the run (%lu of them stopping it after)",
+	       m.dev_accesses, m.dev_inline, dev_stops);
 	printf("\ncuda packets: %lu, interrupt level %u, pending %08X %08X, via ifr %02X ier %02X",
 	       m.cuda.packets, m.ipl, m.pending[0], m.pending[1], m.via.ifr, m.via.ier);
 	printf("\nadb: %lu commands, autopoll %s (devices %04X, %u ms), keyboard @%u handler %u, mouse @%u handler %u",

@@ -1,7 +1,8 @@
 /*
  * Memory-mapped device emulation. Device pages are left unmapped, so guest
  * accesses exit the interpreter with a DSI; the kernel then decodes the
- * faulting load/store and forwards it to the device that owns the address.
+ * faulting load/store and forwards it to the device that owns the address
+ * (or does so from the processor's mmio hook, without the exit: see ppc.h).
  */
 #ifndef SYSHM_MMIO_H
 #define SYSHM_MMIO_H
@@ -43,5 +44,16 @@ enum mmio_result {
 
 /* Emulates the load/store that just faulted (cpu->exit_insn at cpu->fault_addr). */
 enum mmio_result mmio_emulate(const struct mmio_bus *bus, struct ppc_cpu *cpu);
+
+/* ... in two steps: decoded, then done */
+struct mmio_access {
+	const struct mmio_region *region;       /* NULL: not a device register */
+	bool store, update, reverse, sign;
+	unsigned size, rt, ra;
+};
+
+/* false (changing nothing) if mmio_emulate() wouldn't return MMIO_DONE */
+bool mmio_decode(const struct mmio_bus *bus, const struct ppc_cpu *cpu, struct mmio_access *a);
+void mmio_perform(const struct mmio_access *a, struct ppc_cpu *cpu);
 
 #endif

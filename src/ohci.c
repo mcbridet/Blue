@@ -321,7 +321,3 @@ uint64_t ohci_next_event(const struct ohci *o)
 	return o->frame_start + frame_length(o);
 }
 
-bool ohci_irq(const struct ohci *o)
-{
-	return (o->int_enable & OHCI_INT_MIE) && (o->int_status & o->int_enable & ~OHCI_INT_MIE);
-}

@@ -9,7 +9,7 @@ IMGUI_FLAGS := -std=c++17 -fno-exceptions -fno-rtti -DIMGUI_DISABLE_OBSOLETE_FUN
 LDFLAGS ?= -g
 BUILD := build
 
-LIB_SRC := src/adb.c src/audio.c src/awacs.c src/bootinfo.c src/raster.c src/rave.c src/clip.c src/clock.c src/cuda.c src/dbdma.c src/devtree.c src/display.c src/disk.c src/gl.c src/gpu.c src/hfs.c src/hfsread.c src/jit.c src/lzss.c src/macio.c src/mem.c src/mmio.c src/mp.c src/ndrv.c src/net.c src/nk.c src/nvram.c src/ohci.c src/parcels.c src/pci.c src/perf.c src/png.c src/ppc.c src/ppc_fp.c src/rom.c src/rsrc.c src/rtas.c src/scc.c src/tools.c src/via.c src/video.c
+LIB_SRC := src/adb.c src/audio.c src/awacs.c src/bootinfo.c src/raster.c src/rave.c src/clip.c src/clock.c src/cuda.c src/dbdma.c src/devtree.c src/display.c src/disk.c src/gl.c src/gpu.c src/hfs.c src/hfsread.c src/jit.c src/lzss.c src/macio.c src/mem.c src/mmio.c src/mp.c src/ndrv.c src/net.c src/nk.c src/nvram.c src/ohci.c src/parcels.c src/pci.c src/perf.c src/png.c src/ppc.c src/ppc_fp.c src/rom.c src/rsrc.c src/rtas.c src/scc.c src/share.c src/tools.c src/via.c src/video.c
 IMGUI_SRC := third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
 LIB_OBJ := $(LIB_SRC:src/%.c=$(BUILD)/%.o) $(BUILD)/ui.o $(IMGUI_SRC:third_party/imgui/%.cpp=$(BUILD)/imgui/%.o)
 TEST_SRC := $(wildcard tests/*.c)

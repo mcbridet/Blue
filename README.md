@@ -240,7 +240,7 @@ NVRAM is the same 8 KB that RTAS serves 8.5–9.0.4, kept in the same
 file goes with an install whichever ROM starts it. 9.1 reads NVRAM at
 startup and keeps its changes in memory until it shuts down or restarts,
 when it writes them to the chip, as on an iMac: changes since startup are
-lost when syshm quits otherwise (closing the window, or Shut down in its
+lost when syshm quits otherwise (closing the window, or Turn off in its
 menu). The end-of-run statistics count the chip's reads and writes.
 
 Not done yet: installing 9.1 onto a disk image with its installer and
@@ -266,6 +266,77 @@ plain-HTTP sites work.
 host network's timing then makes them unreproducible), and
 `SYSHM_LOG_NET=1` logs the driver's calls. Frame counts are printed at
 exit.
+
+### Shared folder
+
+`--share DIR` shows a host folder to Mac OS as a volume of its own, named
+after the folder, with the files and folders in it: the way to move files
+between the host and Mac OS, such as a program downloaded on the host to
+install. It's an ordinary HFS volume, so everything works on it (the
+Finder, installers, programs run from it), and what Mac OS changes on it
+goes back to the folder when Mac OS shuts down.
+
+```
+build/syshm boot --disk hd.img --share ~/Mac --window --nvram syshm.nvram
+```
+
+The volume (`src/share.c`) is made when syshm starts: its catalog and the
+rest of its metadata in memory (`src/hfs.c` lays volumes out), its files'
+contents read from the host's files only as Mac OS reads them. It has half
+as much free space as there is in it, at least 1 GB but under 2 GB (older
+installers count free space in 31 bits). It is attached after the other
+drives, as one of the four, and is never the startup disk (no boot blocks,
+no System Folder). Names become Mac OS Roman, with `/` for `:` as macOS
+shows them; one longer than 31 characters, or the same as another's to
+Mac OS (which ignores case), is shortened with the item's ID, as Mac OS 9
+does (`A very long file name#1A.txt`). Dot files, symbolic links to
+folders and files over 2 GB (HFS's limit) are left out, and syshm says so.
+Resource forks and Finder info (type, creator, flags) are the host's: on
+macOS the file's own (`..namedfork/rsrc`, `com.apple.FinderInfo`), and
+otherwise an AppleDouble file, `._name` beside it or in a `__MACOSX` folder
+(as zip archives keep them). A file without Finder info gets a type and
+creator from its extension (`.sit`, `.hqx`, `.bin`, `.zip` for StuffIt
+Expander; `.txt`; `.jpg`, `.gif`, `.png` for PictureViewer; `.pdf`; `.img`,
+`.dmg`, `.toast`, `.dsk` for Disk Copy; `.mov`, `.mp3`, `.aiff`, `.html`
+and a few more), else SimpleText's if it's plain text, else `????`.
+
+What Mac OS writes goes to a temporary file (in `$TMPDIR`, gone when
+syshm exits), never to the folder during the run. At the end of the run,
+if Mac OS put the volume away (Shut Down, or Put Away), syshm writes back
+what changed: new, changed, renamed, moved and deleted files and folders,
+with their resource forks and Finder info as the host keeps them (on
+macOS the file's own; otherwise an AppleDouble `._name` file, only for a
+file with a resource fork or Finder info its name and contents wouldn't
+give it) and their dates. Nothing of the host's is destroyed: a file or
+folder Mac OS deleted (emptying the Trash or not) or replaced is moved to
+`DIR/.syshm-recovery/<date and time>/`, under the path it had, and a file
+that changed on the host as well during the run is kept, with Mac OS's
+version beside it as `name (Mac OS).ext`. What Mac OS and its extensions
+keep on a volume for themselves (the desktop database, the Trash, invisible
+files at its top) isn't written back. syshm lists what it did:
+
+```
+share: writing back what Mac OS changed on "Shared" to /Users/me/Shared
+share:   changed Read Me.txt (the host's was put in .syshm-recovery/2026-11-15 00.13.05)
+share:   new untitled folder
+share: 1 new, 1 changed, 0 moved or renamed, 0 deleted; the host's old ones are in /Users/me/Shared/.syshm-recovery/2026-11-15 00.13.05
+```
+
+If the run ends without Mac OS having put the volume away (the window
+closed, or Turn off in syshm's menu, rather than Mac OS shutting down),
+nothing is written back, as the volume may be half-written; if anything
+of the user's had changed on it, it is saved as a disk image in the
+recovery folder instead (attach it with `--disk` to get at what's on it;
+Mac OS may check it first, as after a crash). Mac OS marks the volume in use
+in its MDB as soon as it mounts it (its first write) and put away when it
+unmounts it; that's how syshm tells. A restart keeps the volume as Mac OS
+left it. `SYSHM_LOG_SHARE=1` logs Mac OS's writes.
+
+Changes cross only once a run: files added on the host during the run
+appear in Mac OS the next time, and changes made in Mac OS reach the host
+at the end. Text files keep their line endings (a host's LF shows as boxes
+in SimpleText). Folders' Finder info (window positions, custom icons) and
+the Locked checkbox aren't written back.
 
 ### Guest tools
 
@@ -294,32 +365,32 @@ the same volume to a file):
   copied in Mac OS is on the host's clipboard, and text copied on the host
   is what Command-V pastes in Mac OS, in the front application, without
   switching applications (tested: SimpleText, Note Pad, Scrapbook, the
-  Finder's names and Internet Explorer 4's fields, on 8.5; SimpleText on
+  Finder's names and Internet Explorer 4's fields on 8.5, SimpleText on
   9.1). Mac OS keeps text in Mac OS Roman with CR line ends (`TEXT`), and
   applications that know Unicode (Mac OS 9's MLTE) in UTF-16 too (`utxt`);
-  the host has UTF-8 with LF. Accents
-  come out precomposed (macOS often decomposes them), and characters Mac
-  OS Roman lacks become something close where there is one (½ "1/2", →
-  "->", other spaces a space) or else "?"; `utxt`, which syshm puts in
-  the scrap too, has them all, for applications that read it, and is what
-  the host gets when an application puts both. Styles (`styl`) and pictures
-  aren't passed, nor texts over 4 MB (syshm says so).
-  How: each application has a scrap of its own (the Process Manager hands
-  it to the next one brought to the front), and many keep a private one
-  besides, such as TextEdit's, which they take from the scrap only when
-  resumed with "the clipboard has changed". Enhancements patches ZeroScrap
-  and PutScrap to see what applications copy; puts the host's new text in
-  the front application's scrap just before it gets its next event (a
-  GetNextEvent filter: some read the scrap's size in low memory rather
-  than asking); and posts it a resume event saying the clipboard has
-  changed, as the Process Manager does when one switches applications. Keys
-  typed in the window meanwhile wait for that (at most half a second), so
-  that a quick Command-V pastes the new text. An application that puts its
-  copy in the scrap only when switched out (from a private scrap, at a
-  suspend) reaches the host once another Mac application comes to the
-  front. Scripted runs have a stand-in for the host's clipboard (`clipboard`
-  and `print-clipboard`, see Debugging boot); other runs without a window,
-  or in instruction time, leave the clipboard alone.
+  the host has UTF-8 with LF. Accents come out precomposed (macOS often
+  decomposes them), and characters Mac OS Roman lacks become something
+  close where there is one (½ "1/2", → "->", other spaces a space) or
+  else "?"; `utxt`, which syshm puts in the scrap too, has them all, for
+  applications that read it, and is what the host gets when an
+  application puts both. Styles (`styl`) and pictures aren't passed, nor
+  texts over 4 MB (syshm says so). How: each application has a scrap of
+  its own (the Process Manager hands it to the next one brought to the
+  front), and many keep a private one besides, such as TextEdit's, which
+  they take from the scrap only when resumed with "the clipboard has
+  changed". Enhancements patches ZeroScrap and PutScrap to see what
+  applications copy; puts the host's new text in the front application's
+  scrap just before it gets its next event (a GetNextEvent filter: some
+  read the scrap's size in low memory rather than asking); and posts it a
+  resume event saying the clipboard has changed, as the Process Manager
+  does when one switches applications. Keys typed in the window meanwhile
+  wait for that (at most half a second), so that a quick Command-V pastes
+  the new text. An application that puts its copy in the scrap only when
+  switched out (from a private scrap, at a suspend) reaches the host once
+  another Mac application comes to the front. Scripted runs have a
+  stand-in for the host's clipboard (`clipboard` and `print-clipboard`,
+  see Debugging boot); other runs without a window, or in instruction
+  time, leave the clipboard alone.
 - **syshm 3D Engine**: a QuickDraw 3D RAVE drawing engine (put it in
   Extensions). QuickDraw 3D's interactive renderer and RAVE games then find
   an accelerator: it reports itself as an ATI engine (vendor 1, engine 5),
@@ -391,8 +462,8 @@ lacks: syshm says to install it again from the tools volume.
   code. Rarer instructions call the interpreter from inside the block;
   traps, system calls and host calls go straight to the kernel (but for
   those made in place, below); anything
-  that faults or touches a device page leaves the block so the interpreter
-  executes it. The time base is read natively.
+  that faults leaves the block so the interpreter executes it (but for
+  device registers, below). The time base is read natively.
   - Exactness: blocks run only when the instruction budget covers them, and
     each instruction checks before it changes anything, so instruction
     counts, device timing and faults are exactly the interpreter's (boots,
@@ -414,6 +485,31 @@ lacks: syshm says to install it again from the tools volume.
     the same instruction for instruction. Kernel exits in that 9.1 run
     went from 11.7 to 1.5 million (8.5: 2.8 to 1.1), host time from 1.50
     to 1.32 s (8.5: 1.03 to 1.02 s).
+  - Device registers in place: loads and stores to device registers (1.6
+    million in 4 billion instructions of the 8.5 CD boot: the Time Manager
+    programming and reading VIA timer 2, its interrupt flags, and the USB
+    driver polling the frame number; 0.7 million for 8.5 and 8.6
+    installed, nearly all VIA) don't leave generated code or the
+    interpreter either. Both offer a load or store that faults to the
+    kernel's hook (`mmio` in `src/ppc.h`, `device_hook()` in `src/nk.c`),
+    with the instruction count and time base as at the exit; it does what
+    the kernel's loop does at that exit, with the same code (devices
+    brought up to date, the access, interrupts, the next device event,
+    what the engines may do in place), and the run goes on; or it stops
+    right after the access when the loop has more to do (interrupts that
+    changed, a preemption, a Multiprocessing Services tick, a Cuda
+    shutdown or restart: about 2% of accesses). Not on a run's last
+    instruction (see devices below), nor with `clock`. Generated code gets
+    the hook's path, out of line, for instructions whose fastmem access
+    faulted on a page that isn't mapped; it writes all registers back and
+    reloads them afterwards (the hook may change any, CR when it posts an
+    interrupt). In the 8.5 CD boot device-register exits went from 1.64
+    million to 36,000 and host time from 1.00 to 0.96 s (8.5 installed:
+    0.87 to 0.86 s; 8.6: 1.24 to 1.21 s; 9.1's CD, with 17,000, as before)
+    on an M5, where an access cost about 50 ns with its exit and costs
+    about 25 now, nearly all of it the devices' own bookkeeping.
+    `SYSHM_DEVICE_EXITS=1` has every access exit as before, for
+    comparisons.
   - Registers: CR, LR, r1, r3, r4, r24, r27 and r29 (the hottest across the
     68k emulator and native code) live in host registers while generated
     code runs; others are cached within a block and written back at exits
@@ -529,7 +625,8 @@ lacks: syshm says to install it again from the tools volume.
   interrupt controller and a Z8530 SCC with nothing attached (LocalTalk sees an
   idle network), and for ROM files with parcels the NVRAM chip behind Mac I/O
   (`src/nvram.c`; see Mac OS 9.1). Device registers are emulated by decoding the faulting
-  load/store (`src/mmio.c`).
+  load/store (`src/mmio.c`), without an exit where it would do nothing more
+  (see the JIT's device registers in place).
 - DBDMA (`src/dbdma.c`): Mac I/O's 16 descriptor-based DMA channels, after
   the CHRP I/O Device Reference (chapter 15): input/output with the MORE and
   LAST forms and streams, STORE_QUAD/LOAD_QUAD (memory, device registers,
@@ -572,7 +669,8 @@ lacks: syshm says to install it again from the tools volume.
     tool) to switch between; each is listed only while in use.
   - Disk: host files as drives (`--disk`, writable; `--cdrom`, read-only;
     the 8.5 CD's System refuses to start from a writable drive, as from a
-    copy of the CD).
+    copy of the CD), and a host folder (`--share`; see Shared folder),
+    whose blocks come from `src/share.c` rather than a file.
     An Apple partition map gives one drive per HFS partition; otherwise the
     file is one volume. (When there's a map entry at offset 512, entries are
     512 bytes apart and count 512-byte blocks even if the driver descriptor
@@ -660,9 +758,13 @@ lacks: syshm says to install it again from the tools volume.
   F12 opens the menu (Dear ImGui's, from `third_party/imgui`, drawn over
   the screen through the same run-time SDL2 by `src/ui.cpp`; SDL 2.0.18 or
   later), and the guest is paused while it's open. In it: Resume (F12 and
-  Esc too); Restart and Shut down (straight away: they're the Mac's own
-  restart and power switch, so work not saved in Mac OS is lost; Shut down
-  keeps NVRAM, as closing the window does); a screenshot of the Mac's screen
+  Esc too); Restart (straight away: the Mac's own reset, so work not saved
+  in Mac OS is lost); Shut down, which presses the keyboard's power key, so
+  Mac OS asks "Are you sure you want to shut down your computer now?" and
+  shuts down properly if told to (applications ask to save, NVRAM and a
+  shared folder are written, and the run ends when the Mac turns itself
+  off); Turn off, the power switch, for a Mac that doesn't answer (straight
+  away; it keeps NVRAM, as closing the window does); a screenshot of the Mac's screen
   (a PNG on the Desktop, or in the current directory without one, named
   for when it was taken); fullscreen (at the desktop's resolution); the
   status bar; and whether the pointer is captured while the Mac hides its
@@ -690,7 +792,8 @@ lacks: syshm says to install it again from the tools volume.
   drift into growing delay),
   PNG screenshots (`src/png.c`), NVRAM kept
   in a file, real-time guest time with `--window`/`--realtime`, and
-  `syshm disk create`, which lays out an empty HFS volume (`src/hfs.c`) the
+  `syshm disk create`, which lays out an empty HFS volume (`src/hfs.c`, which
+  also lays out the shared folder's, with B-trees of any size) the
   way Disk Initialization does (`hfsck` from hfsutils accepts it).
 - Speed on an M1 Max: the boot to the Finder (about 3 billion instructions)
   takes 1.1-1.8 s with the JIT, which runs the 68k emulator's code at about
@@ -711,8 +814,9 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 
 - Model `iMac,1`, a 266 MHz PowerPC 750 on a 66 MHz bus, timebase 16.6 MHz.
 - Grackle PCI host bridge; on it the display (device 1, framebuffer at
-  `0x82000000`), up to four disks (devices 2-5), the USB controller (device
-  6, registers at `0x81000000`) and Mac I/O (device 16) at `0x81080000`:
+  `0x82000000`), up to four disks (devices 2-5; a shared folder is one),
+  the USB controller (device 6, registers at `0x81000000`) and Mac I/O
+  (device 16) at `0x81080000`:
   Heathrow-style interrupt controller (`+0x10`), DMA channels (`+0x8000`,
   0x100 bytes each), SCC (`+0x12000`), VIA1 with Cuda (`+0x16000`).
   Interrupt sources use Heathrow numbers (DMA channel n is source n,
@@ -764,17 +868,23 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    host's GPU; what's left there, such as reading back less of each frame,
    is in docs/gpu-plan.md.)
 2. Networking: host ports forwarded to the guest (so it can serve).
-3. Startup-disk selection; Open Transport's stall with a full
+3. Shared folder: writing back when Mac OS ejects the volume, then offering
+   the folder again as new media, so that changes cross during a run (it
+   needs the disk driver's removable media).
+4. Startup-disk selection; Open Transport's stall with a full
    interrupt set for the Ethernet node; then the NanoKernel v2 interface,
    which the ROM files from Mac OS ROM 1.7.1 on use, and Mac OS 9.1's needs
    (see Mac OS 9.1).
-4. More JIT speed for disk boots: device register accesses (1.3 million in
-   a boot, mostly the Time Manager programming VIA timer 2) each leave
-   generated code for the interpreter and the kernel's loop, and could be
-   done from inside it (perhaps 3-5%); the interpreter, which runs code
+5. More JIT speed for disk boots: the interpreter, which runs code
    until it's hot at about 10 ns an instruction, mostly in overheads per
    block (about 8%); translating (4%), with the instruction-cache upkeep
-   that follows (4%).
+   that follows (4%); device register accesses, though made in place, still
+   cost about 25 ns each in the devices' bookkeeping (about 4% of the 8.5
+   CD boot).
+
+future.md has ideas not planned yet: a modem, infrared, 3D sound, sound
+input, AltiVec, printing, game controllers, and more CD formats with CD
+audio.
 
 ## Build and test
 
@@ -802,6 +912,7 @@ build/syshm rom extract MOS.rom build/toolbox.rom
 build/syshm rom trampoline MOS.rom build/trampoline.elf
 build/syshm boot --rom MOS.rom --cdrom 85.iso --window   # interactive
 build/syshm boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
+build/syshm boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
 build/syshm run-raw code.bin 1000                # SYSHM_TRACE=1 logs every instruction
 ```
 
@@ -818,8 +929,9 @@ counts, for example:
 3500000000 motion 40 -10         # the mouse moved 40 right, 10 up (through the ADB mouse, as games read it)
 3600000000 screenshot after.png
 3700000000 clock 800             # guest time at 800 million instructions a second from here
-3800000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)
-3900000000 print-clipboard       # prints the host's clipboard, with what Mac OS copied since
+3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
+3900000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)
+4000000000 print-clipboard       # prints the host's clipboard, with what Mac OS copied since
 ```
 
 `clipboard` and `print-clipboard` stand in for the host's clipboard (a
@@ -841,7 +953,10 @@ don't change what the guest does. (At exits they are updated only when that
 could change anything: when a VIA timer runs out or a USB frame starts with
 its interrupt enabled, while sound DMA moves, or after something touched
 them. Kernel calls made in place, without an exit, only happen while an
-exit would do none of that.) Tracing and trap logging use the
+exit would do none of that; device register accesses made in place update
+devices as their exits would. An access on the last instruction before a
+sync point still exits, after which the loop goes on to the next sync
+point without servicing that one, as it always has.) Tracing and trap logging use the
 interpreter.
 
 Debugging `boot`: `--trace-from N --trace-reg 24` logs instructions with the
@@ -920,8 +1035,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
           (configuration space), nvram.c (devices), ndrv.c (PEF driver generator),
           video.c, disk.c (native drivers), net.c (Ethernet's lanLib,
-          libslirp), hfs.c (volume formatter), hfsread.c (HFS and HFS+
-          reader: the startup disk's ROM file),
+          libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
+          reader: the startup disk's ROM file), share.c (shared folder),
           rsrc.c (resource forks), tools.c (guest tools), clip.c (the
           clipboard they share with the host), rave.c + raster.c
           + gpu.c + gl.c (3D engine: software and OpenGL), display.c (SDL2

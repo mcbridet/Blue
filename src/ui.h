@@ -39,7 +39,7 @@ enum ui_key { UI_KEY_TAB, UI_KEY_LEFT, UI_KEY_RIGHT, UI_KEY_UP, UI_KEY_DOWN, UI_
 
 /* What the user chose in the menu */
 enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI_FULLSCREEN, UI_STATUS_BAR,
-		 UI_CAPTURE_MOUSE, UI_RELEASE_MOUSE };
+		 UI_CAPTURE_MOUSE, UI_RELEASE_MOUSE, UI_TURN_OFF };
 
 /* What becomes of the mouse after the menu */
 enum ui_mouse {

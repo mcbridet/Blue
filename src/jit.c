@@ -39,7 +39,8 @@
 #define FAST_R_BIT 5                    /* MEM_FAST_R */
 
 /* Why generated code returned to C */
-enum { EXIT_MISS, EXIT_BUDGET, EXIT_INTERP, EXIT_HOOK, EXIT_LINK, EXIT_TRAP, EXIT_SC, EXIT_HOSTCALL, EXIT_KINDS };
+enum { EXIT_MISS, EXIT_BUDGET, EXIT_INTERP, EXIT_HOOK, EXIT_LINK, EXIT_TRAP, EXIT_SC, EXIT_HOSTCALL, EXIT_MMIO,
+       EXIT_KINDS };
 
 /* Host registers held for the whole of a run */
 enum {
@@ -77,6 +78,7 @@ struct jit_page {
 	uint8_t runs[PAGE_WORDS];               /* interpreted runs from each word (see find()) */
 	bool followed;                          /* blocks elsewhere hold code from here (ROM) */
 	uint64_t slow[PAGE_WORDS / 64];         /* words whose memory accesses are checked (see fastmem) */
+	uint64_t io[PAGE_WORDS / 64];           /* ... and offered to the mmio hook out of line (slow_ios()) */
 };
 
 /* An access in generated code that may fault, and its side exit (offsets in words from `code`) */
@@ -95,6 +97,7 @@ struct jit_state {
 	bool (*step)(struct ppc_cpu *, uint32_t, uint32_t);
 	bool (*kcall)(struct ppc_cpu *, unsigned);
 	void (*code_store)(struct jit_state *, uint32_t, uint64_t, uint32_t);
+	unsigned (*mmio)(struct ppc_cpu *, uint32_t, uint32_t, uint32_t, uint32_t, uint64_t);
 	uint32_t *link_site;            /* EXIT_LINK: the branch to point at the next block */
 	struct jit_page **pages;
 	uint32_t hook;
@@ -110,6 +113,8 @@ struct jit_state {
 	uint32_t fp_insn, fp_fpcc;
 	uint64_t fp_ops[3];
 	uint32_t scratch;
+	uint64_t mmio_return;           /* (the mmio stub's) */
+	uint32_t mmio_exit;             /* how slow_ios() leaves after an access the hook did */
 };
 
 /* (generated code clears fp_insn and fp_fpcc with one 64-bit store) */
@@ -121,7 +126,7 @@ struct jit {
 	struct mem *mem;
 	uint32_t *code, *code_end, *code_free, *blocks_start;
 	uint32_t (*enter)(struct ppc_cpu *, const void *, uint64_t, struct jit_state *);
-	const uint32_t *exit, *side_exit, *link, *link_branch, *hook_exit, *miss_exit, *lookup;
+	const uint32_t *exit, *side_exit, *link, *link_branch, *hook_exit, *miss_exit, *lookup, *mmio_call;
 	uint32_t linked_hook;           /* blocks are never linked to this pc */
 	/* the match hook blocks are translated for: only a block of its own runs its pc, checking first */
 	uint32_t match_pc;
@@ -152,6 +157,7 @@ struct jit {
 	uint8_t *host_prot;             /* per host page of the view */
 	struct jit_site *sites;         /* in order of address */
 	uint32_t nsites;
+	uint32_t fault_ea;              /* guest address of the last fault (set with st.fault_site) */
 
 	unsigned long translated, invalidations, flushes, links, exits[EXIT_KINDS], faults, slowed, protects;
 	uint64_t translated_insns;
@@ -217,9 +223,25 @@ struct slow_store {
 	struct cache_state cs;
 	bool update;                    /* rA is still to update (from w1) */
 	unsigned ra;
+	bool io;                        /* one for the mmio hook, if not writable (see slow_ios()) */
+	uint32_t insn, pc;
+};
+
+/*
+ * Out-of-line path of a load or store to a page that isn't readable or
+ * writable (a device's, perhaps), offered to the mmio hook (slow_ios())
+ */
+struct slow_io {
+	uint32_t *at;                   /* the TBZ to it */
+	uint32_t *rejoin;               /* after the instruction */
+	unsigned k, bytes;
+	bool write, reload_ea;          /* (the store's update of rA, after rejoin, needs the EA in w1) */
+	uint32_t insn, pc;
+	struct cache_state before, after;
 };
 
 #define MAX_SLOW_STORES 160u
+#define MAX_SLOW_IOS 160u
 #define MAX_LINKS 160u
 #define MAX_SLOW_FP MAX_BLOCK_INSNS
 #define MAX_FP_EXITS 16u
@@ -256,12 +278,15 @@ struct tx {
 	bool too_far;                   /* a branch to out-of-line code is out of range */
 	unsigned max_insns;
 	uint32_t pc;                    /* instruction being translated */
+	uint32_t insn;                  /* ... its word */
 	unsigned k;                     /* its index in the block */
 	uint32_t pcs[MAX_BLOCK_INSNS + 1];      /* the pc of each (the block may follow branches) */
 	struct fixup fix[MAX_FIXUPS];
 	unsigned nfix;
 	struct slow_store slow[MAX_SLOW_STORES];
 	unsigned nslow;
+	struct slow_io io[MAX_SLOW_IOS];
+	unsigned nio;
 	struct link links[MAX_LINKS];
 	unsigned nlinks;
 	struct slow_fp fps[MAX_SLOW_FP];
@@ -685,6 +710,16 @@ static bool fast_access(const struct tx *t)
 	return !pg || !(pg->slow[w / 64] >> (w % 64) & 1);
 }
 
+/* Whether its checked accesses have a path to the mmio hook (see slow_ios()) */
+static bool io_access(const struct tx *t)
+{
+	if (!t->j->fastmem)
+		return true;
+	const struct jit_page *pg = t->j->pages[t->pc >> MEM_PAGE_SHIFT];
+	unsigned w = (t->pc >> 2) & (PAGE_WORDS - 1);
+	return pg && pg->io[w / 64] >> (w % 64) & 1;
+}
+
 /*
  * Loads and stores of `1 << size` bytes. EA = (rA|0, or rA for update) +
  * (rB or d), in w1; a store's value goes byte-swapped into w4/x4. An
@@ -694,14 +729,30 @@ static bool fast_access(const struct tx *t)
  * memory, where the host faults if the guest's page flags say no (or the
  * page holds translated code, for stores). Instructions that faulted that
  * way before, or all without fastmem, test page flags instead and access
- * memory through R_CBASE: loads leave for the interpreter unless the page
- * (and the next) is readable; stores take a slow path (slow_stores())
- * unless MEM_FAST_W says the page is plain writable memory.
+ * memory through R_CBASE: loads take a slow path (slow_ios()) unless the
+ * page (and the next) is readable; stores take one (slow_stores()) unless
+ * MEM_FAST_W says the page is plain writable memory.
  */
 static void load_single(struct tx *t, unsigned r);
 static void store_single(struct tx *t, unsigned r);
 
 enum { LS_GPR, LS_DOUBLE, LS_SINGLE };          /* load_store()'s register kinds */
+
+/*
+ * A TBZ on bit `bit` of w9 (page flags) to an out-of-line path for the
+ * mmio hook (see slow_ios()) for instruction k; NULL, and nothing emitted,
+ * if there's no room.
+ */
+static struct slow_io *add_io(struct tx *t, unsigned bit, unsigned k, uint32_t insn, uint32_t pc, unsigned size,
+			      bool write, const struct cache_state *before)
+{
+	if (t->nio >= MAX_SLOW_IOS)
+		return NULL;
+	struct slow_io *io = &t->io[t->nio++];
+	*io = (struct slow_io){ t->p, NULL, k, 1u << size, write, false, insn, pc, *before, *before };
+	emit(t, a64_tbz(false, 9, bit, 0));
+	return io;
+}
 
 static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool update, bool indexed, unsigned fp,
 		       unsigned rd_, unsigned ra, unsigned rb, int32_t d)
@@ -734,10 +785,15 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 		emit(t, a64_bitfield(0, A64_UBFM, 9, 1, MEM_PAGE_SHIFT, 31));
 		emit(t, a64_ldst_uxtw(0, true, 9, R_FLAGS, 9));
 	}
+	struct slow_io *io = NULL;
 	if (load) {
 		struct cache_state before = t->rc;              /* a fault leaves the registers as they are here */
-		if (!fast)
-			exit_if_bit(t, false, 9, size ? FAST_R_BIT : 0);       /* MEM_FAST_R / MEM_R */
+		if (!fast) {
+			unsigned bit = size ? FAST_R_BIT : 0;  /* MEM_FAST_R / MEM_R */
+			if (fp != LS_GPR || !io_access(t) ||
+			    !(io = add_io(t, bit, t->k, t->insn, t->pc, size, false, &before)))
+				exit_if_bit(t, false, 9, bit);
+		}
 		unsigned v = fp ? 2 : wr(t, rd_);
 		if (fast)
 			add_site(t, &before);
@@ -762,7 +818,8 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 		struct slow_store *slow = NULL;
 		if (t->nslow < MAX_SLOW_STORES) {
 			slow = &t->slow[t->nslow++];
-			*slow = (struct slow_store){ t->p, NULL, t->k, size, t->rc, update, ra };
+			*slow = (struct slow_store){ t->p, NULL, t->k, size, t->rc, update, ra, fp == LS_GPR && io_access(t),
+						     t->insn, t->pc };
 			emit(t, a64_tbz(false, 9, FAST_W_BIT, 0));
 		} else {
 			exit_if_bit(t, false, 9, FAST_W_BIT);
@@ -773,6 +830,10 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 	}
 	if (update)
 		mov_reg(t, wr(t, ra), 1);
+	if (io) {
+		io->rejoin = t->p;
+		io->after = t->rc;
+	}
 }
 
 /* The host address of the EA in w1 into x10, if the n bytes there are accessible within one page */
@@ -816,7 +877,8 @@ static void load_store_multiple(struct tx *t, bool load, unsigned rs, unsigned r
 
 /*
  * Stores that MEM_FAST_W (in w9) turned away. Unless the page is writable
- * and the store stays within it, the interpreter executes the instruction.
+ * and the store stays within it, the mmio hook may do it (slow_ios()), or
+ * the interpreter executes the instruction.
  * Then, if the page holds no translated code, or the word stored to isn't
  * one that code was translated from (the page's bitmap says), the store
  * just happens. Otherwise a host function stores w4/x4 at the EA in w1,
@@ -833,7 +895,13 @@ static void slow_stores(struct tx *t)
 		patch(t, ss->at, FIX_IMM14, t->p);
 		t->k = ss->k;
 		t->rc = ss->cs;
-		exit_if_bit(t, false, 9, 1);                                    /* MEM_W */
+		struct slow_io *io = NULL;
+		if (ss->io && (io = add_io(t, 1, ss->k, ss->insn, ss->pc, ss->size, true, &ss->cs))) {     /* MEM_W */
+			io->rejoin = ss->rejoin;
+			io->reload_ea = ss->update;
+		} else {
+			exit_if_bit(t, false, 9, 1);
+		}
 		if (ss->size) {
 			ubfx(t, 10, 1, 0, MEM_PAGE_SHIFT);
 			emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 10, MEM_PAGE_SIZE - bytes));
@@ -898,6 +966,50 @@ static void slow_stores(struct tx *t)
 				patch(t, to_plain[k], FIX_IMM14, t->p);
 		emit(t, a64_ldst_uxtw(ss->size, false, 4, R_CBASE, 1));
 		branch_to(t, ss->rejoin);
+	}
+}
+
+/*
+ * Loads and stores (to and from GPRs) that page flags turned away: the
+ * page isn't readable, or writable. A host function (mmio() below) offers
+ * the access to the mmio hook, as the interpreter would, with everything
+ * written back; then all registers are reloaded, as the hook may have
+ * changed any. If it didn't take it, the interpreter executes the
+ * instruction; if it did, the block goes on after it, or leaves there
+ * (as mmio() says: for the kernel, or because code changed).
+ */
+static void slow_ios(struct tx *t)
+{
+	for (unsigned s = 0; s < t->nio && !t->overflow; s++) {
+		struct slow_io *io = &t->io[s];
+		patch(t, io->at, FIX_IMM14, t->p);
+		t->k = io->k;
+		rc_store(t, &io->before);
+		mov_reg(t, 3, 1);
+		mov32(t, 1, io->insn);
+		mov32(t, 2, io->pc);
+		mov32(t, 4, io->bytes | (unsigned)io->write << 8);
+		emit(t, a64_addsub_imm(1, 1, 0, 5, R_BUDGET, io->k));         /* instructions left, this one included */
+		emit(t, a64_b(true, (int32_t)((t->j->mmio_call - t->p) * 4)));
+		emit(t, a64_ldst_imm(3, true, R_CBASE, R_STATE, (unsigned)offsetof(struct jit_state, membase)));
+		rc_reset(t);                            /* (all written back) */
+		exit_if_zero(t, false, 0);
+		emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 0, PPC_MMIO_DONE));
+		uint32_t *stop = t->p;
+		emit(t, a64_bcond(A64_NE, 0));
+		for (unsigned c = 0; c < NCACHE; c++)
+			if (io->after.guest[c] >= 0)
+				ld32(t, cache_reg[c], guest_off((unsigned)io->after.guest[c]));
+		if (io->reload_ea)
+			ld32(t, 1, OFF(fault_addr));
+		branch_to(t, io->rejoin);
+		if (!t->overflow)
+			patch(t, stop, FIX_IMM19, t->p);
+		emit(t, a64_addsub_imm(1, 1, 0, R_BUDGET, R_BUDGET, io->k + 1));
+		mov32(t, 0, io->pc + 4);
+		st32(t, 0, OFF(pc));
+		emit(t, a64_ldst_imm(2, true, 1, R_STATE, (unsigned)offsetof(struct jit_state, mmio_exit)));
+		branch_to(t, t->j->exit);
 	}
 }
 
@@ -2410,8 +2522,10 @@ static void code_changed(void *ctx, uint32_t addr, uint32_t len)
 	 * over old ones all the time, and many run only a few times.
 	 */
 	if (pg) {
-		for (unsigned k = first / 64; k <= last / 64; k++)
+		for (unsigned k = first / 64; k <= last / 64; k++) {
 			pg->slow[k] &= ~word_mask(k, first, last);
+			pg->io[k] &= ~word_mask(k, first, last);
+		}
 		memset(pg->runs + first, 0, last - first + 1);
 	}
 	if (pg && pg->followed) {               /* "ROM" changed: start afresh (never seen) */
@@ -2507,6 +2621,34 @@ static void code_store(struct jit_state *st, uint32_t ea, uint64_t value, uint32
 	struct jit *j = (struct jit *)st;
 	mem_invalidate(j->mem, ea, 1u << size);
 	memcpy(mem_ptr(j->mem, ea), &value, 1u << size);        /* (a little-endian host) */
+}
+
+/*
+ * A load or store in generated code that page flags turned away (see
+ * slow_ios()), with `left` instructions left in the run, this one
+ * included: if it faults as the interpreter's would, the mmio hook may do
+ * it. Unless that goes on (PPC_MMIO_DONE), the interpreter takes it, or
+ * the block is left after it: for the kernel (EXIT_MMIO), or because code
+ * changed, perhaps the block's own (EXIT_MISS: C looks for the next).
+ * `access` is the size in bytes, | 0x100 for a store.
+ */
+static unsigned mmio(struct ppc_cpu *c, uint32_t insn, uint32_t pc, uint32_t ea, uint32_t access, uint64_t left)
+{
+	struct jit *j = c->jit;
+	bool write = access >> 8;
+	if (!c->mmio || mem_ok(c->mem, ea, access & 0xFF, write ? MEM_W : MEM_R))
+		return PPC_MMIO_NO;
+	c->pc = pc;
+	c->exit_insn = insn;
+	c->fault_addr = ea;
+	c->fault_write = write;
+	int r = ppc_mmio(c, j->st.entry_budget - left);
+	if (r == PPC_MMIO_DONE && j->st.code_changed) {
+		j->st.mmio_exit = EXIT_MISS;
+		return PPC_MMIO_STOP;
+	}
+	j->st.mmio_exit = EXIT_MMIO;
+	return (unsigned)r;
 }
 
 /*
@@ -2607,6 +2749,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	t.overflow = false;
 	t.nfix = 0;
 	t.nslow = 0;
+	t.nio = 0;
 	t.nlinks = 0;
 	t.nfps = 0;
 	t.nbexits = 0;
@@ -2641,6 +2784,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 			pc = target;
 			continue;
 		}
+		t.insn = i;
 		int r = insn(&t, i);
 		if (r == STOPPED) {
 			add_fixup(&t, FIX_IMM19);       /* straight to the side exit */
@@ -2669,6 +2813,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 
 	rc_reset(&t);                   /* (what follows is out of line) */
 	slow_stores(&t);
+	slow_ios(&t);
 	slow_fps(&t);
 	branch_exits(&t);
 
@@ -2860,6 +3005,7 @@ static void fault_handler(int sig, siginfo_t *si, void *ctx)
 		if (lo < j->nsites && j->sites[lo].at == at) {
 			set_context_pc(ctx, j->code + j->sites[lo].stub);
 			j->st.fault_site = lo + 1;
+			j->fault_ea = (uint32_t)(addr - (uintptr_t)j->view);
 			j->faults++;
 			return;
 		}
@@ -2987,14 +3133,21 @@ static void fastmem_free(struct jit *j)
 	free(j->host_prot);
 }
 
-/* A fastmem access faulted: its instruction gets checks, in a new translation of its block */
+/*
+ * A fastmem access faulted: its instruction gets checks, in a new
+ * translation of its block; and if the page wasn't even readable (a
+ * device's, perhaps), the way to the mmio hook too.
+ */
 static void slow_down(struct jit *j, uint32_t site)
 {
 	const struct jit_site *s = &j->sites[site];
 	struct jit_page *pg = get_page(j, s->pc >> MEM_PAGE_SHIFT);
 	unsigned w = (s->pc >> 2) & (PAGE_WORDS - 1);
-	if (pg)
+	if (pg) {
 		pg->slow[w / 64] |= 1ull << (w % 64);
+		if (!(j->mem->pageflags[j->fault_ea >> MEM_PAGE_SHIFT] & MEM_R))
+			pg->io[w / 64] |= 1ull << (w % 64);
+	}
 	drop_block(j, &j->blocks[s->block]);
 	j->slowed++;
 }
@@ -3082,6 +3235,17 @@ static void build_stubs(struct jit *j)
 	emit(&t, a64_movw(0, A64_MOVZ, 1, EXIT_LINK, 0));
 	branch_to(&t, j->exit);
 
+	/* mmio() for slow_ios(), called with BL (its arguments from w1 on set, cached registers written back) */
+	j->mmio_call = t.p;
+	emit(&t, a64_ldst_imm(3, false, 30, R_STATE, (unsigned)offsetof(struct jit_state, mmio_return)));
+	fixed_store(&t, NFIXED);
+	emit(&t, a64_logic(1, A64_ORR, 0, 0, A64_ZR, R_CPU, A64_LSL, 0));
+	emit(&t, a64_ldst_imm(3, true, 30, R_STATE, (unsigned)offsetof(struct jit_state, mmio)));
+	emit(&t, a64_blr(30));
+	fixed_load(&t, NFIXED);
+	emit(&t, a64_ldst_imm(3, true, 30, R_STATE, (unsigned)offsetof(struct jit_state, mmio_return)));
+	emit(&t, a64_ret());
+
 	__builtin___clear_cache((char *)j->code, (char *)t.p);
 	j->blocks_start = j->code_free = t.p;
 }
@@ -3141,6 +3305,7 @@ struct jit *jit_create(struct mem *mem)
 		.step = step,
 		.kcall = kcall,
 		.code_store = code_store,
+		.mmio = mmio,
 		.pages = j->pages,
 		.fastbase = mem->base,
 	};
@@ -3256,6 +3421,8 @@ enum ppc_exit jit_run(struct jit *j, struct ppc_cpu *c, uint64_t budget)
 			return PPC_EXIT_SC;
 		case EXIT_HOSTCALL:
 			return PPC_EXIT_HOSTCALL;
+		case EXIT_MMIO:
+			return PPC_EXIT_MMIO;
 		case EXIT_LINK: {
 			uint32_t *site = j->st.link_site;
 			unsigned long flushes = j->flushes;
@@ -3455,11 +3622,12 @@ void jit_print_stats(const struct jit *j, FILE *f)
 	if (prof.j == j)
 		prof_report(f);
 	fprintf(f, "jit: %lu blocks (%llu instructions, %zu KB of code), %lu links, %lu invalidations, %lu flushes; "
-		"exits: %lu miss, %lu budget, %lu interpreter, %lu hook, %lu link, %lu kernel\n",
+		"exits: %lu miss, %lu budget, %lu interpreter, %lu hook, %lu link, %lu kernel, %lu device\n",
 		j->translated, (unsigned long long)j->translated_insns,
 		(size_t)(j->code_free - j->blocks_start) * 4 / 1024, j->links, j->invalidations, j->flushes,
 		j->exits[EXIT_MISS], j->exits[EXIT_BUDGET], j->exits[EXIT_INTERP], j->exits[EXIT_HOOK],
-		j->exits[EXIT_LINK], j->exits[EXIT_TRAP] + j->exits[EXIT_SC] + j->exits[EXIT_HOSTCALL]);
+		j->exits[EXIT_LINK], j->exits[EXIT_TRAP] + j->exits[EXIT_SC] + j->exits[EXIT_HOSTCALL],
+		j->exits[EXIT_MMIO]);
 	if (j->view)
 		fprintf(f, "jit: fastmem%s: %lu faults, %lu instructions checked since, %lu protection changes\n",
 			j->fastmem ? "" : " (off)", j->faults, j->slowed, j->protects);

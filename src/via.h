@@ -56,7 +56,11 @@ void via_set_time(struct via *v, uint64_t ticks);
 uint64_t via_next_event(const struct via *v);
 
 void via_raise(struct via *v, uint8_t bits);
-bool via_irq(const struct via *v);
+
+static inline bool via_irq(const struct via *v)
+{
+	return (v->ifr & v->ier & 0x7F) != 0;
+}
 
 /* Port B as the outside world sees it: driven outputs, inputs elsewhere. */
 uint8_t via_port_b(const struct via *v);

@@ -436,6 +436,25 @@ the kernel); 8 onwards as the boot progresses.
   `--rom MOS91.rom`. `rom info 91.iso` (and the other `rom` commands) read
   a disk image's the same way. `tests/test_hfsread.c` covers the reader.
 
+### 12. Shared folder
+
+- **Status:** done. `--share DIR` attaches a host folder as an HFS volume
+  (`src/share.c`): metadata made in memory by `hfs_build()` (`src/hfs.c`,
+  now with folders, B-trees of any depth, map nodes and Mac OS's name
+  order), file data read from the host's files on demand, Mac OS's writes
+  in an overlay; written back at the end of the run if Mac OS put the
+  volume away, the host's deleted or replaced files moved to
+  `DIR/.syshm-recovery/<date>/`, else the volume kept there as an image.
+  The disk driver takes a `struct disk_backend` (read and write callbacks)
+  in place of a file. `hfsread` reads through a callback too, and walks
+  the whole catalog (`hfsread_walk()`). `tests/test_share.c` covers names,
+  volumes (checked with hfsutils, and on Linux Apple's `fsck_hfs` from
+  hfsprogs), and writing back. 8.5 and 9.1 from their CDs and 8.6 from a
+  disk show the volume; Finder copies, new folders, renames, moves,
+  deletions and a SimpleText save came back to the folder. Open: writing
+  back when the volume is ejected, and offering the folder again as new
+  media (needs the disk driver's removable media).
+
 ## Findings
 
 Facts later tasks need, added as they are found.
@@ -911,3 +930,61 @@ Facts later tasks need, added as they are found.
   before. 0.28 million still exit (devices dirty, or the limit passed).
   9.1: kernel exits 8.33 → 1.53 million, host time 1.43 → 1.32 s
   (main 1.50); 8.5: 2.83 → 1.11 million, 1.03 → 1.02 s.
+- **Device registers in place:** a 4-billion-instruction 8.5 CD run made
+  1.64 million device register accesses, each a DSI exit: 874,000 reads
+  of the USB controller's HcFmNumber (`lwz` at `0xFFE22A4C`, MOS.rom's
+  OHCI driver polling the frame number, from 700 million on), 720,000 of
+  VIA1 (the Time Manager, through the 68k emulator's `lbz(u)x`/`stbx`:
+  T2CL and T2CH read 163,000 and 161,000 times, written 80,000 and
+  160,000, IFR read 117,000, IER 33,000, port B 23,000) and a few
+  thousand of SCC, DBDMA and sound registers; once idle, 18,000 VIA and
+  27,000 USB per 100 million instructions (instruction time makes those
+  rates about 150 times real time's). 8.5 and 8.6 installed: 0.71 and
+  0.77 million, nearly all VIA; 9.1's CD 17,000. On an M5 an access cost
+  about 50 ns with its exit. The engines now offer a faulting load or
+  store to the kernel's `device_hook()` (`cpu->mmio`), which does what
+  the loop does at that exit (devices brought up to date as at any exit,
+  then for the access; the access; interrupts; the next device event)
+  and goes on, unless the loop would do more: interrupts changed (pending,
+  posted or cleared), a preemption, software interrupt or task switch
+  waiting, the MP tick due, a Cuda shutdown or restart. Then the run
+  stops right after the access (`PPC_EXIT_MMIO`, 2% of accesses) and the
+  loop does the rest, without the exit's own device update. Two things
+  had to be exactly as at the exit: an access on a run's last
+  instruction still exits, because after that exit the loop computes its
+  next sync point from the count past it and skips the one there (an
+  old quirk; done in place, the access would leave the sync point to be
+  serviced, though the boots came out the same that way too); and
+  `in_place()` runs again after each access, as before the loop's next
+  run (without it, kernel calls in place ran past the next device event
+  as the access had moved it, and the boot changed). Off with `clock`
+  (each exit sets the time base). Generated code has the hook's path only
+  for instructions whose fastmem fault was on an unmapped page (every
+  checked access with fastmem off): with it for every checked access,
+  code grew 6-10%. The bookkeeping was 30 ns an access; looking the
+  region up and decoding once, no DBDMA poll with nothing to poll, no
+  scan of interrupt levels with nothing pending, and inline line and
+  pending helpers (VIA, USB, Mac I/O) brought it to 23 ns. 8.5 CD:
+  device exits 1.64 million → 36,000, host time 1.00 → 0.96 s; 8.5
+  installed 0.87 → 0.86 s, 8.6 1.24 → 1.21 s, 9.1 CD 1.04 → 1.03 s
+  (medians of 9 alternating runs on a shared machine, ±1-2%).
+- **Mac OS and a shared volume's MDB:** 8.5, 8.6 and 9.1 write the MDB
+  with the unmounted attribute (`drAtrb` bit 8) clear as their first write
+  after mounting a volume, before anything else, and with it set when they
+  put it away (Shut Down, Restart, Put Away). A volume that was written
+  but whose MDB doesn't say so wasn't put away (the run ended under it).
+  The Finder makes `Desktop DB` and `Desktop DF` on every writable volume
+  it mounts, and Desktop Printing (8.6) an invisible `DesktopPrinters DB`;
+  the Trash and the `Desktop Folder` come when used.
+- **The catalog's order of names** is Apple's FastRelString (the HFS code
+  in Apple's open-source `hfs`, `UCStringCompareData.h`'s `gCompareTable`):
+  case-insensitive, each accented letter after its plain one, a
+  non-breaking space equal to a space. hfsutils' `hfs_charorder` and
+  Linux's `caseorder` order the same (checked for all 65536 pairs);
+  `hfs.c` keeps the ranks. Linux's hfsprogs `fsck.hfs` (Apple's
+  fsck_hfs 540) checks HFS volumes, map nodes and order included;
+  hfsutils' `hfsck -n` fails to read any image, so the test runs it
+  without `-n` on a copy.
+- **Keys in input scripts:** in 9.1's Finder, Return held for 10 million
+  instructions didn't start editing an icon's name; held for 1 million it
+  does (8.5 took Command-D held 20 million).

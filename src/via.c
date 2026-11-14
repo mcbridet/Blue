@@ -77,11 +77,6 @@ void via_raise(struct via *v, uint8_t bits)
 	v->ifr |= bits & 0x7F;
 }
 
-bool via_irq(const struct via *v)
-{
-	return (v->ifr & v->ier & 0x7F) != 0;
-}
-
 uint8_t via_port_b(const struct via *v)
 {
 	return (uint8_t)((v->orb & v->ddrb) | (v->in_b & ~v->ddrb));
