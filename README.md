@@ -35,9 +35,11 @@ Linux today; other hosts / bare metal later
 does Mac OS 9.0 (see below).** Both also boot straight from their CDs.
 Mac OS 8.6 works too, on the same ROM file and NanoKernel interface. Mouse
 and keyboard work in a window or from scripted input, and sound plays
-through the host (in real time). Bugdom (QuickDraw 3D, Game Sprockets) runs,
-with music, accelerated by the guest tools' 3D engine: about 100 frames per
-second in play on an M1 Max. The built-in Ethernet reaches the host's
+through the host (in real time). Games run accelerated by the guest tools'
+3D engine, on the host's GPU: Unreal Tournament plays, and Bugdom (QuickDraw
+3D, Game Sprockets) reached about 100 frames per second in play on an M1
+Max, with music (it needs URL Access, which comes with Mac OS 8.6 and
+later). The built-in Ethernet reaches the host's
 network, so Internet Explorer loads web pages.
 
 ```
@@ -160,19 +162,16 @@ Some things only code inside Mac OS can do. `--tools` attaches a small
 read-only volume, "syshm Tools", holding it (`syshm tools create FILE` writes
 the same volume to a file):
 
-- **syshm Helper**: drag it onto the System Folder (the Finder puts it in
+- **syshm Enhancements**: drag it onto the System Folder (the Finder puts it in
   Extensions) and restart. From then on, resizing the window changes the
   screen's resolution to match once the window has stopped changing (while
   it's being dragged, the window scales the screen), and the Finder lays out
   the desktop again. A
   resolution chosen in Mac OS (Monitors & Sound, or the Control Strip)
-  resizes the window instead. Without the helper, the window scales the
+  resizes the window instead. Without it, the window scales the
   screen. On high-density displays a screen pixel is a point, so Mac OS
   appears at the size of other programs; with `--integer-scale` it is a
   whole number of pixels instead (2 at 1.7x), for the crispest pixels.
-- **URL Access stub**: a shared library named URLAccessLib, for programs
-  that won't load without Mac OS 9's URL Access (Bugdom checks its
-  registration with it). Every download fails, as with no network.
 - **syshm 3D Engine**: a QuickDraw 3D RAVE drawing engine (put it in
   Extensions). QuickDraw 3D's interactive renderer and RAVE games then find
   an accelerator: it reports itself as an ATI engine (vendor 1, engine 5),
@@ -210,7 +209,8 @@ the same volume to a file):
 
 Like the drivers, these are generated code fragments whose logic runs in
 syshm through host calls (`src/tools.c`). Bugdom's setup, for the record:
-QuickDraw 3D 1.6, Game Sprockets, the URL Access stub and the 3D engine in
+QuickDraw 3D 1.6, Game Sprockets, URL Access (part of Mac OS 8.6 and later;
+Bugdom won't load without it) and the 3D engine in
 Extensions; it asks for a registration code, which shareware-era copies
 came with. Unreal Tournament (the Mac CD, 4.32) needs only the 3D engine in
 Extensions: its first-time configuration offers RAVE only for an ATI engine
@@ -397,8 +397,8 @@ lacks: syshm says to install it again from the tools volume.
   - Display: 640x480 to 1280x1024 at 1-32 bits per pixel, CLUT and gamma
     calls, timer-driven VBL interrupts (which the cursor needs). Two more
     modes take the host window's size on request (up to what the 16 MB
-    framebuffer holds at 32 bits per pixel), for the guest tools' helper to
-    switch between; each is listed only while in use.
+    framebuffer holds at 32 bits per pixel), for syshm Enhancements (a guest
+    tool) to switch between; each is listed only while in use.
   - Disk: host files as drives (`--disk`, writable; `--cdrom`, read-only;
     the 8.5 CD's System refuses to start from a writable drive, as from a
     copy of the CD).

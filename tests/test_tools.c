@@ -213,10 +213,10 @@ static void test_volume(void)
 	uint32_t al_bl_st = be16(mdb + 28), al_siz = be32(mdb + 20);
 	off_t cat = (off_t)al_bl_st * 512 + (off_t)be16(mdb + 150) * al_siz;
 	CHECK(pread(fd, node, 512, cat + 512) == 512);
-	const uint8_t *rec = NULL;                              /* the helper's catalog record */
+	const uint8_t *rec = NULL;                              /* syshm Enhancements' catalog record */
 	for (unsigned k = 0; k < be16(node + 10) && !rec; k++) {
 		const uint8_t *r = node + be16(node + 510 - 2 * k);
-		if (r[6] == 12 && !memcmp(r + 7, "syshm Helper", 12))
+		if (r[6] == 18 && !memcmp(r + 7, "syshm Enhancements", 18))
 			rec = r;
 	}
 	CHECK(rec != NULL);
@@ -224,18 +224,18 @@ static void test_volume(void)
 		close(fd);
 		return;
 	}
-	const uint8_t *f = rec + ((7 + 12 + 1) & ~1);
+	const uint8_t *f = rec + ((7 + 18 + 1) & ~1);
 	CHECK_EQ(be32(f + 4), FOURCC('a', 'p', 'p', 'e'));
 	uint8_t pef[16], fork[1024];
 	CHECK(pread(fd, pef, 16, (off_t)al_bl_st * 512 + (off_t)be16(f + 74) * al_siz) == 16);
 	CHECK(!memcmp(pef, "Joy!peffpwpc", 12));
-	CHECK_EQ(be16(mdb + 12), 3);                            /* and the URL Access stub, the 3D engine */
+	CHECK_EQ(be16(mdb + 12), 2);                            /* and the 3D engine */
 	uint32_t rlen = be32(f + 36), len = 0;
 	CHECK(rlen <= sizeof fork);
 	CHECK(pread(fd, fork, rlen, (off_t)al_bl_st * 512 + (off_t)be16(f + 86) * al_siz) == (ssize_t)rlen);
 	const uint8_t *cfrg = find_resource(fork, FOURCC('c', 'f', 'r', 'g'), 0, &len);
 	CHECK(cfrg && !memcmp(cfrg + 32, "pwpc", 4) && cfrg[32 + 22] == 1 && cfrg[32 + 23] == 1);
-	CHECK(cfrg && !memcmp(cfrg + 32 + 43, "syshm Helper", 12));
+	CHECK(cfrg && !memcmp(cfrg + 32 + 43, "syshm Enhancements", 18));
 	const uint8_t *size = find_resource(fork, FOURCC('S', 'I', 'Z', 'E'), -1, &len);
 	CHECK(size && (be16(size) & 0x0400));                  /* background only */
 	close(fd);

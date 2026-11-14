@@ -41,7 +41,7 @@ static size_t make_cfrg(uint8_t *p, unsigned usage, uint32_t stack, const char *
 	return 32 + member;
 }
 
-/* ---- syshm Helper ---------------------------------------------------------- */
+/* ---- syshm Enhancements ---------------------------------------------------- */
 
 enum { IMP_WAIT_NEXT_EVENT, IMP_GET_MAIN_DEVICE, IMP_DM_SET_DISPLAY_MODE, IMP_COUNT };
 
@@ -146,45 +146,17 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v)
 	}
 }
 
-/* ---- URL Access stub ------------------------------------------------------------ */
-
-#define URL_ACCESS_NOT_AVAILABLE (-30787)       /* kURLAccessNotAvailableError */
-
-static const struct ndrv_export url_stub_exports[] = {
-	{ .name = "URLSimpleDownload", .entry = 0 },
-};
-
-static size_t build_url_stub(uint8_t *out, size_t size)
-{
-	const struct ndrv_spec spec = {
-		.kind = FRAG_LIBRARY,
-		.entries = 1,
-		.init_entry = -1,
-		.exports = url_stub_exports,
-		.export_count = sizeof url_stub_exports / sizeof url_stub_exports[0],
-		.hostcall = HOSTCALL_TOOLS_URL_STUB,
-	};
-	struct ndrv_layout layout;
-	return ndrv_build(&spec, out, size, &layout);
-}
-
-void url_stub_call(struct ndrv_call *c)
-{
-	ndrv_finish(c, (uint32_t)URL_ACCESS_NOT_AVAILABLE);   /* URLSimpleDownload(): no network here */
-}
-
 /* ---- the volume -------------------------------------------------------------- */
 
 int tools_create(const char *path)
 {
-	static uint8_t helper[8192], helper_rsrc[1024], stub[4096], stub_rsrc[1024], engine[8192], engine_rsrc[1024];
+	static uint8_t helper[8192], helper_rsrc[1024], engine[8192], engine_rsrc[1024];
 	struct ndrv_layout layout;
 	size_t helper_len = build_helper(helper, sizeof helper, &layout);
-	size_t stub_len = build_url_stub(stub, sizeof stub);
 	size_t engine_len = rave_build_engine(engine, sizeof engine, &layout);
 
 	uint8_t cfrg[128], size_res[10];
-	size_t cfrg_len = make_cfrg(cfrg, CFRG_APPLICATION, 32u << 10, "syshm Helper");
+	size_t cfrg_len = make_cfrg(cfrg, CFRG_APPLICATION, 32u << 10, "syshm Enhancements");
 	put_be16(size_res, SIZE_CAN_BACKGROUND | SIZE_ONLY_BACKGROUND | SIZE_32_BIT | SIZE_HIGH_LEVEL_EVENTS);
 	put_be32(size_res + 2, 96u << 10);      /* preferred and minimum partition */
 	put_be32(size_res + 6, 96u << 10);
@@ -194,25 +166,18 @@ int tools_create(const char *path)
 	};
 	size_t rsrc_len = rsrc_build(res, 2, helper_rsrc, sizeof helper_rsrc);
 
-	uint8_t stub_cfrg[128];
-	size_t stub_cfrg_len = make_cfrg(stub_cfrg, CFRG_LIBRARY, 0, "URLAccessLib");
-	const struct rsrc stub_res[] = { { FOURCC('c', 'f', 'r', 'g'), 0, stub_cfrg, (uint32_t)stub_cfrg_len } };
-	size_t stub_rsrc_len = rsrc_build(stub_res, 1, stub_rsrc, sizeof stub_rsrc);
-
 	/* RAVE loads 'shlb' files of creator 'tnsl' from the Extensions folder */
 	uint8_t engine_cfrg[128];
 	size_t engine_cfrg_len = make_cfrg(engine_cfrg, CFRG_LIBRARY, 0, "syshm 3D Engine");
 	const struct rsrc engine_res[] = { { FOURCC('c', 'f', 'r', 'g'), 0, engine_cfrg, (uint32_t)engine_cfrg_len } };
 	size_t engine_rsrc_len = rsrc_build(engine_res, 1, engine_rsrc, sizeof engine_rsrc);
-	if (!helper_len || !rsrc_len || !stub_len || !stub_rsrc_len || !engine_len || !engine_rsrc_len)
+	if (!helper_len || !rsrc_len || !engine_len || !engine_rsrc_len)
 		return -1;
 
 	const struct hfs_file files[] = {
-		{ "syshm Helper", FOURCC('a', 'p', 'p', 'e'), FOURCC('s', 'y', 'H', 'p'), 0, 40, 60,
+		{ "syshm Enhancements", FOURCC('a', 'p', 'p', 'e'), FOURCC('s', 'y', 'H', 'p'), 0, 40, 60,
 		  helper, helper_rsrc, (uint32_t)helper_len, (uint32_t)rsrc_len },
-		{ "URL Access stub", FOURCC('s', 'h', 'l', 'b'), FOURCC('s', 'y', 'H', 'p'), 0, 40, 160,
-		  stub, stub_rsrc, (uint32_t)stub_len, (uint32_t)stub_rsrc_len },
-		{ "syshm 3D Engine", FOURCC('s', 'h', 'l', 'b'), FOURCC('t', 'n', 's', 'l'), 0, 40, 260,
+		{ "syshm 3D Engine", FOURCC('s', 'h', 'l', 'b'), FOURCC('t', 'n', 's', 'l'), 0, 40, 160,
 		  engine, engine_rsrc, (uint32_t)engine_len, (uint32_t)engine_rsrc_len },
 	};
 	int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);

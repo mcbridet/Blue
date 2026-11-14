@@ -500,7 +500,7 @@ makes no context a failure:
 By hand, with Bugdom:
 
 - `SYSHM_RAVE_FPS=1` with and without `--no-gpu`, at 640x480 and at
-  1024x768 or more (the guest tools' helper lets the window set the size).
+  1024x768 or more (the guest tools' syshm Enhancements lets the window set the size).
 - The same scripted instruction-time run with and without `SYSHM_GPU=1`,
   comparing screenshots (for example with ImageMagick's
   `compare -metric AE`): differences should be at edges only.

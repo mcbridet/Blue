@@ -126,7 +126,7 @@
         <div class="doc how">
           <p>On a real Power Mac only the NanoKernel runs in supervisor mode. The 68k emulator, the Toolbox, applications and drivers all run in PowerPC user mode and reach the kernel through a small interface.</p>
           <p>syshm runs all of that Apple code unmodified, as the guest, and supplies everything below the interface as an ordinary program on the host.</p>
-          <p>Where Mac OS looks to the machine for drivers, syshm puts its own in the device tree, as a Mac’s firmware would. They’re thin: the work is done on the host. The guest tools, on a disk of their own, work the same way: a helper that resizes the screen with the window, a 3D engine and a URL Access stub.</p>
+          <p>Where Mac OS looks to the machine for drivers, syshm puts its own in the device tree, as a Mac’s firmware would. They’re thin: the work is done on the host. The system helpers, optional extras on a disk of their own, work the same way: guest enhancements that make the screen follow the window, and a 3D engine.</p>
           <figure class="arch">
             <div class="zone guest">
               <p class="zone-label">Guest</p>
@@ -140,9 +140,14 @@
                 <p class="abox-foot">Apple code, unmodified, in PowerPC user mode</p>
               </div>
               <div class="abox syshm guest-syshm">
+                <p class="abox-title">Drivers</p>
+                <span class="part">Display, disks and CDs, Ethernet</span>
+                <p class="abox-foot">Built in, in the device tree</p>
+              </div>
+              <div class="abox syshm guest-syshm">
                 <p class="abox-title">System helpers</p>
-                <span class="part svc"><strong>Drivers</strong> Display, disks and CDs, Ethernet, in the device tree</span>
-                <span class="part svc"><strong>Guest tools</strong> Helper, 3D engine, URL Access stub</span>
+                <span class="part">Guest enhancements, 3D engine</span>
+                <p class="abox-foot">Optional, installed in Extensions</p>
               </div>
             </div>
             <div class="iface">
@@ -154,7 +159,7 @@
               <div class="iface-part">
                 <span class="iface-arrow" aria-hidden="true">⇄</span>
                 <p class="iface-title">Host calls</p>
-                <p>from syshm’s drivers and tools</p>
+                <p>from syshm’s drivers and helpers</p>
               </div>
             </div>
             <div class="zone host">
@@ -255,7 +260,7 @@
 
           <h3>Start up</h3>
 <pre class="code">./syshm boot MOS.rom --disk hd.img --window --nvram syshm.nvram</pre>
-          <p>Add <code>--tools</code> for a disk of guest tools: a helper that resizes the screen with the window, the 3D engine, and a URL Access stub. The <a href="https://github.com/__REPO__#readme">README</a> has the rest.</p>
+          <p>Add <code>--tools</code> for a disk of guest tools: guest enhancements that make the screen follow the window, and the 3D engine. The <a href="https://github.com/__REPO__#readme">README</a> has the rest.</p>
         </div>
       </div>
     </div>

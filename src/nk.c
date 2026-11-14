@@ -2125,9 +2125,6 @@ static const char *host_call(struct machine *m, uint32_t selector)
 	case HOSTCALL_TOOLS_HELPER:
 		helper_call(&m->helper, &c, &m->video);
 		break;
-	case HOSTCALL_TOOLS_URL_STUB:
-		url_stub_call(&c);
-		break;
 	case HOSTCALL_TOOLS_RAVE:
 		rave_call(&m->rave, &c);
 		break;
@@ -2786,7 +2783,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		       (unsigned long long)(m.disk[k].bytes_read >> 10), m.disk[k].writes,
 		       (unsigned long long)(m.disk[k].bytes_written >> 10));
 	if (m.helper.launches)
-		printf("\nhelper: %s, %lu mode switches, %lu failed (last error %d)",
+		printf("\nenhancements: %s, %lu mode switches, %lu failed (last error %d)",
 		       m.helper.running ? "running" : "quit", m.helper.switches, m.helper.failures, m.helper.last_error);
 	if (m.rave.calls)
 		printf("\n3d engine: %lu calls, %lu contexts, %lu textures, %lu frames, %lu triangles (%lu back-facing)",

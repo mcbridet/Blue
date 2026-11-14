@@ -74,8 +74,8 @@ static int usage(void)
 		"                               make a disk image holding an empty HFS volume\n"
 		"                               (size in bytes, or with K, M or G)\n"
 		"  tools create <file>          make the guest tools volume: drag its files onto\n"
-		"                               the System Folder (\"syshm Helper\" lets the\n"
-		"                               screen follow the window's size)\n"
+		"                               the System Folder (\"syshm Enhancements\" lets\n"
+		"                               the screen follow the window's size)\n"
 		"  run-raw <file> <addr> [n]    load raw PowerPC code at hex <addr> in 64 MB of\n"
 		"                               RAM, run up to n instructions, dump registers\n");
 	return 2;
