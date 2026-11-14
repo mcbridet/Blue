@@ -205,6 +205,15 @@ void cdaudio_stop_at(struct cdaudio *p, uint64_t tb, uint32_t lba)
 	}
 }
 
+void cdaudio_stop_after(struct cdaudio *p, uint64_t tb, unsigned k)
+{
+	cdaudio_run(p, tb);
+	if (k < p->current || k >= p->ranges)
+		return;
+	p->ranges = k + 1;
+	p->repeat = false;
+}
+
 void cdaudio_scan(struct cdaudio *p, uint64_t tb, uint32_t lba, int direction)
 {
 	cdaudio_run(p, tb);

@@ -84,6 +84,9 @@ void cdaudio_stop(struct cdaudio *p, uint64_t tb);
 /* The play ends at `lba` instead (stopping at once if it's past). */
 void cdaudio_stop_at(struct cdaudio *p, uint64_t tb, uint32_t lba);
 
+/* ... or after range `k` (once through, if it's playing an earlier one). */
+void cdaudio_stop_after(struct cdaudio *p, uint64_t tb, unsigned k);
+
 /* Scans forward (1) or back (-1) from `lba`: bits of it, quickly, until played, paused or stopped. */
 void cdaudio_scan(struct cdaudio *p, uint64_t tb, uint32_t lba, int direction);
 

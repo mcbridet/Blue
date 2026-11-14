@@ -484,6 +484,11 @@ static void test_cd_calls(struct mem *mem)
 	CHECK_EQ(param(mem, 0), 0x0002);
 	CHECK_EQ(CONTROL(124, 8600, 0), 0);                     /* (and over again) */
 	CHECK_EQ(param(mem, 0), 0);
+	CHECK_EQ(CONTROL(106, 8600, 3, 0, 0x01), 0);            /* AudioStop after entry 1: once more through */
+	CHECK_EQ(CONTROL(124, 8900, 0), 0);
+	CHECK_EQ(param(mem, 0), 1);
+	CHECK_EQ(CONTROL(107, 9200, 0), 0);
+	CHECK_EQ(param(mem, 0) >> 8, 3);
 	mem_w8(mem, BUF + 0x101, 0x07);
 	CHECK_EQ(CONTROL(122, 8600, 2, BUF >> 16, (BUF + 0x100) & 0xFFFF), -50);       /* (no track 7) */
 	CHECK_EQ(CONTROL(106, 8600, 0, 0, 0), 0);

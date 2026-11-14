@@ -223,11 +223,10 @@ static int32_t play(struct cdrom *cd, const struct cdimage *disc, uint64_t tb, u
 	return NO_ERR;
 }
 
-static int32_t read_toc(struct cdrom *cd, const struct cdimage *disc, struct mem *m, uint32_t pb)
+static int32_t read_toc(const struct cdimage *disc, struct mem *m, uint32_t pb)
 {
 	const struct cd_track *t0 = &disc->track[0], *tn = &disc->track[disc->tracks - 1];
 	uint8_t msf[3];
-	(void)cd;
 	switch (word(m, pb, 0)) {
 	case 1:                 /* the first and last tracks */
 		put_word(m, pb, 0, cd_bcd(t0->number) << 8 | cd_bcd(tn->number));
@@ -467,7 +466,7 @@ static bool control_call(struct cdrom *cd, const struct cdimage *disc, struct me
 	}
 	switch (code) {
 	case 100:               /* ReadTOC */
-		*err = read_toc(cd, disc, m, pb);
+		*err = read_toc(disc, m, pb);
 		return true;
 	case 101: {             /* ReadTheQSubcode: where the drive is */
 		uint8_t q[10];
@@ -516,7 +515,10 @@ static bool control_call(struct cdrom *cd, const struct cdimage *disc, struct me
 			if (cd->log)
 				printf("cdrom: stop\n");
 		} else if (address(cd, disc, word(m, pb, 0), lword(m, pb, 1), true, &lba, &entry)) {
-			cdaudio_stop_at(&cd->audio, tb, lba);
+			if (entry < 0)
+				cdaudio_stop_at(&cd->audio, tb, lba);
+			else if (cd->list_play)
+				cdaudio_stop_after(&cd->audio, tb, (unsigned)entry);
 			set_stop(cd, lba, entry);
 		} else {
 			cd->stop_set = false;   /* (AppleCD Audio Player starts with track 0: no stop, the lead-out) */
