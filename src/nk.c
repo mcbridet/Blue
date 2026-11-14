@@ -808,9 +808,10 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	bool parcels = m->rom->format == ROM_FORMAT_PARCELS;
 	bool boot = false;
 	unsigned boot_disk = 0, boot_map_entry = 0;
-	for (unsigned k = 0; k < opt->disks && k < NK_MAX_DISKS; k++) {
+	for (unsigned k = 0; k < opt->disks + (opt->share != NULL) && k < NK_MAX_DISKS; k++) {
 		struct disk *d = &m->disk[k];
-		if (disk_open(d, &m->mem, opt->disk[k], opt->cdrom[k], opt->cdrom[k]))
+		if (k < opt->disks ? disk_open(d, &m->mem, opt->disk[k], opt->cdrom[k], opt->cdrom[k]) :
+				     disk_open_backend(d, &m->mem, opt->share))
 			return -1;
 		m->disks = k + 1;
 		d->log = opt->log_hostcalls;
@@ -819,8 +820,9 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		disk_ndrv_size[k] = disk_build_ndrv(d, m->disk_ndrv[k], sizeof m->disk_ndrv[k],
 						    HOSTCALL_DISK_DRIVER + k);
 		for (unsigned p = 0; p < d->partitions; p++) {
-			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, opt->disk[k],
-			       d->read_only ? " (read-only)" : "", (unsigned long long)(d->part[p].size >> 20),
+			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, d->path,
+			       d->backend ? " (shared folder)" : d->read_only ? " (read-only)" : "",
+			       (unsigned long long)(d->part[p].size >> 20),
 			       (unsigned long long)d->part[p].offset, d->part[p].name[0] ? ", partition " : "",
 			       d->part[p].name);
 			if (parcels && !boot && disk_bootable(d, p)) {  /* (where Open Firmware would boot from) */

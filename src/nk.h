@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "disk.h"
 #include "mem.h"
 #include "ppc.h"
 #include "rom.h"
@@ -99,6 +100,7 @@ struct nk_boot_options {
 	const char *disk[NK_MAX_DISKS];         /* disk images, in drive order */
 	bool cdrom[NK_MAX_DISKS];               /* ... attached read-only as CDs */
 	unsigned disks;
+	const struct disk_backend *share;       /* a shared folder's drive, after the disks (counts towards the 4) */
 	bool rom_from_disk;     /* the ROM file came from a drive's System Folder: ... */
 	unsigned rom_disk, rom_part;    /* ... this drive's, this partition (the startup disk) */
 #define NK_MAX_FLOPPIES 16

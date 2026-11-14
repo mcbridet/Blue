@@ -87,6 +87,20 @@ static void add_partition(struct disk *d, uint64_t offset, uint64_t size, const 
 	snprintf(p->name, sizeof p->name, "%s", name);
 }
 
+static ssize_t read_at(const struct disk *d, void *buf, size_t len, uint64_t at)
+{
+	if (d->backend)
+		return d->backend->read(d->backend->ctx, buf, len, at) ? -1 : (ssize_t)len;
+	return pread(d->fd, buf, len, (off_t)at);
+}
+
+static ssize_t write_at(const struct disk *d, const void *buf, size_t len, uint64_t at)
+{
+	if (d->backend)
+		return d->backend->write(d->backend->ctx, buf, len, at) ? -1 : (ssize_t)len;
+	return pwrite(d->fd, buf, len, (off_t)at);
+}
+
 /*
  * Apple partition map: driver descriptor 'ER' in block 0, entries 'PM' from
  * block 1. The entries are normally 512-byte blocks counting 512-byte blocks,
@@ -146,10 +160,26 @@ int disk_open(struct disk *d, struct mem *mem, const char *path, bool read_only,
 	return 0;
 }
 
+int disk_open_backend(struct disk *d, struct mem *mem, const struct disk_backend *b)
+{
+	memset(d, 0, sizeof *d);
+	d->mem = mem;
+	d->path = b->name;
+	d->fd = -1;
+	d->backend = b;
+	d->size = b->size & ~(uint64_t)511;
+	if (d->size < 1024) {
+		fprintf(stderr, "%s: not a usable volume\n", b->name);
+		return -1;
+	}
+	add_partition(d, 0, d->size, "", 0);
+	return 0;
+}
+
 bool disk_bootable(const struct disk *d, unsigned part)
 {
 	uint8_t sig[2];
-	return part < d->partitions && pread(d->fd, sig, 2, (off_t)d->part[part].offset) == 2 && be16(sig) == 0x4C4B;
+	return part < d->partitions && read_at(d, sig, 2, d->part[part].offset) == 2 && be16(sig) == 0x4C4B;
 }
 
 void disk_close(struct disk *d)
@@ -342,10 +372,10 @@ static int32_t transfer(struct disk *d, uint32_t pb, bool write)
 	if (!guest_range_ok(m, buf, count, write ? MEM_R : MEM_W))
 		return PARAM_ERR;
 
-	off_t at = (off_t)(p->offset + pos);
+	uint64_t at = p->offset + pos;
 	if (!write)
 		mem_invalidate(m, buf, count);  /* reads may load code over translated code */
-	ssize_t n = write ? pwrite(d->fd, mem_ptr(m, buf), count, at) : pread(d->fd, mem_ptr(m, buf), count, at);
+	ssize_t n = write ? write_at(d, mem_ptr(m, buf), count, at) : read_at(d, mem_ptr(m, buf), count, at);
 	if (n != (ssize_t)count) {
 		fprintf(stderr, "%s: %s error at %llu\n", d->path, write ? "write" : "read", (unsigned long long)at);
 		return IO_ERR;

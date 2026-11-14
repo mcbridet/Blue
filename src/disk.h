@@ -24,6 +24,15 @@
 
 #define DISK_MAX_PARTITIONS 8
 
+/* A drive whose blocks come from code rather than a file (a shared folder): one writable volume */
+struct disk_backend {
+	const char *name;               /* for messages */
+	void *ctx;
+	uint64_t size;                  /* bytes */
+	int (*read)(void *ctx, void *buf, size_t len, uint64_t at);             /* 0, or -1 */
+	int (*write)(void *ctx, const void *buf, size_t len, uint64_t at);
+};
+
 struct disk_partition {
 	uint64_t offset, size;          /* bytes */
 	unsigned map_entry;             /* its entry in the partition map (from 1), 0 without a map */
@@ -37,6 +46,7 @@ struct disk {
 	struct mem *mem;
 	const char *path;
 	int fd;
+	const struct disk_backend *backend;     /* instead of the file, if set */
 	uint64_t size;                  /* bytes */
 	bool read_only;
 	bool cdrom;                     /* report as a CD-ROM */
@@ -74,6 +84,9 @@ struct disk {
 /* Opens the backing file and reads its partition map; returns 0 on success. */
 int disk_open(struct disk *d, struct mem *mem, const char *path, bool read_only, bool cdrom);
 void disk_close(struct disk *d);
+
+/* Attaches a drive whose blocks come from `b`; returns 0 on success. */
+int disk_open_backend(struct disk *d, struct mem *mem, const struct disk_backend *b);
 
 /* Whether a partition starts with boot blocks (what the Start Manager looks for) */
 bool disk_bootable(const struct disk *d, unsigned part);
