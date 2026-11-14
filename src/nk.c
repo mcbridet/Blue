@@ -15,6 +15,7 @@
 #include "disk.h"
 #include "display.h"
 #include "gpu.h"
+#include "install.h"
 #include "jit.h"
 #include "macio.h"
 #include "mmio.h"
@@ -466,6 +467,9 @@ struct machine {
 	struct video video;
 	struct helper helper;           /* the guest tools' helper application */
 	struct rave rave;               /* ... and their 3D engine */
+	struct install install;         /* ... and installing them (see tools_startup()) */
+	bool tools_offer;               /* ... which is offered in this run */
+	unsigned tools_disk, tools_part;        /* ... on this drive's partition */
 	struct gpu *gpu;                /* ... which draws with this, if the host can (see nk_boot()) */
 	/* SYSHM_PERF: the host's counters for this thread, printed every second */
 	bool perf_on;
@@ -488,6 +492,7 @@ struct machine {
 	bool mouse_captured;            /* host motion goes to the ADB mouse (see follow_cursor()) */
 	bool mouse_released;            /* ... but the user let the pointer go (Control-Option) */
 	bool paused;                    /* the menu is open (F12): the guest doesn't run */
+	bool prompting;                 /* a question or news is shown over the screen (the guest runs) */
 	bool restart, shut_down;        /* ... and this was chosen in it */
 	char menu_status[480];          /* news it shows (where a screenshot went) */
 	/* the status bar (see status_lights()) */
@@ -802,9 +807,10 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	bool parcels = m->rom->format == ROM_FORMAT_PARCELS;
 	bool boot = false;
 	unsigned boot_disk = 0, boot_map_entry = 0;
-	for (unsigned k = 0; k < opt->disks && k < NK_MAX_DISKS; k++) {
+	for (unsigned k = 0; k < opt->disks + (opt->share != NULL) && k < NK_MAX_DISKS; k++) {
 		struct disk *d = &m->disk[k];
-		if (disk_open(d, &m->mem, opt->disk[k], opt->cdrom[k], opt->cdrom[k]))
+		if (k < opt->disks ? disk_open(d, &m->mem, opt->disk[k], opt->cdrom[k], opt->cdrom[k]) :
+				     disk_open_backend(d, &m->mem, opt->share))
 			return -1;
 		m->disks = k + 1;
 		d->log = opt->log_hostcalls;
@@ -813,8 +819,9 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		disk_ndrv_size[k] = disk_build_ndrv(d, m->disk_ndrv[k], sizeof m->disk_ndrv[k],
 						    HOSTCALL_DISK_DRIVER + k);
 		for (unsigned p = 0; p < d->partitions; p++) {
-			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, opt->disk[k],
-			       d->read_only ? " (read-only)" : "", (unsigned long long)(d->part[p].size >> 20),
+			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, d->path,
+			       d->backend ? " (shared folder)" : d->read_only ? " (read-only)" : "",
+			       (unsigned long long)(d->part[p].size >> 20),
 			       (unsigned long long)d->part[p].offset, d->part[p].name[0] ? ", partition " : "",
 			       d->part[p].name);
 			if (parcels && !boot && disk_bootable(d, p)) {  /* (where Open Firmware would boot from) */
@@ -1298,7 +1305,7 @@ static void follow_cursor(struct machine *m, uint64_t now)
 		m->cursor_hidden_ns = now;
 	}
 	bool capture = hidden && now - m->cursor_hidden_ns >= CAPTURE_AFTER_NS && !m->scripted && !m->mouse_released &&
-		       !m->paused;
+		       !m->paused && !m->prompting;
 	if (capture != m->mouse_captured) {
 		m->mouse_captured = capture;
 		display_capture_mouse(m->display, capture);
@@ -1354,11 +1361,18 @@ static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
 {
 	switch (action) {
 	case UI_RESTART:
-	case UI_SHUT_DOWN:
+	case UI_TURN_OFF:
 		if (action == UI_RESTART)
 			m->restart = true;
 		else
 			m->shut_down = m->quit = true;
+		m->paused = false;
+		display_menu(m->display, false);
+		follow_cursor(m, now);
+		break;
+	case UI_SHUT_DOWN:      /* the power key: Mac OS asks, and shuts down if told to (the run ends then) */
+		adb_power_key(&m->cuda.adb, true);
+		adb_power_key(&m->cuda.adb, false);
 		m->paused = false;
 		display_menu(m->display, false);
 		follow_cursor(m, now);
@@ -1369,6 +1383,12 @@ static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
 	case UI_CAPTURE_MOUSE:
 	case UI_RELEASE_MOUSE:
 		m->mouse_released = action == UI_RELEASE_MOUSE;
+		break;
+	case UI_PROMPT_YES:
+	case UI_PROMPT_NO:
+		m->prompting = false;
+		install_answer(&m->install, action == UI_PROMPT_YES, &m->helper);
+		follow_cursor(m, now);
 		break;
 	default:
 		break;
@@ -1393,7 +1413,7 @@ static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
  */
 #define LED_HOLD_NS 100000000u
 #define SPEED_EVERY_NS 1000000000u
-#define SPEED_BUSY_NS 100000000u        /* (busy for less of a second than this: the speed stands) */
+#define SPEED_BUSY_NS 100000000u        /* (busy for less of a second than this: no speed shown) */
 #define RUN_SAMPLE 32u
 
 static void status_lights(struct machine *m, uint64_t now, bool paused)
@@ -1447,6 +1467,7 @@ static void status_lights(struct machine *m, uint64_t now, bool paused)
 		if (paused) {
 			memset(m->rate_in, 0, sizeof m->rate_in);
 			memset(m->rate_out, 0, sizeof m->rate_out);
+			m->speed_mhz = 0;
 		} else if (m->speed_ns) {
 			double secs = (double)(now - m->speed_ns) / 1e9;
 			for (int k = 0; k < UI_LEDS; k++) {
@@ -1454,7 +1475,9 @@ static void status_lights(struct machine *m, uint64_t now, bool paused)
 				m->rate_in[k] = in[k] >= m->rate_from_in[k] ? (uint64_t)((double)i / secs + 0.5) : 0;
 				m->rate_out[k] = out[k] >= m->rate_from_out[k] ? (uint64_t)((double)o / secs + 0.5) : 0;
 			}
-			if (m->busy_ns >= SPEED_BUSY_NS && m->run_ns)
+			if (m->busy_ns < SPEED_BUSY_NS)
+				m->speed_mhz = 0;       /* (napping: no speed to show) */
+			else if (m->run_ns)
 				m->speed_mhz = (uint32_t)(m->run_insns * 1000u / m->run_ns);
 		}
 		m->speed_ns = paused ? 0 : now;         /* (0: the next frame starts again) */
@@ -1670,7 +1693,7 @@ static int script_load(struct script *s, const char *path)
 		else
 			counted = true;
 		const char *rest = strstr(line, e.cmd) + strlen(e.cmd);
-		if (strcmp(e.cmd, "screenshot") == 0)
+		if (strcmp(e.cmd, "screenshot") == 0 || strcmp(e.cmd, "tools") == 0)
 			sscanf(rest, " %255s", e.arg);
 		else if (strcmp(e.cmd, "key") == 0)
 			sscanf(rest, " %x %255s", (unsigned *)&e.a, e.arg);
@@ -1740,6 +1763,9 @@ static void script_run(struct machine *m, struct script *s)
 				adb_key(&m->cuda.adb, (uint8_t)e->a, false);
 				fast_start_input(m, e->a & 0x7F, false);
 			}
+		} else if (strcmp(e->cmd, "power") == 0) {     /* the power key, pressed and released */
+			adb_power_key(&m->cuda.adb, true);
+			adb_power_key(&m->cuda.adb, false);
 		} else if (strcmp(e->cmd, "clock") == 0) {
 			/*
 			 * From here on, guest time passes at a guest processor speed of
@@ -1766,6 +1792,13 @@ static void script_run(struct machine *m, struct script *s)
 			else
 				printf("screen saved to %s at instruction %llu\n", e->arg,
 				       (unsigned long long)m->cpu.icount);
+		} else if (strcmp(e->cmd, "tools") == 0 && (!strcmp(e->arg, "install") || !strcmp(e->arg, "later"))) {
+			/* answers the window's offer to install the guest tools (see tools_startup()) */
+			if (m->prompting) {
+				m->prompting = false;
+				display_prompt(m->display, NULL, NULL, NULL);
+			}
+			install_answer(&m->install, strcmp(e->arg, "install") == 0, &m->helper);
 		} else {
 			fprintf(stderr, "input script: unknown command '%s'\n", e->cmd);
 		}
@@ -2405,6 +2438,70 @@ static const char *kcall_vm_dispatch(struct machine *m)
 #define CD_BYTES_PER_SECOND 4000000u    /* a 24x to 32x CD-ROM drive */
 
 /*
+ * The guest tools, in window runs (and runs whose input script answers for
+ * the window): looked for on the startup disk before Mac OS starts, and
+ * offered once the Finder is up if they're missing or another syshm's (see
+ * install.h). The startup disk is the partition the ROM file came from, or
+ * (with --rom) the first with boot blocks.
+ */
+static void tools_startup(struct machine *m, const struct nk_boot_options *opt)
+{
+	install_init(&m->install);
+	if (!m->tools_offer)
+		return;
+	bool found = opt->rom_from_disk && opt->rom_disk < opt->disks;
+	unsigned disk = found ? opt->rom_disk : 0, part = found ? opt->rom_part : 0;
+	for (unsigned k = 0; k < opt->disks && !found; k++)     /* (images: a shared folder isn't a startup disk) */
+		for (unsigned p = 0; p < m->disk[k].partitions && !found; p++)
+			if (disk_bootable(&m->disk[k], p)) {
+				found = true;
+				disk = k;
+				part = p;
+			}
+	if (found) {
+		m->tools_disk = disk;
+		m->tools_part = part;
+		install_begin(&m->install, opt->disk[disk], part, m->disk[disk].read_only);
+	}
+}
+
+/* The installer's question or news, in the window (and the news printed, by install.c) */
+static void tools_show(struct machine *m)
+{
+	struct install *in = &m->install;
+	bool shown = false;
+	if (in->ask) {
+		in->ask = false;
+		shown = m->display && display_prompt(m->display, in->question, in->yes, "Not Now");
+	}
+	if (in->news_ready) {
+		in->news_ready = false;
+		char text[sizeof in->news];
+		snprintf(text, sizeof text, "%c%s", in->news[0] >= 'a' && in->news[0] <= 'z' ? in->news[0] - 'a' + 'A' :
+			 in->news[0], in->news[0] ? in->news + 1 : "");
+		shown = m->display && display_prompt(m->display, text, "OK", NULL);
+	}
+	if (shown) {
+		m->prompting = true;
+		follow_cursor(m, host_ns());    /* (the pointer is the prompt's) */
+	}
+}
+
+/* At an idle call: true if the guest goes to the installer instead (see install_idle()) */
+static bool tools_idle(struct machine *m)
+{
+	if (m->install.phase == INSTALL_OFF || m->install.phase == INSTALL_DONE)
+		return false;
+	struct install_idle w = { .mem = &m->mem, .helper = &m->helper, .finder = finder_current(m), .tb = m->cpu.tb,
+				  .tb_hz = TIMEBASE_HZ, .drive = m->disk[m->tools_disk].part[m->tools_part].drive_num };
+	for (unsigned k = 0; k < m->disks; k++)
+		w.disk_bytes += m->disk[k].bytes_read + m->disk[k].bytes_written;
+	bool diverted = install_idle(&m->install, &w);
+	tools_show(m);
+	return diverted;
+}
+
+/*
  * A host call from a generated driver (see ndrv.h): run the native driver
  * one step, then either finish (CR0[EQ] set, result in r3) or have the stub
  * call a Mac OS routine (TVector in r12, arguments in r3..r10).
@@ -2433,6 +2530,10 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		break;
 	case HOSTCALL_TOOLS_RAVE:
 		rave_call(&m->rave, &c);
+		break;
+	case HOSTCALL_TOOLS_INSTALL:
+		install_call(&m->install, &c, &m->helper);
+		tools_show(m);
 		break;
 	case HOSTCALL_LANLIB:
 		net_call(&m->net, &c);
@@ -3001,6 +3102,9 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->mouse_released = old.mouse_released;
 	m->redraw = true;
 	m->scripted = old.scripted;
+	m->tools_offer = old.tools_offer;
+	if (old.prompting)
+		display_prompt(m->display, NULL, NULL, NULL);
 	m->realtime = old.realtime;
 	m->idle_sleep = old.idle_sleep;
 	m->start_ns = old.start_ns;
@@ -3013,6 +3117,7 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 	memcpy(m->exceptions, old.exceptions, sizeof m->exceptions);
 	if (start_machine(m, opt))
 		return -1;
+	tools_startup(m, opt);
 	memcpy(m->rtas.nvram, old.rtas.nvram, sizeof m->rtas.nvram);
 	m->cpu.icount = old.cpu.icount;
 	m->cpu.tb = old.cpu.tb;
@@ -3075,6 +3180,10 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		if (m.display && opt->realtime && !opt->no_sound)
 			m.audio = audio_open();         /* (in instruction time, sound would be too fast or slow) */
 	}
+	m.tools_offer = opt->window;
+	for (size_t k = 0; k < script.count; k++)
+		m.tools_offer |= strcmp(script.ev[k].cmd, "tools") == 0;
+	tools_startup(&m, opt);
 
 	struct ppc_cpu *cpu = &m.cpu;
 	const char *why = NULL;
@@ -3107,7 +3216,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 				display_frame(&m, now);
 				m.next_frame_ns = now + 1000000000u / 60;
 				if (m.quit) {
-					why = m.shut_down ? "shut down from the menu" : "window closed";
+					why = m.shut_down ? "turned off from the menu" : "window closed";
 					break;
 				}
 				if (m.restart) {
@@ -3242,7 +3351,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			why = host_call(&m, cpu->exit_insn & 0x03FFFFFFu);
 			break;
 		case PPC_EXIT_HOOK:
-			blue_naps(&m, UINT64_MAX);
+			if (!tools_idle(&m))
+				blue_naps(&m, UINT64_MAX);
 			if (opt->realtime)
 				sync = true;    /* catch up with the host clock now */
 			break;
@@ -3407,8 +3517,9 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		       (unsigned long long)(m.disk[k].bytes_read >> 10), m.disk[k].writes,
 		       (unsigned long long)(m.disk[k].bytes_written >> 10));
 	if (m.helper.launches)
-		printf("\nenhancements: %s, %lu mode switches, %lu failed (last error %d)",
-		       m.helper.running ? "running" : "quit", m.helper.switches, m.helper.failures, m.helper.last_error);
+		printf("\nenhancements: %s, %lu launches, %lu mode switches, %lu failed (last error %d)",
+		       m.helper.running ? "running" : "quit", m.helper.launches, m.helper.switches, m.helper.failures,
+		       m.helper.last_error);
 	if (m.rave.calls)
 		printf("\n3d engine: %lu calls, %lu contexts, %lu textures, %lu frames, %lu triangles (%lu back-facing)",
 		       m.rave.calls, m.rave.contexts, m.rave.textures, m.rave.frames, m.rave.triangles, m.rave.backfacing);

@@ -155,6 +155,16 @@ void adb_key(struct adb_bus *b, uint8_t code, bool down)
 	b->key_count++;
 }
 
+void adb_power_key(struct adb_bus *b, bool down)
+{
+	/* both bytes of one register 0: 7F 7F pressed, FF FF released (an odd key before it gets FF, "none") */
+	unsigned pad = b->key_count % 2;
+	if (b->key_count + pad + 2 > ADB_KEY_QUEUE)
+		return;
+	for (unsigned k = 0; k < pad + 2; k++)
+		b->keys[(b->key_head + b->key_count++) % ADB_KEY_QUEUE] = k < pad || !down ? 0xFF : 0x7F;
+}
+
 void adb_mouse_move(struct adb_bus *b, int dx, int dy)
 {
 	b->mouse_dx += dx;

@@ -240,7 +240,7 @@ NVRAM is the same 8 KB that RTAS serves 8.5–9.0.4, kept in the same
 file goes with an install whichever ROM starts it. 9.1 reads NVRAM at
 startup and keeps its changes in memory until it shuts down or restarts,
 when it writes them to the chip, as on an iMac: changes since startup are
-lost when syshm quits otherwise (closing the window, or Shut down in its
+lost when syshm quits otherwise (closing the window, or Turn off in its
 menu). The end-of-run statistics count the chip's reads and writes.
 
 Not done yet: installing 9.1 onto a disk image with its installer and
@@ -267,11 +267,107 @@ host network's timing then makes them unreproducible), and
 `SYSHM_LOG_NET=1` logs the driver's calls. Frame counts are printed at
 exit.
 
+### Shared folder
+
+`--share DIR` shows a host folder to Mac OS as a volume of its own, named
+after the folder, with the files and folders in it: the way to move files
+between the host and Mac OS, such as a program downloaded on the host to
+install. It's an ordinary HFS volume, so everything works on it (the
+Finder, installers, programs run from it), and what Mac OS changes on it
+goes back to the folder when Mac OS shuts down.
+
+```
+build/syshm boot --disk hd.img --share ~/Mac --window --nvram syshm.nvram
+```
+
+The volume (`src/share.c`) is made when syshm starts: its catalog and the
+rest of its metadata in memory (`src/hfs.c` lays volumes out), its files'
+contents read from the host's files only as Mac OS reads them. It has half
+as much free space as there is in it, at least 1 GB but under 2 GB (older
+installers count free space in 31 bits). It is attached after the other
+drives, as one of the four, and is never the startup disk (no boot blocks,
+no System Folder). Names become Mac OS Roman, with `/` for `:` as macOS
+shows them; one longer than 31 characters, or the same as another's to
+Mac OS (which ignores case), is shortened with the item's ID, as Mac OS 9
+does (`A very long file name#1A.txt`). Dot files, symbolic links to
+folders and files over 2 GB (HFS's limit) are left out, and syshm says so.
+Resource forks and Finder info (type, creator, flags) are the host's: on
+macOS the file's own (`..namedfork/rsrc`, `com.apple.FinderInfo`), and
+otherwise an AppleDouble file, `._name` beside it or in a `__MACOSX` folder
+(as zip archives keep them). A file without Finder info gets a type and
+creator from its extension (`.sit`, `.hqx`, `.bin`, `.zip` for StuffIt
+Expander; `.txt`; `.jpg`, `.gif`, `.png` for PictureViewer; `.pdf`; `.img`,
+`.dmg`, `.toast`, `.dsk` for Disk Copy; `.mov`, `.mp3`, `.aiff`, `.html`
+and a few more), else SimpleText's if it's plain text, else `????`.
+
+What Mac OS writes goes to a temporary file (in `$TMPDIR`, gone when
+syshm exits), never to the folder during the run. At the end of the run,
+if Mac OS put the volume away (Shut Down, or Put Away), syshm writes back
+what changed: new, changed, renamed, moved and deleted files and folders,
+with their resource forks and Finder info as the host keeps them (on
+macOS the file's own; otherwise an AppleDouble `._name` file, only for a
+file with a resource fork or Finder info its name and contents wouldn't
+give it) and their dates. Nothing of the host's is destroyed: a file or
+folder Mac OS deleted (emptying the Trash or not) or replaced is moved to
+`DIR/.syshm-recovery/<date and time>/`, under the path it had, and a file
+that changed on the host as well during the run is kept, with Mac OS's
+version beside it as `name (Mac OS).ext`. What Mac OS and its extensions
+keep on a volume for themselves (the desktop database, the Trash, invisible
+files at its top) isn't written back. syshm lists what it did:
+
+```
+share: writing back what Mac OS changed on "Shared" to /Users/me/Shared
+share:   changed Read Me.txt (the host's was put in .syshm-recovery/2026-11-15 00.13.05)
+share:   new untitled folder
+share: 1 new, 1 changed, 0 moved or renamed, 0 deleted; the host's old ones are in /Users/me/Shared/.syshm-recovery/2026-11-15 00.13.05
+```
+
+If the run ends without Mac OS having put the volume away (the window
+closed, or Turn off in syshm's menu, rather than Mac OS shutting down),
+nothing is written back, as the volume may be half-written; if anything
+of the user's had changed on it, it is saved as a disk image in the
+recovery folder instead (attach it with `--disk` to get at what's on it;
+Mac OS may check it first, as after a crash). Mac OS marks the volume in use
+in its MDB as soon as it mounts it (its first write) and put away when it
+unmounts it; that's how syshm tells. A restart keeps the volume as Mac OS
+left it. `SYSHM_LOG_SHARE=1` logs Mac OS's writes.
+
+Changes cross only once a run: files added on the host during the run
+appear in Mac OS the next time, and changes made in Mac OS reach the host
+at the end. Text files keep their line endings (a host's LF shows as boxes
+in SimpleText). Folders' Finder info (window positions, custom icons) and
+the Locked checkbox aren't written back.
+
 ### Guest tools
 
-Some things only code inside Mac OS can do. `--tools` attaches a small
-read-only volume, "syshm Tools", holding it (`syshm tools create FILE` writes
-the same volume to a file):
+Some things only code inside Mac OS can do: syshm Enhancements and syshm
+3D Engine (below). In a window, syshm offers to install them: before Mac OS
+starts it looks in the startup disk's System Folder (its folders,
+Extensions whatever its name and Extensions (Disabled) among them) for
+them, and once the Finder is up, if one is missing or isn't this syshm's
+(both forks compared with what it makes), a box over the screen says so,
+with Install (or Update) and Not Now; Mac OS runs on meanwhile. On
+Install, Mac OS writes the files itself (see Findings in plan.md): each
+goes to a temporary file in the folder it belongs in, which then takes the
+old copy's place, so an error (a full or locked disk) leaves nothing half
+written; a disabled copy is updated where it is and stays disabled.
+syshm Enhancements starts at once (an older one running is asked to quit
+first), and programs opened from then on find the 3D engine, without a
+restart. The outcome is shown and printed:
+
+```
+tools: installed syshm Enhancements and syshm 3D Engine in "Macintosh HD:System Folder:Extensions". syshm Enhancements is running. Programs opened from now on find the 3D engine.
+```
+
+Nothing is offered when the startup disk is a CD, an image attached
+read-only, or a locked volume, nor without a window: an input script can
+answer instead (`tools install`, `tools later`), and that turns the check
+on. The startup disk is the partition the ROM file came from (with
+`--rom`, the first with boot blocks).
+
+They can still be installed by hand: `--tools` attaches a small read-only
+volume, "syshm Tools", holding them (`syshm tools create FILE` writes the
+same volume to a file):
 
 - **syshm Enhancements**: drag it onto the System Folder (the Finder puts it in
   Extensions) and restart. From then on, resizing the window changes the
@@ -337,7 +433,7 @@ vertices' specular fields (ks: u/w, v/w, 1/w); both renderers do that,
 filtering the lightmap bilinearly, clamped (the other tags UT sets then,
 always the same, are taken to mean that). The engine's data carries
 its version, so one installed by an older syshm isn't asked for what it
-lacks: syshm says to install it again from the tools volume.
+lacks: syshm says to install it again (and a window offers to update it).
 
 - `syshm rom` decodes NewWorld bootinfo files and raw 4 MB ROMs, verifies the
   checksum, extracts the Toolbox image and Trampoline, and decodes the
@@ -561,7 +657,8 @@ lacks: syshm says to install it again from the tools volume.
     tool) to switch between; each is listed only while in use.
   - Disk: host files as drives (`--disk`, writable; `--cdrom`, read-only;
     the 8.5 CD's System refuses to start from a writable drive, as from a
-    copy of the CD).
+    copy of the CD), and a host folder (`--share`; see Shared folder),
+    whose blocks come from `src/share.c` rather than a file.
     An Apple partition map gives one drive per HFS partition; otherwise the
     file is one volume. (When there's a map entry at offset 512, entries are
     512 bytes apart and count 512-byte blocks even if the driver descriptor
@@ -649,9 +746,13 @@ lacks: syshm says to install it again from the tools volume.
   F12 opens the menu (Dear ImGui's, from `third_party/imgui`, drawn over
   the screen through the same run-time SDL2 by `src/ui.cpp`; SDL 2.0.18 or
   later), and the guest is paused while it's open. In it: Resume (F12 and
-  Esc too); Restart and Shut down (straight away: they're the Mac's own
-  restart and power switch, so work not saved in Mac OS is lost; Shut down
-  keeps NVRAM, as closing the window does); a screenshot of the Mac's screen
+  Esc too); Restart (straight away: the Mac's own reset, so work not saved
+  in Mac OS is lost); Shut down, which presses the keyboard's power key, so
+  Mac OS asks "Are you sure you want to shut down your computer now?" and
+  shuts down properly if told to (applications ask to save, NVRAM and a
+  shared folder are written, and the run ends when the Mac turns itself
+  off); Turn off, the power switch, for a Mac that doesn't answer (straight
+  away; it keeps NVRAM, as closing the window does); a screenshot of the Mac's screen
   (a PNG on the Desktop, or in the current directory without one, named
   for when it was taken); fullscreen (at the desktop's resolution); the
   status bar; and whether the pointer is captured while the Mac hides its
@@ -670,8 +771,9 @@ lacks: syshm says to install it again from the tools volume.
   idle sleep). Beside that is its speed: millions of instructions a second of
   the time actually spent running them, as a clock rate (the Mac thinks it
   has a 266 MHz G3, which runs about one instruction a cycle), worked out
-  once a second from a random 1 in 32 runs (timing each costs too much)
-  and left as it was when the guest is busy less than a tenth of the time.
+  once a second from a random 1 in 32 runs (timing each costs too much),
+  and not shown while the guest naps (busy less than a tenth of the time)
+  or the menu pauses it.
   In narrow windows (640 wide, say) the names are shortened and the text
   made smaller to fit.
   SDL2 sound output (`src/audio.c`; in real time, `--no-sound` turns it
@@ -679,7 +781,8 @@ lacks: syshm says to install it again from the tools volume.
   drift into growing delay),
   PNG screenshots (`src/png.c`), NVRAM kept
   in a file, real-time guest time with `--window`/`--realtime`, and
-  `syshm disk create`, which lays out an empty HFS volume (`src/hfs.c`) the
+  `syshm disk create`, which lays out an empty HFS volume (`src/hfs.c`, which
+  also lays out the shared folder's, with B-trees of any size) the
   way Disk Initialization does (`hfsck` from hfsutils accepts it).
 - Speed on an M1 Max: the boot to the Finder (about 3 billion instructions)
   takes 1.1-1.8 s with the JIT, which runs the 68k emulator's code at about
@@ -700,8 +803,9 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 
 - Model `iMac,1`, a 266 MHz PowerPC 750 on a 66 MHz bus, timebase 16.6 MHz.
 - Grackle PCI host bridge; on it the display (device 1, framebuffer at
-  `0x82000000`), up to four disks (devices 2-5), the USB controller (device
-  6, registers at `0x81000000`) and Mac I/O (device 16) at `0x81080000`:
+  `0x82000000`), up to four disks (devices 2-5; a shared folder is one),
+  the USB controller (device 6, registers at `0x81000000`) and Mac I/O
+  (device 16) at `0x81080000`:
   Heathrow-style interrupt controller (`+0x10`), DMA channels (`+0x8000`,
   0x100 bytes each), SCC (`+0x12000`), VIA1 with Cuda (`+0x16000`).
   Interrupt sources use Heathrow numbers (DMA channel n is source n,
@@ -753,11 +857,14 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    host's GPU; what's left there, such as reading back less of each frame,
    is in docs/gpu-plan.md.)
 2. Networking: host ports forwarded to the guest (so it can serve).
-3. Startup-disk selection; Open Transport's stall with a full
+3. Shared folder: writing back when Mac OS ejects the volume, then offering
+   the folder again as new media, so that changes cross during a run (it
+   needs the disk driver's removable media).
+4. Startup-disk selection; Open Transport's stall with a full
    interrupt set for the Ethernet node; then the NanoKernel v2 interface,
    which the ROM files from Mac OS ROM 1.7.1 on use, and Mac OS 9.1's needs
    (see Mac OS 9.1).
-4. More JIT speed for disk boots: the interpreter, which runs code
+5. More JIT speed for disk boots: the interpreter, which runs code
    until it's hot at about 10 ns an instruction, mostly in overheads per
    block (about 8%); translating (4%), with the instruction-cache upkeep
    that follows (4%); device register accesses, though made in place, still
@@ -765,7 +872,8 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    CD boot).
 
 future.md has ideas not planned yet: a modem, infrared, 3D sound, sound
-input and AltiVec.
+input, AltiVec, printing, game controllers, and more CD formats with CD
+audio.
 
 ## Build and test
 
@@ -793,6 +901,7 @@ build/syshm rom extract MOS.rom build/toolbox.rom
 build/syshm rom trampoline MOS.rom build/trampoline.elf
 build/syshm boot --rom MOS.rom --cdrom 85.iso --window   # interactive
 build/syshm boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
+build/syshm boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
 build/syshm run-raw code.bin 1000                # SYSHM_TRACE=1 logs every instruction
 ```
 
@@ -809,6 +918,8 @@ counts, for example:
 3500000000 motion 40 -10         # the mouse moved 40 right, 10 up (through the ADB mouse, as games read it)
 3600000000 screenshot after.png
 3700000000 clock 800             # guest time at 800 million instructions a second from here
+3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
+0 tools install                  # the answer to the offer to install the guest tools (or "later")
 ```
 
 `clock N` keeps a run reproducible while making guest time pass as on a
@@ -907,11 +1018,12 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
           (configuration space), nvram.c (devices), ndrv.c (PEF driver generator),
           video.c, disk.c (native drivers), net.c (Ethernet's lanLib,
-          libslirp), hfs.c (volume formatter), hfsread.c (HFS and HFS+
-          reader: the startup disk's ROM file),
-          rsrc.c (resource forks), tools.c (guest tools), rave.c + raster.c
+          libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
+          reader: the startup disk's ROM file), share.c (shared folder),
+          rsrc.c (resource forks), tools.c (guest tools), install.c
+          (installing them from inside Mac OS), rave.c + raster.c
           + gpu.c + gl.c (3D engine: software and OpenGL), display.c (SDL2
-          window), ui.cpp (its menu, with Dear ImGui), audio.c (SDL2 sound), png.c,
+          window), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), main.c
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results

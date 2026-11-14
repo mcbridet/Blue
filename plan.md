@@ -436,6 +436,44 @@ the kernel); 8 onwards as the boot progresses.
   `--rom MOS91.rom`. `rom info 91.iso` (and the other `rom` commands) read
   a disk image's the same way. `tests/test_hfsread.c` covers the reader.
 
+### 12. Shared folder
+
+- **Status:** done. `--share DIR` attaches a host folder as an HFS volume
+  (`src/share.c`): metadata made in memory by `hfs_build()` (`src/hfs.c`,
+  now with folders, B-trees of any depth, map nodes and Mac OS's name
+  order), file data read from the host's files on demand, Mac OS's writes
+  in an overlay; written back at the end of the run if Mac OS put the
+  volume away, the host's deleted or replaced files moved to
+  `DIR/.syshm-recovery/<date>/`, else the volume kept there as an image.
+  The disk driver takes a `struct disk_backend` (read and write callbacks)
+  in place of a file. `hfsread` reads through a callback too, and walks
+  the whole catalog (`hfsread_walk()`). `tests/test_share.c` covers names,
+  volumes (checked with hfsutils, and on Linux Apple's `fsck_hfs` from
+  hfsprogs), and writing back. 8.5 and 9.1 from their CDs and 8.6 from a
+  disk show the volume; Finder copies, new folders, renames, moves,
+  deletions and a SimpleText save came back to the folder. Open: writing
+  back when the volume is ejected, and offering the folder again as new
+  media (needs the disk driver's removable media).
+
+### 13. Installing the guest tools
+
+- **Status:** done (8.5, 8.6; 9.1 untested: no installed 9.1 image). In
+  window runs, syshm looks for the guest tools in the startup disk's
+  System Folder before Mac OS starts (`install_check()` in
+  `src/install.c`: the System Folder's folders, whatever their names, for
+  files of the tools' type and creator whose code makes the tool's host
+  call; current if both forks are the bytes this syshm makes). Once the
+  Finder is up, if one is missing or differs (and the disk is writable
+  and not locked), a box over the screen offers to install or update them;
+  Mac OS runs on meanwhile. On yes, Mac OS writes them itself: syshm
+  diverts the next `_SynchIdleTime` to a 68k bootstrap that prepares a
+  generated installer fragment with the Code Fragment Manager and calls it
+  (see Findings). Input scripts answer with `tools install` or `tools
+  later` (and turn the check on without a window). `tests/test_install.c`
+  covers the check on HFS volumes made with `hfs_build()`, the offer, and
+  the installer against a File Manager of its own. Open: "don't ask
+  again"; 9.1 on an installed disk.
+
 ## Findings
 
 Facts later tasks need, added as they are found.
@@ -949,3 +987,61 @@ Facts later tasks need, added as they are found.
   device exits 1.64 million → 36,000, host time 1.00 → 0.96 s; 8.5
   installed 0.87 → 0.86 s, 8.6 1.24 → 1.21 s, 9.1 CD 1.04 → 1.03 s
   (medians of 9 alternating runs on a shared machine, ±1-2%).
+- **Mac OS and a shared volume's MDB:** 8.5, 8.6 and 9.1 write the MDB
+  with the unmounted attribute (`drAtrb` bit 8) clear as their first write
+  after mounting a volume, before anything else, and with it set when they
+  put it away (Shut Down, Restart, Put Away). A volume that was written
+  but whose MDB doesn't say so wasn't put away (the run ended under it).
+  The Finder makes `Desktop DB` and `Desktop DF` on every writable volume
+  it mounts, and Desktop Printing (8.6) an invisible `DesktopPrinters DB`;
+  the Trash and the `Desktop Folder` come when used.
+- **The catalog's order of names** is Apple's FastRelString (the HFS code
+  in Apple's open-source `hfs`, `UCStringCompareData.h`'s `gCompareTable`):
+  case-insensitive, each accented letter after its plain one, a
+  non-breaking space equal to a space. hfsutils' `hfs_charorder` and
+  Linux's `caseorder` order the same (checked for all 65536 pairs);
+  `hfs.c` keeps the ranks. Linux's hfsprogs `fsck.hfs` (Apple's
+  fsck_hfs 540) checks HFS volumes, map nodes and order included;
+  hfsutils' `hfsck -n` fails to read any image, so the test runs it
+  without `-n` on a copy.
+- **Keys in input scripts:** in 9.1's Finder, Return held for 10 million
+  instructions didn't start editing an icon's name; held for 1 million it
+  does (8.5 took Command-D held 20 million).
+- **Running code of syshm's in Mac OS on demand** (installing the guest
+  tools): the Toolbox trap table is in low memory as on 68k Macs (entry
+  `0x0E00 + 4 × (trap & 0x3FF)`), and the 68k emulator dispatches through
+  it on every call, interpreted or recompiled. `_SynchIdleTime` (ABF7),
+  where the idle hook stops, is called from a `_SystemTask` patch in the
+  system heap (r24 points 8 bytes into `_SystemTask`'s entry, on 8.5 and
+  8.6): application time, in the current application's context (often
+  the Finder's), inside its WaitNextEvent. At that hook syshm points the
+  entry at 68k code of its own, in 64 KB it maps at `0x5E000000`, outside
+  everything Mac OS knows of; the dispatch under way goes there. The code
+  puts the entry back first, saves d0-d7/a0-a6, and calls
+  `_CodeFragmentDispatch` (AA5A, a routine descriptor to the native CFM;
+  selector 3 GetMemFragment, 4 CloseConnection, pushed as a word, Pascal
+  conventions) on a PEF container made like the drivers, with
+  `kPrivateCFragCopy`: its InterfaceLib imports resolve, and memory outside
+  RAM is fine for the container. Its main routine is called through a
+  routine descriptor (procInfo 0, ISA 1, the TVector from GetMemFragment
+  written in by the 68k code) by a plain `jsr`, so Mixed Mode switches
+  to native code as for any 68k caller, and back for each File Manager
+  trap. Then CloseConnection, the registers, and a `jmp` to the trap's
+  own routine. FindFolder, PBHGetVInfoSync, PBGetCatInfoSync, the FSp
+  calls, FSWrite and FSClose all work there, and so does
+  LaunchApplication (`launchContinue | launchNoFileFlags |
+  launchDontSwitch`) of a background-only application: Enhancements runs
+  at once (its launches count 2 in the run's statistics). Disk First Aid
+  finds the volume sound afterwards. (hfsutils' `hdel` on an installed
+  8.6 disk leaves something it can't repair; `hattrib` doesn't.)
+- **A running Enhancements can't be replaced** (its resource fork is open:
+  `fBsyErr`), so syshm has it quit first (`helper.quit`: its main
+  routine returns at its next WaitNextEvent, as for a quit Apple event)
+  and goes on once it's gone (0.1 s later; 5 s at most), and starts it
+  again if it couldn't be replaced after all.
+- **RAVE finds engines per program:** QuickDraw 3D RAVE looks through the
+  Extensions folder when a program loads it, so programs opened after the
+  3D engine is installed find it without a restart, even after an earlier
+  program loaded RAVE (SimpleText opening the Teapot from the QuickDraw 3D
+  folder, quit, the engine installed, opened again: 19 calls to the
+  engine). Programs already running don't.
