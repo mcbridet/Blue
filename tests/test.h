@@ -32,6 +32,8 @@ void test_cuda(void);
 void test_mmio(void);
 void test_dbdma(void);
 void test_awacs(void);
+void test_cdimage(void);
+void test_cdaudio(void);
 void test_drivers(void);
 void test_net(void);
 void test_hfs(void);
