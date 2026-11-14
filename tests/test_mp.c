@@ -720,7 +720,7 @@ static void test_swi(void)
 	CHECK_EQ(cpu.gpr[4], mp.blue_process);
 	any[1] = mp.blue_process;
 	CHECK_EQ(call(37, 2, any), MP_NO_ERR);
-	CHECK_EQ(cpu.gpr[4], blue);
+	CHECK_EQ(cpu.gpr[4], mp.coherence_group);
 }
 
 /* Areas: the page ager's record (78) and page ages (93, 94) */
@@ -844,6 +844,43 @@ static void test_processes(void)
 	CHECK_EQ(mp_lookup(&mp, task, MP_TASK)->process, mp.blue_process);
 }
 
+/*
+ * The startup objects, in NanoKernel 2's order (its IDs for them in the
+ * reference run, until its semaphores and idle task); the processors of a
+ * coherence group (62), scheduling on them (44, 45); clock drift
+ * correction (132)
+ */
+static void test_processors(void)
+{
+	mp_init(&mp, TB_HZ);
+	CHECK_EQ(mp.blue_process, 0x00000001u);
+	CHECK_EQ(mp.coherence_group, 0x00010001u);
+	CHECK_EQ(mp.cpu, 0x00020001u);
+	CHECK_EQ(mp.space, 0x00030001u);
+	CHECK_EQ(mp.page_queue, 0x00040001u);
+	CHECK_EQ(mp.blue_task, 0x00050001u);
+
+	uint32_t first[] = { 0, 0 }, next[] = { 0, mp.cpu };
+	CHECK_EQ(call(62, 2, first), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], mp.cpu);
+	CHECK_EQ(call(62, 2, next), MP_INVALID_ID_ERR);
+	CHECK_EQ(cpu.gpr[4], mp.cpu);
+	uint32_t group[] = { mp.coherence_group, 0 }, bad[] = { mp.cpu, 0 };
+	CHECK_EQ(call(62, 2, group), MP_NO_ERR);
+	CHECK_EQ(cpu.gpr[4], mp.cpu);
+	CHECK_EQ(call(62, 2, bad), MP_INVALID_ID_ERR);
+
+	/* scheduling on the processor: it is, and can't stop (the kernel started on it) */
+	uint32_t processor[] = { mp.cpu }, other[] = { mp.coherence_group };
+	CHECK_EQ(call(44, 1, processor), MP_NO_ERR);
+	CHECK_EQ(call(45, 1, processor), MP_INSUFFICIENT_RESOURCES_ERR);
+	CHECK_EQ(call(45, 1, other), MP_INVALID_ID_ERR);
+
+	uint32_t off[] = { 0 }, ppb[] = { 1500 };
+	CHECK_EQ(call(132, 1, off), MP_NO_ERR);
+	CHECK_EQ(call(132, 1, ppb), MP_NO_ERR);
+}
+
 void test_mp(void)
 {
 	test_tasks();
@@ -854,4 +891,5 @@ void test_mp(void)
 	test_swi();
 	test_areas();
 	test_processes();
+	test_processors();
 }

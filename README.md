@@ -21,7 +21,8 @@ Linux today; other hosts / bare metal later
 - **ROM:** the "Mac OS ROM" file from the startup disk's System Folder, as
   a New World Mac's firmware starts it (see Status); `--rom` for one of your
   own. Tested: 8.5's own (Toolbox release 0x44F3), 8.6's (0x44B5), 9.1's
-  (6.1f9, in parcels), and `MOS.rom`, a 1.x file (0x44F1, compatible with
+  (6.1f9, in parcels), MacOS9Lives 9.2.2's (10.2f1, in parcels, 0x45F6),
+  and `MOS.rom`, a 1.x file (0x44F1, compatible with
   `iMac,1 PowerMac1,1 PowerBook1,1`; the family SheepShaver uses).
 - **OS:** the retail Mac OS 8.5 CD (`85.iso`). It boots with the ROM file it
   carries itself (1.1.x, no `<COMPATIBLE>` list) or with `MOS.rom`.
@@ -29,7 +30,8 @@ Linux today; other hosts / bare metal later
   builds. Retail 8.5 predates the Blue & White G3, so an iMac identity is the
   safer first choice; B&W G3 (`PowerMac1,1`) for 8.5.1 and later.
 - **OS ladder:** 8.5 → 8.6 → 9.0.4 on the NanoKernel v1 interface, then the
-  v2 interface for 9.2.2.
+  v2 interface for 9.1 and 9.2.2 (both CDs start up to the Finder; see
+  below).
 
 ## Status
 
@@ -246,6 +248,64 @@ menu). The end-of-run statistics count the chip's reads and writes.
 Not done yet: installing 9.1 onto a disk image with its installer and
 starting up from that.
 
+### Mac OS 9.2.2 (from its CD)
+
+The MacOS9Lives 9.2.2 CD (`922.iso`, "Mac OS 9.2.2 Universal", for Macs
+Apple's 9.2.2 doesn't support; its ROM file is Mac OS ROM 10.2f1, a
+modified 10.2.1 compatible with any `MacRISC` model) starts up to the
+Finder on the same kernel, and opens its Read Me in SimpleText, as under
+QEMU:
+
+```
+build/syshm boot --cdrom 922.iso --max 3000000000 --screenshot finder.png
+```
+
+The Finder is up by instruction 1.5 billion; in real time with fast start
+after 13 s of guest time (0.9 s on the host), and then the host sleeps
+most of the time. Its ROM file carries NanoKernel 2.28 (the version
+syshm's kernel reports), and wants a few things 9.1's doesn't:
+
+- The info records as NanoKernel 2.28 has them: HWInfo version 0x0108 (0xC0
+  bytes), ProcessorInfo 0x0112 (0xA0 bytes, with the processor's clock
+  rates) and SystemInfo 0x0107. The ROM's 68k startup reads HWInfo's new
+  CascadeInfo pointer (`+0xA8`: interrupt controllers cascaded from an
+  OpenPIC, none on an iMac); with the old, shorter record it read the end of
+  RAM instead and stopped. Earlier ROMs still get NanoKernel 1's records.
+- Multiprocessing Services calls 62 (`MPGetNextCpuID`), 44 and 45
+  (`MPStartScheduling`, `MPStopScheduling`: the power manager stops the
+  other processors before it sleeps; the one the kernel started on can't
+  be) and 132 (`NKSetClockDriftCorrection`). The kernel now has the
+  machine's coherence group and processor, as a NanoKernel 2 has them
+  before its first call, so the blue task, page queue and address space
+  have the real kernel's IDs.
+- A task ('accu') that measures the timebase's drift against KeyLargo's
+  counter at Mac I/O `+0x15038`. On the iMac's Mac I/O that's the floppy
+  controller's cell, which now reads as zeros (it faulted before): the task
+  finds the counter stopped and corrects nothing.
+- Its ROM file has a lanLib for the iMac's own Ethernet controller (BMAC+),
+  which the Trampoline puts in the Ethernet node in place of the firmware's.
+  syshm has no BMAC, so its own lanLib stays.
+- Kernel call 7 (CacheDispatch) with a selector for no cache (4), from the
+  power manager as it dozes after half an hour of idling: -2, as both
+  NanoKernels answer.
+
+The CD installs with Apple Software Restore (its Read Me says how), which
+copies the CD's disk image onto a volume, erasing it. Drive Setup, which
+opens too, lists no drives (it knows Apple's own ATA and SCSI drives only)
+and isn't needed:
+
+```
+build/syshm disk create hd922.img 2G "Macintosh HD"
+build/syshm boot --disk hd922.img --cdrom 922.iso --window --nvram syshm.nvram
+```
+
+In Apple Software Restore, click Switch Disk until the destination disk is
+"Macintosh HD", then Restore, and OK. A scripted run restored 671 MB in
+under 20 billion instructions; the volume is then called MacOS9Lives. Then
+`build/syshm boot --disk hd922.img --window --nvram syshm.nvram` starts it,
+to the Finder in real time. In instruction time (scripted runs) its startup
+waits before the Finder until a key is pressed (plan.md, Findings).
+
 ### Networking
 
 In real time (`--window`, `--realtime`), the guest's built-in Ethernet is
@@ -344,31 +404,64 @@ at the end. Text files keep their line endings (a host's LF shows as boxes
 in SimpleText). Folders' Finder info (window positions, custom icons) and
 the Locked checkbox aren't written back.
 
-### Floppies
+### Floppies and CDs: removable drives
 
-`--floppy IMAGE` puts a floppy disk image in a floppy drive, mainly to
-install software that came on floppies; give it several times for a set of
-disks. The first is in the drive at startup; the others are listed in the
-window's menu (F12), where a click puts one in, and dragging an image file
-onto the window puts it in too. `--floppy-drive` gives a drive that's empty
-at startup (with `--floppy` images only listed). Mac OS ejects a disk as
-on any Mac: Put Away or dragging it to the Trash, Eject in the Finder's
-Special menu, an installer's own eject, an Initialize dialog's Eject. The
-drive is then empty, and syshm says so (`floppy: Mac OS ejected ...`).
+The floppy drive (`--floppy`) and the CD-ROM drives (`--cdrom`) take disc
+images that come and go while Mac OS runs, mainly to install software that
+came on floppies or on several CDs. Mac OS ejects a disc as on any Mac: Put
+Away or dragging it to the Trash, Eject in the Finder's Special menu, an
+installer's own eject, an Initialize dialog's Eject. The drive is then
+empty, and syshm says so (`cdrom: Mac OS ejected ut.iso`). To put an image
+in, drop it on the window: one of a floppy's size (2880K or less) goes in
+the floppy drive, any other in a CD-ROM drive, the first that's empty (else
+one whose disc Mac OS isn't using). Mac OS learns of a disc going in as
+from a real drive, by a disk-inserted event, so whatever application is in
+front and waiting for one (an installer, Disk Copy) gets it, and mounts it.
 
 ```
-build/syshm boot --disk hd.img --floppy "Install 1.image" --floppy "Install 2.image" --window
+build/syshm boot --disk hd.img --cdrom "Game CD 1.iso" --window
+build/syshm boot --disk hd.img --cdrom-drive --floppy "Install 1.image" --floppy "Install 2.image" --window
 ```
 
-A multi-disk installer ejects disk 1 and asks for disk 2: press F12 and
-click disk 2 (the menu closes and Mac OS goes on), or drag disk 2's image
-onto the window. Mac OS learns of a disk going in as from a real drive,
-by a disk-inserted event, so whatever application is in front and waiting
-for a disk (an installer, Disk Copy) gets it. syshm won't take a disk out
-that Mac OS has mounted (it's using it; the menu says so, and how to
-eject it there); one that isn't mounted (unreadable, say) can be ejected or
-replaced from the menu. Input scripts have `floppy insert FILE` (the rest
-of the line) and `floppy eject`, which follow the same rules.
+The window's menu (F12) shows what's in each drive, with an Eject button.
+syshm won't take a disc out that Mac OS has mounted (it's using it: the
+button is disabled, and the menu says to put it away in Mac OS); one that
+isn't mounted (unreadable, say, or just put in) it can. If an image can't
+go in (no empty drive, a drive Mac OS is using, not an image syshm takes),
+the menu opens to say why.
+
+`--floppy IMAGE` puts a floppy disk image in the floppy drive; given
+several times, for a set of disks, the first is in the drive at startup
+and the others go in, in turn, as Mac OS ejects the one in (a second
+later, as from a quick hand): a multi-disk installer that ejects disk 1 and
+asks for disk 2 gets it with nothing to do, and the menu lists what's still
+to come. Dropping an image puts that one in instead (when the drive is
+free), and the rest follow as before. `--floppy-drive` gives a floppy drive
+with nothing in it, `--cdrom-drive` an empty CD-ROM drive (one of the four
+disks). Input scripts have `floppy insert FILE` and `cdrom insert FILE` (the
+rest of the line), `floppy eject` and `cdrom eject` (the first CD-ROM drive
+whose disc Mac OS isn't using), which follow the same rules.
+
+CD-ROM drives look as they did before (Mac OS shows a CD as a disk, or
+with its own icon, the same in at startup or put in later) but say their
+disc is ejectable, and that a restart keeps it in. A CD-ROM drive gives
+Mac OS a drive for each HFS partition of the disc in it at startup (one if
+it's empty); a disc put in later with more shows its first ones, and a
+disc comes out once none of its volumes is in use. A CD put in while Mac OS runs is never
+the startup disk (it's shown to Mac OS once applications run); one in at
+startup may be, as before, and Mac OS won't eject the startup disk ("The
+startup disk cannot be removed from the desktop"). CD images are raw: an
+`.iso`, `.toast`, `.cdr` or `.img` with or without a partition map;
+compressed ones, UDIF `.dmg` (`hdiutil convert -format UDTO` makes a raw
+`.cdr`) and raw 2352-byte sectors (`.bin`/`.cue`) are refused, saying what
+they are. Ejectable drives change what Mac OS does all along (it looks at
+the drives' flags as it runs), so CD-ROM drives are ejectable only where
+discs can be swapped: in a window or real time, with `--cdrom-drive`, or
+with an input script that swaps CDs (`cdrom` commands); other
+instruction-time runs keep them fixed, as before, the same instruction for
+instruction.
+
+#### Floppies
 
 Images: raw ones of 400K, 720K, 800K, 1440K and 2880K disks (`.img`,
 `.dsk`, `.ima`, `.flp`), and Disk Copy 4.2 ones (`.image`: an 84-byte
@@ -395,8 +488,9 @@ blank.img 1440K "Untitled"` makes a blank formatted floppy (400K, 720K,
 
 The iMac has no floppy controller, so none is emulated: the drive is a
 third kind of drive of syshm's own disk driver (`src/disk.c`, images in
-`src/floppy.c`), at PCI device 7, much as a USB floppy drive is on a real
-iMac, and needs nothing installed in Mac OS. It answers as a floppy drive
+`src/floppy.c`, which drive an image goes in `src/drives.c`), at PCI
+device 7, much as a USB floppy drive is on a real iMac, and needs nothing
+installed in Mac OS. It answers as a floppy drive
 (DriverGestalt 'devt' 'flop', a floppy disk's icon and the drive's, in
 color, the 'where' of Get Info, the format list) and says its disk is
 ejectable, and Mac OS keeps the disk in at a restart. A floppy is never the
@@ -406,6 +500,25 @@ Transfers take guest time at the disks' rate. The status bar's floppy light
 (with a floppy drive only) is dimmed while it's empty. Disk Copy can't
 make floppies from images in this drive (it looks for Apple's floppy
 drives): put the image in instead, or a copy of it.
+
+### MacBench
+
+ZD MacBench 5.0 runs (tested from a shared folder, on an installed 8.5):
+it registers, opens its main window and runs its Processor test (the
+others are untried). Right after registering it uses Gary Davidian's
+skeleton key, a kernel call that gives a program supervisor mode, to read
+the processor's L2CR and HID0 (see the kernel calls and privileged
+instructions below); without it, MacBench quit with "an error of type 1".
+Its scores are relative to its reference machine, a Power Macintosh G3/300
+(1000 in every test). Benchmark in real time, in a window: in instruction
+time, guest time follows the instruction count, so the guest processor
+looks like a 16.6 MIPS one (Processor: 62, 6% of the G3/300); in one
+real-time run on an M5, with other work on the host, Processor scored
+18,324 (the test took about 25 s). MacBench times things by polling the
+VIA's timer in a tight loop; in real time, a loop whose device register
+read fell on the last instruction before a sync point kept syshm from ever
+reaching one (guest time stood still, and the window froze); it no longer
+does.
 
 ### Guest tools
 
@@ -705,7 +818,19 @@ lacks: syshm says to install it again (and a window offers to update it).
   68k emulator from the ROM.
 - Native kernel calls: `ReturnFromException` (all verdicts), `RunAlternateContext`,
   `ResetSystem`, `VMDispatch` (VM off; `VMAllocateMemory` supported),
-  `PrioritizeInterrupts` and `RTASDispatch`.
+  `PrioritizeInterrupts` and `RTASDispatch`. `ResetSystem` with Gary
+  Davidian's skeleton key (r3 'Gary', r4 0x05051956) doesn't reset: its
+  caller goes on with MSR = (MSR & ~r5) | r7, as with both NanoKernels.
+- Privileged instructions: in user mode, `mfmsr` reads the user MSR and the
+  rest raise the privileged instruction exception. In supervisor mode (the
+  skeleton key's MSR with PR off) the kernel does them (`src/priv.c`):
+  `mfmsr`, `mtmsr` (PR on again ends it), `rfi`, the 750's supervisor SPRs
+  with an iMac's values (PVR, HID0, HID1 for 266 MHz on a 66 MHz bus, L2CR
+  for its 512 KB L2 at half speed, the thermal assist unit reading 40 °C,
+  the decrementer, SPRGs, SRR0/1, BATs...), segment registers, and `tlbie`,
+  `tlbsync` and `dcbi`, which do nothing; writes are kept, without effect.
+  Real mode is the same address space (identity for RAM). While the MSR has
+  EE off, interrupts wait.
 - Exceptions go the NanoKernel way: to the running context's handler if
   enabled, otherwise ending the native (alternate) context. An interrupt that
   arrives while native code runs ends that context with exception 0, so the
@@ -776,7 +901,8 @@ lacks: syshm says to install it again (and a window offers to update it).
     the 8.5 CD's System refuses to start from a writable drive, as from a
     copy of the CD), and a host folder (`--share`; see Shared folder),
     whose blocks come from `src/share.c` rather than a file; and a floppy
-    drive (`--floppy`; see Floppies), whose disk comes and goes.
+    drive (`--floppy`): the floppy and CD-ROM drives' discs come and go
+    (see Floppies and CDs).
     An Apple partition map gives one drive per HFS partition; otherwise the
     file is one volume. (When there's a map entry at offset 512, entries are
     512 bytes apart and count 512-byte blocks even if the driver descriptor
@@ -881,8 +1007,8 @@ lacks: syshm says to install it again (and a window offers to update it).
   (a PNG on the Desktop, or in the current directory without one, named
   for when it was taken); fullscreen (at the desktop's resolution); the
   status bar; whether the pointer is captured while the Mac hides its
-  cursor; and with a floppy drive, what's in it, Eject, and the floppy
-  images to put in (see Floppies). In real time guest time doesn't count
+  cursor; and what's in the floppy and CD-ROM drives, each with Eject (see
+  Floppies and CDs). In real time guest time doesn't count
   the pause, so the Mac's clock is that much behind afterwards.
   The status bar (shown unless `--no-status-bar`; the menu toggles it) sits
   below the screen, so the window grows by its height rather than covering
@@ -944,7 +1070,10 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
   `sound` child; DecoderInfo long 39 holds the chip's address.
 - Ethernet: `ethernet` at Mac I/O `+0x11000` (`bmac+`, DMA channels 2 and 3;
   nothing answers at those addresses, lanLib being the driver's way to the
-  hardware), station address 52:54:00:12:34:56.
+  hardware), station address 52:54:00:12:34:56. Its lanLib is syshm's even
+  when the ROM file has one for `bmac+` (9.2.2's).
+- Mac I/O's floppy controller cell (`+0x15000`), for ROM files with parcels
+  only: reads as zeros, writes are ignored (the iMac has no floppy drive).
 - NVRAM, for ROM files with parcels only: `nvram` at Mac I/O `+0x60000`
   (`device_type` and `compatible` `nvram`, `reg` 0x60000 0x20000, `#bytes`
   0x2000, `AAPL,address`), as on Heathrow and Paddington Macs: 8 KB, byte k
@@ -968,6 +1097,10 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 - The ROM installs SCSI Manager 4.3 (no buses), as on real machines; the
   Apple CD/DVD Driver extension needs `_SCSIAtomic` to exist.
 - The boot-info area (`0xFF800000`) holds the tables and the device tree.
+- Info records: NanoKernel 1's versions and lengths, or for ROM files with
+  parcels NanoKernel 2.28's (HWInfo 0x0108 with CascadeInfo, a table of no
+  cascaded interrupt controllers, ProcessorInfo 0x0112 with clock rates,
+  SystemInfo 0x0107), all in the one InfoRecord page.
 - Quiet writes: ConfigInfo maps the ROM write-through and read-only (PP 3),
   which the NanoKernel takes to mean that stores to it are dropped rather
   than raising an exception (and counted in NanoKernelInfo's
@@ -1038,6 +1171,7 @@ build/syshm boot --rom MOS.rom --cdrom 85.iso --window   # interactive
 build/syshm boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
 build/syshm boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
 build/syshm boot --rom MOS.rom --cdrom 85.iso --floppy disk1.img --floppy disk2.img --window   # a floppy drive
+build/syshm boot --disk hd.img --cdrom-drive --window       # an empty CD-ROM drive: drop CD images on the window
 build/syshm disk create blank.img 1440K "Untitled"          # a blank floppy
 build/syshm run-raw code.bin 1000                # SYSHM_TRACE=1 logs every instruction
 ```
@@ -1058,12 +1192,14 @@ counts, for example:
 3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
 0 tools install                  # the answer to the offer to install the guest tools (or "later")
 3900000000 floppy insert Disk 2.img
+3950000000 cdrom insert Game CD 2.iso
 4000000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)
 4100000000 print-clipboard       # prints the host's clipboard, with what Mac OS copied since
 ```
 
-(`floppy insert` takes the rest of its line as the image's path, comments
-included; `floppy eject` takes it out: see Floppies.)
+(`floppy insert` and `cdrom insert` take the rest of their line as the
+image's path, comments included; `floppy eject` and `cdrom eject` take one
+out: see Floppies and CDs.)
 
 `clipboard` and `print-clipboard` stand in for the host's clipboard (a
 scripted run leaves the window's alone), for syshm Enhancements to share
@@ -1086,8 +1222,7 @@ its interrupt enabled, while sound DMA moves, or after something touched
 them. Kernel calls made in place, without an exit, only happen while an
 exit would do none of that; device register accesses made in place update
 devices as their exits would. An access on the last instruction before a
-sync point still exits, after which the loop goes on to the next sync
-point without servicing that one, as it always has.) Tracing and trap logging use the
+sync point still exits, and the loop then services that sync point.) Tracing and trap logging use the
 interpreter.
 
 Debugging `boot`: `--trace-from N --trace-reg 24` logs instructions with the
@@ -1160,12 +1295,13 @@ the one in the startup disk's System Folder.
 src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           ppc.c + ppc_exec.inc + ppc_fp.c (interpreter), jit.c + a64.h
           (AArch64 JIT), nk.c (native kernel), mp.c (its Multiprocessing
-          Services, NanoKernel 2's),
+          Services, NanoKernel 2's), priv.c (supervisor mode: the skeleton key),
           bootinfo.c + devtree.c (Trampoline replacement, device tree),
           rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
           dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
           (configuration space), nvram.c (devices), ndrv.c (PEF driver generator),
           video.c, disk.c (native drivers), floppy.c (floppy images),
+          drives.c (removable drives: where images go, the menu),
           net.c (Ethernet's lanLib,
           libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
           reader: the startup disk's ROM file), share.c (shared folder),

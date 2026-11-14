@@ -97,8 +97,8 @@ struct nk_boot_options {
 	bool log_hostcalls;     /* log calls from the generated drivers */
 	const char *screenshot; /* save the screen here (PNG) when the run ends */
 #define NK_MAX_DISKS 4
-	const char *disk[NK_MAX_DISKS];         /* disk images, in drive order */
-	bool cdrom[NK_MAX_DISKS];               /* ... attached read-only as CDs */
+	const char *disk[NK_MAX_DISKS];         /* disk images, in drive order (NULL: an empty CD-ROM drive) */
+	bool cdrom[NK_MAX_DISKS];               /* ... attached read-only as CDs (see cd_swap in nk.c) */
 	unsigned disks;
 	const struct disk_backend *share;       /* a shared folder's drive, after the disks (counts towards the 4) */
 	bool rom_from_disk;     /* the ROM file came from a drive's System Folder: ... */
@@ -106,7 +106,7 @@ struct nk_boot_options {
 #define NK_MAX_FLOPPIES 16
 	const char *floppy[NK_MAX_FLOPPIES];    /* floppy images (floppy.h): the first is in the drive at startup */
 	unsigned floppies;
-	bool floppy_drive;      /* a floppy drive, empty at startup, with or without images (see disk.h) */
+	bool floppy_drive;      /* a floppy drive, even without images (see disk.h) */
 	const char *dump_ram;   /* write guest RAM here when the run ends */
 	const char *nvram;      /* NVRAM file: loaded at start (if present), saved at the end */
 	bool window;            /* show the screen in a host window and take input from it */

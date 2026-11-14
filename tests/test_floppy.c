@@ -332,7 +332,7 @@ static void test_driver(void)
 	mem_map(&mem, 0, 0x40000, MEM_RW);
 	memset(mem_ptr(&mem, 0), 0, 0x40000);
 	static struct disk d;
-	disk_open_removable(&d, &mem);
+	disk_open_floppy(&d, &mem);
 	load_driver(&d, &mem);
 
 	/* Initialize: the drive is queued, empty */

@@ -30,6 +30,9 @@ int floppy_probe(int fd, struct floppy_image *img, char *why, size_t len);
 /* ... the same for a file */
 int floppy_check(const char *path, char *why, size_t len);
 
+/* What an open image is if it's one syshm doesn't take, a CD's either (compressed, an archive, ...); NULL if not */
+const char *floppy_other_image(int fd);
+
 /* Whether a raw image of this many bytes is a floppy's */
 bool floppy_raw_size(uint64_t bytes);
 

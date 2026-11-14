@@ -39,6 +39,7 @@ void test_net(void);
 void test_hfs(void);
 void test_hfsread(void);
 void test_floppy(void);
+void test_drives(void);
 void test_install(void);
 void test_share(void);
 void test_tools(void);
@@ -52,5 +53,6 @@ void test_jit(void);
 void test_ohci(void);
 void test_mp(void);
 void test_nvram(void);
+void test_priv(void);
 
 #endif

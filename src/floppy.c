@@ -143,10 +143,46 @@ static int describe_volume(int fd, struct floppy_image *img, char *why, size_t l
 	return 0;
 }
 
+/* What an image syshm doesn't take is (compressed, an archive, another kind of image), from its first bytes */
+static const char *other_image(int fd, uint64_t size, const uint8_t *h)
+{
+	static const uint8_t sync[12] = { 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0 };
+	uint8_t tail[4];
+	if (h[0] == 0x1F && h[1] == 0x8B)
+		return "gzip-compressed";
+	if (!memcmp(h, "PK\3\4", 4))
+		return "a ZIP archive";
+	if (!memcmp(h, "BZh", 3))
+		return "bzip2-compressed";
+	if (!memcmp(h, "SIT!", 4) || !memcmp(h, "StuffIt", 7))
+		return "a StuffIt archive";
+	if (!memcmp(h, "(This file must be converted with BinHex", 40))
+		return "BinHex-encoded";
+	if (!memcmp(h, "2IMG", 4))
+		return "an Apple II 2IMG image";
+	if (!memcmp(h, sync, sizeof sync))
+		return "raw 2352-byte CD sectors (a .bin image)";
+	if (h[0] <= 2 && (h[1] == 1 || h[1] == 2 || h[1] == 3 || (h[1] >= 0x10 && h[1] <= 0x12)) &&
+	    (be16(h + 2) == 400 || be16(h + 2) == 720 || be16(h + 2) == 800 || be16(h + 2) == 1440))
+		return "a DART image";
+	if (size >= 512 && pread(fd, tail, 4, (off_t)(size - 512)) == 4 && !memcmp(tail, "koly", 4))
+		return "a UDIF image (.dmg)";
+	return NULL;
+}
+
+const char *floppy_other_image(int fd)
+{
+	struct stat st;
+	uint8_t h[MACBINARY_HEADER] = { 0 };
+	if (fstat(fd, &st) || pread(fd, h, sizeof h, 0) < 0)
+		return NULL;
+	return other_image(fd, (uint64_t)st.st_size, h);
+}
+
 int floppy_probe(int fd, struct floppy_image *img, char *why, size_t len)
 {
 	struct stat st;
-	uint8_t h[MACBINARY_HEADER], tail[4];
+	uint8_t h[MACBINARY_HEADER];
 	memset(img, 0, sizeof *img);
 	if (fstat(fd, &st) || !S_ISREG(st.st_mode))
 		return fail(why, len, "not a file");
@@ -154,24 +190,7 @@ int floppy_probe(int fd, struct floppy_image *img, char *why, size_t len)
 	if (size < sizeof h || pread(fd, h, sizeof h, 0) != (ssize_t)sizeof h)
 		return fail(why, len, "too small to be a floppy image");
 
-	const char *other = NULL;
-	if (h[0] == 0x1F && h[1] == 0x8B)
-		other = "gzip-compressed";
-	else if (!memcmp(h, "PK\3\4", 4))
-		other = "a ZIP archive";
-	else if (!memcmp(h, "BZh", 3))
-		other = "bzip2-compressed";
-	else if (!memcmp(h, "SIT!", 4) || !memcmp(h, "StuffIt", 7))
-		other = "a StuffIt archive";
-	else if (!memcmp(h, "(This file must be converted with BinHex", 40))
-		other = "BinHex-encoded";
-	else if (!memcmp(h, "2IMG", 4))
-		other = "an Apple II 2IMG image";
-	else if (h[0] <= 2 && (h[1] == 1 || h[1] == 2 || h[1] == 3 || (h[1] >= 0x10 && h[1] <= 0x12)) &&
-		 (be16(h + 2) == 400 || be16(h + 2) == 720 || be16(h + 2) == 800 || be16(h + 2) == 1440))
-		other = "a DART image";
-	else if (size >= 512 && pread(fd, tail, 4, (off_t)(size - 512)) == 4 && !memcmp(tail, "koly", 4))
-		other = "a UDIF image (.dmg)";
+	const char *other = other_image(fd, size, h);
 	if (other) {
 		snprintf(why, len, "%s: syshm takes raw floppy images (400K, 720K, 800K, 1440K) and Disk Copy 4.2 "
 			 "images; convert it to one of those first", other);
@@ -189,8 +208,8 @@ int floppy_probe(int fd, struct floppy_image *img, char *why, size_t len)
 		}
 	} else if (!dc42_header(h, 0, size, img) || DC42_HEADER + img->data_size + img->tag_size != size) {
 		if (size > MAX_FLOPPY) {
-			snprintf(why, len, "too big for a floppy (%llu MB): disk and CD images go on syshm's command "
-				 "line (--disk, --cdrom)", (unsigned long long)(size >> 20));
+			snprintf(why, len, "too big for a floppy (%llu MB): it would go in a CD-ROM drive",
+				 (unsigned long long)(size >> 20));
 			return -1;
 		}
 		if (!floppy_raw_size(size)) {

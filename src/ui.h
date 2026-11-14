@@ -37,13 +37,13 @@ struct ui_renderer {
 
 enum ui_key { UI_KEY_TAB, UI_KEY_LEFT, UI_KEY_RIGHT, UI_KEY_UP, UI_KEY_DOWN, UI_KEY_SPACE, UI_KEY_ENTER };
 
-#define UI_FLOPPIES 16                  /* floppy images the menu lists */
+#define UI_DRIVES 5                     /* drives with removable media: the floppy drive, CD-ROM drives */
 
 /* What the user chose in the menu (or a prompt's buttons) */
 enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI_FULLSCREEN, UI_STATUS_BAR,
-		 UI_CAPTURE_MOUSE, UI_RELEASE_MOUSE, UI_TURN_OFF, UI_PROMPT_YES, UI_PROMPT_NO, UI_FLOPPY_EJECT,
-		 UI_FLOPPY_INSERT,              /* (+ the image's number in the list) */
-		 UI_FLOPPY_INSERT_LAST = UI_FLOPPY_INSERT + UI_FLOPPIES - 1 };
+		 UI_CAPTURE_MOUSE, UI_RELEASE_MOUSE, UI_TURN_OFF, UI_PROMPT_YES, UI_PROMPT_NO,
+		 UI_EJECT,                      /* (+ the drive's number in the menu's list) */
+		 UI_EJECT_LAST = UI_EJECT + UI_DRIVES - 1 };
 
 /* What becomes of the mouse after the menu */
 enum ui_mouse {
@@ -52,14 +52,18 @@ enum ui_mouse {
 	UI_MOUSE_RELEASED,              /* ... but the user let it go */
 };
 
-/* The floppy drive, as the menu shows it */
-struct ui_floppy {
-	char in[64];                    /* the image in the drive ("": it's empty) */
-	bool locked;                    /* ... read-only */
+/* The drives with removable media, as the menu shows them */
+struct ui_drive {
+	char name[24];                  /* "Floppy drive", "CD-ROM drive 2" */
+	char in[64];                    /* the image in it ("": it's empty) */
+	bool locked;                    /* ... read-only (CDs always are: not said) */
 	bool in_use;                    /* ... mounted in Mac OS, which is then the one to eject it */
-	int current;                    /* ... its number in the list (-1: none) */
-	unsigned count;                 /* the images to put in (--floppy's, and those dropped on the window) */
-	char names[UI_FLOPPIES][64];
+};
+
+struct ui_drives {
+	unsigned count;
+	struct ui_drive drive[UI_DRIVES];
+	char next[200];                 /* the floppy images that go in as Mac OS ejects the one in ("": none) */
 };
 
 /* The status bar's lights */
@@ -92,7 +96,7 @@ struct ui_state {
 	const char *news;               /* (where a screenshot went, say), or NULL */
 	/* a question or news over the screen (the guest runs on), or NULL: its buttons (`no` may be NULL) */
 	const char *prompt, *prompt_yes, *prompt_no;
-	const struct ui_floppy *floppy; /* the floppy drive, or NULL without one */
+	const struct ui_drives *drives; /* the drives with removable media, or NULL without any */
 };
 
 #define UI_STATUS_BAR_HEIGHT 24         /* in the window's units */
