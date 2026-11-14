@@ -171,6 +171,7 @@ def relocations(pef):
         code = struct.unpack_from('>%dH' % count, loader, instr + first)
         where = out.setdefault(sec, {})
         st = dict(pos=0, imp=0, c=0, d=1)
+        limit = pef.sections[sec]['total'] if sec < len(pef.sections) else 0
 
         def put(target):
             where[st['pos']] = target
@@ -178,7 +179,7 @@ def relocations(pef):
 
         def run(lo, hi):
             i = lo
-            while i < hi:
+            while i < hi and st['pos'] <= limit:        # (past the section: not relocations)
                 w = code[i]
                 i += 1
                 if w >> 14 == 0:                        # RelocBySectDWithSkip
@@ -226,6 +227,8 @@ def relocations(pef):
                         i += 1
                     # (times more, after the first: so the relocations of Apple's fragments land on pointers)
                     for _ in range(times):
+                        if st['pos'] > limit:
+                            break
                         run(at - blocks, at)
                 elif w >> 10 == 0x28:                   # RelocSetPosition
                     st['pos'] = (w & 0x3FF) << 16 | code[i]
@@ -418,7 +421,12 @@ class Guest:
         for f in self.frags:
             known.setdefault(hashlib.sha1(f.blob[f.offset:f.offset + f.length]).digest(), f)
         for off in self.find_pefs(blob):
-            length = pef_extent(blob, off)
+            try:
+                length = pef_extent(blob, off)
+            except struct.error:
+                continue
+            if off + length > len(blob):
+                continue                        # (a header at the end of RAM, or not one)
             same = known.get(hashlib.sha1(blob[off:off + length]).digest())
             self.add_pef(blob, off, same.name if same else None,
                          'in RAM' + (' (%s)' % same.origin if same else ''), off)
