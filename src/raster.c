@@ -1,5 +1,10 @@
 #include "raster.h"
 
+/* (the same pixels on every host: no fused multiply-adds where some have them; GCC fuses none in ISO C) */
+#ifdef __clang__
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
