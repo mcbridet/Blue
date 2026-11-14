@@ -25,6 +25,7 @@ enum display_event_type {
 	DISPLAY_EVENT_RELEASE_MOUSE,    /* the user pressed Control and Option (Ctrl and Alt) together */
 	DISPLAY_EVENT_MENU,             /* the menu's to open or close (F12; or Esc or Resume, open) */
 	DISPLAY_EVENT_MENU_ACTION,      /* something chosen in the menu: action (but Resume, Fullscreen, Status bar) */
+	DISPLAY_EVENT_DROP_FILE,        /* a file was dropped on the window: path (until the next event) */
 };
 
 struct display_event {
@@ -34,6 +35,7 @@ struct display_event {
 	bool down;
 	uint8_t adb_key;                /* ADB key code */
 	enum ui_action action;
+	const char *path;
 };
 
 /*
@@ -88,6 +90,9 @@ void display_refresh(struct display *d);
 
 /* What the menu shows of the machine: the mouse, and news (copied; NULL for none) */
 void display_menu_state(struct display *d, enum ui_mouse mouse, const char *status);
+
+/* ... and of the floppy drive (copied; NULL: there's none) */
+void display_floppy_state(struct display *d, const struct ui_floppy *f);
 
 /*
  * The status bar (with the menu's SDL only), below the screen: shown or

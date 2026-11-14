@@ -166,6 +166,39 @@ static void render(struct ui *u, ImDrawData *dd)
 	u->r.RenderSetScale(u->r.renderer, 1, 1);
 }
 
+/* The floppy drive's part of the menu: what's in it, and the images to put in */
+static enum ui_action floppy_menu(const struct ui_floppy *f, const ImVec2 &wide)
+{
+	enum ui_action action = UI_NONE;
+	ImGui::Separator();
+	if (f->in[0]) {
+		ImGui::Text("Floppy drive: %s%s", f->in, f->locked ? " (locked)" : "");
+		ImGui::BeginDisabled(f->in_use);
+		if (ImGui::Button("Eject", wide))
+			action = UI_FLOPPY_EJECT;
+		ImGui::EndDisabled();
+		if (f->in_use)
+			ImGui::TextDisabled("(Mac OS is using it: drag it to the Trash there to eject it)");
+	} else {
+		ImGui::TextUnformatted("Floppy drive: empty");
+	}
+	bool others = f->count > (f->current >= 0 ? 1u : 0u);
+	if (others)
+		ImGui::TextDisabled(f->in[0] ? "Put in instead:" : "Put in:");
+	for (unsigned k = 0; k < f->count && k < UI_FLOPPIES; k++) {
+		if ((int)k == f->current)
+			continue;
+		ImGui::PushID((int)k);
+		ImGui::BeginDisabled(f->in_use);
+		if (ImGui::Button(f->names[k], wide))
+			action = (enum ui_action)(UI_FLOPPY_INSERT + k);
+		ImGui::EndDisabled();
+		ImGui::PopID();
+	}
+	ImGui::TextDisabled(others ? "(or drop an image on the window)" : "(drop an image on the window to put it in)");
+	return action;
+}
+
 /* The menu: the guest is paused while it's open */
 static enum ui_action menu(const struct ui_state *s)
 {
@@ -185,6 +218,11 @@ static enum ui_action menu(const struct ui_state *s)
 		action = UI_RESTART;
 	if (ImGui::Button("Shut down", wide))
 		action = UI_SHUT_DOWN;
+	if (s->floppy) {
+		enum ui_action chosen = floppy_menu(s->floppy, wide);
+		if (chosen != UI_NONE)
+			action = chosen;
+	}
 
 	ImGui::Separator();
 	if (ImGui::Button("Screenshot", wide))
@@ -296,12 +334,14 @@ static float bar_rate_widest(ImFont *font, float k)
 static float bar_contents(const struct ui_state *s, ImDrawList *dl, ImFont *font, float x, float mid, float k,
 			  bool brief)
 {
-	static const char *const names[UI_LEDS] = { "CPU", "Disk", "CD-ROM", "Network" };
-	static const char *const brief_names[UI_LEDS] = { "CPU", "Disk", "CD", "Net" };
+	static const char *const names[UI_LEDS] = { "CPU", "Disk", "CD-ROM", "Floppy", "Network" };
+	static const char *const brief_names[UI_LEDS] = { "CPU", "Disk", "CD", "FD", "Net" };
 	static const char *const widest_speed[] = { "000 MHz", "00.00 GHz", nullptr };
 	const float x0 = x, size = BAR_TEXT * k;
 	for (int n = 0; n < UI_LEDS; n++) {
 		const struct ui_light *l = &s->bar.light[n];
+		if (l->hidden)
+			continue;
 		if (n)
 			x += 20 * k;
 		if (dl) {
@@ -345,7 +385,8 @@ static float bar_contents(const struct ui_state *s, ImDrawList *dl, ImFont *font
 
 /*
  * The status bar, along the bottom of the window: a light for each device
- * (green, or amber while written to; dimmed if there's no such device),
+ * (green, or amber while written to; dimmed if there's no such device, or
+ * no disk in the floppy drive, whose light is there only with one),
  * with what it reads and writes a second, and the processor's lit as
  * brightly as it's busy, with its speed alongside. In narrow windows, the
  * hint goes, then the names are shortened, then it's all made smaller.

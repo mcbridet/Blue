@@ -37,9 +37,13 @@ struct ui_renderer {
 
 enum ui_key { UI_KEY_TAB, UI_KEY_LEFT, UI_KEY_RIGHT, UI_KEY_UP, UI_KEY_DOWN, UI_KEY_SPACE, UI_KEY_ENTER };
 
+#define UI_FLOPPIES 16                  /* floppy images the menu lists */
+
 /* What the user chose in the menu */
 enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI_FULLSCREEN, UI_STATUS_BAR,
-		 UI_CAPTURE_MOUSE, UI_RELEASE_MOUSE };
+		 UI_CAPTURE_MOUSE, UI_RELEASE_MOUSE, UI_FLOPPY_EJECT,
+		 UI_FLOPPY_INSERT,              /* (+ the image's number in the list) */
+		 UI_FLOPPY_INSERT_LAST = UI_FLOPPY_INSERT + UI_FLOPPIES - 1 };
 
 /* What becomes of the mouse after the menu */
 enum ui_mouse {
@@ -48,14 +52,25 @@ enum ui_mouse {
 	UI_MOUSE_RELEASED,              /* ... but the user let it go */
 };
 
+/* The floppy drive, as the menu shows it */
+struct ui_floppy {
+	char in[64];                    /* the image in the drive ("": it's empty) */
+	bool locked;                    /* ... read-only */
+	bool in_use;                    /* ... mounted in Mac OS, which is then the one to eject it */
+	int current;                    /* ... its number in the list (-1: none) */
+	unsigned count;                 /* the images to put in (--floppy's, and those dropped on the window) */
+	char names[UI_FLOPPIES][64];
+};
+
 /* The status bar's lights */
-enum ui_led { UI_LED_CPU, UI_LED_DISK, UI_LED_CDROM, UI_LED_NET, UI_LEDS };
+enum ui_led { UI_LED_CPU, UI_LED_DISK, UI_LED_CDROM, UI_LED_FLOPPY, UI_LED_NET, UI_LEDS };
 
 struct ui_light {
 	uint8_t level;                  /* how brightly it's lit: 0 (off) to 255 */
 	uint8_t nap;                    /* ... and softly blue, the processor's while it naps: 0 to 255 */
 	bool write;                     /* amber (written to) rather than green */
 	bool absent;                    /* there's no such device: it's dimmed */
+	bool hidden;                    /* ... not even shown (the floppy drive's, without one) */
 };
 
 /* What the status bar shows */
@@ -75,6 +90,7 @@ struct ui_state {
 	bool fullscreen;
 	enum ui_mouse mouse;
 	const char *news;               /* (where a screenshot went, say), or NULL */
+	const struct ui_floppy *floppy; /* the floppy drive, or NULL without one */
 };
 
 #define UI_STATUS_BAR_HEIGHT 24         /* in the window's units */

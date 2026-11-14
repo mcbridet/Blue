@@ -440,6 +440,7 @@ const char *nk_kcall_name(unsigned n)
 enum {
 	HOSTCALL_VIDEO_DRIVER = 1,      /* the display NDRV */
 	HOSTCALL_DISK_DRIVER,           /* the block device NDRVs: one selector each */
+	HOSTCALL_FLOPPY_DRIVER = HOSTCALL_DISK_DRIVER + NK_MAX_DISKS,  /* the floppy drive's */
 };
 
 struct machine {
@@ -527,6 +528,13 @@ struct machine {
 	struct disk disk[NK_MAX_DISKS];
 	unsigned disks;
 	uint8_t disk_ndrv[NK_MAX_DISKS][2048];
+	/* the floppy drive, if there's one (see floppy_insert()): the images it's been given, and the one in it */
+	bool has_floppy;
+	struct disk floppy;
+	uint8_t floppy_ndrv[8192];
+	char *floppy_list[NK_MAX_FLOPPIES];
+	unsigned floppy_count;
+	int floppy_in;                  /* (-1: none) */
 	struct net net;                 /* Ethernet */
 	uint8_t lanlib[4096];
 	uint64_t net_poll_ns;           /* host time the host network was last serviced */
@@ -830,6 +838,21 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		boot_map_entry = m->disk[opt->rom_disk].part[opt->rom_part].map_entry;
 	}
 
+	/* The floppy drive, with the image that was in it (never a startup disk: see disk.h) */
+	size_t floppy_ndrv_size = 0;
+	if (opt->floppies || opt->floppy_drive) {
+		char why[512];
+		m->has_floppy = true;
+		disk_open_removable(&m->floppy, &m->mem);
+		m->floppy.log = opt->log_hostcalls;
+		floppy_ndrv_size = disk_build_ndrv(&m->floppy, m->floppy_ndrv, sizeof m->floppy_ndrv,
+						   HOSTCALL_FLOPPY_DRIVER);
+		if (m->floppy_in >= 0 && disk_insert(&m->floppy, m->floppy_list[m->floppy_in], why, sizeof why)) {
+			fprintf(stderr, "floppy: %s: %s\n", m->floppy_list[m->floppy_in], why);
+			m->floppy_in = -1;
+		}
+	}
+
 	static const uint8_t mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };   /* (locally administered) */
 	net_init(&m->net, &m->mem, mac, TIMEBASE_HZ);
 	m->net.log = getenv("SYSHM_LOG_NET") != NULL;
@@ -864,7 +887,9 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		hw.disk_ndrv[k] = m->disk_ndrv[k];
 		hw.disk_ndrv_size[k] = disk_ndrv_size[k];
 	}
-	if (!ndrv_size || bootinfo_build(&m->mem, &m->bootinfo, &hw))
+	hw.floppy_ndrv = m->floppy_ndrv;
+	hw.floppy_ndrv_size = floppy_ndrv_size;
+	if (!ndrv_size || (m->has_floppy && !floppy_ndrv_size) || bootinfo_build(&m->mem, &m->bootinfo, &hw))
 		return -1;
 	if (hw.parcels)
 		printf("rom: %u parcels, %u device-tree properties from them (tree %u KB)\n", hw.parcels->count,
@@ -913,6 +938,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	pci_add(&m->pci, PCI_DEVFN_DISPLAY, PCI_VENDOR_SYSHM, PCI_DEVICE_DISPLAY, PCI_CLASS_DISPLAY, 1, FB_BASE, FB_SIZE);
 	for (unsigned k = 0; k < m->disks; k++)
 		pci_add(&m->pci, (uint8_t)(PCI_DEVFN_DISK + 8 * k), PCI_VENDOR_SYSHM, PCI_DEVICE_DISK, PCI_CLASS_DISK, 1, 0, 0);
+	if (m->has_floppy)
+		pci_add(&m->pci, PCI_DEVFN_FLOPPY, PCI_VENDOR_SYSHM, PCI_DEVICE_FLOPPY, PCI_CLASS_DISK, 1, 0, 0);
 	pci_add(&m->pci, PCI_DEVFN_USB, OHCI_PCI_VENDOR, OHCI_PCI_DEVICE, OHCI_PCI_CLASS, OHCI_PCI_REVISION, USB_BASE, OHCI_SIZE);
 	pci_add(&m->pci, PCI_DEVFN_MACIO, PCI_VENDOR_APPLE, PCI_DEVICE_HEATHROW, PCI_CLASS_MACIO, 0, MACIO_BASE, MACIO_SIZE);
 	mmio_add(&m->bus, PCI_CONFIG_ADDR, PCI_CONFIG_SIZE, &pci_addr_mmio_ops, &m->pci, "pci config address");
@@ -1135,6 +1162,7 @@ static void fast_start_idle(struct machine *m)
 	uint64_t disk = 0;
 	for (unsigned k = 0; k < m->disks; k++)
 		disk += m->disk[k].bytes_read + m->disk[k].bytes_written;
+	disk += m->floppy.bytes_read + m->floppy.bytes_written;
 	bool busy = m->cpu.tb - m->fast_idle_tb > FAST_START_BUSY_TB;  /* (since the last idle call) */
 	if (!m->fast_idled || busy || disk != m->fast_disk || !m->fast_finder) {
 		m->fast_idled = true;
@@ -1309,12 +1337,120 @@ static void follow_cursor(struct machine *m, uint64_t now)
 static void display_input(struct machine *m, uint64_t now);
 static void stay_paused(struct machine *m);
 
+/* A path's last part, as the menu and messages name images */
+static const char *file_name(const char *path)
+{
+	const char *slash = strrchr(path, '/');
+	return slash && slash[1] ? slash + 1 : path;
+}
+
+/* An image's number in the floppy drive's list, which it's added to if need be (in place of an older one, if full) */
+static int floppy_listed(struct machine *m, const char *path)
+{
+	for (unsigned k = 0; k < m->floppy_count; k++)
+		if (strcmp(m->floppy_list[k], path) == 0)
+			return (int)k;
+	char *copy = strdup(path);
+	if (!copy)
+		return -1;
+	unsigned k = m->floppy_count;
+	if (k == NK_MAX_FLOPPIES) {     /* (full: the last goes, unless it's the one in the drive) */
+		k = NK_MAX_FLOPPIES - 1 - (m->floppy_in == NK_MAX_FLOPPIES - 1);
+		free(m->floppy_list[k]);
+	} else {
+		m->floppy_count++;
+	}
+	m->floppy_list[k] = copy;
+	return (int)k;
+}
+
+/*
+ * The floppy drive (see disk.h): the images it was given (--floppy's, then
+ * those dropped on the window or put in by a script), and which is in it.
+ * An image goes in when the drive is empty, or Mac OS isn't using the one
+ * in it; only Mac OS ejects one it has mounted (Put Away, the Trash, an
+ * installer's Eject). Messages go to the output, and to the menu's news.
+ */
+static bool floppy_insert(struct machine *m, const char *path)
+{
+	char why[400];
+	if (!m->has_floppy) {
+		snprintf(m->menu_status, sizeof m->menu_status,
+			 "There's no floppy drive: start syshm with --floppy IMAGE, or --floppy-drive for an empty one");
+		fprintf(stderr, "floppy: %s\n", m->menu_status);
+		return false;
+	}
+	if (m->floppy.media && disk_in_use(&m->floppy)) {
+		snprintf(m->menu_status, sizeof m->menu_status,
+			 "The floppy drive has %s in it, which Mac OS is using: put it away there first (drag it to "
+			 "the Trash), then put in %s", file_name(m->floppy.media_path), file_name(path));
+		fprintf(stderr, "floppy: %s\n", m->menu_status);
+		return false;
+	}
+	if (disk_insert(&m->floppy, path, why, sizeof why)) {
+		snprintf(m->menu_status, sizeof m->menu_status, "%s: %s", file_name(path), why);
+		fprintf(stderr, "floppy: %s: %s\n", path, why);
+		return false;
+	}
+	m->floppy_in = floppy_listed(m, path);
+	const struct disk *d = &m->floppy;
+	snprintf(m->menu_status, sizeof m->menu_status, "Put %s in the floppy drive", file_name(path));
+	printf("floppy: %s in the drive (%lluK%s, %s%s)\n", path, (unsigned long long)(d->image.data_size >> 10),
+	       d->image.kind == FLOPPY_DC42 ? " Disk Copy 4.2 image" : "", d->image.volume,
+	       d->read_only ? ", locked" : "");
+	if (d->image.kind == FLOPPY_DC42 && !d->image.checksums_ok)
+		printf("floppy: %s: its Disk Copy checksums don't match what's in it (it may be damaged)\n", path);
+	return true;
+}
+
+/* Takes the image out of the floppy drive, unless Mac OS is using it */
+static void floppy_eject(struct machine *m)
+{
+	if (!m->has_floppy || !m->floppy.media)
+		return;
+	if (disk_in_use(&m->floppy)) {
+		snprintf(m->menu_status, sizeof m->menu_status,
+			 "Mac OS is using %s: put it away there (drag it to the Trash) to eject it",
+			 file_name(m->floppy.media_path));
+		fprintf(stderr, "floppy: %s\n", m->menu_status);
+		return;
+	}
+	printf("floppy: %s taken out\n", m->floppy.media_path);
+	snprintf(m->menu_status, sizeof m->menu_status, "Took %s out of the floppy drive",
+		 file_name(m->floppy.media_path));
+	disk_eject(&m->floppy);
+	m->floppy_in = -1;
+}
+
+/* What the menu shows of the floppy drive */
+static void floppy_state(struct machine *m)
+{
+	struct ui_floppy f;
+	if (!m->has_floppy) {
+		display_floppy_state(m->display, NULL);
+		return;
+	}
+	memset(&f, 0, sizeof f);
+	f.current = -1;
+	if (m->floppy.media) {
+		snprintf(f.in, sizeof f.in, "%s", file_name(m->floppy.media_path));
+		f.locked = m->floppy.read_only;
+		f.in_use = disk_in_use(&m->floppy);
+		f.current = m->floppy_in;
+	}
+	f.count = m->floppy_count < UI_FLOPPIES ? m->floppy_count : UI_FLOPPIES;
+	for (unsigned k = 0; k < f.count; k++)
+		snprintf(f.names[k], sizeof f.names[k], "%s", file_name(m->floppy_list[k]));
+	display_floppy_state(m->display, &f);
+}
+
 /* What the menu shows: whether the mouse will be captured when the guest resumes, and news */
 static void menu_state(struct machine *m)
 {
 	enum ui_mouse mouse = !m->cursor_hidden_ns ? UI_MOUSE_FOLLOWS :
 			      m->mouse_released ? UI_MOUSE_RELEASED : UI_MOUSE_CAPTURED;
 	display_menu_state(m->display, mouse, m->menu_status);
+	floppy_state(m);
 }
 
 /* The screen as a PNG on the Desktop (or here), named for when it was taken */
@@ -1368,7 +1504,19 @@ static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
 	case UI_RELEASE_MOUSE:
 		m->mouse_released = action == UI_RELEASE_MOUSE;
 		break;
+	case UI_FLOPPY_EJECT:
+		floppy_eject(m);
+		break;
 	default:
+		/* an image put in: the Mac goes on (to mount it) */
+		if (action >= UI_FLOPPY_INSERT && action <= UI_FLOPPY_INSERT_LAST &&
+		    (unsigned)(action - UI_FLOPPY_INSERT) < m->floppy_count &&
+		    floppy_insert(m, m->floppy_list[action - UI_FLOPPY_INSERT])) {
+			m->paused = false;
+			display_menu(m->display, false);
+			follow_cursor(m, now);
+			printf("resumed\n");
+		}
 		break;
 	}
 	menu_state(m);
@@ -1400,13 +1548,16 @@ static void status_lights(struct machine *m, uint64_t now, bool paused)
 	memset(&s, 0, sizeof s);
 	/* bytes each device has read (or received) and written (or sent) */
 	uint64_t in[UI_LEDS] = { 0 }, out[UI_LEDS] = { 0 };
-	bool present[UI_LEDS] = { [UI_LED_CPU] = true, [UI_LED_NET] = m->net.backend != NULL };
+	bool present[UI_LEDS] = { [UI_LED_CPU] = true, [UI_LED_NET] = m->net.backend != NULL,
+				  [UI_LED_FLOPPY] = m->floppy.media };
 	for (unsigned k = 0; k < m->disks; k++) {
 		enum ui_led led = m->disk[k].cdrom ? UI_LED_CDROM : UI_LED_DISK;
 		in[led] += m->disk[k].bytes_read;
 		out[led] += m->disk[k].bytes_written;
 		present[led] = true;
 	}
+	in[UI_LED_FLOPPY] = m->floppy.bytes_read;
+	out[UI_LED_FLOPPY] = m->floppy.bytes_written;
 	in[UI_LED_NET] = m->net.bytes_received;
 	out[UI_LED_NET] = m->net.bytes_sent;
 	for (int k = UI_LED_DISK; k < UI_LEDS; k++) {
@@ -1421,6 +1572,7 @@ static void status_lights(struct machine *m, uint64_t now, bool paused)
 		s.light[k].write = now < m->led_amber_until[k];
 		s.light[k].absent = !present[k];
 	}
+	s.light[UI_LED_FLOPPY].hidden = !m->has_floppy;         /* (dimmed while it's empty) */
 
 	if (paused) {
 		m->cpu_busy = 0;
@@ -1585,6 +1737,18 @@ static void display_input(struct machine *m, uint64_t now)
 				m->want_ns = host_ns();
 			}
 			break;
+		case DISPLAY_EVENT_DROP_FILE:   /* into the floppy drive; if it can't go in, the menu says why */
+			if (m->scripted)
+				break;
+			if (!floppy_insert(m, ev.path) && !m->paused) {
+				m->paused = true;
+				follow_cursor(m, now);
+				menu_state(m);
+				display_menu(m->display, true);
+				printf("paused (F12 resumes)\n");
+			}
+			menu_state(m);
+			break;
 		default:
 			break;
 		}
@@ -1640,12 +1804,17 @@ static int script_load(struct script *s, const char *path)
 		else
 			counted = true;
 		const char *rest = strstr(line, e.cmd) + strlen(e.cmd);
-		if (strcmp(e.cmd, "screenshot") == 0)
+		if (strcmp(e.cmd, "screenshot") == 0) {
 			sscanf(rest, " %255s", e.arg);
-		else if (strcmp(e.cmd, "key") == 0)
+		} else if (strcmp(e.cmd, "key") == 0) {
 			sscanf(rest, " %x %255s", (unsigned *)&e.a, e.arg);
-		else
+		} else if (strcmp(e.cmd, "floppy") == 0) {      /* floppy insert FILE (the rest of the line), floppy eject */
+			e.a = sscanf(rest, " insert %255[^\n]", e.arg) == 1 ? 1 : strstr(rest, "eject") ? 2 : 0;
+			for (size_t n = strlen(e.arg); n && (e.arg[n - 1] == ' ' || e.arg[n - 1] == '\r'); n--)
+				e.arg[n - 1] = '\0';
+		} else {
 			sscanf(rest, " %d %d", &e.a, &e.b);
+		}
 		if (strcmp(e.cmd, "click") == 0 || strcmp(e.cmd, "dblclick") == 0) {
 			/* move, then press once the cursor has followed (a few VBLs); presses are
 			 * 0.2 s and 0.1 s apart in instruction time (16.6 million per second) */
@@ -1736,6 +1905,13 @@ static void script_run(struct machine *m, struct script *s)
 			else
 				printf("screen saved to %s at instruction %llu\n", e->arg,
 				       (unsigned long long)m->cpu.icount);
+		} else if (strcmp(e->cmd, "floppy") == 0) {
+			if (e->a == 1)
+				floppy_insert(m, e->arg);
+			else if (e->a == 2)
+				floppy_eject(m);
+			else
+				fprintf(stderr, "input script: floppy insert FILE, or floppy eject\n");
 		} else {
 			fprintf(stderr, "input script: unknown command '%s'\n", e->cmd);
 		}
@@ -2374,6 +2550,18 @@ static const char *kcall_vm_dispatch(struct machine *m)
 #define HD_BYTES_PER_SECOND 20000000u   /* a hard disk around 2000 */
 #define CD_BYTES_PER_SECOND 4000000u    /* a 24x to 32x CD-ROM drive */
 
+/* A disk driver's step, whose transfers take guest time */
+static void drive_call(struct machine *m, struct disk *d, struct ndrv_call *c)
+{
+	uint64_t moved = d->bytes_read + d->bytes_written;
+	disk_driver_call(d, c, TIMEBASE_HZ);
+	moved = d->bytes_read + d->bytes_written - moved;
+	if (moved) {
+		uint64_t ticks = moved * TIMEBASE_HZ / (d->cdrom ? CD_BYTES_PER_SECOND : HD_BYTES_PER_SECOND);
+		pass_guest_time(m, ticks < TIMEBASE_HZ / 60 ? ticks : TIMEBASE_HZ / 60);
+	}
+}
+
 /*
  * A host call from a generated driver (see ndrv.h): run the native driver
  * one step, then either finish (CR0[EQ] set, result in r3) or have the stub
@@ -2407,19 +2595,18 @@ static const char *host_call(struct machine *m, uint32_t selector)
 	case HOSTCALL_LANLIB:
 		net_call(&m->net, &c);
 		break;
-	default: {
+	case HOSTCALL_FLOPPY_DRIVER:
+		if (!m->has_floppy)
+			return "unknown host call";
+		drive_call(m, &m->floppy, &c);
+		if (!m->floppy.media)
+			m->floppy_in = -1;      /* (Mac OS ejected it) */
+		break;
+	default:
 		if (selector - HOSTCALL_DISK_DRIVER >= m->disks)
 			return "unknown host call";
-		struct disk *d = &m->disk[selector - HOSTCALL_DISK_DRIVER];
-		uint64_t moved = d->bytes_read + d->bytes_written;
-		disk_driver_call(d, &c, TIMEBASE_HZ);
-		moved = d->bytes_read + d->bytes_written - moved;
-		if (moved) {
-			uint64_t ticks = moved * TIMEBASE_HZ / (d->cdrom ? CD_BYTES_PER_SECOND : HD_BYTES_PER_SECOND);
-			pass_guest_time(m, ticks < TIMEBASE_HZ / 60 ? ticks : TIMEBASE_HZ / 60);
-		}
+		drive_call(m, &m->disk[selector - HOSTCALL_DISK_DRIVER], &c);
 		break;
-	}
 	}
 
 	if (c.done) {
@@ -2923,6 +3110,8 @@ static void stop_machine(struct machine *m)
 {
 	for (unsigned k = 0; k < m->disks; k++)
 		disk_close(&m->disk[k]);
+	if (m->has_floppy)
+		disk_close(&m->floppy);
 	rave_free(&m->rave);
 	net_free(&m->net);
 	jit_free(m->cpu.jit);
@@ -2980,6 +3169,9 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->dev_accesses = old.dev_accesses;
 	m->dev_inline = old.dev_inline;
 	m->net_poll_ns = old.net_poll_ns;
+	memcpy(m->floppy_list, old.floppy_list, sizeof m->floppy_list);        /* (the disk stays in the drive) */
+	m->floppy_count = old.floppy_count;
+	m->floppy_in = old.floppy_in;
 	memcpy(m->exceptions, old.exceptions, sizeof m->exceptions);
 	if (start_machine(m, opt))
 		return -1;
@@ -3014,6 +3206,17 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	m.rom = rom;
 	m.ram_size = opt->ram_size;
 	m.realtime = opt->realtime;
+	/* the floppy images, checked now: the first goes in at startup (unless the drive starts empty) */
+	m.floppy_in = opt->floppies && !opt->floppy_drive ? 0 : -1;
+	for (unsigned k = 0; k < opt->floppies && k < NK_MAX_FLOPPIES; k++) {
+		char why[400];
+		if (floppy_check(opt->floppy[k], why, sizeof why)) {
+			fprintf(stderr, "%s: %s\n", opt->floppy[k], why);
+			return 1;
+		}
+		if (floppy_listed(&m, opt->floppy[k]) < 0)
+			return 1;
+	}
 	m.gpu = open_gpu(opt);          /* (getting ready in the background) */
 	if (start_machine(&m, opt))
 		return 1;
@@ -3373,6 +3576,12 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		       m.disk[k].calls, m.disk[k].part[0].drive_num, m.disk[k].reads,
 		       (unsigned long long)(m.disk[k].bytes_read >> 10), m.disk[k].writes,
 		       (unsigned long long)(m.disk[k].bytes_written >> 10));
+	if (m.has_floppy)
+		printf("\nfloppy: %lu driver calls, drive %u, %lu reads (%llu KB), %lu writes (%llu KB), %lu ejected by "
+		       "Mac OS; %s", m.floppy.calls, m.floppy.part[0].drive_num, m.floppy.reads,
+		       (unsigned long long)(m.floppy.bytes_read >> 10), m.floppy.writes,
+		       (unsigned long long)(m.floppy.bytes_written >> 10), m.floppy.ejects,
+		       m.floppy.media ? m.floppy.media_path : "empty");
 	if (m.helper.launches)
 		printf("\nenhancements: %s, %lu mode switches, %lu failed (last error %d)",
 		       m.helper.running ? "running" : "quit", m.helper.switches, m.helper.failures, m.helper.last_error);
@@ -3440,5 +3649,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	free(m.rgb);
 	free(m.shown);
 	free(script.ev);
+	for (unsigned k = 0; k < m.floppy_count; k++)
+		free(m.floppy_list[k]);
 	return 0;
 }

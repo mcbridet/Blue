@@ -23,6 +23,7 @@ int main(int argc, char **argv)
 		{ "net", test_net },
 		{ "hfs", test_hfs },
 		{ "hfsread", test_hfsread },
+		{ "floppy", test_floppy },
 		{ "tools", test_tools },
 		{ "raster", test_raster },
 		{ "rave", test_rave },

@@ -101,6 +101,10 @@ struct nk_boot_options {
 	unsigned disks;
 	bool rom_from_disk;     /* the ROM file came from a drive's System Folder: ... */
 	unsigned rom_disk, rom_part;    /* ... this drive's, this partition (the startup disk) */
+#define NK_MAX_FLOPPIES 16
+	const char *floppy[NK_MAX_FLOPPIES];    /* floppy images (floppy.h): the first is in the drive at startup */
+	unsigned floppies;
+	bool floppy_drive;      /* a floppy drive, empty at startup, with or without images (see disk.h) */
 	const char *dump_ram;   /* write guest RAM here when the run ends */
 	const char *nvram;      /* NVRAM file: loaded at start (if present), saved at the end */
 	bool window;            /* show the screen in a host window and take input from it */
