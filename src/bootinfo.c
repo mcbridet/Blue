@@ -77,9 +77,12 @@ static const uint8_t rtas_token_field[RTAS_TOKEN_COUNT] = {
  * 3), as its driver-ist: the ROM's InterruptTreeNew builds one from every
  * node with AAPL,interrupt-priorities, whose parallel AAPL,interrupts (here
  * the sources), AAPL,interrupt-priorities (68k levels) and
- * AAPL,interrupt-vectors (sources) it reads 3 at most.
+ * AAPL,interrupt-vectors (sources) it reads 3 at most. Mac OS 9.2's ROM
+ * files build them in DriverServicesLib instead, and only for nodes with
+ * AAPL,interrupt-index as well (the source's entry in the interrupt
+ * controller's table, so here the source again): `index` gives it.
  */
-static void interrupt_set(struct dt_node *n, const uint32_t *sources, unsigned count)
+static void interrupt_set(struct dt_node *n, const uint32_t *sources, unsigned count, bool index)
 {
 	uint32_t masks[2][8], levels[3] = { 0 };
 	bootinfo_level_masks(masks);
@@ -90,6 +93,8 @@ static void interrupt_set(struct dt_node *n, const uint32_t *sources, unsigned c
 	dt_prop_cells(n, "AAPL,interrupts", sources, count);
 	dt_prop_cells(n, "AAPL,interrupt-priorities", levels, count);
 	dt_prop_cells(n, "AAPL,interrupt-vectors", sources, count);
+	if (index)
+		dt_prop_cells(n, "AAPL,interrupt-index", sources, count);
 }
 
 static void pci_ids(struct dt_node *n, uint32_t vendor, uint32_t device, uint32_t class_code, uint32_t rev)
@@ -174,13 +179,23 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	dt_prop_cells(pci, "bus-range", bus_range, 2);
 	dt_prop_u32(pci, "clock-frequency", 33333333);
 
-	/* The display: a plain framebuffer whose Mac OS driver is in its node */
+	/*
+	 * The display: a plain framebuffer whose Mac OS driver is in its node,
+	 * and an interrupt at each vertical blank, on the line the iMac's ATI
+	 * chip has (its driver installs its handler in the interrupt set). The
+	 * other devices' sets have no AAPL,interrupt-index, so Mac OS 9.2 still
+	 * makes none for them: with them, its sound, USB and Ethernet drivers
+	 * would run differently (see plan.md, Findings).
+	 */
 	struct dt_node *disp = dt_add_node(pci, "display");
 	pci_ids(disp, PCI_VENDOR_SYSHM, PCI_DEVICE_DISPLAY, PCI_CLASS_DISPLAY, 1);
 	dt_prop_str(disp, "device_type", "display");
 	dt_prop_str(disp, "model", "syshm framebuffer");
 	dt_prop_str(disp, "compatible", "syshm,display");
 	pci_bar0(disp, PCI_DEVFN_DISPLAY, hw->fb_base, hw->fb_size);
+	const uint32_t disp_irq = IRQ_DISPLAY;
+	dt_prop_u32(disp, "interrupts", IRQ_DISPLAY);
+	interrupt_set(disp, &disp_irq, 1, true);
 	dt_prop_u32(disp, "width", hw->fb_width);
 	dt_prop_u32(disp, "height", hw->fb_height);
 	dt_prop_u32(disp, "depth", hw->fb_depth);
@@ -218,7 +233,7 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	pci_bar0(usb, PCI_DEVFN_USB, USB_BASE, OHCI_SIZE);
 	const uint32_t usb_irq = IRQ_USB;
 	dt_prop_u32(usb, "interrupts", IRQ_USB);
-	interrupt_set(usb, &usb_irq, 1);
+	interrupt_set(usb, &usb_irq, 1, false);
 	dt_prop_u32(usb, "#address-cells", 1);
 	dt_prop_u32(usb, "#size-cells", 0);
 
@@ -280,7 +295,7 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	dt_prop_cells(dav, "reg", dav_reg, 6);
 	dt_prop_cells(dav, "interrupts", dav_irq, 3);
 	dt_prop_cells(dav, "AAPL,address", dav_addr, 3);
-	interrupt_set(dav, dav_irq, 3);
+	interrupt_set(dav, dav_irq, 3, false);
 	dt_prop_u32(dav, "#address-cells", 1);
 	dt_prop_u32(dav, "#size-cells", 0);
 	struct dt_node *sound = dt_add_node(dav, "sound");
@@ -322,7 +337,7 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 		dt_prop_cells(enet, "reg", enet_reg, 6);
 		dt_prop_cells(enet, "interrupts", enet_irq, 3);
 		dt_prop_cells(enet, "AAPL,address", enet_addr, 3);
-		interrupt_set(enet, &enet_rx_irq, 1);
+		interrupt_set(enet, &enet_rx_irq, 1, false);
 		dt_prop(enet, "local-mac-address", hw->mac, 6);
 		dt_prop(enet, "lanLib,AAPL,MacOS,PowerPC", hw->lanlib, (uint32_t)hw->lanlib_size);
 	}
@@ -482,6 +497,7 @@ void bootinfo_level_masks(uint32_t masks[2][8])
 	masks[0][2] |= 0x80000000u >> IRQ_ENET | 0x80000000u >> IRQ_DMA_ENET_TX |
 		       0x80000000u >> IRQ_DMA_ENET_RX;         /* Ethernet: level 2 */
 	masks[0][2] |= 0x80000000u >> IRQ_USB;                  /* USB: level 2 */
+	masks[0][2] |= 0x80000000u >> IRQ_DISPLAY;              /* the display (VBL): level 2 */
 	masks[0][4] |= 0x80000000u >> IRQ_SCC_A | 0x80000000u >> IRQ_SCC_B;    /* SCC: level 4 */
 }
 

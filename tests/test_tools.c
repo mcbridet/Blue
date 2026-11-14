@@ -262,7 +262,7 @@ static void driver(struct video *v, unsigned code, unsigned cs, uint32_t param, 
 	c.arg[4] = NDRV_KIND_IMMEDIATE;
 	mem_w16(&mem, PB + 26, (uint16_t)cs);
 	mem_w32(&mem, PB + 28, param);
-	video_driver_call(v, &c, 16600000);
+	video_driver_call(v, &c);
 	CHECK(c.done);
 	CHECK_EQ(c.result, (uint32_t)want);
 }
@@ -277,7 +277,7 @@ static uint32_t timing_flags(struct video *v, uint32_t mode_id)
 static void test_custom_modes(void)
 {
 	struct video *v = &video;
-	video_init(v, &mem, FB, FB_SIZE);
+	video_init(v, &mem, FB, FB_SIZE, 16600000);
 	unsigned fixed = video_mode_count;
 	uint32_t id, depth;
 
@@ -388,7 +388,7 @@ static void test_helper(void)
 	struct helper h;
 	struct clip clip = { 0 };
 	helper_load(&h, true);
-	video_init(&video, &mem, FB, FB_SIZE);
+	video_init(&video, &mem, FB, FB_SIZE, 16600000);
 	const uint32_t event = TOC + h.layout.extra + 8;
 	struct ndrv_call c;
 
@@ -426,7 +426,7 @@ static void test_helper_v1(void)
 	struct helper h;
 	struct clip clip = { .enabled = true };
 	helper_load(&h, false);
-	video_init(&video, &mem, FB, FB_SIZE);
+	video_init(&video, &mem, FB, FB_SIZE, 16600000);
 	const uint32_t event = TOC + h.v1_extra;
 	struct ndrv_call c;
 
@@ -472,7 +472,7 @@ static void test_helper_clipboard(void)
 	struct helper h;
 	struct clip clip = { .enabled = true };
 	helper_load(&h, true);
-	video_init(&video, &mem, FB, FB_SIZE);
+	video_init(&video, &mem, FB, FB_SIZE, 16600000);
 	const uint32_t event = TOC + h.layout.extra + 8;
 	struct ndrv_call c;
 

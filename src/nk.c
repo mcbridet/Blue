@@ -842,7 +842,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	/* Display: framebuffer RAM and the driver Mac OS finds in the device tree */
 	memset(mem_ptr(&m->mem, FB_BASE), 0, FB_SIZE);
 	mem_map(&m->mem, FB_BASE, FB_SIZE, MEM_RW);
-	video_init(&m->video, &m->mem, FB_BASE, FB_SIZE);
+	video_init(&m->video, &m->mem, FB_BASE, FB_SIZE, TIMEBASE_HZ);
 	helper_init(&m->helper);
 	clip_guest_reset(&m->clip);
 	rave_init(&m->rave, &m->mem);
@@ -1283,10 +1283,11 @@ static void fast_start_input(struct machine *m, int key, bool down)
  * The guest has nothing to do until an interrupt arrives (the Process
  * Manager found no process to run, or the system asked to nap), or until
  * guest time reaches `deadline` (UINT64_MAX: none). In real time, sleep
- * until the next device event: the next VIA timer interrupt, the next
- * window frame, or host input, whichever is first. Interrupts only come
- * from the VIA timers and from Cuda, which only talks after input. With
- * Multiprocessing Services, a timer's, timeout's or delay's end counts too.
+ * until the next device event: the next VIA timer interrupt or vertical
+ * blank, the next window frame, or host input, whichever is first.
+ * Interrupts only come from the VIA timers, the display and Cuda, which
+ * only talks after input. With Multiprocessing Services, a timer's,
+ * timeout's or delay's end counts too.
  *
  * Guest time that disk transfers put ahead of the host clock is made up
  * here, while nothing shows it: guest time runs at 3/4 speed while the guest
@@ -1318,6 +1319,9 @@ static void idle_wait(struct machine *m, uint64_t deadline)
 	ev = ohci_next_event(&m->ohci);
 	if (ev != UINT64_MAX && host_ns_at(m, ev, OHCI_BIT_HZ) < until)
 		until = host_ns_at(m, ev, OHCI_BIT_HZ);
+	ev = video_next_vbl(&m->video);
+	if (ev != UINT64_MAX && host_ns_at(m, ev, TIMEBASE_HZ) < until)
+		until = host_ns_at(m, ev, TIMEBASE_HZ);
 	if (deadline != UINT64_MAX && host_ns_at(m, deadline, TIMEBASE_HZ) < until)
 		until = host_ns_at(m, deadline, TIMEBASE_HZ);
 	bool sound = awacs_playing(&m->awacs), fast = m->fast_start && !sound && now >= m->fast_pause_ns;
@@ -2112,6 +2116,7 @@ static void update_device_time(struct machine *m)
 {
 	via_set_time(&m->via, m->cpu.tb * VIA_HZ / TIMEBASE_HZ);
 	ohci_set_time(&m->ohci, m->cpu.tb / TIMEBASE_HZ * OHCI_BIT_HZ + m->cpu.tb % TIMEBASE_HZ * OHCI_BIT_HZ / TIMEBASE_HZ);
+	video_set_time(&m->video, m->cpu.tb);
 	if (m->dbdma.poll)
 		dbdma_poll(&m->dbdma);
 	awacs_set_time(&m->awacs, m->cpu.tb);
@@ -2119,8 +2124,9 @@ static void update_device_time(struct machine *m)
 
 /*
  * The first timebase at which devices change by themselves: an enabled VIA
- * timer runs out or a USB frame with an enabled interrupt starts, or now if
- * sound DMA moves or a DMA channel is to continue.
+ * timer runs out, a USB frame with an enabled interrupt starts or the
+ * display's vertical blank interrupts, or now if sound DMA moves or a DMA
+ * channel is to continue.
  * Until then, and unless something touched them, updating the devices and
  * interrupts would change nothing, so exits skip it.
  */
@@ -2128,9 +2134,12 @@ static uint64_t device_next_tb(const struct machine *m)
 {
 	if (m->dbdma.poll || awacs_moving(&m->awacs))
 		return 0;
-	uint64_t next = UINT64_MAX, ev = via_next_event(&m->via), usb = ohci_next_event(&m->ohci);
-	if (ev < UINT64_MAX / TIMEBASE_HZ)
-		next = (ev * TIMEBASE_HZ + VIA_HZ - 1) / VIA_HZ;        /* (the first whose VIA time reaches it) */
+	uint64_t next = video_next_vbl(&m->video), ev = via_next_event(&m->via), usb = ohci_next_event(&m->ohci);
+	if (ev < UINT64_MAX / TIMEBASE_HZ) {
+		ev = (ev * TIMEBASE_HZ + VIA_HZ - 1) / VIA_HZ;  /* (the first whose VIA time reaches it) */
+		if (ev < next)
+			next = ev;
+	}
 	if (usb != UINT64_MAX) {
 		usb = usb / OHCI_BIT_HZ * TIMEBASE_HZ + (usb % OHCI_BIT_HZ * TIMEBASE_HZ + OHCI_BIT_HZ - 1) / OHCI_BIT_HZ;
 		if (usb < next)
@@ -2205,8 +2214,9 @@ static unsigned blue_boost(struct machine *m)
  * Delivers external interrupts the way the NanoKernel's Heathrow handler
  * does: pending = mask & levels per bank, reported in HWInfo.PendingInts,
  * where latched pulses (DMA channels) are acknowledged once posted and stay
- * until PrioritizeInterrupts, which Mac OS calls once it has handled them
- * (Mac OS 9's interrupt sets never clear them in the controller themselves);
+ * until a PrioritizeInterrupts after Mac OS has handled them (Mac OS 9's
+ * interrupt sets never clear them in the controller themselves; see
+ * macio_release());
  * the 68k level is the highest whose sources are pending; it is posted as
  * 0x8000 | level at EmulatorData+IplValueOffset, with ConfigInfo's Post mask
  * ORed into the System context's CR (Clear mask ANDed when nothing is left).
@@ -2228,6 +2238,7 @@ static bool update_interrupts(struct machine *m, bool force)
 {
 	macio_set_line(&m->macio, IRQ_VIA1, via_irq(&m->via));
 	macio_set_line(&m->macio, IRQ_USB, ohci_irq(&m->ohci));
+	macio_set_line(&m->macio, IRQ_DISPLAY, video_irq(&m->video));
 	if (force)
 		macio_release(&m->macio);
 
@@ -2817,7 +2828,7 @@ static const char *host_call(struct machine *m, uint32_t selector)
 
 	switch (selector) {
 	case HOSTCALL_VIDEO_DRIVER:
-		video_driver_call(&m->video, &c, TIMEBASE_HZ);
+		video_driver_call(&m->video, &c);
 		break;
 	case HOSTCALL_TOOLS_HELPER:
 		helper_call(&m->helper, &c, &m->video, &m->clip);
