@@ -637,6 +637,11 @@ lacks: syshm says to install it again from the tools volume.
   which Apple's emulator makes by design); the interpreter manages about
   200 million. The Mac OS 8.5 install takes under 25 s. On an M5 under
   macOS, the same boot takes 0.8 s with the JIT and 11 s interpreted.
+  Memory copies stay in Mac OS's own code: BlockMove and its relatives
+  (InterfaceLib's, and the 68k emulator's for the `_BlockMove` trap) take
+  0.3-1.2% of guest instructions in the CD boots and a game's startup, and
+  1-2% of host time, mostly in copies too small to be worth a kernel exit
+  (plan.md, Findings).
 
 ## Virtual machine description
 

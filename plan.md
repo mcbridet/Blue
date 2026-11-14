@@ -854,3 +854,30 @@ Facts later tasks need, added as they are found.
   4.5 s at 4 MB/s. When the ROM file comes from a startup disk, its
   partition is the one to name (`boot_disk`, `boot_map_entry` in
   `struct bootinfo_machine`).
+- **BlockMove on the host isn't worth it.** InterfaceLib has BlockMove,
+  BlockMoveData, BlockZero and their Uncached forms (`MOS.rom`
+  `0xFFD2CCA0`-`0xFFD2D0EB`; the same code at the same code-section
+  offsets in 8.5's and 8.6's ROM files; 9.1's at `0xFFCFFE74` and
+  `0xFFD272BC`, where the first BlockMove call asks Gestalt `ppcf` for
+  AltiVec and points the TOC's vectors at the G3 or AltiVec versions).
+  BlockMoveData copies backwards when the destination is above the
+  source; the cached forms clear each destination line with `dcbz` first,
+  the Uncached ones don't (BlockZeroUncached stores with `stfd`); BlockMove
+  above 12 bytes then calls FlushEmulatorCacheRange (about 80
+  instructions). The 68k `_BlockMove` (A02E, A22E for -Data) never reaches
+  them: its ROM routine (`0xFFC3DAF0`) is just F-line `$FC12` (flushes)
+  or `$FC14`, which the emulator does natively (emulator `+0xA9AC`,
+  `lswx`/`stswx` up to 20 bytes, a `dcbz` loop from 0x5F). Counted in the
+  interpreter (calls, bytes, instructions until return): the 8.5 CD boot
+  (4 billion) 88,000 calls, 22 MB, 0.34% of instructions (68k 0.17%); the
+  9.1 CD boot (3 billion) 132,000 calls, 39 MB, 0.60%; Unreal Tournament
+  starting from the 8.6 disk (31.5 billion) 11.7 million calls, 1.16%, of
+  which 0.86% is 11.3 million BlockMoveData calls of about 1 byte; a
+  Finder copy of 7 MB 0.1% (large file transfers go to the disk driver on
+  the host). Calls over 256 bytes, the only ones a kernel exit could
+  speed up, are 0.25-0.45%. Sampled host time in their translated blocks
+  is 1.1% of the 9.1 boot (8 runs; single runs 1.0-2.4%), 1.3% of the 8.5
+  boot and 1.9% of UT's startup (four fifths in the 1-byte copies);
+  touching guest RAM in advance doesn't change it. The 68k routine's
+  `lswx`/`stswx`, which the JIT hands to the interpreter, are 99% of the
+  200,000-275,000 string instructions in a boot.
