@@ -1762,10 +1762,12 @@ Facts later tasks need, added as they are found.
   of guest time apart in instruction time; in real time with fast start
   (a guest processor ten times slower in guest time) about 8 ms apart, 17
   s in all: the CD's Finder at 29.7 s of guest time with only the sound
-  chip's set, 22.2 s with all three. With the bit (`awacs.valid`, for ROM
-  files with the index) the plug-in goes on at once. 9.1's plug-in has
-  the same code (`0x003093F8`, 1,000 polls at startup, 2 s in instruction
-  time); 9.1 is kept as it was, but would start sooner with the bit.
+  chip's set, 22.2 s with all three. With the bit (`awacs.valid`) the plug-in
+  goes on at once. 9.1's plug-in has the same code (`0x003093F8`, 1,000
+  polls at startup, 2 s in instruction time), and 8.5's polls too; the bit
+  is set for every system (real time, fast start, guest time to the
+  Finder: 8.5 CD 14.6 → 13.7 s, 9.1 CD 17.1 → 15.7 s; the screens at 4
+  billion instructions are the same).
 - **9.2.2's sound with its interrupt set:** two plug-in instances (one in
   a fragment that makes a `sound-root` node, "VirtualHAL", with
   `AAPL,sndhw-plugin-id`) set the codec up with fades of both outputs'

@@ -308,8 +308,9 @@ syshm's kernel reports), and wants a few things 9.1's doesn't:
   the codec up, and gives up after a thousand polls: 2 s of guest time in
   instruction time, 17 s in real time with fast start, whose slower guest
   processor stretches each poll (the CD's Finder came at 22-30 s of guest
-  time). It's only set for 9.2's ROM files, so 8.5-9.1's runs stay as they
-  were (9.1's plug-in waits the same way, once).
+  time). It's set for every system: 8.5's and 9.1's plug-ins wait for it
+  too (with fast start, the 8.5 CD's Finder came 0.9 s later without it,
+  9.1's 1.4 s).
 
 The CD installs with Apple Software Restore (its Read Me says how), which
 copies the CD's disk image onto a volume, erasing it. Drive Setup, which
@@ -1008,9 +1009,8 @@ lacks: syshm says to install it again (and a window offers to update it).
   (Apple, 1) pick a port layout the 'soph' component knows; without them the
   output device opens but never plays. The node declares output hardware
   only (`hardware-types` 2, bit 0 being input), which keeps Mac OS 9's buggy
-  input component away (see Mac OS 9). With 9.2's ROM files the codec's
-  status says it's valid (bit 22), which Mac OS 9's sound plug-in polls for
-  (see Mac OS 9.2.2).
+  input component away (see Mac OS 9). The codec's status says it's valid
+  (bit 22), which Mac OS's sound plug-in polls for (see Mac OS 9.2.2).
 - Device tree (`src/devtree.c`, `src/bootinfo.c`): an `iMac,1` with a Grackle
   PCI bridge, Mac I/O, a framebuffer display and a disk, flattened into the
   format the ROM's Name Registry reads.
