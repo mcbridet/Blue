@@ -344,31 +344,64 @@ at the end. Text files keep their line endings (a host's LF shows as boxes
 in SimpleText). Folders' Finder info (window positions, custom icons) and
 the Locked checkbox aren't written back.
 
-### Floppies
+### Floppies and CDs: removable drives
 
-`--floppy IMAGE` puts a floppy disk image in a floppy drive, mainly to
-install software that came on floppies; give it several times for a set of
-disks. The first is in the drive at startup; the others are listed in the
-window's menu (F12), where a click puts one in, and dragging an image file
-onto the window puts it in too. `--floppy-drive` gives a drive that's empty
-at startup (with `--floppy` images only listed). Mac OS ejects a disk as
-on any Mac: Put Away or dragging it to the Trash, Eject in the Finder's
-Special menu, an installer's own eject, an Initialize dialog's Eject. The
-drive is then empty, and syshm says so (`floppy: Mac OS ejected ...`).
+The floppy drive (`--floppy`) and the CD-ROM drives (`--cdrom`) take disc
+images that come and go while Mac OS runs, mainly to install software that
+came on floppies or on several CDs. Mac OS ejects a disc as on any Mac: Put
+Away or dragging it to the Trash, Eject in the Finder's Special menu, an
+installer's own eject, an Initialize dialog's Eject. The drive is then
+empty, and syshm says so (`cdrom: Mac OS ejected ut.iso`). To put an image
+in, drop it on the window: one of a floppy's size (2880K or less) goes in
+the floppy drive, any other in a CD-ROM drive, the first that's empty (else
+one whose disc Mac OS isn't using). Mac OS learns of a disc going in as
+from a real drive, by a disk-inserted event, so whatever application is in
+front and waiting for one (an installer, Disk Copy) gets it, and mounts it.
 
 ```
-build/syshm boot --disk hd.img --floppy "Install 1.image" --floppy "Install 2.image" --window
+build/syshm boot --disk hd.img --cdrom "Game CD 1.iso" --window
+build/syshm boot --disk hd.img --cdrom-drive --floppy "Install 1.image" --floppy "Install 2.image" --window
 ```
 
-A multi-disk installer ejects disk 1 and asks for disk 2: press F12 and
-click disk 2 (the menu closes and Mac OS goes on), or drag disk 2's image
-onto the window. Mac OS learns of a disk going in as from a real drive,
-by a disk-inserted event, so whatever application is in front and waiting
-for a disk (an installer, Disk Copy) gets it. syshm won't take a disk out
-that Mac OS has mounted (it's using it; the menu says so, and how to
-eject it there); one that isn't mounted (unreadable, say) can be ejected or
-replaced from the menu. Input scripts have `floppy insert FILE` (the rest
-of the line) and `floppy eject`, which follow the same rules.
+The window's menu (F12) shows what's in each drive, with an Eject button.
+syshm won't take a disc out that Mac OS has mounted (it's using it: the
+button is disabled, and the menu says to put it away in Mac OS); one that
+isn't mounted (unreadable, say, or just put in) it can. If an image can't
+go in (no empty drive, a drive Mac OS is using, not an image syshm takes),
+the menu opens to say why.
+
+`--floppy IMAGE` puts a floppy disk image in the floppy drive; given
+several times, for a set of disks, the first is in the drive at startup
+and the others go in, in turn, as Mac OS ejects the one in (a second
+later, as from a quick hand): a multi-disk installer that ejects disk 1 and
+asks for disk 2 gets it with nothing to do, and the menu lists what's still
+to come. Dropping an image puts that one in instead (when the drive is
+free), and the rest follow as before. `--floppy-drive` gives a floppy drive
+with nothing in it, `--cdrom-drive` an empty CD-ROM drive (one of the four
+disks). Input scripts have `floppy insert FILE` and `cdrom insert FILE` (the
+rest of the line), `floppy eject` and `cdrom eject` (the first CD-ROM drive
+whose disc Mac OS isn't using), which follow the same rules.
+
+CD-ROM drives look as they did before (Mac OS shows a CD as a disk, or
+with its own icon, the same in at startup or put in later) but say their
+disc is ejectable, and that a restart keeps it in. A CD-ROM drive gives
+Mac OS a drive for each HFS partition of the disc in it at startup (one if
+it's empty); a disc put in later with more shows its first ones, and a
+disc comes out once none of its volumes is in use. A CD put in while Mac OS runs is never
+the startup disk (it's shown to Mac OS once applications run); one in at
+startup may be, as before, and Mac OS won't eject the startup disk ("The
+startup disk cannot be removed from the desktop"). CD images are raw: an
+`.iso`, `.toast`, `.cdr` or `.img` with or without a partition map;
+compressed ones, UDIF `.dmg` (`hdiutil convert -format UDTO` makes a raw
+`.cdr`) and raw 2352-byte sectors (`.bin`/`.cue`) are refused, saying what
+they are. Ejectable drives change what Mac OS does all along (it looks at
+the drives' flags as it runs), so CD-ROM drives are ejectable only where
+discs can be swapped: in a window or real time, with `--cdrom-drive`, or
+with an input script that swaps CDs (`cdrom` commands); other
+instruction-time runs keep them fixed, as before, the same instruction for
+instruction.
+
+#### Floppies
 
 Images: raw ones of 400K, 720K, 800K, 1440K and 2880K disks (`.img`,
 `.dsk`, `.ima`, `.flp`), and Disk Copy 4.2 ones (`.image`: an 84-byte
@@ -395,8 +428,9 @@ blank.img 1440K "Untitled"` makes a blank formatted floppy (400K, 720K,
 
 The iMac has no floppy controller, so none is emulated: the drive is a
 third kind of drive of syshm's own disk driver (`src/disk.c`, images in
-`src/floppy.c`), at PCI device 7, much as a USB floppy drive is on a real
-iMac, and needs nothing installed in Mac OS. It answers as a floppy drive
+`src/floppy.c`, which drive an image goes in `src/drives.c`), at PCI
+device 7, much as a USB floppy drive is on a real iMac, and needs nothing
+installed in Mac OS. It answers as a floppy drive
 (DriverGestalt 'devt' 'flop', a floppy disk's icon and the drive's, in
 color, the 'where' of Get Info, the format list) and says its disk is
 ejectable, and Mac OS keeps the disk in at a restart. A floppy is never the
@@ -776,7 +810,8 @@ lacks: syshm says to install it again (and a window offers to update it).
     the 8.5 CD's System refuses to start from a writable drive, as from a
     copy of the CD), and a host folder (`--share`; see Shared folder),
     whose blocks come from `src/share.c` rather than a file; and a floppy
-    drive (`--floppy`; see Floppies), whose disk comes and goes.
+    drive (`--floppy`): the floppy and CD-ROM drives' discs come and go
+    (see Floppies and CDs).
     An Apple partition map gives one drive per HFS partition; otherwise the
     file is one volume. (When there's a map entry at offset 512, entries are
     512 bytes apart and count 512-byte blocks even if the driver descriptor
@@ -881,8 +916,8 @@ lacks: syshm says to install it again (and a window offers to update it).
   (a PNG on the Desktop, or in the current directory without one, named
   for when it was taken); fullscreen (at the desktop's resolution); the
   status bar; whether the pointer is captured while the Mac hides its
-  cursor; and with a floppy drive, what's in it, Eject, and the floppy
-  images to put in (see Floppies). In real time guest time doesn't count
+  cursor; and what's in the floppy and CD-ROM drives, each with Eject (see
+  Floppies and CDs). In real time guest time doesn't count
   the pause, so the Mac's clock is that much behind afterwards.
   The status bar (shown unless `--no-status-bar`; the menu toggles it) sits
   below the screen, so the window grows by its height rather than covering
@@ -1038,6 +1073,7 @@ build/syshm boot --rom MOS.rom --cdrom 85.iso --window   # interactive
 build/syshm boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
 build/syshm boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
 build/syshm boot --rom MOS.rom --cdrom 85.iso --floppy disk1.img --floppy disk2.img --window   # a floppy drive
+build/syshm boot --disk hd.img --cdrom-drive --window       # an empty CD-ROM drive: drop CD images on the window
 build/syshm disk create blank.img 1440K "Untitled"          # a blank floppy
 build/syshm run-raw code.bin 1000                # SYSHM_TRACE=1 logs every instruction
 ```
@@ -1058,12 +1094,14 @@ counts, for example:
 3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
 0 tools install                  # the answer to the offer to install the guest tools (or "later")
 3900000000 floppy insert Disk 2.img
+3950000000 cdrom insert Game CD 2.iso
 4000000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)
 4100000000 print-clipboard       # prints the host's clipboard, with what Mac OS copied since
 ```
 
-(`floppy insert` takes the rest of its line as the image's path, comments
-included; `floppy eject` takes it out: see Floppies.)
+(`floppy insert` and `cdrom insert` take the rest of their line as the
+image's path, comments included; `floppy eject` and `cdrom eject` take one
+out: see Floppies and CDs.)
 
 `clipboard` and `print-clipboard` stand in for the host's clipboard (a
 scripted run leaves the window's alone), for syshm Enhancements to share
@@ -1166,6 +1204,7 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
           (configuration space), nvram.c (devices), ndrv.c (PEF driver generator),
           video.c, disk.c (native drivers), floppy.c (floppy images),
+          drives.c (removable drives: where images go, the menu),
           net.c (Ethernet's lanLib,
           libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
           reader: the startup disk's ROM file), share.c (shared folder),

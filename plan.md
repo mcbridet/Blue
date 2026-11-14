@@ -86,6 +86,18 @@ Done:
   by Mac OS. Mounts, writes, Eject, Erase Disk and a restart work on the
   8.5 and 9.1 CDs, FAT disks on an installed 8.5 (File Exchange). See
   Findings, "Media changes".
+- **CD swapping** (`--cdrom`, `--cdrom-drive`; removable CD-ROM drives in
+  `src/disk.c`, where images go and the menu in `src/drives.c`): CD-ROM
+  drives' discs come and go like the floppy's, through the same media
+  changes, wherever they can be swapped (a window or real time, an empty
+  drive, a script with `cdrom` commands); dropped images go by size, a
+  floppy's to the floppy drive, others to a CD-ROM drive. The menu shows
+  each drive's disc with Eject; its list of images is gone, and the
+  `--floppy` images after the first go in as Mac OS ejects. Eject, Put
+  Away and the Trash work on an installed 8.5 with a second CD-ROM drive
+  (`ut.iso` out, `86.iso` in, by script), 9.1 and 8.5 still start up from
+  ejectable CDs, and runs where discs can't be swapped are the same as
+  before. See Findings, "Ejectable drives".
 
 Where it stops:
 
@@ -1129,6 +1141,25 @@ Facts later tasks need, added as they are found.
   floppies" says it needs a drive that can make 720K/1440K disks, without
   a call to the driver: it looks for other drives, the Sony driver's
   presumably), though it offers to make an image of one put in.
+- **Ejectable drives** (CD swapping): the flags' "ejectable" (1) rather
+  than "non-ejectable" (8) changes what Mac OS does from early on: with
+  only that changed, the 8.5 CD's 4-billion-instruction run ended
+  elsewhere (its screen the same) and 9.1's screen differed, as Mac OS
+  reads the flags as it runs; set only once the CD was mounted, the runs
+  still diverged. With flags 8, the Finder's Eject is disabled and Put
+  Away asks "Do you really want to remove the disk ... It will reappear on
+  the desktop when the computer is restarted", then unmounts it without a
+  call to the driver (only DriverGestalt 'flus' queries), so nothing could
+  tell the driver to release the image or start its timer again (it stops
+  once its volumes are mounted). Hence CD-ROM drives are ejectable only
+  where discs can be swapped. With flags 1, Put Away, the Trash and the
+  Finder's Eject unmount the volume and call Control 7; the Finder refuses
+  for the startup disk. What 8.5 asks of an ejectable CD drive is what it
+  asks of the disks (DriverGestalt 'flus', 'intf', 'minf', 'mics', Control
+  20, 21, 22, 23 at mount), all declined as before, so a CD keeps its
+  look: the generic disk's icon or the disc's own, the same in at startup
+  or put in later. 'ejec' (kRestartDontEject) keeps the startup CD in at a
+  restart.
 - **Each application has its own scrap:** its scrap handle is in its
   heap, and the low-memory scrap globals (`0x960`) are switched with it;
   the Process Manager hands the front application's scrap to the next one

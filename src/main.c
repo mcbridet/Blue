@@ -61,7 +61,8 @@ static int usage(void)
 		"                               move X Y, click X Y, dblclick X Y, down, up,\n"
 		"                               motion DX DY (the mouse moved, as games read it),\n"
 		"                               key HEX [down|up], resize W H, screenshot FILE,\n"
-		"                               floppy insert FILE, floppy eject,\n"
+		"                               floppy insert FILE, floppy eject, cdrom insert FILE,\n"
+		"                               cdrom eject,\n"
 		"                               tools install|later (the answer to that offer)\n"
 		"      --max <n>                stop after n PowerPC instructions (default 500000000)\n");
 	fprintf(stderr,
@@ -78,10 +79,12 @@ static int usage(void)
 		"      --disk <image>           attach a disk image (writable if the file is);\n"
 		"                               drives are numbered, and tried for startup, in\n"
 		"                               command-line order\n"
-		"      --cdrom <image>          attach an image read-only\n"
+		"      --cdrom <image>          attach an image read-only, in a CD-ROM drive (whose\n"
+		"                               disc can be swapped in a window: drop an image on it)\n"
+		"      --cdrom-drive            an empty CD-ROM drive\n"
 		"      --floppy <image>         a floppy image for the floppy drive (raw 400K-1440K, or\n"
 		"                               Disk Copy 4.2); the first is in it at startup, the\n"
-		"                               others go in from the window's menu (F12)\n"
+		"                               others go in, in turn, as Mac OS ejects the one in\n"
 		"      --floppy-drive           a floppy drive, empty at startup (drop images on the\n"
 		"                               window to put them in)\n"
 		"      --tools                  attach the guest tools volume (see tools create)\n"
@@ -386,6 +389,13 @@ static int cmd_boot(int argc, char **argv)
 			}
 			opt.cdrom[opt.disks] = strcmp(argv[k], "--cdrom") == 0;
 			opt.disk[opt.disks++] = argv[++k];
+		} else if (strcmp(argv[k], "--cdrom-drive") == 0) {
+			if (opt.disks >= NK_MAX_DISKS) {
+				fprintf(stderr, "at most %d disks\n", NK_MAX_DISKS);
+				return 2;
+			}
+			opt.cdrom[opt.disks] = true;
+			opt.disk[opt.disks++] = NULL;
 		} else if (strcmp(argv[k], "--floppy") == 0 && k + 1 < argc) {
 			if (opt.floppies >= NK_MAX_FLOPPIES) {
 				fprintf(stderr, "at most %d floppy images\n", NK_MAX_FLOPPIES);
@@ -458,9 +468,18 @@ static int cmd_boot(int argc, char **argv)
 		if (found)
 			fprintf(stderr, "%s\n", err);
 	} else {
-		found = load_startup_rom(opt.disk, opt.disks, &rom, from, sizeof from, &opt.rom_disk, &opt.rom_part);
+		const char *paths[NK_MAX_DISKS];       /* (the drives with images: not an empty CD-ROM drive) */
+		unsigned drive[NK_MAX_DISKS], images = 0;
+		for (unsigned k = 0; k < opt.disks; k++)
+			if (opt.disk[k]) {
+				drive[images] = k;
+				paths[images++] = opt.disk[k];
+			}
+		found = load_startup_rom(paths, images, &rom, from, sizeof from, &opt.rom_disk, &opt.rom_part);
 		opt.rom_from_disk = !found;
-		if (found > 0 && opt.disks)
+		if (!found)
+			opt.rom_disk = drive[opt.rom_disk];
+		if (found > 0 && images)
 			fprintf(stderr, "no drive has a System Folder with a Mac OS ROM file in it: give one with "
 				"--rom FILE\n");
 		else if (found > 0)
