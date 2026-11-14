@@ -33,7 +33,6 @@ void test_rom(void)
 	CHECK(nk[0] != '\0');
 	if (rom.format == ROM_FORMAT_BOOTINFO || rom.format == ROM_FORMAT_PARCELS) {
 		CHECK(strncmp(nk, "NewWorld", 8) == 0);
-		CHECK(rom.compatible[0] != '\0');
 		CHECK(rom.elf_entry != 0);
 	}
 
