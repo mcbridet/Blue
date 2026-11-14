@@ -1048,13 +1048,13 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	awacs_init(&m->awacs, &m->dbdma, TIMEBASE_HZ);
 	m->awacs.log = getenv("SYSHM_LOG_SOUND") != NULL;
 	/*
-	 * The codec's status says it's valid, as a running codec's does, for
-	 * the ROM files whose interrupt sets start Mac OS 9.2's sound. Mac OS's
-	 * sound plug-in polls for it after setting the codec up; 8.5-9.1's
-	 * runs stay as they were, the plug-in giving up after a thousand polls
-	 * (2 s of guest time at startup, more in real time with fast start).
+	 * The codec's status says it's valid, as a running codec's does. Mac
+	 * OS's sound plug-in polls for it after setting the codec up, and
+	 * without it gives up only after a thousand polls (2 s of guest time
+	 * at startup for 9.1, more for 9.2.2's two plug-ins, and more again in
+	 * real time with fast start).
 	 */
-	m->awacs.valid = hw.interrupt_index;
+	m->awacs.valid = true;
 	m->awacs.sink = play_sound;
 	m->awacs.sink_ctx = m;
 	m->awacs.input = (struct awacs_input){ cd_input_run, cd_input_pull, cd_input_active, m };
