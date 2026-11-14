@@ -2669,6 +2669,26 @@ static const char *system_call(struct machine *m)
 	return NULL;
 }
 
+/*
+ * The engines answer the quick calls themselves (see ppc.h), for the main
+ * loop's runs (`on`), as long as that changes nothing else the kernel
+ * would do at the exit: not once devices are to be updated or
+ * Multiprocessing Services' tick is due, nor with a task switch or a
+ * software interrupt waiting, nor with `clock` (each exit sets the time
+ * base then).
+ */
+static void quick_calls(struct machine *m, bool on)
+{
+	struct ppc_cpu *cpu = &m->cpu;
+	const struct mp_object *task = m->mp_kernel ? mp_lookup(&m->mp, m->mp.current, MP_TASK) : NULL;
+	cpu->sc_until = 0;
+	if (!on || !task || m->clock_mips || m->dev_dirty || m->mp.swi || m->mp.yield)
+		return;
+	cpu->sc_until = m->dev_next_tb < m->mp.next_tb ? m->dev_next_tb : m->mp.next_tb;
+	cpu->sc_blue = blue_running(m) ? NK2_FLAG_BLUE : 0;
+	cpu->sc_word = task->task.label;
+}
+
 /* Calls made through the emulator's trap table return to LR; others to the next instruction. */
 static uint32_t kcall_return_pc(const struct machine *m)
 {
@@ -2987,6 +3007,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		}
 		if (opt->watch)
 			watch_protect(&m, opt->watch, true);
+		quick_calls(&m, !opt->trap_log || trap_log_armed);      /* (trap logging starts at the same exit) */
 		/* (a random one in RUN_SAMPLE timed, for the status bar's speed: see status_lights()) */
 		m.run_sample = m.run_sample * 1664525u + 1013904223u;
 		bool timed = m.display && m.run_sample < UINT32_MAX / RUN_SAMPLE;
@@ -2996,6 +3017,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			m.run_ns += host_ns() - run_from;
 			m.run_insns += cpu->icount - insns_from;
 		}
+		quick_calls(&m, false);
 		if (opt->watch)
 			watch_protect(&m, opt->watch, false);
 		sync = cpu->icount >= next_sync;
@@ -3033,10 +3055,12 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			}
 			break;
 		case PPC_EXIT_SC:
-			if (m.mp_kernel)        /* NanoKernel 2's way to Multiprocessing Services */
+			if (m.mp_kernel) {      /* NanoKernel 2's way to Multiprocessing Services */
+				dev_clean = cpu->gpr[0] >= 0xFFFFFFFEu;         /* (the quick calls touch nothing) */
 				why = system_call(&m);
-			else
+			} else {
 				why = exception(&m, EC_SYSTEM_CALL, cpu->pc + 4);
+			}
 			break;
 		case PPC_EXIT_HOSTCALL:
 			why = host_call(&m, cpu->exit_insn & 0x03FFFFFFu);

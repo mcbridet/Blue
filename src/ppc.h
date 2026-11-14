@@ -84,6 +84,15 @@ struct ppc_cpu {
 	uint16_t hook_match_value;
 	uint8_t hook_match_reg;
 	bool hook_match_skip;
+	/*
+	 * NanoKernel 2's quick system calls, which `sc` answers itself while
+	 * the time base is below sc_until (the kernel's to set; 0: never):
+	 * r0 -1 becomes sc_blue, -2 sc_word, and CR0 GT if sc_blue isn't 0,
+	 * else EQ (SO from XER). As when the kernel answers, that retires
+	 * nothing.
+	 */
+	uint64_t sc_until;
+	uint32_t sc_blue, sc_word;
 
 	struct mem *mem;
 	struct jit *jit;        /* translate to host code (NULL: interpret) */

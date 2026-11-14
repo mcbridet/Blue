@@ -789,3 +789,17 @@ Facts later tasks need, added as they are found.
   68k bus error during Starting Up). `quiet_store()` in `nk.c` now runs
   such a store with the page writable and puts the page back, so the rest
   of the instruction (update forms, other pages) happens as under MemRetry.
+- **Quick `sc` in the engines:** 4.5 million of a 4-billion-instruction
+  CD run's 12.6 million kernel exits were `sc`, 4 million of them Mixed
+  Mode's r0 -1 (`0xFFCF8DB8`). The kernel's answer (`system_call()`)
+  never counted the `sc` as retired, and an exit for it only services
+  devices and Multiprocessing Services when they're due (or something
+  touched the devices since the last update); `quick_calls()` gives the
+  engines the answers and a time-base limit (the earlier of the next
+  device event and `mp->next_tb`; 0 when devices are dirty, a switch or
+  software interrupt waits, with `clock`, or before trap logging starts)
+  for each main-loop run, so the run stays the same instruction for
+  instruction. 0.56 million still exit because the devices were dirty
+  (after each sync point and each real MP call), 0.07 million because
+  the limit had passed. Kernel exits 11.66 → 8.33 million, host time
+  1.53 → 1.44 s.

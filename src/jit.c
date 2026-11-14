@@ -1645,12 +1645,11 @@ static int branch(struct tx *t, uint32_t i)
 }
 
 /*
- * rD = the time base (its upper half if `high`), as the interpreter has it:
- * the value when generated code was entered, plus the step for each
- * instruction retired since (those before this block's, then this
- * block's up to here).
+ * x9 = the time base as the interpreter has it: the value when generated
+ * code was entered, plus the step for each instruction retired since
+ * (those before this block's, then this block's up to here). Uses x10, x11.
  */
-static void read_tb(struct tx *t, unsigned rd_, bool high)
+static void time_base(struct tx *t)
 {
 	emit(t, a64_ldst_imm(3, true, 9, R_CPU, OFF(tb)));
 	emit(t, a64_ldst_imm(3, true, 10, R_STATE, (unsigned)offsetof(struct jit_state, entry_budget)));
@@ -1659,6 +1658,12 @@ static void read_tb(struct tx *t, unsigned rd_, bool high)
 		emit(t, a64_addsub_imm(1, 0, 0, 10, 10, t->k));
 	emit(t, a64_ldst_imm(2, true, 11, R_CPU, OFF(tb_step)));
 	emit(t, a64_madd(1, 9, 10, 11, 9));
+}
+
+/* rD = the time base (its upper half if `high`) */
+static void read_tb(struct tx *t, unsigned rd_, bool high)
+{
+	time_base(t);
 	unsigned d = wr(t, rd_);
 	if (high)
 		emit(t, a64_bitfield(1, A64_UBFM, d, 9, 32, 63));
@@ -2026,6 +2031,40 @@ static int kernel_exit(struct tx *t, uint32_t insn, unsigned kind)
 	return EXITED;
 }
 
+/*
+ * sc: NanoKernel 2's quick calls (r0 -1 and -2) are answered here while the
+ * kernel lets them be (see ppc.h), retiring nothing (the budget gets the
+ * instruction back); otherwise the kernel takes it.
+ */
+static int system_call(struct tx *t, uint32_t insn)
+{
+	unsigned r0 = rd(t, 0), xer = rd(t, G_XER);
+	struct cache_state at = t->rc;
+	emit(t, a64_addsub_imm(0, 0, 0, 2, r0, 2));             /* -2, -1: 0, 1 */
+	emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 2, 1));
+	uint32_t *other = fwd(t, a64_bcond(A64_HI, 0));
+	time_base(t);
+	emit(t, a64_ldst_imm(3, true, 10, R_CPU, OFF(sc_until)));
+	emit(t, a64_addsub(1, 1, 1, A64_ZR, 9, 10, A64_LSL, 0));
+	uint32_t *quick = fwd(t, a64_bcond(A64_LO, 0));
+	land(t, other);
+	kernel_exit(t, insn, EXIT_SC);
+	t->rc = at;
+	land(t, quick);
+	ld32(t, 10, OFF(sc_blue));
+	ld32(t, 11, OFF(sc_word));
+	emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 2, 1));
+	emit(t, a64_csel(0, 0, 0, wr(t, 0), 10, 11, A64_EQ));
+	emit(t, a64_movw(0, A64_MOVZ, 5, CR_EQ, 0));
+	emit(t, a64_movw(0, A64_MOVZ, 6, CR_GT, 0));
+	emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 10, 0));
+	emit(t, a64_csel(0, 0, 0, 5, 6, 5, A64_NE));
+	emit(t, a64_logic(0, A64_ORR, 0, 5, 5, xer, A64_LSR, 31));
+	bfi(t, rw(t, G_CR), 5, 28, 4);
+	emit(t, a64_addsub_imm(1, 0, 0, R_BUDGET, R_BUDGET, 1));
+	return EMITTED;
+}
+
 static int insn(struct tx *t, uint32_t i)
 {
 	unsigned op = i >> 26, rd_ = (i >> 21) & 31, ra = (i >> 16) & 31;
@@ -2038,7 +2077,7 @@ static int insn(struct tx *t, uint32_t i)
 	case 6:                                 /* host call */
 		return kernel_exit(t, i, EXIT_HOSTCALL);
 	case 17:                                /* sc */
-		return kernel_exit(t, i, EXIT_SC);
+		return system_call(t, i);
 	case 4:                                 /* AltiVec */
 		return STOPPED;
 	case 7: {                                                       /* mulli */

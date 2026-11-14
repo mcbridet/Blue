@@ -17,6 +17,7 @@
 #include "../src/mem.h"
 #include "../src/ppc.h"
 #include "../src/ppc_fp.h"
+#include "ppcasm.h"
 #include "test.h"
 
 #define CODE 0x00010000u
@@ -316,6 +317,9 @@ static void test_random_programs(unsigned programs, bool rom_code)
 		for (unsigned k = 0; k < n; k++)
 			code[k] = gen_insn(k, n);
 		code[n] = 17u << 26 | 2;                                /* sc */
+		for (unsigned k = 1; k < n; k++)                        /* the quick system calls, often */
+			if (code[k] == code[n] && pick(2))
+				code[k - 1] = d_form(14, 0, 0, (uint32_t)-1 - pick(2));       /* li r0, -1 or -2 */
 		for (uint32_t o = 0; o < DATA_SIZE; o++)
 			data[o] = (uint8_t)rnd();
 
@@ -341,6 +345,14 @@ static void test_random_programs(unsigned programs, bool rom_code)
 		init.ctr = pick(2) ? pick(5) : interesting();
 		init.pc = CODE;
 		init.tb = 1000;
+		init.tb_step = pick(8) ? 1 : 0;
+		switch (pick(4)) {                                      /* quick system calls: never, always, until */
+		case 0:  init.sc_until = 0; break;
+		case 1:  init.sc_until = UINT64_MAX; break;
+		default: init.sc_until = init.tb + pick(400); break;
+		}
+		init.sc_blue = pick(2) ? 0x00200000u : 0;
+		init.sc_word = interesting();
 		if (pick(4) == 0)
 			init.hook_pc = CODE + 4 * pick(n);
 		if (pick(4) == 0) {                                     /* the match hook: often matching */
@@ -461,10 +473,79 @@ static void test_logic_imm(void)
 	}
 }
 
+/*
+ * NanoKernel 2's quick system calls, by both engines: answered in place,
+ * retiring nothing, while the time base is below sc_until; else (and for
+ * other calls) left to the kernel.
+ */
+static void test_quick_sc(void)
+{
+	const uint32_t prog[] = {
+		LI(0, -1), SC, ORI(5, 0, 0), MFCR(6), LI(0, -2), SC, ORI(7, 0, 0), MFCR(8), LI(0, 5), SC,
+	};
+	const unsigned n = sizeof prog / sizeof prog[0];
+	static struct side s;
+	for (int jit = 0; jit < 2; jit++) {
+		setup(&s, jit);
+		if (jit && !s.cpu.jit) {
+			mem_free(&s.mem);
+			return;
+		}
+		mem_invalidate(&s.mem, CODE, sizeof prog);
+		for (unsigned k = 0; k < n; k++)
+			mem_w32(&s.mem, CODE + 4 * k, prog[k]);
+		/* off; the blue task; another, with XER[SO]; only the first call in time */
+		for (int c = 0; c < 4; c++) {
+			struct jit *j = s.cpu.jit;
+			ppc_init(&s.cpu, &s.mem);
+			s.cpu.jit = j;
+			s.cpu.xer = c == 2 ? XER_SO : 0;
+			s.cpu.sc_until = c == 0 ? 0 : c == 3 ? 1002 : UINT64_MAX;
+			s.cpu.sc_blue = c == 2 ? 0 : 0x00200000u;
+			s.cpu.sc_word = 0xCAFE0001u;
+			for (int run = 0; run < 2; run++) {     /* (again, through what the first run translated) */
+				s.cpu.pc = CODE;
+				s.cpu.icount = 0;
+				s.cpu.tb = 1000;
+				s.cpu.cr = 0x01234567u;
+				s.cpu.gpr[5] = s.cpu.gpr[6] = s.cpu.gpr[7] = s.cpu.gpr[8] = 0;
+				enum ppc_exit e = ppc_run(&s.cpu, 1000);
+				CHECK_EQ(e, PPC_EXIT_SC);
+				if (c == 0) {
+					CHECK_EQ(s.cpu.pc, CODE + 4);
+					CHECK_EQ(s.cpu.icount, 1);
+					CHECK_EQ(s.cpu.gpr[0], 0xFFFFFFFFu);
+					CHECK_EQ(s.cpu.cr, 0x01234567u);
+				} else if (c == 3) {            /* the second call is at time base 1004 */
+					CHECK_EQ(s.cpu.pc, CODE + 4 * 5);
+					CHECK_EQ(s.cpu.icount, 4);
+					CHECK_EQ(s.cpu.tb, 1004);
+					CHECK_EQ(s.cpu.gpr[5], 0x00200000u);
+					CHECK_EQ(s.cpu.gpr[6], 0x41234567u);
+					CHECK_EQ(s.cpu.gpr[0], 0xFFFFFFFEu);
+				} else {
+					uint32_t cr0 = c == 2 ? 0x30000000u : 0x40000000u;
+					CHECK_EQ(s.cpu.pc, CODE + 4 * (n - 1));
+					CHECK_EQ(s.cpu.icount, n - 3);
+					CHECK_EQ(s.cpu.tb, 1000 + n - 3);
+					CHECK_EQ(s.cpu.gpr[5], c == 2 ? 0 : 0x00200000u);
+					CHECK_EQ(s.cpu.gpr[6], cr0 | 0x01234567u);
+					CHECK_EQ(s.cpu.gpr[7], 0xCAFE0001u);
+					CHECK_EQ(s.cpu.gpr[8], cr0 | 0x01234567u);
+					CHECK_EQ(s.cpu.gpr[0], 5);
+				}
+			}
+		}
+		jit_free(s.cpu.jit);
+		mem_free(&s.mem);
+	}
+}
+
 void test_jit(void)
 {
 	const char *n = getenv("SYSHM_JIT_PROGRAMS");
 	unsigned programs = n ? (unsigned)strtoul(n, NULL, 0) : 3000;
+	test_quick_sc();
 	test_random_programs(programs, false);
 	test_random_programs(programs / 2 + 1, true);
 	setenv("SYSHM_JIT_FAR", "1", 1);        /* again, with the code far from the JIT's stubs */

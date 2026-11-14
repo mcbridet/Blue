@@ -5,6 +5,8 @@
  * was updated), hook, and the macros
  *   EXIT(e)       stop with exit reason e; the instruction has changed nothing
  *   CHECK_HOOK()  after a branch has set npc
+ *   UNRETIRED()   before a kernel call answered in place changes anything:
+ *                 it completes without counting as retired
  */
 #define RA0(i) (RA(i) ? g[RA(i)] : 0)
 #define DSI(ea, w) do { c->fault_addr = (ea); c->fault_write = (w); EXIT(PPC_EXIT_DSI); } while (0)
@@ -52,7 +54,12 @@
 		break;
 	}
 	case 17:                                                        /* sc */
-		EXIT(PPC_EXIT_SC);
+		if ((g[0] != 0xFFFFFFFFu && g[0] != 0xFFFFFFFEu) || c->tb + done * c->tb_step >= c->sc_until)
+			EXIT(PPC_EXIT_SC);
+		UNRETIRED();
+		set_crf(c, 0, (c->sc_blue ? CR_GT : CR_EQ) | so_bit(c));
+		g[0] = g[0] == 0xFFFFFFFFu ? c->sc_blue : c->sc_word;
+		break;
 	case 18: {                                                      /* b */
 		uint32_t li = i & 0x03FFFFFCu;
 		if (li & 0x02000000u)
