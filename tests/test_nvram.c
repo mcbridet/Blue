@@ -109,6 +109,38 @@ void test_nvram(void)
 	CHECK(usb && flat_u32(usb, "AAPL,interrupts", 0) == IRQ_USB);
 	CHECK(usb && flat_u32(usb, "AAPL,interrupt-index", 0) == 0xDEADBEEFu);
 
+	/*
+	 * ... and for ROM files whose Trampoline makes it (Mac OS 9.2's), the
+	 * USB controller's, the sound chip's (its three interrupts) and the
+	 * Ethernet node's (its receive DMA channel's) as well
+	 */
+	static uint8_t lib[] = { 1, 2, 3, 4 };
+	hw.interrupt_index = true;
+	hw.lanlib = lib;
+	hw.lanlib_size = sizeof lib;
+	CHECK(bootinfo_build(&mem, &bi, &hw) == 0);
+	tree = mem_ptr(&mem, bi.device_tree);
+	usb = flat_find(tree, NULL, "usb", "pci");
+	CHECK(usb && flat_u32(usb, "AAPL,interrupt-index", 0) == IRQ_USB);
+	const uint8_t *dav = flat_find(tree, NULL, "davbus", "mac-io");
+	CHECK(dav != NULL);
+	if (dav) {
+		const uint32_t want[3] = { IRQ_SOUND, IRQ_DMA_SOUND_OUT, IRQ_DMA_SOUND_IN };
+		for (unsigned k = 0; k < 3; k++) {
+			CHECK_EQ(flat_u32(dav, "AAPL,interrupt-index", k), want[k]);
+			CHECK_EQ(flat_u32(dav, "AAPL,interrupt-vectors", k), want[k]);
+			CHECK_EQ(flat_u32(dav, "AAPL,interrupt-priorities", k), 2);
+		}
+	}
+	const uint8_t *enet = flat_find(tree, NULL, "ethernet", "mac-io");
+	CHECK(enet && flat_u32(enet, "AAPL,interrupt-index", 0) == IRQ_DMA_ENET_RX);
+	CHECK(enet && flat_u32(enet, "AAPL,interrupt-index", 1) == 0xDEADBEEFu);
+	display = flat_find(tree, NULL, "display", "pci");
+	CHECK(display && flat_u32(display, "AAPL,interrupt-index", 0) == IRQ_DISPLAY);
+	hw.interrupt_index = false;
+	hw.lanlib = NULL;
+	hw.lanlib_size = 0;
+
 	hw.parcels = &none;
 	CHECK(bootinfo_build(&mem, &bi, &hw) == 0);
 	tree = mem_ptr(&mem, bi.device_tree);

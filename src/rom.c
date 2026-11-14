@@ -253,6 +253,11 @@ size_t rom_file_version(const struct rom *rom, char *buf, size_t len)
 	return n;
 }
 
+bool rom_interrupt_index(const struct rom *rom)
+{
+	return rom->elf_size && find_bytes(rom->file + rom->elf_offset, rom->elf_size, "AAPL,interrupt-index");
+}
+
 void rom_free(struct rom *rom)
 {
 	parcels_free(&rom->parcels);

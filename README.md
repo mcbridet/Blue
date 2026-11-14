@@ -263,8 +263,9 @@ build/syshm boot --cdrom 922.iso --max 3000000000 --screenshot finder.png
 ```
 
 The Finder is up by instruction 1.5 billion; in real time with fast start
-after 13 s of guest time (0.9 s on the host), and then the host sleeps
-most of the time. Its ROM file carries NanoKernel 2.28 (the version
+after 13-14 s of guest time (about 1 s on the host; how far guest time
+gets in that second depends on how busy the host is), and then the host
+sleeps most of the time. Its ROM file carries NanoKernel 2.28 (the version
 syshm's kernel reports), and wants a few things 9.1's doesn't:
 
 - The info records as NanoKernel 2.28 has them: HWInfo version 0x0108 (0xC0
@@ -290,6 +291,25 @@ syshm's kernel reports), and wants a few things 9.1's doesn't:
 - Kernel call 7 (CacheDispatch) with a selector for no cache (4), from the
   power manager as it dozes after half an hour of idling: -2, as both
   NanoKernels answer.
+- `AAPL,interrupt-index` in the nodes with interrupt sets. Its
+  DriverServicesLib makes a node's interrupt set only if the node has one
+  (its Trampoline gives every node with interrupts one: each interrupt's
+  slot in HWInfo's VectorLookupTable, here the source), so without it the
+  sound chip, the USB controller and the Ethernet node had no sets: no
+  sound, USB's driver waiting for an interrupt that never came, and lanLib
+  polling. syshm gives them one for ROM files whose Trampoline makes it
+  (9.2's; earlier ROMs' trees are as they were; the display's set has
+  always had one). The sound plays (alerts; the Sound control panel's
+  volume and Mute), USB's root hub runs with its interrupts (start of
+  frame, frame number overflow), and lanLib receives by interrupt (TCP/IP
+  gets its address by DHCP in real time).
+- The sound codec's status says it's valid (bit 22), as a running codec's
+  does. The sound plug-in (two start on 9.2.2) polls for it after setting
+  the codec up, and gives up after a thousand polls: 2 s of guest time in
+  instruction time, 17 s in real time with fast start, whose slower guest
+  processor stretches each poll (the CD's Finder came at 22-30 s of guest
+  time). It's only set for 9.2's ROM files, so 8.5-9.1's runs stay as they
+  were (9.1's plug-in waits the same way, once).
 
 The CD installs with Apple Software Restore (its Read Me says how), which
 copies the CD's disk image onto a volume, erasing it. Drive Setup, which
@@ -312,6 +332,15 @@ was pressed: a Time Manager software interrupt the 68k emulator never took,
 and nothing else to interrupt the native code it then napped in. The
 display's vertical blank interrupts it 60 times a second now, as an iMac's
 does (plan.md, Findings).
+
+The CD's system and the restored one start up as quickly as before in
+real time, give or take the half second USB's root hub and the sound
+plug-ins now take at startup (measured without fast start too), and the
+host sleeps while they idle: their sound output's DMA stops when nothing
+plays, and a USB controller with only frame number overflow enabled wakes
+the host when a frame overflows (every 33 s), not at every frame (1 ms).
+The restored system, set up and idle at the Finder, left the host asleep
+37 s of 40.
 
 ### Networking
 
@@ -956,7 +985,9 @@ lacks: syshm says to install it again (and a window offers to update it).
   (Apple, 1) pick a port layout the 'soph' component knows; without them the
   output device opens but never plays. The node declares output hardware
   only (`hardware-types` 2, bit 0 being input), which keeps Mac OS 9's buggy
-  input component away (see Mac OS 9).
+  input component away (see Mac OS 9). With 9.2's ROM files the codec's
+  status says it's valid (bit 22), which Mac OS 9's sound plug-in polls for
+  (see Mac OS 9.2.2).
 - Device tree (`src/devtree.c`, `src/bootinfo.c`): an `iMac,1` with a Grackle
   PCI bridge, Mac I/O, a framebuffer display and a disk, flattened into the
   format the ROM's Name Registry reads.
@@ -1041,6 +1072,9 @@ lacks: syshm says to install it again (and a window offers to update it).
   advances the frame number, writes it to the HCCA in guest memory and
   raises start-of-frame (and, every 32768, frame-number overflow). With
   nothing connected, there are no transfers, so the lists aren't walked.
+  Mac OS keeps overflow enabled and start-of-frame only while it waits for
+  a frame to pass, so an idle host sleeps until the overflow (every 33 s)
+  rather than waking at every frame.
   What it took for the ROM to use it: PCI configuration space
   (`src/pci.c`), through Grackle's `CONFIG_ADDR`/`CONFIG_DATA` registers
   and RTAS's `read-pci-config`/`write-pci-config`; an interrupt set for the
@@ -1057,14 +1091,15 @@ lacks: syshm says to install it again (and a window offers to update it).
   `AAPL,interrupts`; here the sources), `AAPL,interrupt-priorities` (68k
   levels) and `AAPL,interrupt-vectors` (sources). Mac OS 9.2's ROM files
   build them in DriverServicesLib instead, and only for nodes that also
-  have `AAPL,interrupt-index` (the source's entry in the controller's table:
-  the source again); only the display has it so far, so on 9.2.2 the
-  others still have no sets (no sound output, the USB controller without
-  interrupts, lanLib polling). The display, the USB controller, the
+  have `AAPL,interrupt-index`, which their Trampoline makes (each
+  interrupt's slot in HWInfo's VectorLookupTable, whose slot n is source n
+  here: the source again). The display, the USB controller, the
   sound chip and the Ethernet node have them (the Ethernet node only for
   its receive DMA channel, lanLib's: with all three of its interrupts, Open
   Transport stalled for half a minute or more in some startups of Mac OS 9,
-  busy in its deferred tasks, for reasons not yet known). Their handlers mask and
+  busy in its deferred tasks, for reasons not yet known), with
+  `AAPL,interrupt-index` when the ROM file's Trampoline makes it (the
+  display's always: earlier ROMs ignore it). Their handlers mask and
   unmask the source but never clear a latched pulse in the controller, so
   the kernel takes pulses itself when it delivers them, as the NanoKernel's
   handler would: they stay in `PendingInts` until Mac OS has handled them

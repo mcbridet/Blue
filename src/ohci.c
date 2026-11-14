@@ -321,3 +321,11 @@ uint64_t ohci_next_event(const struct ohci *o)
 	return o->frame_start + frame_length(o);
 }
 
+uint64_t ohci_next_interrupt(const struct ohci *o)
+{
+	uint64_t next = ohci_next_event(o);
+	if (next == UINT64_MAX || (o->int_enable & OHCI_INT_SF))
+		return next;
+	return o->frame_start + (0x8000u - (o->fm_number & 0x7FFFu)) * frame_length(o);
+}
+

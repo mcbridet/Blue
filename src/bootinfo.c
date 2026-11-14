@@ -79,8 +79,9 @@ static const uint8_t rtas_token_field[RTAS_TOKEN_COUNT] = {
  * the sources), AAPL,interrupt-priorities (68k levels) and
  * AAPL,interrupt-vectors (sources) it reads 3 at most. Mac OS 9.2's ROM
  * files build them in DriverServicesLib instead, and only for nodes with
- * AAPL,interrupt-index as well (the source's entry in the interrupt
- * controller's table, so here the source again): `index` gives it.
+ * AAPL,interrupt-index as well, which their Trampoline makes: each
+ * interrupt's slot in HWInfo's VectorLookupTable, whose slot n is source n
+ * here, so the source again. `index` gives it.
  */
 static void interrupt_set(struct dt_node *n, const uint32_t *sources, unsigned count, bool index)
 {
@@ -182,10 +183,9 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	/*
 	 * The display: a plain framebuffer whose Mac OS driver is in its node,
 	 * and an interrupt at each vertical blank, on the line the iMac's ATI
-	 * chip has (its driver installs its handler in the interrupt set). The
-	 * other devices' sets have no AAPL,interrupt-index, so Mac OS 9.2 still
-	 * makes none for them: with them, its sound, USB and Ethernet drivers
-	 * would run differently (see plan.md, Findings).
+	 * chip has (its driver installs its handler in the interrupt set). Its
+	 * set has AAPL,interrupt-index for every ROM file (earlier ones ignore
+	 * it); the other devices' only for those whose Trampoline makes it.
 	 */
 	struct dt_node *disp = dt_add_node(pci, "display");
 	pci_ids(disp, PCI_VENDOR_SYSHM, PCI_DEVICE_DISPLAY, PCI_CLASS_DISPLAY, 1);
@@ -233,7 +233,7 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	pci_bar0(usb, PCI_DEVFN_USB, USB_BASE, OHCI_SIZE);
 	const uint32_t usb_irq = IRQ_USB;
 	dt_prop_u32(usb, "interrupts", IRQ_USB);
-	interrupt_set(usb, &usb_irq, 1, false);
+	interrupt_set(usb, &usb_irq, 1, hw->interrupt_index);
 	dt_prop_u32(usb, "#address-cells", 1);
 	dt_prop_u32(usb, "#size-cells", 0);
 
@@ -295,7 +295,7 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	dt_prop_cells(dav, "reg", dav_reg, 6);
 	dt_prop_cells(dav, "interrupts", dav_irq, 3);
 	dt_prop_cells(dav, "AAPL,address", dav_addr, 3);
-	interrupt_set(dav, dav_irq, 3, false);
+	interrupt_set(dav, dav_irq, 3, hw->interrupt_index);
 	dt_prop_u32(dav, "#address-cells", 1);
 	dt_prop_u32(dav, "#size-cells", 0);
 	struct dt_node *sound = dt_add_node(dav, "sound");
@@ -337,7 +337,7 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 		dt_prop_cells(enet, "reg", enet_reg, 6);
 		dt_prop_cells(enet, "interrupts", enet_irq, 3);
 		dt_prop_cells(enet, "AAPL,address", enet_addr, 3);
-		interrupt_set(enet, &enet_rx_irq, 1, false);
+		interrupt_set(enet, &enet_rx_irq, 1, hw->interrupt_index);
 		dt_prop(enet, "local-mac-address", hw->mac, 6);
 		dt_prop(enet, "lanLib,AAPL,MacOS,PowerPC", hw->lanlib, (uint32_t)hw->lanlib_size);
 	}

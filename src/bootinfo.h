@@ -93,6 +93,7 @@ struct bootinfo_machine {
 	size_t lanlib_size;
 	uint8_t mac[6];
 	const struct parcels *parcels;  /* the ROM file's nodes and properties (Mac OS 9.1 on), or NULL */
+	bool interrupt_index;           /* interrupt sets with AAPL,interrupt-index (the ROM file's Trampoline makes it) */
 	/* With parcels: where Open Firmware booted from, a disk and its partition's map entry (0: no map) */
 	bool boot;
 	unsigned boot_disk, boot_map_entry;

@@ -20,6 +20,7 @@ enum {
 /* The codec identifies itself as an AWACS (revision 2) made by Crystal (1) */
 #define CODEC_REVISION 2u
 #define CODEC_MANUFACTURER 1u
+#define CODEC_VALID 0x00400000u
 
 #define FRAME_BYTES 4u
 #define MAX_CREDIT (FRAME_BYTES * 4096u)        /* about 0.1 s at 44.1 kHz */
@@ -223,7 +224,7 @@ static uint32_t reg_value(struct awacs *a, unsigned reg)
 	case REG_CODEC_CONTROL:
 		return a->codec_control & ~0x01000000u;         /* the write is done */
 	case REG_CODEC_STATUS:
-		return CODEC_REVISION << 12 | CODEC_MANUFACTURER << 8;
+		return CODEC_REVISION << 12 | CODEC_MANUFACTURER << 8 | (a->valid ? CODEC_VALID : 0);
 	case REG_CLIP_COUNT: {
 		uint32_t v = a->clip_count;
 		a->clip_count = 0;

@@ -1005,6 +1005,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		.lanlib = m->lanlib,
 		.lanlib_size = lanlib_size,
 		.parcels = parcels ? &m->rom->parcels : NULL,
+		.interrupt_index = rom_interrupt_index(m->rom),
 		.boot = boot,
 		.boot_disk = boot_disk,
 		.boot_map_entry = boot_map_entry,
@@ -1046,6 +1047,14 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	mmio_add(&m->bus, MACIO_DBDMA, DBDMA_SIZE, &dbdma_mmio_ops, &m->dbdma, "dbdma");
 	awacs_init(&m->awacs, &m->dbdma, TIMEBASE_HZ);
 	m->awacs.log = getenv("SYSHM_LOG_SOUND") != NULL;
+	/*
+	 * The codec's status says it's valid, as a running codec's does, for
+	 * the ROM files whose interrupt sets start Mac OS 9.2's sound. Mac OS's
+	 * sound plug-in polls for it after setting the codec up; 8.5-9.1's
+	 * runs stay as they were, the plug-in giving up after a thousand polls
+	 * (2 s of guest time at startup, more in real time with fast start).
+	 */
+	m->awacs.valid = hw.interrupt_index;
 	m->awacs.sink = play_sound;
 	m->awacs.sink_ctx = m;
 	m->awacs.input = (struct awacs_input){ cd_input_run, cd_input_pull, cd_input_active, m };
@@ -1353,10 +1362,12 @@ static void fast_start_input(struct machine *m, int key, bool down)
  * The guest has nothing to do until an interrupt arrives (the Process
  * Manager found no process to run, or the system asked to nap), or until
  * guest time reaches `deadline` (UINT64_MAX: none). In real time, sleep
- * until the next device event: the next VIA timer interrupt or vertical
- * blank, the next window frame, or host input, whichever is first.
- * Interrupts only come from the VIA timers, the display and Cuda, which
- * only talks after input. With Multiprocessing Services, a timer's,
+ * until the next device event: the next VIA timer interrupt, USB frame
+ * that interrupts (see ohci_next_interrupt()) or vertical blank, the next
+ * window frame, or host input, whichever is first. Interrupts only come
+ * from the VIA timers, USB, the display and Cuda, which only talks after
+ * input, and from DMA, while sound plays or the host network is connected
+ * (both handled below). With Multiprocessing Services, a timer's,
  * timeout's or delay's end counts too.
  *
  * Guest time that disk transfers put ahead of the host clock is made up
@@ -1386,7 +1397,7 @@ static void idle_wait(struct machine *m, uint64_t deadline)
 	uint64_t ev = via_next_event(&m->via);
 	if (ev != UINT64_MAX && host_ns_at(m, ev, VIA_HZ) < until)
 		until = host_ns_at(m, ev, VIA_HZ);
-	ev = ohci_next_event(&m->ohci);
+	ev = ohci_next_interrupt(&m->ohci);
 	if (ev != UINT64_MAX && host_ns_at(m, ev, OHCI_BIT_HZ) < until)
 		until = host_ns_at(m, ev, OHCI_BIT_HZ);
 	ev = video_next_vbl(&m->video);

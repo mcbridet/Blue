@@ -64,6 +64,13 @@ void ohci_set_time(struct ohci *o, uint64_t bit_times);
 /* The bit time at which the next enabled interrupt is due; UINT64_MAX if none is. */
 uint64_t ohci_next_event(const struct ohci *o);
 
+/*
+ * The bit time of the next frame whose start interrupts: with frame number
+ * overflow enabled but not start of frame, the frame that overflows
+ * (ohci_next_event()'s frames in between only update the frame number).
+ */
+uint64_t ohci_next_interrupt(const struct ohci *o);
+
 /* Whether the interrupt line is asserted. */
 static inline bool ohci_irq(const struct ohci *o)
 {

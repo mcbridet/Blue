@@ -11,7 +11,8 @@
  *                       0-11, register number in bits 12-15; bit 24 reads 1
  *                       while a write is in progress (never here)
  *   0x20 codec status   revision (bits 12-15) and manufacturer (8-11) of the
- *                       codec, and its input sense bits (0-3)
+ *                       codec, and its input sense bits (0-3); bit 22 says
+ *                       the codec's status is valid (`valid`)
  *   0x30 clip count     samples clipped since last read
  *   0x50 frame count    sample frames since reset, counting all the time
  *
@@ -57,6 +58,7 @@ struct awacs {
 	uint16_t codec[AWACS_CODEC_REGS];
 	uint32_t byte_swap;
 	uint32_t clip_count;
+	bool valid;                             /* codec status bit 22, as a running codec's (see nk.c) */
 
 	struct dbdma *dma;
 	awacs_sink *sink;

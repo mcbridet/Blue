@@ -9,6 +9,15 @@
 /* Uses a real ROM if one is available: $SYSHM_TEST_ROM, or ./MOS.rom. */
 void test_rom(void)
 {
+	/* the Trampoline makes AAPL,interrupt-index when it names it (Mac OS 9.2's on) */
+	static uint8_t file[] = "<CHRP-BOOT>...</CHRP-BOOT>\x7f" "ELF AAPL,interrupts\0AAPL,interrupt-index\0";
+	struct rom fake = { .file = file, .file_size = sizeof file, .elf_offset = 26, .elf_size = sizeof file - 26 };
+	CHECK(rom_interrupt_index(&fake));
+	fake.elf_size = 20;
+	CHECK(!rom_interrupt_index(&fake));
+	fake.elf_size = 0;
+	CHECK(!rom_interrupt_index(&fake));
+
 	const char *path = getenv("SYSHM_TEST_ROM");
 	if (!path)
 		path = "MOS.rom";
@@ -27,6 +36,7 @@ void test_rom(void)
 
 	CHECK_EQ(rom_stored_checksum(&rom), rom_computed_checksum(&rom));
 	CHECK_EQ(rom_version(&rom), 0x077D);
+	CHECK(!rom_interrupt_index(&rom));
 
 	char nk[40];
 	rom_nanokernel_id(&rom, nk, sizeof nk);

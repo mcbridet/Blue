@@ -143,14 +143,17 @@ left is mostly AppleTalk on Ethernet (5 s) and the CD's transfers.
 The 9.2.2 CD (`build/syshm boot --cdrom 922.iso --max 4000000000`) has the
 Finder up by instruction 1.5 billion, with the CD's Read Me open in
 SimpleText (as under QEMU), and idles there; two runs are identical. In
-real time with fast start the Finder is up after 13.2 s of guest time (0.9
-s on the host), and the host then sleeps 25 s of 30. Its installer, Apple
+real time with fast start the Finder is up after 13.4-13.7 s of guest time
+(about 1 s on the host), and the host then sleeps 25 s of 30. It has
+sound, USB's interrupts and interrupt-driven Ethernet (Findings, "9.2.2's
+interrupt sets"). Its installer, Apple
 Software Restore, restores the CD's image onto a blank disk from `disk
 create` (671 MB, by instruction 40 billion of a scripted run), and the
 restored system starts up to the Finder (the Setup Assistant over it the
 first time), in real time and, since the display has its vertical-blank
 interrupt, in instruction time too (Findings, "The restored 9.2.2 waits
-for a key"). After half an hour of idling the power manager
+for a key"). Set up, it's at the Finder by instruction 1.9 billion, and
+after 13 s of guest time in real time. After half an hour of idling the power manager
 dozes (PowerDispatch
 1, CacheDispatch 4), and at 55 minutes its 'powr' task stops and restarts
 scheduling around a sleep that doesn't happen; the system carries on.
@@ -482,9 +485,11 @@ the kernel); 8 onwards as the boot progresses.
   the floppy controller's cell (`empty_cell_ops`, `setup_machine()`);
   syshm's lanLib kept over the ROM file's `bmac+` one (`build_tree()`).
   `tests/test_mp.c` and `tests/test_nvram.c` cover them. Open: Apple's own
-  9.2/9.2.2 CDs (not tried: none here); interrupt sets for the USB
-  controller, the sound chip and lanLib on 9.2.2 (they need
-  `AAPL,interrupt-index`: see Findings, "The display's interrupt"). The
+  9.2/9.2.2 CDs (not tried: none here). Interrupt sets for the USB
+  controller, the sound chip and lanLib on 9.2.2 (`AAPL,interrupt-index`
+  for ROM files whose Trampoline makes it, and the codec's valid bit: see
+  Findings, "9.2.2's interrupt sets") are done: sound, USB's interrupts and
+  interrupt-driven Ethernet. The
   installed system's wait for a key in instruction time is gone (Task 17).
 - **Goal:** their ROM files (newer parcels, possibly newer kernel
   features) on the same path. Find out first whether they list `iMac,1`
@@ -1614,9 +1619,10 @@ Facts later tasks need, added as they are found.
   Without it no node had a set on 9.2.2: the display's Open got
   nrNotFoundErr, USB's UIM never enables its interrupts, the sound DMA
   plug-in doesn't start (no codec writes) and lanLib polls. With it on all
-  of them, 9.2.2 plays sound (and keeps its DMA running, which holds fast
-  start back: the CD's Finder at 22 s of guest time instead of 13, and
-  the host idles less), so only the display has it for now.
+  of them, 9.2.2 plays sound, but the CD's Finder came at 22 s of guest
+  time instead of 13 in real time with fast start, and the host idled
+  less, so only the display had it at first; see "9.2.2's interrupt sets"
+  for why, and the rest.
 - **The restored 9.2.2's hang, resolved:** reproduced with a restore whose
   run was stopped without quitting Apple Software Restore (its first
   startup then differs; a cleanly unmounted one didn't hang). On main, of
@@ -1722,3 +1728,95 @@ Facts later tasks need, added as they are found.
   in place). Main froze the same way: the user's freeze was this, not
   the skeleton key (which without it quit MacBench with "an error of type
   1", in instruction time).
+- **9.2.2's interrupt sets** (`src/bootinfo.c`, `src/rom.c`): 10.2f1's
+  Trampoline names `AAPL,interrupt-index` (`rom trampoline 922.iso`);
+  9.1's (6.1f9) and `MOS.rom`'s don't. Under QEMU (`mac99`, 922.iso at
+  the Finder, the device-tree copy from a 128 MB RAM dump with `nk2dump.py
+  --tree`) every node with `interrupts` has all four properties:
+  `AAPL,interrupt-vectors` the controller's sources (OpenPIC's there),
+  `-priorities` 68k levels, `AAPL,interrupts` numbers counted through the
+  tree (escc-legacy's channels get their own though they share escc's
+  sources), and `AAPL,interrupt-index` each source's slot in HWInfo's
+  VectorLookupTable, counted from 0 as sources are first met (escc and
+  escc-legacy share 3-5; the table: 0x2F, 0x37, 0x19, 0x25, 4, 5, 0x24, 6,
+  7, 0xD, 2, 0xE, 3, 0x1C, 0x1E; usb's source 0x1C is slot 0xD, the
+  ethernet's 0x1E slot 0xE). syshm's table maps slot n to source n, so its
+  index is the source. The sound chip (17, 8, 9), the USB controller (28)
+  and the Ethernet node (its receive DMA channel, 3, as before) now have
+  it when `rom_interrupt_index()` finds the name in the ROM file's
+  Trampoline (`bootinfo_machine.interrupt_index`); earlier ROMs' trees
+  are as they were (the display's index stays for every ROM: without it
+  the 8.5 and 9.1 checks' counts change, though not their screens).
+  QEMU's `mac99` has no sound device, so it can't show what 9.2.2's sound
+  does there.
+- **The codec's valid bit** (`src/awacs.c`, `setup_machine()`): what made
+  startup slow with the sound chip's set. Mac OS 9's sound plug-in, once
+  it has set the codec up, runs an event (`0x003203C0` in a 9.2.2 CD run
+  to a billion instructions) that reads the codec's status for a subframe
+  (`0x0031B9D8`: control's status-subframe field set, then +0x20) and
+  tests bit 22 (MASK_VALID in Linux's `awacs.h`, whose
+  `snd_pmac_screamer_wait()` waits for it, 1 ms at a time); while it's
+  clear the event is queued again, about a thousand times, then dropped.
+  syshm's codec never set it. Two plug-in instances poll on 9.2.2 (1,025
+  and 1,015 polls, from instructions 0.90 and 0.98 billion), each 1.3 ms
+  of guest time apart in instruction time; in real time with fast start
+  (a guest processor ten times slower in guest time) about 8 ms apart, 17
+  s in all: the CD's Finder at 29.7 s of guest time with only the sound
+  chip's set, 22.2 s with all three. With the bit (`awacs.valid`, for ROM
+  files with the index) the plug-in goes on at once. 9.1's plug-in has
+  the same code (`0x003093F8`, 1,000 polls at startup, 2 s in instruction
+  time); 9.1 is kept as it was, but would start sooner with the bit.
+- **9.2.2's sound with its interrupt set:** two plug-in instances (one in
+  a fragment that makes a `sound-root` node, "VirtualHAL", with
+  `AAPL,sndhw-plugin-id`) set the codec up with fades of both outputs'
+  attenuation around a mute (16 steps 10 ms apart: about 0.3 s each). The
+  output DMA plays 2,048 frames of silence at startup and stops; after
+  that it runs only while something plays: an alert (a click outside
+  SimpleText's Open dialog: 0.95 s, peak 6,925), the Sound control panel's
+  Play (peak 5,393 at its volume then, 18,066 with Main Volume at the top,
+  nothing with Mute, which sets both outputs' mute bits, register 1
+  0xA80); the volume slider writes the attenuation (registers 2 and 4).
+  The output never ran on by itself (the CD, the restored install with and
+  without the Setup Assistant, after alerts), so idle real-time runs
+  sleep; that it ran continuously, as first reported, didn't reproduce.
+- **USB with its interrupt set (9.2.2):** without it the UIM enabled start
+  of frame without MasterInterruptEnable and waited for a frame that never
+  interrupted. With it: 0x8000007B (MIE, RHSC, FNO, UE, RD, WDH, SO), start
+  of frame enabled for a frame at a time about 15 times during setup (each
+  handled: cleared and disabled), both ports powered and read (0x100,
+  nothing connected), then only frame number overflow, every 32.8 s of
+  guest time. `ohci_next_event()` counts every frame while overflow is
+  enabled (the HCCA's frame number moves on), and `idle_wait()` used it,
+  so idle real-time runs woke the host every 1 ms: 9.2.2 now, and 8.5 and
+  9.1 all along (their UIMs enable overflow too: 0x80000032, 0x8000007B).
+  `ohci_next_interrupt()` gives the frame that interrupts, and
+  `idle_wait()` sleeps to it (9.1's idle calls in 40 s of real time:
+  94,768 → 10,862); `device_next_tb()` still sees every frame, so
+  instruction-time runs are as before.
+- **Ethernet by interrupt (9.2.2):** `net: receiving by interrupt` (main:
+  `no receive interrupt (step 3, status -2539): polling`). In a real-time
+  run of the restored system, the TCP/IP control panel shows 10.0.2.15,
+  router 10.0.2.2, name server 10.0.2.3 from DHCP (28 frames sent, 2
+  received).
+- **Startup times with the sets, and what fast start's guest time
+  measures:** the 9.2.2 CD's fast start ended at 13.4-13.7 s of guest time
+  with a quiet host (main 12.9-13.1), and at 13.6-15.2 s for both when the
+  host was busy (load 2.6): fast start runs guest time ten times as fast
+  as the host's, so CPU-bound startup costs ten times its host time in
+  guest time, which moves with the host's load. Without fast start
+  (`--realtime --no-fast-start`) the Finder is current at 6.2-6.4 s
+  against 5.8-6.1: the half second is the guest's own, the first CD read
+  0.27 s later with USB's set (the USB Manager after the root hub's setup)
+  and the sound plug-ins' fades 0.1-0.2 s more. The restored system, set
+  up: 13.0-13.1 s (main 12.8-13.0), and the host asleep 36.4-37.0 s of 40
+  (main 35.4-35.8).
+- **Scripting the 9.2.2 restore** (instruction time): scripted clicks and
+  double-clicks didn't select the desktop's icons (main too); typing a name
+  in the Finder does (`MacO`, then Command-O opens the CD's window; `apple
+  s`, Command-O, opens Apple Software Restore, whose destination is already
+  Macintosh HD). Return, then a click on OK, restores (done by 39
+  billion). Its last dialog's Quit took a click only after a key press;
+  Special > Shut Down (y 125 in the CD's Finder at 800x600, 136 in the
+  restored one's, whose Special menu has Burn CD) then powers off with
+  the volume unmounted. The Setup Assistant's first screen quits with
+  Command-Q and a click on Quit.

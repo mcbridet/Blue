@@ -88,6 +88,10 @@ static void test_registers(void)
 {
 	reset();
 	CHECK_EQ(rd(0x20) & 0xFF00, 0x2100);            /* an AWACS (2) by Crystal (1) */
+	CHECK_EQ(rd(0x20) & 0x400000, 0);
+	snd.valid = true;                               /* (the codec says its status is valid) */
+	CHECK_EQ(rd(0x20), 0x402100);
+	snd.valid = false;
 	wr(0x00, 0x00004200);
 	CHECK_EQ(rd(0x00), 0x00004200);
 	CHECK_EQ(awacs_rate(&snd), 22050);

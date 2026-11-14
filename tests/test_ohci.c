@@ -141,6 +141,25 @@ static void test_interrupts(void)
 	CHECK_EQ(rd(HC_INT_ENABLE), OHCI_INT_MIE);
 	CHECK(!ohci_irq(&usb));
 	CHECK_EQ(ohci_next_event(&usb), UINT64_MAX);
+	CHECK_EQ(ohci_next_interrupt(&usb), UINT64_MAX);
+
+	/*
+	 * Start of frame interrupts at the next frame; frame number overflow
+	 * alone at the frame whose number's bit 15 changes, though every frame
+	 * is an event (the frame number moves on in the HCCA)
+	 */
+	wr(HC_INT_ENABLE, OHCI_INT_SF | OHCI_INT_FNO);
+	CHECK_EQ(ohci_next_interrupt(&usb), 2 * FRAME);
+	wr(HC_INT_DISABLE, OHCI_INT_SF);
+	CHECK_EQ(rd(HC_FM_NUMBER), 2);
+	CHECK_EQ(ohci_next_event(&usb), 2 * FRAME);
+	CHECK_EQ(ohci_next_interrupt(&usb), 0x7FFFull * FRAME);      /* (frame 0x8000's start) */
+	ohci_set_time(&usb, 0x7FFFull * FRAME - 1);
+	CHECK(!ohci_irq(&usb));
+	ohci_set_time(&usb, 0x7FFFull * FRAME);
+	CHECK(ohci_irq(&usb));
+	wr(HC_INT_STATUS, OHCI_INT_SF | OHCI_INT_FNO);
+	CHECK_EQ(ohci_next_interrupt(&usb), 0xFFFFull * FRAME);      /* (0x10000's, frame 0 again) */
 }
 
 static void test_root_hub(void)

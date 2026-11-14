@@ -1,6 +1,7 @@
 #ifndef SYSHM_ROM_H
 #define SYSHM_ROM_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -46,6 +47,13 @@ void rom_free(struct rom *rom);
 
 /* The ROM file's version from its parcels ("6.1f9"), or "" for files without one; returns its length. */
 size_t rom_file_version(const struct rom *rom, char *buf, size_t len);
+
+/*
+ * Whether the ROM file's Trampoline gives the device tree's interrupts an
+ * AAPL,interrupt-index (Mac OS 9.2's), without which their DriverServicesLib
+ * makes no interrupt sets.
+ */
+bool rom_interrupt_index(const struct rom *rom);
 
 uint32_t rom_stored_checksum(const struct rom *rom);
 uint32_t rom_computed_checksum(const struct rom *rom);
