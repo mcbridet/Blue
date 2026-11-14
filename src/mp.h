@@ -132,6 +132,7 @@ struct mp {
 	struct mp_message msg[MP_MAX_MESSAGES];         /* waiting on all the queues, oldest first */
 	unsigned messages;
 	uint32_t blue_process, blue_task, page_queue, space;
+	uint32_t coherence_group, cpu;  /* the machine's, and its one processor */
 	uint32_t debugger;              /* a queue for tasks' exceptions (call 59), or 0 */
 	uint8_t *emulator_data;         /* the 68k emulator's data page (EmulatorData), where software interrupts go, or NULL */
 	uint32_t ecb;                   /* ... and its context block's offset in it */
@@ -157,9 +158,10 @@ struct mp {
 };
 
 /*
- * Makes the objects a NanoKernel 2 has at startup: the blue process (ID 1),
- * the blue task (on the processor), the page queue and the address space
- * (its areas follow). `tb_hz` is the timebase's rate.
+ * Makes the objects a NanoKernel 2 has at startup, in its order: the blue
+ * process (ID 1), the machine's coherence group and its processor, the
+ * address space (its areas follow), the page queue and the blue task (on
+ * the processor). `tb_hz` is the timebase's rate.
  */
 void mp_init(struct mp *mp, uint32_t tb_hz);
 

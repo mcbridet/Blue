@@ -14,6 +14,8 @@
 #define PRODUCT_INFO_OFFSET 0x50000u
 #define VECTOR_MASK_OFFSET 0x51000u
 #define VECTOR_LOOKUP_OFFSET 0x51040u
+#define CASCADE_INFO_OFFSET 0x51100u
+#define CASCADE_INFO_SIZE 0x204u
 /* (a tree that doesn't fit, with the libraries and drivers of a ROM file's parcels, goes here) */
 #define BIG_DEVICE_TREE_OFFSET 0x100000u
 #define BIG_DEVICE_TREE_SIZE 0x200000u
@@ -302,8 +304,9 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	 * fragment Mac OS's driver needs for it (lanLib; see net.h), which New
 	 * World Macs' firmware supplies.
 	 */
+	struct dt_node *enet = NULL;
 	if (hw->lanlib_size) {
-		struct dt_node *enet = dt_add_node(mio, "ethernet");
+		enet = dt_add_node(mio, "ethernet");
 		const uint32_t enet_reg[6] = { MACIO_ENET - MACIO_BASE, 0x1000, MACIO_DMA_ENET_TX - MACIO_BASE, 0x100,
 					       MACIO_DMA_ENET_RX - MACIO_BASE, 0x100 };
 		const uint32_t enet_addr[3] = { MACIO_ENET, MACIO_DMA_ENET_TX, MACIO_DMA_ENET_RX };
@@ -366,6 +369,13 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	if (hw->parcels) {
 		dt_add_node(dt_add_node(root, "rom"), "macos");
 		*parcel_props = parcels_apply(hw->parcels, root);
+		/*
+		 * Mac OS 9.2.2's ROM file has a lanLib for the iMac's Ethernet
+		 * controller (bmac+'s), which goes in the node in place of the
+		 * firmware's; ours drives no such controller, so its own stays.
+		 */
+		if (enet)
+			dt_prop(enet, "lanLib,AAPL,MacOS,PowerPC", hw->lanlib, (uint32_t)hw->lanlib_size);
 	}
 	return root;
 }
@@ -376,6 +386,7 @@ int bootinfo_build(struct mem *mem, struct bootinfo *bi, const struct bootinfo_m
 	bi->product_info = BOOTINFO_BASE + PRODUCT_INFO_OFFSET;
 	bi->vector_mask_table = BOOTINFO_BASE + VECTOR_MASK_OFFSET;
 	bi->vector_lookup_table = BOOTINFO_BASE + VECTOR_LOOKUP_OFFSET;
+	bi->cascade_info = 0;
 	bi->parcel_props = 0;
 
 	struct dt_node *tree = build_tree(hw, &bi->parcel_props);
@@ -449,6 +460,16 @@ int bootinfo_build(struct mem *mem, struct bootinfo *bi, const struct bootinfo_m
 	}
 	for (uint32_t k = 0; k < 64; k++)
 		mem_w16(mem, bi->vector_lookup_table + 2 * k, (uint16_t)k);
+
+	/*
+	 * ROM files with parcels (NanoKernel 2's HWInfo, 0x0108): the
+	 * Trampoline's CascadeInfo, for interrupt controllers cascaded from
+	 * the machine's OpenPIC, their count first. None here.
+	 */
+	if (hw->parcels) {
+		bi->cascade_info = BOOTINFO_BASE + CASCADE_INFO_OFFSET;
+		memset(mem_ptr(mem, bi->cascade_info), 0, CASCADE_INFO_SIZE);
+	}
 	return 0;
 }
 
@@ -466,7 +487,7 @@ void bootinfo_level_masks(uint32_t masks[2][8])
 
 void bootinfo_hwinfo(const struct bootinfo *bi, uint8_t *hw)
 {
-	memset(hw, 0, 0xA0);
+	memset(hw, 0, bi->cascade_info ? 0xC0 : 0xA0);
 	put_be32(hw + 0x00, ROM_PHYS_BASE);             /* MacROM_Base */
 	put_be32(hw + 0x04, bi->device_tree);           /* DeviceTreeBase */
 	put_be32(hw + 0x08, bi->product_info);          /* UniversalInfoTableBase */
@@ -493,4 +514,6 @@ void bootinfo_hwinfo(const struct bootinfo *bi, uint8_t *hw)
 	/* RTAS tokens: services the native kernel provides through KCall 6 */
 	for (int t = 1; t < RTAS_TOKEN_COUNT; t++)
 		put_be32(hw + rtas_token_field[t], (uint32_t)t);
+	if (bi->cascade_info)
+		put_be32(hw + 0xA8, bi->cascade_info);  /* CascadeInfo (version 0x0108) */
 }
