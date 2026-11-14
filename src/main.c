@@ -5,6 +5,7 @@
 
 #include <unistd.h>
 
+#include "cdimage.h"
 #include "disk.h"
 #include "hfsread.h"
 #include "mem.h"
@@ -94,6 +95,8 @@ static int usage(void)
 		"      --screenshot <file.png>  save the screen when the run ends\n"
 		"      --dump-ram <file>        save guest RAM when the run ends\n"
 		"      --log-hostcalls          log driver requests handled natively\n"
+		"  disk toc <image>             list a CD image's tracks (a .cue sheet's, or one data\n"
+		"                               track) as its CD-ROM drive gives them\n"
 		"  disk create <file> <size> [name]\n"
 		"                               make a disk image holding an empty HFS volume\n"
 		"                               (size in bytes, or with K, M or G; 1M or more, or a\n"
@@ -523,8 +526,49 @@ static int cmd_tools(int argc, char **argv)
 	return tools_create(argv[1]) ? 1 : 0;
 }
 
+static void print_msf(uint32_t lba, bool length)
+{
+	uint8_t m, s, f;
+	cd_msf(length ? lba - CD_MSF_OFFSET : lba, &m, &s, &f);
+	printf("%02u:%02u:%02u", m, s, f);
+}
+
+/* A CD image's table of contents, as the CD-ROM drive gives it */
+static int cmd_toc(const char *path)
+{
+	char why[400];
+	struct cdimage *c = cdimage_open(path, why, sizeof why);
+	if (!c) {
+		fprintf(stderr, "%s: %s\n", path, why);
+		return 1;
+	}
+	printf("%s: %u track%s, %u session%s, lead-out at ", path, c->tracks, c->tracks == 1 ? "" : "s", c->sessions,
+	       c->sessions == 1 ? "" : "s");
+	print_msf(c->leadout, false);
+	printf(" (LBA %u)\n", c->leadout);
+	for (unsigned k = 0; k < c->tracks; k++) {
+		const struct cd_track *t = &c->track[k];
+		printf("  %2u  %-6s  ", t->number, t->mode ? (t->mode == 1 ? "mode 1" : "mode 2") : "audio");
+		print_msf(t->start, false);
+		printf("  LBA %6u  ", t->start);
+		print_msf(t->end - t->start, true);
+		if (t->start > t->pregap) {
+			printf("  (pregap ");
+			print_msf(t->start - t->pregap, true);
+			printf(")");
+		}
+		if (c->sessions > 1)
+			printf("  session %u", t->session);
+		printf("%s\n", (int)k == c->data ? "  (Mac OS sees its data)" : "");
+	}
+	cdimage_close(c);
+	return 0;
+}
+
 static int cmd_disk(int argc, char **argv)
 {
+	if (argc == 2 && strcmp(argv[0], "toc") == 0)
+		return cmd_toc(argv[1]);
 	if (argc < 3 || argc > 4 || strcmp(argv[0], "create") != 0)
 		return usage();
 	char *end;

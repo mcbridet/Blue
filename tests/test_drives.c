@@ -170,14 +170,23 @@ static void test_cdrom(struct mem *mem)
 	CHECK_EQ(blocks(mem, &d, 0), (4u << 20) / 512);
 	CHECK_EQ(timer(&d, mem, 1000), 1);                      /* (applications or not) */
 	CHECK_EQ(read_block(&d, mem, drive, 2), 0);              /* (mounted) */
-	/* it answers as the disks do, but for keeping its disc at a restart */
+	/* it answers as a CD-ROM drive, with its icons, keeping its disc at a restart */
 	CHECK_EQ(gestalt(&d, mem, drive, "devt"), 0);
-	CHECK_EQ(mem_r32(mem, PB + 32), be32("disk"));
+	CHECK_EQ(mem_r32(mem, PB + 32), be32("cdrm"));
 	CHECK_EQ(gestalt(&d, mem, drive, "ejec"), 0);
 	CHECK_EQ(mem_r32(mem, PB + 32), 1);
-	CHECK_EQ(gestalt(&d, mem, drive, "mics"), -18);
-	CHECK_EQ(io(&d, mem, NDRV_CONTROL, 22, drive), -17);
-	CHECK_EQ(io(&d, mem, NDRV_CONTROL, 23, drive), -17);
+	CHECK_EQ(gestalt(&d, mem, drive, "mics"), 0);
+	CHECK_EQ(mem_r32(mem, mem_r32(mem, PB + 32)), be32("icns"));
+	static uint8_t icn[2][256], icns[2][FLOPPY_ICNS_SIZE];
+	cdrom_icons(icn[0], icn[1], icns[0], icns[1]);
+	CHECK_EQ(io(&d, mem, NDRV_CONTROL, 22, drive), 0);
+	CHECK(!memcmp(mem_ptr(mem, mem_r32(mem, PB + 28)), icn[0], 256));
+	CHECK_EQ(io(&d, mem, NDRV_CONTROL, 21, drive), 0);
+	CHECK(!memcmp(mem_ptr(mem, mem_r32(mem, PB + 28)), icn[1], 256));
+	uint32_t where = mem_r32(mem, PB + 28) + 256;
+	CHECK(!memcmp(mem_ptr(mem, where), "\022syshm CD-ROM drive", 19));
+	CHECK_EQ(io(&d, mem, NDRV_CONTROL, 23, drive), 0);
+	CHECK_EQ(mem_r32(mem, PB + 28), 0xB01);
 	CHECK(disk_bootable(&d, 0) == false);
 
 	/* Mac OS ejects it (its volume put away): the drive's empty, its timer goes on */
@@ -278,6 +287,243 @@ static void test_cdrom(struct mem *mem)
 	unlink(parts);
 }
 
+/* ---- a CD-ROM drive's calls (cdrom.c), with a cue sheet's disc ---------------- */
+
+#define BUF 0x30000u
+
+static int32_t cd_io(struct disk *d, struct mem *mem, uint32_t code, uint16_t cs_code, uint16_t drive, uint64_t tb,
+		     const uint16_t *param, unsigned n)
+{
+	struct ndrv_call c = { .mem = mem, .toc = TOC, .frame = FRAME, .tb = tb };
+	memset(mem_ptr(mem, PB + 28), 0, 22);
+	for (unsigned k = 0; k < n; k++)
+		mem_w16(mem, PB + 28 + 2 * k, param[k]);
+	mem_w16(mem, PB + 22, drive);
+	mem_w16(mem, PB + 26, cs_code);
+	c.arg[2] = PB;
+	c.arg[3] = code;
+	c.arg[4] = NDRV_KIND_IMMEDIATE;
+	disk_driver_call(d, &c, 1000);
+	for (int k = 0; !c.done && k < 4; k++) {
+		c.entry = NDRV_ENTRY_RESUME;
+		c.arg[0] = 0;
+		disk_driver_call(d, &c, 1000);
+	}
+	CHECK(c.done);
+	return (int32_t)c.result;
+}
+
+#define CONTROL(code, tb, ...) cd_io(&d, mem, NDRV_CONTROL, code, 8, tb, (const uint16_t[]){ __VA_ARGS__ }, \
+				     sizeof (uint16_t[]){ __VA_ARGS__ } / 2)
+#define STATUS(code, tb, ...) cd_io(&d, mem, NDRV_STATUS, code, 8, tb, (const uint16_t[]){ __VA_ARGS__ }, \
+				    sizeof (uint16_t[]){ __VA_ARGS__ } / 2)
+
+static uint16_t param(struct mem *mem, unsigned k)
+{
+	return mem_r16(mem, PB + 28 + 2 * k);
+}
+
+/* Track n's samples: left counts the frames of its file, right is n * 1000 */
+static void put_track(FILE *f, unsigned n, unsigned sectors, unsigned *frame)
+{
+	for (unsigned k = 0; k < sectors * 588; k++, (*frame)++) {
+		uint16_t s[2] = { (uint16_t)(*frame & 0x7FFF), (uint16_t)(n * 1000) };
+		uint8_t b[4] = { (uint8_t)s[0], (uint8_t)(s[0] >> 8), (uint8_t)s[1], (uint8_t)(s[1] >> 8) };
+		fwrite(b, 1, 4, f);
+	}
+}
+
+/*
+ * A fixed CD-ROM drive with a cue sheet's disc: an HFS data track (1024
+ * sectors) and two audio tracks of 20 sectors, the first after a 2 s pregap
+ * not in its file: LBA 0, 1174, 1194, the lead-out at 1214.
+ */
+static void test_cd_calls(struct mem *mem)
+{
+	char data[256], audio[256], cue[300], text[1024], why[400];
+	make_image(data, sizeof data, 2u << 20, "CD Data");
+	temp_path(audio, sizeof audio);
+	FILE *f = fopen(audio, "wb");
+	unsigned frame = 0;
+	put_track(f, 2, 20, &frame);
+	put_track(f, 3, 20, &frame);
+	fclose(f);
+	temp_path(cue, sizeof cue - 4);
+	unlink(cue);
+	strcat(cue, ".cue");
+	snprintf(text, sizeof text, "FILE \"%s\" BINARY\n TRACK 01 MODE1/2048\n  INDEX 01 00:00:00\n"
+		 "FILE \"%s\" BINARY\n TRACK 02 AUDIO\n  PREGAP 00:02:00\n  INDEX 01 00:00:00\n"
+		 " TRACK 03 AUDIO\n  INDEX 01 00:00:20\n", data, audio);
+	f = fopen(cue, "w");
+	fputs(text, f);
+	fclose(f);
+
+	static struct disk d;
+	CHECK_EQ(disk_open(&d, mem, cue, true, true), 0);
+	CHECK(d.cdrom && d.read_only && !d.removable && d.disc && d.backend);
+	CHECK_EQ(d.partitions, 1);
+	CHECK_EQ(d.part[0].size, 2u << 20);
+	CHECK(disk_check_cd(cue, why, sizeof why) == 0);
+	load_driver(&d, mem);
+	mem_w32(mem, 0x308 + 2, 0);
+	mem_w32(mem, 0x308 + 6, 0);
+	mem_w16(mem, PB, 0xFFCF);
+	CHECK_EQ(io(&d, mem, NDRV_INITIALIZE, 0, 0), 0);
+	CHECK_EQ(d.part[0].drive_num, 8);
+	CHECK(d.cd != NULL);
+
+	/* the data track: the volume, read through the disc */
+	CHECK_EQ(read_block(&d, mem, 8, 2), 0);
+	CHECK_EQ(mem_r16(mem, 0x30000), 0x4244);
+	/* a CD-ROM drive, its disc in place (DriveStatus 1, as Apple's driver), of so many blocks */
+	CHECK_EQ(gestalt(&d, mem, 8, "devt"), 0);
+	CHECK_EQ(mem_r32(mem, PB + 32), be32("cdrm"));
+	CHECK_EQ(gestalt(&d, mem, 8, "minf"), 0);
+	CHECK_EQ(mem_r32(mem, PB + 32), (2u << 20) / 512);
+	CHECK_EQ(mem_r16(mem, PB + 40), 129);
+	CHECK_EQ(io(&d, mem, NDRV_STATUS, 8, 8), 0);
+	CHECK_EQ(mem_r8(mem, PB + 31), 1);
+	CHECK_EQ(in_place(mem, &d, 0), 8);                      /* (the drive queue's flags: not ejectable) */
+	CHECK_EQ(io(&d, mem, NDRV_CONTROL, 7, 8), -17);
+	CHECK_EQ(STATUS(120, 0, 0), 0);                         /* ReturnDeviceIdent */
+	CHECK_EQ(STATUS(96, 0, 0), 0);                          /* GetDriveType: a multi-speed drive */
+	CHECK_EQ(param(mem, 0), 3);
+
+	/* ReadTOC: first and last tracks, the lead-out, track starts, the whole table, sessions */
+	CHECK_EQ(CONTROL(100, 0, 1), 0);
+	CHECK_EQ(param(mem, 0), 0x0103);
+	CHECK_EQ(CONTROL(100, 0, 2), 0);                        /* 1214 + 150 = 00:18:14 */
+	CHECK_EQ(param(mem, 0), 0x0018);
+	CHECK_EQ(param(mem, 1), 0x1400);
+	CHECK_EQ(CONTROL(100, 0, 3, BUF >> 16, BUF & 0xFFFF, 8, 0x0200), 0);   /* (two entries' room, from 2) */
+	CHECK_EQ(mem_r32(mem, BUF), 0x00001749u);               /* audio, 1174 + 150: 00:17:49 */
+	CHECK_EQ(mem_r32(mem, BUF + 4), 0x00001769u);           /* 1194 + 150: 00:17:69 */
+	CHECK_EQ(CONTROL(100, 0, 4, BUF >> 16, BUF & 0xFFFF), 0);
+	CHECK_EQ(mem_r8(mem, BUF + 2), 0xA0);
+	CHECK_EQ(mem_r8(mem, BUF + 3), 0x01);
+	CHECK_EQ(mem_r8(mem, BUF + 8), 0x03);                   /* A1: the last track */
+	CHECK_EQ(mem_r8(mem, BUF + 16), 0x04);                  /* track 1: data */
+	CHECK_EQ(mem_r8(mem, BUF + 22), 0x02);
+	CHECK_EQ(CONTROL(100, 0, 5), 0);
+	CHECK_EQ(param(mem, 1), 1);
+	CHECK_EQ(CONTROL(100, 0, 9), -50);
+
+	/* AudioPlay: where to stop (the end of track 3), then from track 2 */
+	CHECK_EQ(CONTROL(104, 0, 2, 0, 0x03, 1, 9), 0);
+	CHECK_EQ(CONTROL(104, 1000, 2, 0, 0x02, 0, 9), 0);
+	CHECK_EQ(CONTROL(107, 1200, 0), 0);                     /* AudioStatus: playing, stereo, 0.2 s in */
+	CHECK_EQ(param(mem, 0), 0x0009);
+	CHECK_EQ(param(mem, 1), 0x0000);                        /* audio; 1174 + 15 + 150 = 00:17:64 */
+	CHECK_EQ(param(mem, 2), 0x1764);
+	CHECK_EQ(CONTROL(101, 1200, 0), 0);                     /* ReadTheQSubcode: track 2, index 1, 00:00:15 in */
+	CHECK_EQ(param(mem, 0), 0x0002);
+	CHECK_EQ(param(mem, 1), 0x0100);
+	CHECK_EQ(param(mem, 2), 0x0015);
+	CHECK_EQ(CONTROL(105, 1300, 0, 1), 0);                  /* paused, the position kept */
+	CHECK_EQ(CONTROL(107, 5000, 0), 0);
+	CHECK_EQ(param(mem, 0) >> 8, 1);
+	CHECK_EQ(param(mem, 2), 0x1771);                        /* (22.5 sectors in: 22) */
+	CHECK_EQ(CONTROL(105, 5000, 0, 0), 0);
+	CHECK_EQ(CONTROL(107, 6000, 0), 0);                     /* (to the end of track 3 by then) */
+	CHECK_EQ(param(mem, 0), 0x0309);                        /* done */
+	CHECK_EQ(CONTROL(106, 6000, 0, 0, 0), 0);               /* AudioStop at once */
+	CHECK_EQ(CONTROL(107, 6000, 0), 0);
+	CHECK_EQ(param(mem, 0) >> 8, 5);
+	CHECK_EQ(CONTROL(104, 6000, 0, 0, 10, 0, 9), -50);      /* (not on the data track) */
+	CHECK_EQ(CONTROL(106, 6000, 2, 0, 0x00), 0);            /* (track 0, as AppleCD Audio Player gives: none) */
+	CHECK_EQ(CONTROL(103, 6000, 1, 0, 0x1849, 0, 9), -50);  /* (past the lead-out) */
+	CHECK_EQ(CONTROL(103, 6000, 1, 0, 0x1760, 0, 9), 0);    /* AudioTrackSearch: holds at 00:17:60 */
+	CHECK_EQ(CONTROL(107, 7000, 0), 0);
+	CHECK_EQ(param(mem, 0) >> 8, 1);
+	CHECK_EQ(param(mem, 2), 0x1760);
+	CHECK_EQ(CONTROL(108, 7000, 2, 0, 0x02, 0), 0);         /* AudioScan forward from track 2 */
+	CHECK_EQ(CONTROL(107, 7100, 0), 0);
+	CHECK_EQ(param(mem, 0) >> 8, 0);
+	CHECK_EQ(CONTROL(106, 7100, 0, 0, 0), 0);
+
+	/* the drive's volume and play mode */
+	CHECK_EQ(CONTROL(109, 7100, 0x80FF), 0);
+	CHECK_EQ(CONTROL(112, 7100, 0), 0);
+	CHECK_EQ(param(mem, 0), 0x80FF);
+	CHECK_EQ(d.cd->audio.volume[0], 0x80);
+
+	/* ReadAudio: samples (little-endian), with Q, the subchannel alone; not of the data track */
+	CHECK_EQ(CONTROL(115, 7100, 0, BUF >> 16, BUF & 0xFFFF, 0, 0, 1194, 2), 0);
+	CHECK_EQ(mem_r8(mem, BUF), (20 * 588) & 0xFF);          /* track 3's first frame: the file's 11760th */
+	CHECK_EQ(mem_r8(mem, BUF + 1), (20 * 588) >> 8);
+	CHECK_EQ(mem_r16(mem, BUF + 2), 0xB80B);                /* 3000, little-endian */
+	CHECK_EQ(mem_r8(mem, BUF + 2352 + 4), (20 * 588 + 589) & 0xFF);
+	CHECK_EQ(CONTROL(115, 7100, 1, BUF >> 16, BUF & 0xFFFF, 2, 0, 0x03, 1), 0);
+	CHECK_EQ(mem_r8(mem, BUF + 2352), 0x01);                /* Q: control 0, ADR 1, track 3, index 1 */
+	CHECK_EQ(mem_r8(mem, BUF + 2353), 0x03);
+	CHECK_EQ(mem_r8(mem, BUF + 2354), 0x01);
+	CHECK_EQ(CONTROL(115, 7100, 3, BUF >> 16, BUF & 0xFFFF, 0, 0, 1180, 1), 0);
+	CHECK_EQ(mem_r8(mem, BUF) & 0xC0, 0);                   /* P off, Q's first bit 0 */
+	CHECK_EQ(CONTROL(115, 7100, 0, BUF >> 16, BUF & 0xFFFF, 0, 0, 5, 1), -50);
+
+	/* the play list: track 3 then 2, played by the driver, entry by entry */
+	mem_w8(mem, BUF + 0x100, 0x03);
+	mem_w8(mem, BUF + 0x101, 0x02);
+	CHECK_EQ(CONTROL(122, 8000, 2, BUF >> 16, (BUF + 0x100) & 0xFFFF), 0);
+	CHECK_EQ(CONTROL(125, 8000, 0x0102), 0);                /* repeat, programmed */
+	CHECK_EQ(CONTROL(126, 8000, 0), 0);
+	CHECK_EQ(param(mem, 0), 0x0102);
+	CHECK_EQ(CONTROL(123, 8000, 0, BUF >> 16, (BUF + 0x200) & 0xFFFF), 0);
+	CHECK_EQ(param(mem, 0), 2);
+	CHECK_EQ(mem_r16(mem, BUF + 0x200), 0x0302);
+	CHECK_EQ(CONTROL(124, 8000, 0), 0);
+	CHECK_EQ(param(mem, 0), 0xFFFF);                        /* (none playing) */
+	CHECK_EQ(CONTROL(104, 8000, 3, 0, 0x00, 0, 9), 0);      /* from entry 0 */
+	CHECK_EQ(CONTROL(124, 8100, 0), 0);
+	CHECK_EQ(param(mem, 0), 0);
+	CHECK_EQ(CONTROL(101, 8100, 0), 0);
+	CHECK_EQ(param(mem, 0), 0x0003);
+	CHECK_EQ(CONTROL(124, 8300, 0), 0);                     /* (track 3 lasts 267 ms) */
+	CHECK_EQ(param(mem, 0), 1);
+	CHECK_EQ(CONTROL(101, 8300, 0), 0);
+	CHECK_EQ(param(mem, 0), 0x0002);
+	CHECK_EQ(CONTROL(124, 8600, 0), 0);                     /* (and over again) */
+	CHECK_EQ(param(mem, 0), 0);
+	mem_w8(mem, BUF + 0x101, 0x07);
+	CHECK_EQ(CONTROL(122, 8600, 2, BUF >> 16, (BUF + 0x100) & 0xFFFF), -50);       /* (no track 7) */
+	CHECK_EQ(CONTROL(106, 8600, 0, 0, 0), 0);
+	disk_close(&d);
+
+	/* a swappable drive: the disc taken out while playing is silent at once; none: off line */
+	CHECK_EQ(disk_open_cdrom(&d, mem, cue), 0);
+	load_driver(&d, mem);
+	mem_w32(mem, 0x308 + 2, 0);
+	mem_w32(mem, 0x308 + 6, 0);
+	CHECK_EQ(io(&d, mem, NDRV_INITIALIZE, 0, 0), 0);
+	CHECK_EQ(CONTROL(104, 0, 2, 0, 0x02, 0, 9), 0);
+	cdaudio_run(&d.cd->audio, 100);
+	CHECK(cdaudio_active(&d.cd->audio));
+	disk_eject(&d);
+	CHECK(!cdaudio_active(&d.cd->audio));
+	CHECK_EQ(CONTROL(100, 200, 1), -65);
+	CHECK_EQ(CONTROL(109, 200, 0xFFFF), 0);                 /* (the volume needs no disc) */
+	disk_close(&d);
+
+	/* a disc of audio alone: its drive reads zeros (Audio CD Access mounts it) */
+	snprintf(text, sizeof text, "FILE \"%s\" BINARY\n TRACK 01 AUDIO\n  INDEX 01 00:00:00\n", audio);
+	f = fopen(cue, "w");
+	fputs(text, f);
+	fclose(f);
+	CHECK_EQ(disk_open(&d, mem, cue, true, true), 0);
+	CHECK_EQ(d.part[0].size, 40u * 2048);
+	load_driver(&d, mem);
+	mem_w32(mem, 0x308 + 2, 0);
+	mem_w32(mem, 0x308 + 6, 0);
+	CHECK_EQ(io(&d, mem, NDRV_INITIALIZE, 0, 0), 0);
+	mem_w16(mem, 0x30000, 0x4244);
+	CHECK_EQ(read_block(&d, mem, 8, 2), 0);
+	CHECK_EQ(mem_r16(mem, 0x30000), 0);
+	disk_close(&d);
+	unlink(cue);
+	unlink(audio);
+	unlink(data);
+}
+
 /* Where images go, and what the menu shows */
 static void test_routing(struct mem *mem)
 {
@@ -295,9 +541,16 @@ static void test_routing(struct mem *mem)
 	struct drives dr = { .floppy = &f, .cd = { &c1, &c2 }, .cds = 2 };
 	volumes(mem, 0, 0);
 
-	/* a floppy's size to the floppy drive, anything else to the first empty CD-ROM drive */
+	/* a floppy's size to the floppy drive, anything else (a cue sheet too) to the first empty CD-ROM drive */
+	char cue[300];
+	snprintf(cue, sizeof cue, "%s.cue", cd);
+	FILE *sheet = fopen(cue, "w");
+	fprintf(sheet, "FILE \"%s\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n", cd);
+	fclose(sheet);
 	CHECK(drives_pick(&dr, flop, DRIVES_ANY, why, sizeof why) == &f);
 	CHECK(drives_pick(&dr, cd, DRIVES_ANY, why, sizeof why) == &c1);
+	CHECK(drives_pick(&dr, cue, DRIVES_ANY, why, sizeof why) == &c1);
+	unlink(cue);
 	CHECK(drives_pick(&dr, flop, DRIVES_CD, why, sizeof why) == &c1);     /* (as asked) */
 	CHECK(drives_pick(&dr, cd, DRIVES_FLOPPY, why, sizeof why) == NULL);
 	CHECK(strstr(why, "too big for a floppy") != NULL);
@@ -365,6 +618,7 @@ void test_drives(void)
 	mem_map(&mem, 0, 0x40000, MEM_RW);
 	memset(mem_ptr(&mem, 0), 0, 0x40000);
 	test_cdrom(&mem);
+	test_cd_calls(&mem);
 	test_routing(&mem);
 	mem_free(&mem);
 }

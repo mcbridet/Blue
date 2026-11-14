@@ -258,11 +258,15 @@ static const struct {
 	{ 'b', 252, false },            /* 444444 */
 	{ 'h', 251, false },            /* 555555 */
 	{ 'G', 249, false },            /* 888888 */
+	{ 'H', 250, true },             /* 777777 */
 	{ 'M', 248, false },            /* AAAAAA */
 	{ 'g', 247, false },            /* BBBBBB */
 	{ 'L', 246, false },            /* DDDDDD */
 	{ 'W', 0, false },              /* white */
 	{ 'Z', 191, true },             /* 00CC00 */
+	{ 'c', 78, false },             /* 99CCFF */
+	{ 'm', 6, false },              /* FFCCFF */
+	{ 'y', 1, false },              /* FFFFCC */
 };
 
 static const char *const disk32[32] = {
@@ -402,7 +406,7 @@ static uint8_t *icns_element(uint8_t *p, const char *type, const uint8_t *data, 
 	return p + 8 + len;
 }
 
-static void icon_family(const char *const *art32, const char *const *art16, uint8_t *icn, uint8_t *icns)
+void floppy_icon_family(const char *const *art32, const char *const *art16, uint8_t *icn, uint8_t *icns)
 {
 	uint8_t icl8[1024], ics[64], ics8[256];
 	draw(art32, 32, icn, icl8);
@@ -417,6 +421,6 @@ static void icon_family(const char *const *art32, const char *const *art16, uint
 
 void floppy_icons(uint8_t *media_icn, uint8_t *drive_icn, uint8_t *media_icns, uint8_t *drive_icns)
 {
-	icon_family(disk32, disk16, media_icn, media_icns);
-	icon_family(drive32, drive16, drive_icn, drive_icns);
+	floppy_icon_family(disk32, disk16, media_icn, media_icns);
+	floppy_icon_family(drive32, drive16, drive_icn, drive_icns);
 }

@@ -614,6 +614,10 @@ int cdimage_read_data(void *ctx, void *out, size_t len, uint64_t at)
 {
 	const struct cdimage *c = ctx;
 	uint8_t *buf = out;
+	if (c->data < 0 && at <= (uint64_t)c->leadout * CD_DATA && len <= (uint64_t)c->leadout * CD_DATA - at) {
+		memset(buf, 0, len);    /* (a disc of audio alone: no data, nothing but zeros) */
+		return 0;
+	}
 	if (c->data < 0 || at > c->data_size || len > c->data_size - at)
 		return -1;
 	const struct cd_track *t = &c->track[c->data];

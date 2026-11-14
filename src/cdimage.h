@@ -78,7 +78,11 @@ void cdimage_close(struct cdimage *c);
 /* Whether a path names a cue sheet */
 bool cdimage_is_cue(const char *path);
 
-/* The data track's user data, `len` bytes at byte `at`: 0, or -1 (a disk_backend's read). */
+/*
+ * The data track's user data, `len` bytes at byte `at`: 0, or -1 (a
+ * disk_backend's read). A disc of audio alone reads as zeros, 2048 bytes a
+ * sector up to the lead-out (Mac OS then mounts it with Audio CD Access).
+ */
 int cdimage_read_data(void *ctx, void *buf, size_t len, uint64_t at);
 
 /*

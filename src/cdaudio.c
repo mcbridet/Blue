@@ -136,9 +136,8 @@ void cdaudio_run(struct cdaudio *p, uint64_t tb)
 	}
 }
 
-void cdaudio_disc(struct cdaudio *p, const struct cdimage *disc, uint64_t tb)
+void cdaudio_disc(struct cdaudio *p, const struct cdimage *disc)
 {
-	cdaudio_run(p, tb);
 	p->disc = disc;
 	p->state = CDAUDIO_IDLE;
 	p->scan = 0;
@@ -156,7 +155,7 @@ static void start(struct cdaudio *p, uint64_t tb)
 }
 
 void cdaudio_play(struct cdaudio *p, uint64_t tb, const struct cdaudio_range *range, unsigned n, unsigned first,
-		  bool repeat, bool hold)
+		  uint32_t at, bool repeat, bool hold)
 {
 	cdaudio_run(p, tb);
 	if (n > CD_MAX_TRACKS)
@@ -166,7 +165,7 @@ void cdaudio_play(struct cdaudio *p, uint64_t tb, const struct cdaudio_range *ra
 	p->current = first < n ? first : 0;
 	p->repeat = repeat;
 	p->scan = 0;
-	p->frame = n ? p->range[p->current].start * CD_FRAMES : 0;
+	p->frame = n ? at * CD_FRAMES : 0;
 	p->state = !n ? CDAUDIO_IDLE : hold ? CDAUDIO_PAUSED : CDAUDIO_PLAYING;
 	start(p, tb);
 }

@@ -603,7 +603,7 @@ static void test_play(const struct cdimage *c)
 {
 	uint32_t lba;
 	cdaudio_init(&player, CD_RATE);                 /* (a tick a frame) */
-	cdaudio_disc(&player, c, 0);
+	cdaudio_disc(&player, c);
 	CHECK_EQ(cdaudio_status(&player, 100, &lba), CDAUDIO_IDLE);
 	CHECK(!cdaudio_active(&player));
 	int16_t f[2];
@@ -611,7 +611,7 @@ static void test_play(const struct cdimage *c)
 
 	/* from sector 15 to 25: across tracks 1 and 2 */
 	struct cdaudio_range r = { 15, 25 };
-	cdaudio_play(&player, 1000, &r, 1, 0, false, false);
+	cdaudio_play(&player, 1000, &r, 1, 0, r.start, false, false);
 	CHECK_EQ(cdaudio_status(&player, 1000 + 3 * CD_FRAMES + 7, &lba), CDAUDIO_PLAYING);
 	CHECK_EQ(lba, 18);
 	CHECK(cdaudio_active(&player));
@@ -631,7 +631,7 @@ static void test_play(const struct cdimage *c)
 
 	/* pause and go on; the position stays meanwhile */
 	r = (struct cdaudio_range){ 0, 60 };
-	cdaudio_play(&player, 20000, &r, 1, 0, false, false);
+	cdaudio_play(&player, 20000, &r, 1, 0, r.start, false, false);
 	CHECK(cdaudio_pause(&player, 21000, true));
 	CHECK_EQ(cdaudio_status(&player, 30000, &lba), CDAUDIO_PAUSED);
 	CHECK_EQ(player.frame, 1000);
@@ -646,7 +646,7 @@ static void test_play(const struct cdimage *c)
 	cdaudio_stop(&player, 40000);
 	player.count = 0;
 	r = (struct cdaudio_range){ 40, 60 };
-	cdaudio_play(&player, 40000, &r, 1, 0, false, true);
+	cdaudio_play(&player, 40000, &r, 1, 0, r.start, false, true);
 	CHECK_EQ(cdaudio_status(&player, 45000, &lba), CDAUDIO_PAUSED);
 	CHECK_EQ(lba, 40);
 	CHECK(cdaudio_pause(&player, 45000, false));
@@ -659,7 +659,7 @@ static void test_play(const struct cdimage *c)
 	CHECK_EQ(cdaudio_status(&player, 46000 + 10 * CD_FRAMES, &lba), CDAUDIO_DONE);
 	CHECK_EQ(lba, 50);
 	r = (struct cdaudio_range){ 0, 60 };
-	cdaudio_play(&player, 50000, &r, 1, 0, false, false);
+	cdaudio_play(&player, 50000, &r, 1, 0, r.start, false, false);
 	cdaudio_stop_at(&player, 50000 + 3 * CD_FRAMES, 2);
 	CHECK_EQ(cdaudio_status(&player, 50000 + 3 * CD_FRAMES, &lba), CDAUDIO_DONE);
 	CHECK_EQ(lba, 3);
@@ -671,7 +671,7 @@ static void test_play(const struct cdimage *c)
 	/* a list, over and over: track 3's first 2 sectors, then track 1's first */
 	player.count = 0;
 	struct cdaudio_range list[2] = { { 40, 42 }, { 0, 1 } };
-	cdaudio_play(&player, 100000, list, 2, 0, true, false);
+	cdaudio_play(&player, 100000, list, 2, 0, list[0].start, true, false);
 	cdaudio_run(&player, 100000 + 3 * CD_FRAMES + 10);
 	CHECK(took(2 * CD_FRAMES, 3, 0));
 	CHECK(took(CD_FRAMES, 1, 0));
@@ -680,7 +680,7 @@ static void test_play(const struct cdimage *c)
 	CHECK_EQ(cdaudio_status(&player, 100000 + 3 * CD_FRAMES + 10, NULL), CDAUDIO_PLAYING);
 	cdaudio_stop(&player, 200000);
 	player.count = 0;
-	cdaudio_play(&player, 200000, list, 2, 1, false, false);       /* from the second, once */
+	cdaudio_play(&player, 200000, list, 2, 1, list[1].start, false, false);       /* from the second, once */
 	cdaudio_run(&player, 200000 + 5 * CD_FRAMES);
 	CHECK_EQ(cdaudio_status(&player, 200000 + 5 * CD_FRAMES, &lba), CDAUDIO_DONE);
 	CHECK_EQ(lba, 1);
@@ -688,26 +688,26 @@ static void test_play(const struct cdimage *c)
 
 	/* over the data track: silence */
 	r = (struct cdaudio_range){ 59, 62 };
-	cdaudio_play(&player, 300000, &r, 1, 0, false, false);
+	cdaudio_play(&player, 300000, &r, 1, 0, r.start, false, false);
 	cdaudio_run(&player, 300000 + 3 * CD_FRAMES);
 	CHECK(took(CD_FRAMES, 3, 19 * CD_FRAMES));
 	CHECK(took(2 * CD_FRAMES, 0, 0));
 
 	/* out comes the disc: silence at once */
 	r = (struct cdaudio_range){ 0, 60 };
-	cdaudio_play(&player, 400000, &r, 1, 0, false, false);
+	cdaudio_play(&player, 400000, &r, 1, 0, r.start, false, false);
 	cdaudio_run(&player, 401000);
-	cdaudio_disc(&player, NULL, 401000);
+	cdaudio_disc(&player, NULL);
 	CHECK(!cdaudio_active(&player));
 	CHECK_EQ(cdaudio_status(&player, 402000, &lba), CDAUDIO_IDLE);
 	CHECK_EQ(lba, 0);
 	CHECK(!cdaudio_pause(&player, 402000, false));
-	cdaudio_disc(&player, c, 402000);
+	cdaudio_disc(&player, c);
 
 	/* nobody taking the frames: only the last ones stay */
 	player.count = 0;
 	unsigned long dropped = player.dropped;
-	cdaudio_play(&player, 500000, &r, 1, 0, false, false);
+	cdaudio_play(&player, 500000, &r, 1, 0, r.start, false, false);
 	cdaudio_run(&player, 500000 + CD_RATE / 4);
 	CHECK_EQ(player.count, CDAUDIO_FIFO);
 	CHECK_EQ(player.dropped - dropped, CD_RATE / 4 - CDAUDIO_FIFO);
@@ -722,8 +722,8 @@ static void test_volume_and_modes(const struct cdimage *c)
 	pattern(2, 0, &l, &rr);
 	pattern(2, 1, &l, &rr);
 	cdaudio_init(&player, CD_RATE);
-	cdaudio_disc(&player, c, 0);
-	cdaudio_play(&player, 0, &r, 1, 0, false, false);
+	cdaudio_disc(&player, c);
+	cdaudio_play(&player, 0, &r, 1, 0, r.start, false, false);
 	cdaudio_volume(&player, 0, 128, 255);
 	cdaudio_run(&player, 2);
 	cdaudio_mode(&player, 2, 6);                    /* channels swapped */
@@ -757,7 +757,7 @@ static void test_scan(const struct cdimage *c)
 {
 	uint32_t lba, bit = CDAUDIO_SCAN_SECTORS * CD_FRAMES, jump = CDAUDIO_SCAN_SPEED * CDAUDIO_SCAN_SECTORS;
 	cdaudio_init(&player, CD_RATE);
-	cdaudio_disc(&player, c, 0);
+	cdaudio_disc(&player, c);
 	cdaudio_scan(&player, 0, 2, 1);                 /* forward from sector 2: a bit of it, then on */
 	CHECK_EQ(cdaudio_status(&player, bit + 1, &lba), CDAUDIO_PLAYING);
 	CHECK_EQ(lba, 2 + jump);
@@ -784,8 +784,8 @@ static void test_pacing(const struct cdimage *c)
 	uint32_t lba;
 	struct cdaudio_range r = { 0, 60 };
 	cdaudio_init(&player, GUEST_HZ);
-	cdaudio_disc(&player, c, tb);
-	cdaudio_play(&player, tb, &r, 1, 0, false, false);
+	cdaudio_disc(&player, c);
+	cdaudio_play(&player, tb, &r, 1, 0, r.start, false, false);
 	for (size_t k = 0; k < sizeof steps / sizeof steps[0]; k++) {
 		total += steps[k];
 		cdaudio_run(&player, tb + total);
@@ -793,7 +793,7 @@ static void test_pacing(const struct cdimage *c)
 	}
 	CHECK_EQ(cdaudio_status(&player, tb + GUEST_HZ, &lba), CDAUDIO_DONE);  /* (60 sectors < 1 s) */
 	r.end = 600;                                    /* (past the lead-out: silence) */
-	cdaudio_play(&player, tb, &r, 1, 0, false, false);
+	cdaudio_play(&player, tb, &r, 1, 0, r.start, false, false);
 	total = 0;
 	for (unsigned rounds = 0; rounds < 3; rounds++)
 		for (size_t k = 0; k < sizeof steps / sizeof steps[0]; k++) {
@@ -811,8 +811,8 @@ static void test_resampling(const struct cdimage *c)
 	struct cdaudio_range r = { 0, 20 };
 	int16_t f[2 * 64], l, rr;
 	cdaudio_init(&player, CD_RATE);
-	cdaudio_disc(&player, c, 0);
-	cdaudio_play(&player, 0, &r, 1, 0, false, false);
+	cdaudio_disc(&player, c);
+	cdaudio_play(&player, 0, &r, 1, 0, r.start, false, false);
 	cdaudio_run(&player, 128);
 	CHECK(cdaudio_pull(&player, f, 64, 22050));
 	CHECK_EQ(player.count, 128 - 126);
@@ -870,10 +870,10 @@ static void test_through_codec(const struct cdimage *c)
 	snd.sink = sink;
 	snd.input = (struct awacs_input){ input_run, input_pull, input_active, &player };
 	cdaudio_init(&player, GUEST_HZ);
-	cdaudio_disc(&player, c, 0);
+	cdaudio_disc(&player, c);
 	struct cdaudio_range r = { 20, 40 };
 	CHECK(!awacs_playing(&snd));
-	cdaudio_play(&player, 1000, &r, 1, 0, false, false);
+	cdaudio_play(&player, 1000, &r, 1, 0, r.start, false, false);
 	CHECK(awacs_playing(&snd));
 	CHECK(awacs_moving(&snd));
 	heard_frames = 0;

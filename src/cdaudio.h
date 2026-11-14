@@ -62,18 +62,19 @@ struct cdaudio {
 void cdaudio_init(struct cdaudio *p, uint64_t hz);
 
 /* A disc goes in (or out: NULL); it stops playing, silent at once. */
-void cdaudio_disc(struct cdaudio *p, const struct cdimage *disc, uint64_t tb);
+void cdaudio_disc(struct cdaudio *p, const struct cdimage *disc);
 
 /* Brings the position to guest time `tb`, putting what was played in the FIFO. */
 void cdaudio_run(struct cdaudio *p, uint64_t tb);
 
 /*
- * Plays the ranges from range[first] on (then from the first again, with
- * `repeat`), at once; or with `hold`, holds (paused) at its start. A range
- * from an address to the end is one with end at the lead-out.
+ * Plays the ranges from range[first] on, from sector `at` in it (then from
+ * the first range again, with `repeat`), at once; or with `hold`, holds
+ * (paused) there. A range from an address to the end is one with end at the
+ * lead-out.
  */
 void cdaudio_play(struct cdaudio *p, uint64_t tb, const struct cdaudio_range *range, unsigned n, unsigned first,
-		  bool repeat, bool hold);
+		  uint32_t at, bool repeat, bool hold);
 
 /* Pauses or goes on; false if it wasn't playing or paused. */
 bool cdaudio_pause(struct cdaudio *p, uint64_t tb, bool pause);

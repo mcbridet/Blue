@@ -539,7 +539,7 @@ struct machine {
 	uint8_t display_ndrv[8192];
 	struct disk disk[NK_MAX_DISKS];
 	unsigned disks;
-	uint8_t disk_ndrv[NK_MAX_DISKS][2048];
+	uint8_t disk_ndrv[NK_MAX_DISKS][8192];                  /* (a CD-ROM drive's has its icons) */
 	/* the floppy drive, if there's one (see drive_insert()): what's in it at startup, and what follows */
 	bool has_floppy;
 	struct disk floppy;
@@ -723,6 +723,51 @@ static void play_sound(void *ctx, const uint8_t *frames, unsigned count, unsigne
 	}
 }
 
+/*
+ * The sound chip's analog input: what the CD-ROM drives play (one on the
+ * iMac; here each one's player, mixed).
+ */
+static void cd_input_run(void *ctx, uint64_t time)
+{
+	struct machine *m = ctx;
+	for (unsigned k = 0; k < m->disks; k++)
+		if (m->disk[k].cd)
+			cdaudio_run(&m->disk[k].cd->audio, time);
+}
+
+static bool cd_input_pull(void *ctx, int16_t *frames, unsigned count, unsigned rate)
+{
+	struct machine *m = ctx;
+	int16_t more[2 * 256];
+	bool any = false;
+	for (unsigned k = 0; k < m->disks; k++) {
+		struct cdaudio *p = m->disk[k].cd ? &m->disk[k].cd->audio : NULL;
+		if (!p || !cdaudio_active(p))
+			continue;
+		for (unsigned at = 0; at < count; at += 256) {
+			unsigned n = count - at < 256 ? count - at : 256;
+			if (!any)
+				cdaudio_pull(p, frames + 2 * at, n, rate);
+			else if (cdaudio_pull(p, more, n, rate))
+				for (unsigned j = 0; j < 2 * n; j++) {
+					int v = frames[2 * at + j] + more[j];
+					frames[2 * at + j] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+				}
+		}
+		any = true;
+	}
+	return any;
+}
+
+static bool cd_input_active(const void *ctx)
+{
+	const struct machine *m = ctx;
+	for (unsigned k = 0; k < m->disks; k++)
+		if (m->disk[k].cd && cdaudio_active(&m->disk[k].cd->audio))
+			return true;
+	return false;
+}
+
 static void wav_header(uint8_t h[44], uint32_t frames, uint32_t rate)
 {
 	memcpy(h, "RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x02\0", 24);
@@ -887,7 +932,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 			printf("disk %u: a CD-ROM drive, empty\n", k);
 		for (unsigned p = 0; p < d->partitions && (d->media || !d->removable); p++) {
 			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, d->path,
-			       d->backend ? " (shared folder)" : d->removable ? " (a CD: read-only, ejectable)" :
+			       d->removable ? " (a CD: read-only, ejectable)" : d->backend && !d->cdrom ? " (shared folder)" :
 			       d->read_only ? " (read-only)" : "",
 			       (unsigned long long)(d->part[p].size >> 20),
 			       (unsigned long long)d->part[p].offset, d->part[p].name[0] ? ", partition " : "",
@@ -898,6 +943,15 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 				boot_map_entry = d->part[p].map_entry;
 			}
 		}
+	}
+	for (unsigned k = 0; k < m->disks; k++) {
+		const struct cdimage *c = m->disk[k].disc;
+		unsigned audio = 0;
+		for (unsigned t = 0; c && t < c->tracks; t++)
+			audio += !c->track[t].mode;
+		if (audio)
+			printf("disk %u: %u tracks, %u of them audio%s\n", k, c->tracks, audio,
+			       c->data < 0 ? " (no data: Mac OS reads its tracks with Audio CD Access)" : "");
 	}
 	/* Open Firmware boots from where it found the ROM file */
 	if (parcels && opt->rom_from_disk && opt->rom_disk < m->disks &&
@@ -994,6 +1048,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->awacs.log = getenv("SYSHM_LOG_SOUND") != NULL;
 	m->awacs.sink = play_sound;
 	m->awacs.sink_ctx = m;
+	m->awacs.input = (struct awacs_input){ cd_input_run, cd_input_pull, cd_input_active, m };
 	if (!m->wav && getenv("SYSHM_SOUND_WAV") && (m->wav = fopen(getenv("SYSHM_SOUND_WAV"), "wb"))) {
 		uint8_t h[44];
 		wav_header(h, 0, 44100);
@@ -3922,11 +3977,16 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	printf("\nvideo: %lu driver calls, %u opens, %ux%u %u-bit, %lu mode changes, %lu VBLs",
 	       m.video.calls, m.video.open_count, video_width(&m.video), video_height(&m.video),
 	       video_bpp(&m.video), m.video.mode_changes, m.video.vbls);
-	for (unsigned k = 0; k < m.disks; k++)
+	for (unsigned k = 0; k < m.disks; k++) {
 		printf("\ndisk %u: %lu driver calls, drive %u, %lu reads (%llu KB), %lu writes (%llu KB)", k,
 		       m.disk[k].calls, m.disk[k].part[0].drive_num, m.disk[k].reads,
 		       (unsigned long long)(m.disk[k].bytes_read >> 10), m.disk[k].writes,
 		       (unsigned long long)(m.disk[k].bytes_written >> 10));
+		const struct cdrom *cd = m.disk[k].cd;
+		if (cd && cd->audio_calls)
+			printf("\ndisk %u: CD audio: %lu calls to play or read, %lu frames played (%.1f s)", k,
+			       cd->audio_calls, cd->audio.frames, cd->audio.frames / (double)CD_RATE);
+	}
 	if (m.has_floppy)
 		printf("\nfloppy: %lu driver calls, drive %u, %lu reads (%llu KB), %lu writes (%llu KB), "
 		       "%lu ejected by Mac OS; %s", m.floppy.calls, m.floppy.part[0].drive_num, m.floppy.reads,
@@ -3948,6 +4008,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	if (m.awacs.codec_writes)
 		printf("\nsound: %lu codec writes, %u Hz, %lu frames played, %lu recorded",
 		       m.awacs.codec_writes, awacs_rate(&m.awacs), m.awacs.frames_played, m.awacs.frames_recorded);
+	if (m.awacs.frames_through)
+		printf("\nsound: %lu frames with the CD's audio in them", m.awacs.frames_through);
 	if (m.audio)
 		printf("\naudio: %lu frames dropped, %lu frames of silence added",
 		       audio_dropped(m.audio), audio_padded(m.audio));
