@@ -7,6 +7,7 @@
 #define SYSHM_DISPLAY_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "ui.h"
@@ -46,8 +47,35 @@ struct display_event {
 struct display *display_open(const char *title, unsigned width, unsigned height, bool integer);
 void display_close(struct display *d);
 
-/* Shows an RGB image (3 bytes per pixel); the window follows size changes. */
-void display_present(struct display *d, const uint8_t *rgb, unsigned width, unsigned height);
+/*
+ * The screen (width x height) is shown from a texture of 32-bit pixels,
+ * 0xFFRRGGBB (SDL's ARGB8888, the format renderers take as it is), which
+ * the caller writes the changed rows of: rows from .. to - 1, `*pitch`
+ * bytes apart, handed back with display_rows_done(); NULL if they can't be
+ * written. The window follows a change of the screen's size (all of it is
+ * to be written then). What's written is shown when the window is next
+ * drawn (display_update()).
+ */
+uint32_t *display_rows(struct display *d, unsigned width, unsigned height, unsigned from, unsigned to,
+		       size_t *pitch);
+void display_rows_done(struct display *d);
+
+/*
+ * The pointer, drawn over the screen (Mac OS's hardware cursor): where its
+ * image's top left is in screen pixels, and its pixels (0xFFRRGGBB, or
+ * clear, or inverting the screen), copied when `image` changes. NULL: none.
+ */
+#define DISPLAY_CURSOR_MAX 16
+#define DISPLAY_CURSOR_CLEAR 0x00000000u
+#define DISPLAY_CURSOR_INVERT 0x00FFFFFFu
+struct display_cursor {
+	bool visible;
+	int x, y;
+	unsigned width, height;         /* (at most DISPLAY_CURSOR_MAX) */
+	const uint32_t *pixels;
+	unsigned long image;
+};
+void display_cursor(struct display *d, const struct display_cursor *c);
 
 /*
  * Where a screen goes in a window out_w x out_h pixels in size: as large
@@ -91,12 +119,12 @@ void display_menu_state(struct display *d, enum ui_mouse mouse, const char *stat
 
 /*
  * The status bar (with the menu's SDL only), below the screen: shown or
- * hidden (the menu toggles it too); what it shows, drawn when the window
- * next is (by display_present() or display_update()); and drawing the
- * window again if that's changed (and the bar is shown).
+ * hidden (the menu toggles it too); and what it shows.
  */
 void display_status_bar(struct display *d, bool on);
 void display_status(struct display *d, const struct ui_status *s);
+
+/* Draws the window if the screen, the pointer or the status bar has changed since it was. */
 void display_update(struct display *d);
 
 /* Returns false when there are no more events. */

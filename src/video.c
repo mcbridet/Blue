@@ -17,6 +17,12 @@
 #define PB_CS_CODE 26
 #define PB_CS_PARAM 28
 
+/* Hardware cursor calls (Control and Status share the numbers) */
+#define CSC_SET_HARDWARE_CURSOR 22
+#define CSC_DRAW_HARDWARE_CURSOR 23
+#define CSC_SUPPORTS_HARDWARE_CURSOR 22
+#define CSC_GET_HARDWARE_CURSOR_DRAW_STATE 23
+
 /* Display mode IDs with special meanings */
 #define MODE_ID_CURRENT 0x00000000u
 #define MODE_ID_FIND_FIRST 0xFFFFFFFEu
@@ -80,8 +86,28 @@ void video_init(struct video *v, struct mem *mem, uint32_t fb_base, uint32_t fb_
 #define EXTRA_NOW 296u                  /* AbsoluteTime from UpTime */
 #define EXTRA_EXPIRATION 304u           /* AbsoluteTime for SetInterruptTimer */
 #define EXTRA_SIZE 312u
+/* ... and with the hardware cursor: what VSLPrepareCursorForHardwareCursor converts it to, and into */
+#define EXTRA_CURSOR_DESC 312u          /* HardwareCursorDescriptorRec, 100 bytes */
+#define EXTRA_CURSOR_INFO 412u          /* HardwareCursorInfoRec, 44 bytes */
+#define EXTRA_CURSOR_ENCODINGS 456u     /* colorEncodings: a word for each of CURSOR_COLORS */
+#define EXTRA_CURSOR_CTAB 1472u         /* ColorTable for colorMap: 8 bytes, then a ColorSpec for each */
+#define EXTRA_CURSOR_IMAGE 3512u        /* the cursor: a byte a pixel */
+#define EXTRA_CURSOR_SIZE (EXTRA_CURSOR_IMAGE + VIDEO_CURSOR_SIZE * VIDEO_CURSOR_SIZE)
 
-enum { IMP_IO_COMPLETE, IMP_SET_TIMER, IMP_UPTIME, IMP_VSL_NEW_SERVICE, IMP_VSL_DO_SERVICE, IMP_COUNT };
+/*
+ * The cursor format: 8 bits a pixel, CURSOR_COLORS colours from colorMap
+ * (the pixel value is the colour's index), and two more values for
+ * transparent and inverting pixels. (The Video Services Library of Mac OS
+ * 8.5 to 9.1 converts to indexed formats of 2, 4 or 8 bits only.)
+ */
+#define CURSOR_COLORS 254u
+#define CURSOR_TRANSPARENT 254u
+#define CURSOR_INVERTING 255u
+#define TRANSPARENT_ENCODED_PIXEL 0x1u  /* supportedSpecialEncodings */
+#define INVERTING_ENCODED_PIXEL 0x4u
+
+enum { IMP_IO_COMPLETE, IMP_SET_TIMER, IMP_UPTIME, IMP_VSL_NEW_SERVICE, IMP_VSL_DO_SERVICE, IMP_VSL_PREPARE_CURSOR,
+       IMP_COUNT };
 
 #define VBL_SERVICE_TYPE 0x76626C20u      /* 'vbl ' */
 
@@ -93,16 +119,30 @@ size_t video_build_ndrv(struct video *v, uint8_t *out, size_t size, uint32_t hos
 		[IMP_UPTIME] = { "DriverServicesLib", "UpTime" },
 		[IMP_VSL_NEW_SERVICE] = { "VideoServicesLib", "VSLNewInterruptService" },
 		[IMP_VSL_DO_SERVICE] = { "VideoServicesLib", "VSLDoInterruptService" },
+		[IMP_VSL_PREPARE_CURSOR] = { "VideoServicesLib", "VSLPrepareCursorForHardwareCursor" },
 	};
 
 	/* A linear gamma table (GammaTbl) for GetGamma to point at */
-	uint8_t extra[EXTRA_SIZE] = { 0 };
+	uint8_t extra[EXTRA_CURSOR_SIZE] = { 0 };
 	uint8_t *gamma = extra + EXTRA_GAMMA;
 	gamma[7] = 1;                   /* gChanCnt */
 	gamma[8] = 0x01;                /* gDataCnt = 256 */
 	gamma[11] = 8;                  /* gDataWidth */
 	for (int k = 0; k < 256; k++)
 		gamma[12 + k] = (uint8_t)k;
+
+	/* HardwareCursorDescriptorRec (colorEncodings is filled in when the driver runs) */
+	uint8_t *desc = extra + EXTRA_CURSOR_DESC;
+	put_be16(desc, 1);                      /* majorVersion */
+	put_be32(desc + 4, VIDEO_CURSOR_SIZE);  /* height */
+	put_be32(desc + 8, VIDEO_CURSOR_SIZE);  /* width */
+	put_be32(desc + 12, 8);                 /* bitDepth */
+	put_be32(desc + 20, CURSOR_COLORS);     /* numColors */
+	put_be32(desc + 32, TRANSPARENT_ENCODED_PIXEL | INVERTING_ENCODED_PIXEL);
+	put_be32(desc + 36, CURSOR_TRANSPARENT);        /* specialEncodings */
+	put_be32(desc + 40, CURSOR_INVERTING);
+	for (unsigned k = 0; k < CURSOR_COLORS; k++)
+		put_be32(extra + EXTRA_CURSOR_ENCODINGS + 4 * k, k);
 
 	struct ndrv_spec spec = {
 		.device_name = "display",
@@ -113,9 +153,10 @@ size_t video_build_ndrv(struct video *v, uint8_t *out, size_t size, uint32_t hos
 		.version = DRIVER_VERSION,
 		.hostcall = hostcall,
 		.imports = imports,
-		.import_count = IMP_COUNT,
+		/* (without the hardware cursor, the driver is as it was before there was one) */
+		.import_count = v->hw_cursor ? IMP_COUNT : IMP_VSL_PREPARE_CURSOR,
 		.extra = extra,
-		.extra_len = sizeof extra,
+		.extra_len = v->hw_cursor ? EXTRA_CURSOR_SIZE : EXTRA_SIZE,
 	};
 	return ndrv_build(&spec, out, size, &v->layout);
 }
@@ -330,7 +371,14 @@ static int32_t control(struct video *v, uint32_t pb, uint32_t toc)
 		v->preferred_depth = (unsigned)d;
 		v->preferred_mode = (unsigned)md;
 		return NO_ERR;
-	default:        /* Reset, SetDefaultMode, hardware cursor, power, ... */
+	case CSC_DRAW_HARDWARE_CURSOR:  /* VDDrawHardwareCursorRec: x, y, visible */
+		if (!v->hw_cursor)
+			return CONTROL_ERR;
+		v->cursor.x = (int32_t)mem_r32(m, p);
+		v->cursor.y = (int32_t)mem_r32(m, p + 4);
+		v->cursor.visible = mem_r32(m, p + 8) != 0;
+		return NO_ERR;
+	default:        /* Reset, SetDefaultMode, power, ... (SetHardwareCursor: see video_driver_call()) */
 		return CONTROL_ERR;
 	}
 }
@@ -447,13 +495,26 @@ static int32_t status(struct video *v, uint32_t pb, uint32_t toc)
 	case 29:        /* GetClutBehavior: kSetClutAtSetEntries */
 		mem_w32(m, p, 0);
 		return NO_ERR;
+	case CSC_SUPPORTS_HARDWARE_CURSOR:      /* VDSupportsHardwareCursorRec */
+		if (!v->hw_cursor)
+			return STATUS_ERR;
+		mem_w32(m, p, 1);
+		return NO_ERR;
+	case CSC_GET_HARDWARE_CURSOR_DRAW_STATE:        /* VDHardwareCursorDrawStateRec: x, y, visible, set */
+		if (!v->hw_cursor)
+			return STATUS_ERR;
+		mem_w32(m, p, (uint32_t)v->cursor.x);
+		mem_w32(m, p + 4, (uint32_t)v->cursor.y);
+		mem_w32(m, p + 8, v->cursor.visible);
+		mem_w32(m, p + 12, v->cursor.set);
+		return NO_ERR;
 	case 43:        /* DriverGestalt: selector and response are inline in csParam */
 		if (mem_r32(m, pb + PB_CS_PARAM) == GESTALT_VERSION) {
 			mem_w32(m, pb + PB_CS_PARAM + 4, DRIVER_VERSION);
 			return NO_ERR;
 		}
 		return STATUS_ERR;
-	default:        /* GetDefaultMode, gamma lists, hardware cursor, power, ... */
+	default:        /* GetDefaultMode, gamma lists, power, ... */
 		return STATUS_ERR;
 	}
 }
@@ -511,6 +572,74 @@ void video_to_rgb(const struct video *v, uint8_t *rgb)
 	}
 }
 
+void video_palette(const struct video *v, struct video_palette *p)
+{
+	unsigned bpp = video_bpp(v), colors = bpp <= 8 ? 1u << bpp : 0;
+	p->bpp = bpp;
+	for (unsigned k = 0; k < colors; k++)
+		p->color[k] = 0xFF000000u | (uint32_t)v->clut[k][0] << 16 | (uint32_t)v->clut[k][1] << 8 | v->clut[k][2];
+	if (bpp >= 8)
+		return;
+	for (unsigned b = 0; b < 256; b++)
+		for (unsigned k = 0; k < 8 / bpp; k++)
+			p->bytes[b][k] = p->color[(b >> (8 - bpp - k * bpp)) & (colors - 1)];
+}
+
+/* (loops simple enough for the compiler to do several pixels at a time) */
+static void convert_32(const uint8_t *in, uint32_t *out, unsigned width)
+{
+	for (unsigned x = 0; x < width; x++)
+		out[x] = be32(in + 4 * x) | 0xFF000000u;
+}
+
+/* 5-bit channels widened as r << 3 | r >> 2, all three at once */
+static void convert_16(const uint8_t *in, uint32_t *out, unsigned width)
+{
+	for (unsigned x = 0; x < width; x++) {
+		uint32_t px = be16(in + 2 * x);
+		uint32_t c = (px & 0x7C00) << 9 | (px & 0x03E0) << 6 | (px & 0x001F) << 3;
+		out[x] = 0xFF000000u | c | (c >> 5 & 0x070707u);
+	}
+}
+
+void video_convert(const struct video_palette *p, const uint8_t *src, size_t src_pitch, unsigned width,
+		   unsigned rows, uint32_t *dst, size_t dst_pitch)
+{
+	unsigned per = p->bpp < 8 ? 8 / p->bpp : 1, bytes = width / per, rest = width % per;
+	for (unsigned y = 0; y < rows; y++) {
+		const uint8_t *in = src + y * src_pitch;
+		uint32_t *out = (uint32_t *)(void *)((uint8_t *)dst + y * dst_pitch);
+		if (p->bpp == 32) {
+			convert_32(in, out, width);
+		} else if (p->bpp == 16) {
+			convert_16(in, out, width);
+		} else if (p->bpp == 8) {
+			for (unsigned x = 0; x < width; x++)
+				out[x] = p->color[in[x]];
+		} else {
+			for (unsigned b = 0; b < bytes; b++)
+				memcpy(out + b * per, p->bytes[in[b]], per * sizeof *out);
+			if (rest)
+				memcpy(out + bytes * per, p->bytes[in[bytes]], rest * sizeof *out);
+		}
+	}
+}
+
+unsigned video_changed_rows(const uint8_t *shown, const uint8_t *fb, size_t row_bytes, unsigned rows,
+			    struct video_rows *bands, unsigned max)
+{
+	unsigned n = 0;
+	for (unsigned y = 0; y < rows; y++) {
+		if (memcmp(shown + y * row_bytes, fb + y * row_bytes, row_bytes) == 0)
+			continue;
+		if (n && (y - bands[n - 1].to < VIDEO_ROWS_GAP || n == max))
+			bands[n - 1].to = y + 1;
+		else if (max)
+			bands[n++] = (struct video_rows){ y, y + 1 };
+	}
+	return n;
+}
+
 static int32_t driver_io_logged(struct video *v, uint32_t toc, uint32_t contents, uint32_t code, uint32_t kind)
 {
 	v->calls++;
@@ -534,7 +663,63 @@ enum {
 	STEP_VBL_SERVICE,               /* VSLDoInterruptService returned */
 	STEP_VBL_UPTIME,
 	STEP_VBL_TIMER,
+	STEP_CURSOR_PREPARED,           /* VSLPrepareCursorForHardwareCursor returned */
 };
+
+/*
+ * SetHardwareCursor: the Video Services Library converts Mac OS's cursor
+ * (csCursorRef) to the driver's format, if it can; if it can't (too many
+ * colours), SetHardwareCursor fails, and Mac OS draws that cursor itself.
+ * Mac OS 8.5 to 9.1 call SetHardwareCursor with each new cursor (without
+ * asking SupportsHardwareCursor first), then DrawHardwareCursor as it moves.
+ */
+static void prepare_cursor(struct video *v, struct ndrv_call *c, uint32_t cursor_ref)
+{
+	struct mem *m = v->mem;
+	uint32_t data = c->toc + v->layout.extra;
+	uint32_t info = data + EXTRA_CURSOR_INFO;
+	mem_w32(m, data + EXTRA_CURSOR_DESC + 24, data + EXTRA_CURSOR_ENCODINGS);
+	memset(mem_ptr(m, info), 0, 44);        /* HardwareCursorInfoRec */
+	mem_w16(m, info, 1);                    /* majorVersion */
+	mem_w32(m, info + 12, data + EXTRA_CURSOR_CTAB);        /* colorMap */
+	mem_w32(m, info + 16, data + EXTRA_CURSOR_IMAGE);       /* hardwareCursor */
+	ndrv_callout(c, ndrv_import(c, &v->layout, IMP_VSL_PREPARE_CURSOR), cursor_ref, data + EXTRA_CURSOR_DESC,
+		     info, 0);
+}
+
+/* ... and takes it if it came (`ok`, the library's Boolean) */
+static int32_t cursor_prepared(struct video *v, struct ndrv_call *c, uint32_t ok)
+{
+	struct mem *m = v->mem;
+	uint32_t data = c->toc + v->layout.extra;
+	uint32_t info = data + EXTRA_CURSOR_INFO, ctab = data + EXTRA_CURSOR_CTAB + 8;
+	unsigned w = mem_r32(m, info + 8), h = mem_r32(m, info + 4);
+	if (!(ok & 0xFF) || !w || !h || w > VIDEO_CURSOR_SIZE || h > VIDEO_CURSOR_SIZE) {
+		v->cursor.set = v->cursor.visible = false;
+		return CONTROL_ERR;
+	}
+	struct video_cursor *cur = &v->cursor;
+	uint32_t pixels[VIDEO_CURSOR_SIZE * VIDEO_CURSOR_SIZE];
+	for (unsigned y = 0; y < h; y++) {
+		for (unsigned x = 0; x < w; x++) {
+			unsigned px = mem_r8(m, data + EXTRA_CURSOR_IMAGE + y * VIDEO_CURSOR_SIZE + x);
+			uint32_t cs = ctab + 8 * px;
+			pixels[y * w + x] = px == CURSOR_TRANSPARENT ? VIDEO_CURSOR_CLEAR :
+					    px == CURSOR_INVERTING ? VIDEO_CURSOR_INVERT :
+					    0xFF000000u | (uint32_t)mem_r8(m, cs + 2) << 16 |
+					    (uint32_t)mem_r8(m, cs + 4) << 8 | mem_r8(m, cs + 6);
+		}
+	}
+	/* (Mac OS hands over the same one again and again) */
+	if (!cur->set || w != cur->width || h != cur->height || memcmp(pixels, cur->pixels, w * h * sizeof *pixels)) {
+		memcpy(cur->pixels, pixels, w * h * sizeof *pixels);
+		cur->width = w;
+		cur->height = h;
+		cur->images++;
+	}
+	cur->set = true;
+	return NO_ERR;
+}
 
 /* Arms the VBL timer one period after the UpTime result in EXTRA_NOW. */
 static void arm_timer(struct video *v, struct ndrv_call *c, uint32_t next_step)
@@ -564,6 +749,14 @@ void video_driver_call(struct video *v, struct ndrv_call *c, uint32_t timebase_h
 		uint32_t cmd_id = c->arg[1], contents = c->arg[2], code = c->arg[3], kind = c->arg[4];
 		if (code == NDRV_INITIALIZE || code == NDRV_REPLACE)    /* DriverInitInfo: refNum, RegEntryID */
 			memcpy(mem_ptr(m, data + EXTRA_REG_ENTRY), mem_ptr(m, contents + 2), 16);
+		if (code == NDRV_CONTROL && mem_r16(m, contents + PB_CS_CODE) == CSC_SET_HARDWARE_CURSOR && v->hw_cursor) {
+			v->calls++;
+			ndrv_set_state(c, 0, STEP_CURSOR_PREPARED);
+			ndrv_set_state(c, 2, cmd_id);
+			ndrv_set_state(c, 3, kind);
+			prepare_cursor(v, c, mem_r32(m, mem_r32(m, contents + PB_CS_PARAM)));
+			return;
+		}
 		int32_t status = driver_io_logged(v, c->toc, contents, code, kind);
 		if (code == NDRV_OPEN && status == 0 && !v->vbl_service) {
 			/* VBL interrupts come from a timer, as there is no hardware to raise them */
@@ -621,10 +814,36 @@ void video_driver_call(struct video *v, struct ndrv_call *c, uint32_t timebase_h
 	case STEP_VBL_TIMER:
 		ndrv_finish(c, 0);
 		return;
+	case STEP_CURSOR_PREPARED: {
+		int32_t status = cursor_prepared(v, c, result);
+		if (v->log)
+			printf("video: control %u (kind %u) -> %d\n", CSC_SET_HARDWARE_CURSOR, ndrv_state(c, 3), status);
+		ndrv_complete(c, &v->layout, IMP_IO_COMPLETE, ndrv_state(c, 2), ndrv_state(c, 3), status);
+		return;
+	}
 	case NDRV_STEP_COMPLETING:
 	default:
 		ndrv_finish(c, result);
 		return;
+	}
+}
+
+void video_draw_cursor(const struct video *v, uint8_t *rgb)
+{
+	const struct video_cursor *cur = &v->cursor;
+	int w = (int)video_width(v), h = (int)video_height(v);
+	if (!v->hw_cursor || !cur->set || !cur->visible)
+		return;
+	for (int y = 0; y < (int)cur->height; y++) {
+		for (int x = 0; x < (int)cur->width; x++) {
+			int sx = cur->x + x, sy = cur->y + y;
+			uint32_t px = cur->pixels[y * (int)cur->width + x];
+			if (sx < 0 || sy < 0 || sx >= w || sy >= h || px == VIDEO_CURSOR_CLEAR)
+				continue;
+			uint8_t *out = rgb + ((size_t)sy * (size_t)w + (size_t)sx) * 3;
+			for (int c = 0; c < 3; c++)
+				out[c] = px == VIDEO_CURSOR_INVERT ? (uint8_t)~out[c] : (uint8_t)(px >> (16 - 8 * c));
+		}
 	}
 }
 
@@ -635,6 +854,7 @@ int video_screenshot(const struct video *v, const char *path)
 	if (!rgb)
 		return -1;
 	video_to_rgb(v, rgb);
+	video_draw_cursor(v, rgb);
 	int err = png_write_rgb(path, rgb, w, h);
 	free(rgb);
 	return err;

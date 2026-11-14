@@ -23,6 +23,24 @@ struct video_mode {
 	uint32_t timing;                /* Apple timing constant */
 };
 
+/*
+ * The hardware cursor: Mac OS hands the driver the pointer's image and
+ * where it goes, for the window to draw over the screen (instead of
+ * drawing it into the framebuffer itself).
+ */
+#define VIDEO_CURSOR_SIZE 16            /* (Mac OS cursors are 16 x 16 pixels) */
+#define VIDEO_CURSOR_CLEAR 0x00000000u  /* pixels: the screen shows through */
+#define VIDEO_CURSOR_INVERT 0x00FFFFFFu /* ... inverted; others are 0xFFRRGGBB */
+
+struct video_cursor {
+	bool set;                       /* Mac OS has handed the driver an image (that it could take) */
+	bool visible;
+	int32_t x, y;                   /* the image's top left, in screen pixels */
+	unsigned width, height;
+	uint32_t pixels[VIDEO_CURSOR_SIZE * VIDEO_CURSOR_SIZE];        /* rows of `width` */
+	unsigned long images;           /* counts the images handed over */
+};
+
 struct video {
 	struct mem *mem;
 	uint32_t fb_base, fb_size;
@@ -44,6 +62,8 @@ struct video {
 	uint32_t vbl_service;           /* Video Services Library VBL interrupt service */
 	uint64_t vbl_period;            /* AbsoluteTime units between VBLs */
 	unsigned long vbls;
+	bool hw_cursor;                 /* offer Mac OS a hardware cursor (set before building the driver) */
+	struct video_cursor cursor;
 };
 
 extern const struct video_mode video_modes[];
@@ -83,6 +103,43 @@ unsigned video_row_bytes(const struct video *v);
 
 /* Converts the visible screen to RGB (width * height * 3 bytes). */
 void video_to_rgb(const struct video *v, uint8_t *rgb);
+
+/* ... and draws the hardware cursor over it, if it's shown */
+void video_draw_cursor(const struct video *v, uint8_t *rgb);
+
+/*
+ * Saves the screen as a PNG (with the hardware cursor drawn over it, where
+ * it's shown).
+ */
 int video_screenshot(const struct video *v, const char *path);
+
+/*
+ * For the window: the screen as 32-bit pixels, 0xFFRRGGBB (SDL's
+ * ARGB8888), the same colours as video_to_rgb()'s. A palette holds what
+ * converting takes from the depth and CLUT; video_convert() converts
+ * `rows` rows of `width` pixels, rows src_pitch bytes apart in the
+ * framebuffer's format and dst_pitch bytes apart in `dst`.
+ */
+struct video_palette {
+	unsigned bpp;
+	uint32_t color[256];            /* each CLUT entry (8 bits per pixel and fewer) */
+	uint32_t bytes[256][8];         /* ... and the pixels each byte holds (fewer than 8) */
+};
+void video_palette(const struct video *v, struct video_palette *p);
+void video_convert(const struct video_palette *p, const uint8_t *src, size_t src_pitch, unsigned width,
+		   unsigned rows, uint32_t *dst, size_t dst_pitch);
+
+/*
+ * The rows that differ between two copies of the framebuffer (rows
+ * `row_bytes` long): up to `max` bands of them, top to bottom, those fewer
+ * than VIDEO_ROWS_GAP rows apart (or past the last) taken as one. Returns
+ * how many.
+ */
+#define VIDEO_ROWS_GAP 32u
+struct video_rows {
+	unsigned from, to;              /* rows from .. to - 1 */
+};
+unsigned video_changed_rows(const uint8_t *shown, const uint8_t *fb, size_t row_bytes, unsigned rows,
+			    struct video_rows *bands, unsigned max);
 
 #endif

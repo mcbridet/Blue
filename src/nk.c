@@ -477,11 +477,12 @@ struct machine {
 	unsigned want_w, want_h;        /* screen size the window asks for (0: none) */
 	uint64_t want_ns;               /* host time it last changed (0: from a script, at once) */
 	struct display *display;        /* host window, if open */
-	uint8_t *rgb;                   /* screen converted for the window */
+	bool hw_cursor;                 /* ... and the display driver offers Mac OS a hardware cursor for it */
 	uint8_t *shown;                 /* framebuffer bytes as last shown */
 	uint8_t shown_clut[256][3];
 	unsigned shown_w, shown_h, shown_bpp;
 	uint64_t shown_ns;
+	struct video_palette palette;   /* (for the depth and CLUT shown) */
 	bool quit;                      /* the window was closed */
 	bool redraw;                    /* the window needs drawing even if the screen is the same */
 	bool mouse_captured;            /* host motion goes to the ADB mouse (see follow_cursor()) */
@@ -523,7 +524,7 @@ struct machine {
 	uint64_t fast_disk;             /* bytes the disks had moved at the last idle call */
 	uint64_t fast_idle_tb;          /* guest time of the last idle call */
 	uint64_t fast_quiet_tb;         /* guest time since which the guest has idled without disk transfers */
-	uint8_t display_ndrv[2048];
+	uint8_t display_ndrv[8192];
 	struct disk disk[NK_MAX_DISKS];
 	unsigned disks;
 	uint8_t disk_ndrv[NK_MAX_DISKS][2048];
@@ -794,6 +795,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 			fprintf(stderr, "SYSHM_PERF: no processor counters here\n");
 	}
 	m->video.log = opt->log_hostcalls;
+	m->video.hw_cursor = m->hw_cursor;
 	size_t ndrv_size = video_build_ndrv(&m->video, m->display_ndrv, sizeof m->display_ndrv, HOSTCALL_VIDEO_DRIVER);
 
 	size_t disk_ndrv_size[NK_MAX_DISKS] = { 0 };
@@ -1467,31 +1469,59 @@ static void status_lights(struct machine *m, uint64_t now, bool paused)
 }
 
 /*
- * Shows the screen in the window if it has changed (and once a second
- * regardless), and feeds the window's input to the guest; while the menu is
- * open, the guest stays paused here.
+ * Shows the screen in the window: the rows that have changed since it was
+ * last shown (all of them when its mode or colours change, when the window
+ * asks, and once a second if nothing has changed), and the pointer, if Mac
+ * OS has the display driver draw it; and feeds the window's input to the
+ * guest. While the menu is open, the guest stays paused here.
  */
+#define DISPLAY_BANDS 8                 /* bands of changed rows, at most (see video_changed_rows()) */
+
 static void display_frame(struct machine *m, uint64_t now)
 {
 	unsigned w = video_width(&m->video), h = video_height(&m->video), bpp = video_bpp(&m->video);
-	size_t len = (size_t)video_row_bytes(&m->video) * h;
+	size_t rb = video_row_bytes(&m->video);
+	unsigned rows = rb * h > m->video.fb_size ? (unsigned)(m->video.fb_size / rb) : h;
 	const uint8_t *fb = mem_ptr(&m->mem, m->video.fb_base);
-	if (len > m->video.fb_size)
-		len = m->video.fb_size;
 	status_lights(m, now, false);   /* (drawn with the screen, if that's drawn) */
+	struct video_rows bands[DISPLAY_BANDS];
+	unsigned n;
 	if (m->redraw || w != m->shown_w || h != m->shown_h || bpp != m->shown_bpp ||
-	    now - m->shown_ns >= 1000000000u || memcmp(m->shown_clut, m->video.clut, sizeof m->shown_clut) != 0 ||
-	    memcmp(m->shown, fb, len) != 0) {
+	    now - m->shown_ns >= 1000000000u || memcmp(m->shown_clut, m->video.clut, sizeof m->shown_clut) != 0) {
 		m->redraw = false;
-		memcpy(m->shown, fb, len);
 		memcpy(m->shown_clut, m->video.clut, sizeof m->shown_clut);
 		m->shown_w = w;
 		m->shown_h = h;
 		m->shown_bpp = bpp;
-		m->shown_ns = now;
-		video_to_rgb(&m->video, m->rgb);
-		display_present(m->display, m->rgb, w, h);
+		video_palette(&m->video, &m->palette);
+		bands[0] = (struct video_rows){ 0, rows };
+		n = 1;
+	} else {
+		n = video_changed_rows(m->shown, fb, rb, rows, bands, DISPLAY_BANDS);
 	}
+	for (unsigned k = 0; k < n; k++) {
+		size_t at = bands[k].from * rb, pitch;
+		unsigned count = bands[k].to - bands[k].from;
+		memcpy(m->shown + at, fb + at, count * rb);
+		uint32_t *px = display_rows(m->display, w, h, bands[k].from, bands[k].to, &pitch);
+		if (px) {
+			video_convert(&m->palette, fb + at, rb, w, count, px, pitch);
+			display_rows_done(m->display);
+		}
+	}
+	if (n)
+		m->shown_ns = now;
+	const struct video_cursor *c = &m->video.cursor;
+	struct display_cursor pointer = {
+		.visible = m->video.hw_cursor && c->set && c->visible,
+		.x = c->x,
+		.y = c->y,
+		.width = c->width,
+		.height = c->height,
+		.pixels = c->pixels,
+		.image = c->images,
+	};
+	display_cursor(m->display, &pointer);
 	display_update(m->display);
 	display_input(m, now);
 	if (m->paused)
@@ -2963,8 +2993,8 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->want_h = old.want_h;
 	m->want_ns = old.want_ns;
 	m->display = old.display;
+	m->hw_cursor = old.hw_cursor;
 	m->gpu = old.gpu;
-	m->rgb = old.rgb;
 	m->shown = old.shown;
 	m->quit = old.quit;
 	m->mouse_captured = old.mouse_captured;
@@ -3014,6 +3044,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	m.rom = rom;
 	m.ram_size = opt->ram_size;
 	m.realtime = opt->realtime;
+	/* (only for the window: headless and instruction-time runs draw the pointer as they always have) */
+	m.hw_cursor = opt->window && opt->realtime;
 	m.gpu = open_gpu(opt);          /* (getting ready in the background) */
 	if (start_machine(&m, opt))
 		return 1;
@@ -3032,11 +3064,12 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	if (opt->realtime && !opt->no_fast_start)
 		fast_start_begin(&m);
 	if (opt->window) {
-		m.rgb = malloc((size_t)FB_SIZE / 4 * 3 + 3);
 		m.shown = malloc(FB_SIZE);
-		if (m.rgb && m.shown)
+		if (m.shown)
 			m.display = display_open("syshm", video_width(&m.video), video_height(&m.video),
 						 opt->integer_scale);
+		if (!m.display)         /* (the driver has the hardware cursor, but says it hasn't) */
+			m.hw_cursor = m.video.hw_cursor = false;
 		if (m.display && !opt->no_status_bar)
 			display_status_bar(m.display, true);
 		if (m.display && opt->realtime && !opt->no_sound)
@@ -3437,7 +3470,6 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	}
 	audio_close(m.audio);
 	display_close(m.display);
-	free(m.rgb);
 	free(m.shown);
 	free(script.ev);
 	return 0;

@@ -41,6 +41,7 @@ void test_raster(void);
 void test_rave(void);
 void test_gpu(void);
 void test_display(void);
+void test_video(void);
 void test_jit(void);
 void test_ohci(void);
 void test_mp(void);

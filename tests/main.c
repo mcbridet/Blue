@@ -28,6 +28,7 @@ int main(int argc, char **argv)
 		{ "rave", test_rave },
 		{ "gpu", test_gpu },
 		{ "display", test_display },
+		{ "video", test_video },
 		{ "jit", test_jit },
 		{ "mp", test_mp },
 		{ "nvram", test_nvram },

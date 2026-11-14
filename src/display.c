@@ -19,11 +19,17 @@
 #define SDL_WINDOW_FULLSCREEN_DESKTOP 0x00001001u
 #define SDL_RENDERER_SOFTWARE 0x00000001u
 #define SDL_RENDERER_TARGETTEXTURE 0x00000008u
-#define SDL_PIXELFORMAT_RGB24 0x17101803u
 #define SDL_PIXELFORMAT_ARGB8888 0x16362004u
+#define SDL_TEXTUREACCESS_STATIC 0
 #define SDL_TEXTUREACCESS_STREAMING 1
 #define SDL_TEXTUREACCESS_TARGET 2
 #define SDL_BLENDMODE_NONE 0
+#define SDL_BLENDMODE_BLEND 1
+#define SDL_BLENDFACTOR_ZERO 1
+#define SDL_BLENDFACTOR_ONE 2
+#define SDL_BLENDFACTOR_ONE_MINUS_SRC_COLOR 4
+#define SDL_BLENDFACTOR_ONE_MINUS_DST_COLOR 8
+#define SDL_BLENDOPERATION_ADD 1
 #define SDL_HINT_OVERRIDE 2
 #define SDL_HINT_RENDER_SCALE_QUALITY "SDL_RENDER_SCALE_QUALITY"   /* read when a texture is made */
 #define SDL_HINT_WAYLAND_SCALE_TO_DISPLAY "SDL_VIDEO_WAYLAND_SCALE_TO_DISPLAY"
@@ -114,6 +120,9 @@ struct sdl {
 	void (*DestroyTexture)(void *);
 	int (*SetTextureBlendMode)(void *, int);
 	int (*UpdateTexture)(void *, const void *, const void *, int);
+	int (*LockTexture)(void *, const SDL_Rect *, void **, int *);
+	void (*UnlockTexture)(void *);
+	int (*ComposeCustomBlendMode)(int, int, int, int, int, int);    /* (2.0.6; NULL before) */
 	int (*SetRenderTarget)(void *, void *);
 	int (*RenderClear)(void *);
 	int (*RenderCopy)(void *, void *, const void *, const void *);
@@ -133,10 +142,22 @@ struct display {
 	struct sdl sdl;
 	void *window, *renderer;
 	void *texture;                  /* the screen, drawn nearest-neighbour */
+	bool locked;                    /* ... some of its rows are being written (display_rows()) */
+	bool screen_stale;              /* ... and it has changed since the window was drawn */
 	void *scaled;                   /* ... at a whole multiple of its size, drawn filtered */
-	bool scaled_stale;              /* ... from an older screen */
+	unsigned scaled_from, scaled_to;        /* ... rows of it from an older screen */
 	unsigned width, height;         /* the screen's size */
 	unsigned scaled_by;             /* the multiple `scaled` holds */
+	/* the pointer (Mac OS's hardware cursor), drawn over the screen */
+	struct display_cursor cursor;
+	uint32_t cursor_pixels[DISPLAY_CURSOR_MAX * DISPLAY_CURSOR_MAX];
+	unsigned long cursor_images;    /* ... counts the images copied to cursor_pixels */
+	bool cursor_stale;              /* ... has changed since the window was drawn */
+	void *cursor_color, *cursor_invert;     /* ... its pixels, and those that invert the screen */
+	unsigned long cursor_image;     /* ... the image they hold (of cursor_images) */
+	unsigned cursor_scale;          /* ... at this multiple of its size (0: none yet) */
+	bool cursor_filtered;
+	int invert_mode;                /* the blend mode that inverts (-1: none) */
 	int max_texture;                /* longest texture side the renderer takes (0: any) */
 	bool prescale;                  /* render targets, on a renderer fast enough for them */
 	bool integer;                   /* whole multiples only */
@@ -219,6 +240,8 @@ static bool load_sdl(struct sdl *s)
 	SYM(DestroyTexture, "SDL_DestroyTexture");
 	SYM(SetTextureBlendMode, "SDL_SetTextureBlendMode");
 	SYM(UpdateTexture, "SDL_UpdateTexture");
+	SYM(LockTexture, "SDL_LockTexture");
+	SYM(UnlockTexture, "SDL_UnlockTexture");
 	SYM(SetRenderTarget, "SDL_SetRenderTarget");
 	SYM(RenderClear, "SDL_RenderClear");
 	SYM(RenderCopy, "SDL_RenderCopy");
@@ -233,6 +256,7 @@ static bool load_sdl(struct sdl *s)
 	SYM(GetWindowSize, "SDL_GetWindowSize");
 	SYM(GetWindowFlags, "SDL_GetWindowFlags");
 #undef SYM
+	*(void **)&s->ComposeCustomBlendMode = dlsym(s->lib, "SDL_ComposeCustomBlendMode");
 	return true;
 }
 
@@ -342,9 +366,11 @@ static bool set_screen_size(struct display *d, unsigned width, unsigned height)
 		d->sdl.DestroyTexture(d->scaled);
 	d->scaled = NULL;
 	d->scaled_by = 0;
-	d->texture = make_texture(d, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, width, height, false);
+	/* (the format renderers take as it is: written straight into, it's uploaded without converting) */
+	d->texture = make_texture(d, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height, false);
 	if (!d->texture)
 		return false;
+	d->sdl.SetTextureBlendMode(d->texture, SDL_BLENDMODE_NONE);
 	d->width = width;
 	d->height = height;
 	return true;
@@ -364,16 +390,31 @@ static void *prescaled(struct display *d, unsigned k)
 			return NULL;
 		}
 		d->sdl.SetTextureBlendMode(d->scaled, SDL_BLENDMODE_NONE);
-		d->scaled_stale = true;
+		d->scaled_from = 0;
+		d->scaled_to = d->height;
 	}
-	if (!d->scaled_stale)
+	if (d->scaled_from >= d->scaled_to)
 		return d->scaled;
 	if (d->sdl.SetRenderTarget(d->renderer, d->scaled) != 0)
 		return NULL;
-	d->sdl.RenderCopy(d->renderer, d->texture, NULL, NULL);
+	SDL_Rect from = { 0, (int)d->scaled_from, (int)d->width, (int)(d->scaled_to - d->scaled_from) };
+	SDL_Rect to = { 0, from.y * (int)k, from.w * (int)k, from.h * (int)k };
+	d->sdl.RenderCopy(d->renderer, d->texture, &from, &to);
 	d->sdl.SetRenderTarget(d->renderer, NULL);
-	d->scaled_stale = false;
+	d->scaled_from = d->scaled_to = 0;
 	return d->scaled;
+}
+
+/* Rows of the screen changed: `scaled` needs them drawn again */
+static void scaled_stale(struct display *d, unsigned from, unsigned to)
+{
+	if (d->scaled_from >= d->scaled_to) {
+		d->scaled_from = from;
+		d->scaled_to = to;
+	} else {
+		d->scaled_from = from < d->scaled_from ? from : d->scaled_from;
+		d->scaled_to = to > d->scaled_to ? to : d->scaled_to;
+	}
 }
 
 /* Where the screen is drawn: in the window above the status bar */
@@ -381,6 +422,77 @@ static struct display_view screen_view(struct display *d, int *ww, int *wh, int 
 {
 	window_size(d, ww, wh, pw, ph);
 	return display_view(d->width, d->height, *pw, *ph - bar_pixels(d, *wh, *ph), d->integer);
+}
+
+/*
+ * The pointer's textures, at k times its size (filtered, when drawn at other
+ * sizes): its pixels, and white where it inverts the screen, for a blend
+ * mode that does (where the renderer has none, those pixels are black).
+ */
+static bool cursor_textures(struct display *d, unsigned k, bool filtered)
+{
+	if (d->cursor_color && d->cursor_image == d->cursor_images && d->cursor_scale == k &&
+	    d->cursor_filtered == filtered)
+		return true;
+	if (d->cursor_color)
+		d->sdl.DestroyTexture(d->cursor_color);
+	if (d->cursor_invert)
+		d->sdl.DestroyTexture(d->cursor_invert);
+	d->cursor_color = d->cursor_invert = NULL;
+	unsigned w = d->cursor.width * k, h = d->cursor.height * k;
+	uint32_t *color = malloc((size_t)w * h * 8), *invert = color + (size_t)w * h;
+	if (!color)
+		return false;
+	bool inverts = false;
+	for (unsigned y = 0; y < h; y++) {
+		for (unsigned x = 0; x < w; x++) {
+			uint32_t px = d->cursor_pixels[y / k * d->cursor.width + x / k];
+			bool inv = px == DISPLAY_CURSOR_INVERT;
+			color[y * w + x] = !inv ? px : d->invert_mode < 0 ? 0xFF000000u : DISPLAY_CURSOR_CLEAR;
+			invert[y * w + x] = inv ? 0xFFFFFFFFu : 0xFF000000u;
+			inverts |= inv;
+		}
+	}
+	d->cursor_color = make_texture(d, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, w, h, filtered);
+	if (d->cursor_color) {
+		d->sdl.UpdateTexture(d->cursor_color, NULL, color, (int)w * 4);
+		d->sdl.SetTextureBlendMode(d->cursor_color, SDL_BLENDMODE_BLEND);
+	}
+	if (d->cursor_color && inverts && d->invert_mode >= 0) {
+		d->cursor_invert = make_texture(d, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, w, h, filtered);
+		if (d->cursor_invert) {
+			d->sdl.UpdateTexture(d->cursor_invert, NULL, invert, (int)w * 4);
+			d->sdl.SetTextureBlendMode(d->cursor_invert, d->invert_mode);
+		}
+	}
+	free(color);
+	d->cursor_image = d->cursor_images;
+	d->cursor_scale = k;
+	d->cursor_filtered = filtered;
+	return d->cursor_color != NULL;
+}
+
+/* The pointer over the screen (drawn at v, from `scaled` at k times its size if `filtered`) */
+static void draw_cursor(struct display *d, const struct display_view *v, unsigned k, bool filtered)
+{
+	const struct display_cursor *c = &d->cursor;
+	if (!c->visible || v->w <= 0 || v->h <= 0)
+		return;
+	/* (the part on the screen, in its pixels) */
+	int x0 = c->x > 0 ? c->x : 0, y0 = c->y > 0 ? c->y : 0;
+	int x1 = c->x + (int)c->width, y1 = c->y + (int)c->height;
+	x1 = x1 < (int)d->width ? x1 : (int)d->width;
+	y1 = y1 < (int)d->height ? y1 : (int)d->height;
+	if (x0 >= x1 || y0 >= y1 || !cursor_textures(d, filtered ? k : 1, filtered))
+		return;
+	int n = (int)d->cursor_scale;
+	SDL_Rect src = { (x0 - c->x) * n, (y0 - c->y) * n, (x1 - x0) * n, (y1 - y0) * n };
+	int dx0 = (int)lround((double)x0 * v->w / d->width), dx1 = (int)lround((double)x1 * v->w / d->width);
+	int dy0 = (int)lround((double)y0 * v->h / d->height), dy1 = (int)lround((double)y1 * v->h / d->height);
+	SDL_Rect dst = { v->x + dx0, v->y + dy0, dx1 - dx0, dy1 - dy0 };
+	if (d->cursor_invert)
+		d->sdl.RenderCopy(d->renderer, d->cursor_invert, &src, &dst);
+	d->sdl.RenderCopy(d->renderer, d->cursor_color, &src, &dst);
 }
 
 static void draw(struct display *d)
@@ -394,6 +506,7 @@ static void draw(struct display *d)
 	SDL_Rect dst = { v.x, v.y, v.w, v.h };
 	d->sdl.RenderClear(d->renderer);
 	d->sdl.RenderCopy(d->renderer, src ? src : d->texture, NULL, &dst);
+	draw_cursor(d, &v, k, src != NULL);
 	if (d->ui && (d->menu || d->status_bar)) {
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -412,7 +525,7 @@ static void draw(struct display *d)
 			d->menu_action = action;
 		d->menu_time = now;
 	}
-	d->bar_stale = false;
+	d->bar_stale = d->screen_stale = d->cursor_stale = false;
 	d->sdl.RenderPresent(d->renderer);
 }
 
@@ -451,6 +564,11 @@ struct display *display_open(const char *title, unsigned width, unsigned height,
 		d->max_texture = info.max_texture_width < info.max_texture_height ? info.max_texture_width
 										  : info.max_texture_height;
 	}
+	d->invert_mode = -1;
+	if (d->sdl.ComposeCustomBlendMode)      /* (the screen made white where the source is, kept where it's black) */
+		d->invert_mode = d->sdl.ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE_MINUS_DST_COLOR,
+			SDL_BLENDFACTOR_ONE_MINUS_SRC_COLOR, SDL_BLENDOPERATION_ADD, SDL_BLENDFACTOR_ZERO,
+			SDL_BLENDFACTOR_ONE, SDL_BLENDOPERATION_ADD);
 	fit_window(d);
 	d->sdl.ShowCursor(0);           /* Mac OS draws its own */
 	d->ui = open_menu(d);
@@ -467,6 +585,10 @@ void display_close(struct display *d)
 	if (!d)
 		return;
 	ui_close(d->ui);
+	if (d->cursor_color)
+		d->sdl.DestroyTexture(d->cursor_color);
+	if (d->cursor_invert)
+		d->sdl.DestroyTexture(d->cursor_invert);
 	if (d->scaled)
 		d->sdl.DestroyTexture(d->scaled);
 	if (d->texture)
@@ -480,11 +602,11 @@ void display_close(struct display *d)
 	free(d);
 }
 
-void display_present(struct display *d, const uint8_t *rgb, unsigned width, unsigned height)
+uint32_t *display_rows(struct display *d, unsigned width, unsigned height, unsigned from, unsigned to, size_t *pitch)
 {
 	if (width != d->width || height != d->height) {
 		if (!set_screen_size(d, width, height))
-			return;
+			return NULL;
 		fit_window(d);
 	} else if (d->integer) {
 		/* the window's natural size depends on the display's scale: known once the window
@@ -493,9 +615,38 @@ void display_present(struct display *d, const uint8_t *rgb, unsigned width, unsi
 		if (fabs(window_size(d, &ww, &wh, &pw, &ph) - d->density) > 0.02)
 			fit_window(d);
 	}
-	d->sdl.UpdateTexture(d->texture, NULL, rgb, (int)width * 3);
-	d->scaled_stale = true;
-	draw(d);
+	SDL_Rect r = { 0, (int)from, (int)width, (int)to - (int)from };
+	void *pixels;
+	int p;
+	if (!d->texture || from >= to || to > height || d->sdl.LockTexture(d->texture, &r, &pixels, &p) != 0)
+		return NULL;
+	d->locked = d->screen_stale = true;
+	scaled_stale(d, from, to);
+	*pitch = (size_t)p;
+	return pixels;
+}
+
+void display_rows_done(struct display *d)
+{
+	if (d->locked)
+		d->sdl.UnlockTexture(d->texture);
+	d->locked = false;
+}
+
+void display_cursor(struct display *d, const struct display_cursor *c)
+{
+	struct display_cursor none = { .visible = false };
+	if (!c || c->width > DISPLAY_CURSOR_MAX || c->height > DISPLAY_CURSOR_MAX)
+		c = &none;
+	if (c->visible != d->cursor.visible ||
+	    (c->visible && (c->x != d->cursor.x || c->y != d->cursor.y || c->image != d->cursor.image)))
+		d->cursor_stale = true;
+	if (c->image != d->cursor.image && c->pixels) {
+		memcpy(d->cursor_pixels, c->pixels, c->width * c->height * sizeof *c->pixels);
+		d->cursor_images++;
+	}
+	d->cursor = *c;
+	d->cursor.pixels = d->cursor_pixels;
 }
 
 bool display_wait(struct display *d, unsigned ms)
@@ -590,7 +741,7 @@ bool display_poll(struct display *d, struct display_event *ev)
 			ev->type = DISPLAY_EVENT_QUIT;
 			return true;
 		case SDL_RENDER_TARGETS_RESET:
-			d->scaled_stale = true;
+			scaled_stale(d, 0, d->height);
 			ev->type = DISPLAY_EVENT_EXPOSE;
 			return true;
 		case SDL_WINDOWEVENT: {
@@ -752,7 +903,7 @@ void display_status(struct display *d, const struct ui_status *s)
 
 void display_update(struct display *d)
 {
-	if (d->bar_stale)
+	if (d->screen_stale || d->bar_stale || d->cursor_stale)
 		draw(d);
 }
 
