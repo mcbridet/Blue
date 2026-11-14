@@ -6,6 +6,10 @@
  * them. A file with an Apple partition map gives one drive per HFS
  * partition (as Apple's own disk drivers do); otherwise the whole file is
  * one drive.
+ *
+ * The floppy drive is one too, with removable media (see
+ * disk_open_removable()): images (floppy.h) go in and come out while the
+ * machine runs, and Mac OS ejects them through the driver.
  */
 #ifndef SYSHM_DISK_H
 #define SYSHM_DISK_H
@@ -14,6 +18,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "floppy.h"
 #include "mem.h"
 #include "ndrv.h"
 
@@ -60,6 +65,20 @@ struct disk {
 	bool boot_gestalt;
 	unsigned unit;
 	struct ndrv_layout layout;
+	/*
+	 * The floppy drive (`removable`): one drive, whose image is in it
+	 * (`media`, host side) or not. The driver's timer tells Mac OS
+	 * (`shown`, in the drive's flags), and posts a disk-inserted event, only
+	 * once applications run, so that a floppy is never the startup disk.
+	 */
+	bool removable;
+	bool media, shown;
+	unsigned media_gen, shown_gen;  /* (an image put in after another before Mac OS saw that one go) */
+	struct floppy_image image;
+	char media_path[1024];
+	bool dirty;                     /* written since last flushed (and a DC42 image's checksums worked out) */
+	uint64_t written_tb;            /* ... last, at this timebase */
+	unsigned long ejects;           /* by Mac OS */
 };
 
 /* Opens the backing file and reads its partition map; returns 0 on success. */
@@ -82,5 +101,29 @@ size_t disk_build_ndrv(struct disk *d, uint8_t *out, size_t size, uint32_t hostc
  * 1), or their resumption after a callout. `timebase_hz` paces the timer.
  */
 void disk_driver_call(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz);
+
+/*
+ * The floppy drive, empty: a drive whose disk comes and goes. Its driver
+ * (disk_build_ndrv()) is for a node named "syshm,floppy", answers as a
+ * floppy drive (icons, format list, DriverGestalt 'devt' 'flop'), and
+ * ejects when Mac OS asks (Put Away, Eject), which empties the drive.
+ */
+void disk_open_removable(struct disk *d, struct mem *mem);
+
+/*
+ * Puts an image in the drive (taking out the one in it, if any): read-only
+ * if the file can't be written. Returns 0, or -1 with the reason in `why`
+ * (the drive is left as it was).
+ */
+int disk_insert(struct disk *d, const char *path, char *why, size_t len);
+
+/* Takes the image out, host side (what was written is flushed); Mac OS learns of it from the driver's timer. */
+void disk_eject(struct disk *d);
+
+/* Writes what's pending: a DC42 image's checksums, and the file to its disk. */
+void disk_flush(struct disk *d);
+
+/* Whether Mac OS has a volume on the drive mounted (in its volume queue), so that only it can eject it */
+bool disk_in_use(const struct disk *d);
 
 #endif

@@ -61,6 +61,7 @@ static int usage(void)
 		"                               move X Y, click X Y, dblclick X Y, down, up,\n"
 		"                               motion DX DY (the mouse moved, as games read it),\n"
 		"                               key HEX [down|up], resize W H, screenshot FILE,\n"
+		"                               floppy insert FILE, floppy eject,\n"
 		"                               tools install|later (the answer to that offer)\n"
 		"      --max <n>                stop after n PowerPC instructions (default 500000000)\n");
 	fprintf(stderr,
@@ -78,6 +79,11 @@ static int usage(void)
 		"                               drives are numbered, and tried for startup, in\n"
 		"                               command-line order\n"
 		"      --cdrom <image>          attach an image read-only\n"
+		"      --floppy <image>         a floppy image for the floppy drive (raw 400K-1440K, or\n"
+		"                               Disk Copy 4.2); the first is in it at startup, the\n"
+		"                               others go in from the window's menu (F12)\n"
+		"      --floppy-drive           a floppy drive, empty at startup (drop images on the\n"
+		"                               window to put them in)\n"
 		"      --tools                  attach the guest tools volume (see tools create)\n"
 		"      --share <folder>         show a host folder to Mac OS as a volume; what Mac OS\n"
 		"                               changes on it is written back when it shuts down\n"
@@ -87,7 +93,8 @@ static int usage(void)
 		"      --log-hostcalls          log driver requests handled natively\n"
 		"  disk create <file> <size> [name]\n"
 		"                               make a disk image holding an empty HFS volume\n"
-		"                               (size in bytes, or with K, M or G)\n"
+		"                               (size in bytes, or with K, M or G; 1M or more, or a\n"
+		"                               floppy's: 400K, 720K, 800K or 1440K)\n"
 		"  tools create <file>          make the guest tools volume: drag its files onto\n"
 		"                               the System Folder (\"syshm Enhancements\" lets\n"
 		"                               the screen follow the window's size)\n"
@@ -379,6 +386,14 @@ static int cmd_boot(int argc, char **argv)
 			}
 			opt.cdrom[opt.disks] = strcmp(argv[k], "--cdrom") == 0;
 			opt.disk[opt.disks++] = argv[++k];
+		} else if (strcmp(argv[k], "--floppy") == 0 && k + 1 < argc) {
+			if (opt.floppies >= NK_MAX_FLOPPIES) {
+				fprintf(stderr, "at most %d floppy images\n", NK_MAX_FLOPPIES);
+				return 2;
+			}
+			opt.floppy[opt.floppies++] = argv[++k];
+		} else if (strcmp(argv[k], "--floppy-drive") == 0) {
+			opt.floppy_drive = true;
 		} else if (strcmp(argv[k], "--tools") == 0 && !tools_path[0]) {
 			if (opt.disks >= NK_MAX_DISKS) {
 				fprintf(stderr, "at most %d disks\n", NK_MAX_DISKS);
@@ -500,11 +515,12 @@ static int cmd_disk(int argc, char **argv)
 	case 'm': case 'M': size <<= 20; end++; break;
 	case 'g': case 'G': size <<= 30; end++; break;
 	}
-	if (*end || size < (1u << 20)) {
-		fprintf(stderr, "disk size must be at least 1M\n");
+	bool floppy = floppy_raw_size(size) && size <= 1440u << 10;
+	if (*end || (size < (1u << 20) && !floppy)) {
+		fprintf(stderr, "disk size must be at least 1M, or a floppy's (400K, 720K, 800K, 1440K)\n");
 		return 2;
 	}
-	return disk_create(argv[1], size, argc > 3 ? argv[3] : "Macintosh HD") ? 1 : 0;
+	return disk_create(argv[1], size, argc > 3 ? argv[3] : floppy ? "Untitled" : "Macintosh HD") ? 1 : 0;
 }
 
 int main(int argc, char **argv)

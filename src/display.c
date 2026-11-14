@@ -41,6 +41,8 @@
 #define SDL_MOUSEWHEEL 0x403u
 #define SDL_MOUSEWHEEL_FLIPPED 1u
 #define SDL_RENDER_TARGETS_RESET 0x2000u /* (render targets lost what was drawn in them) */
+#define SDL_DROPFILE 0x1000u
+#define SDL_DROPTEXT 0x1001u
 #define SDL_SCANCODE_RETURN 40u
 #define SDL_SCANCODE_ESCAPE 41u
 #define SDL_SCANCODE_TAB 43u
@@ -85,6 +87,11 @@ typedef union {
 		int32_t x, y;
 		uint32_t direction;
 	} wheel;
+	struct {
+		uint32_t type, timestamp;
+		char *file;                     /* (SDL's to free) */
+		uint32_t window;
+	} drop;
 	uint8_t padding[56];
 } SDL_Event;
 
@@ -127,6 +134,7 @@ struct sdl {
 	void (*SetWindowSize)(void *, int, int);
 	void (*GetWindowSize)(void *, int *, int *);
 	uint32_t (*GetWindowFlags)(void *);
+	void (*free)(void *);
 };
 
 struct display {
@@ -159,6 +167,9 @@ struct display {
 	bool bar_stale;                 /* ... has changed since it was drawn */
 	bool resize;                    /* a DISPLAY_EVENT_RESIZE to deliver: it came or went, the window kept its size */
 	bool captured;                  /* the pointer is captured (display_capture_mouse()) */
+	bool has_floppy;                /* the menu shows the floppy drive: */
+	struct ui_floppy floppy;
+	char drop[1024];                /* the file last dropped on the window */
 };
 
 /* The status bar's height in the window's units (0: hidden) */
@@ -234,6 +245,7 @@ static bool load_sdl(struct sdl *s)
 	SYM(SetWindowSize, "SDL_SetWindowSize");
 	SYM(GetWindowSize, "SDL_GetWindowSize");
 	SYM(GetWindowFlags, "SDL_GetWindowFlags");
+	SYM(free, "SDL_free");
 #undef SYM
 	return true;
 }
@@ -411,6 +423,7 @@ static void draw(struct display *d)
 			.prompt = d->prompt ? d->prompt_text : NULL,
 			.prompt_yes = d->prompt_yes,
 			.prompt_no = d->prompt_no[0] ? d->prompt_no : NULL,
+			.floppy = d->has_floppy ? &d->floppy : NULL,
 		};
 		enum ui_action action = ui_draw(d->ui, &s, ww, wh, ww > 0 ? (float)pw / (float)ww : 1, now - d->menu_time);
 		if (action != UI_NONE)
@@ -706,6 +719,17 @@ bool display_poll(struct display *d, struct display_event *ev)
 				ui_mouse_wheel(d->ui, flip * (float)e.wheel.x, flip * (float)e.wheel.y);
 			}
 			continue;
+		case SDL_DROPFILE:
+		case SDL_DROPTEXT:
+			if (!e.drop.file)
+				continue;
+			snprintf(d->drop, sizeof d->drop, "%s", e.drop.file);
+			d->sdl.free(e.drop.file);
+			if (e.type == SDL_DROPTEXT)
+				continue;
+			ev->type = DISPLAY_EVENT_DROP_FILE;
+			ev->path = d->drop;
+			return true;
 		default:
 			continue;
 		}
@@ -748,6 +772,13 @@ void display_menu_state(struct display *d, enum ui_mouse mouse, const char *stat
 {
 	d->menu_mouse = mouse;
 	snprintf(d->menu_status, sizeof d->menu_status, "%s", status ? status : "");
+}
+
+void display_floppy_state(struct display *d, const struct ui_floppy *f)
+{
+	d->has_floppy = f != NULL;
+	if (f)
+		d->floppy = *f;
 }
 
 bool display_prompt(struct display *d, const char *text, const char *yes, const char *no)
