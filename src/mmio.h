@@ -1,7 +1,8 @@
 /*
  * Memory-mapped device emulation. Device pages are left unmapped, so guest
  * accesses exit the interpreter with a DSI; the kernel then decodes the
- * faulting load/store and forwards it to the device that owns the address.
+ * faulting load/store and forwards it to the device that owns the address
+ * (or does so from the processor's mmio hook, without the exit: see ppc.h).
  */
 #ifndef SYSHM_MMIO_H
 #define SYSHM_MMIO_H

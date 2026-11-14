@@ -243,9 +243,13 @@ static inline __attribute__((always_inline)) enum ppc_exit interp(struct ppc_cpu
 #define EXIT(e) do { ex = (e); goto stop; } while (0)
 /* after a branch: stop with the branch retired if it went to the hook */
 #define CHECK_HOOK() do { if (npc == hook) { pc = npc; done++; i = 0; EXIT(PPC_EXIT_HOOK); } } while (0)
+#define IN_PLACE 1
+#define UNRETIRED() done--              /* (the loop counts it back) */
 #include "ppc_exec.inc"
 #undef EXIT
 #undef CHECK_HOOK
+#undef IN_PLACE
+#undef UNRETIRED
 	retired:
 		if (block && (OPCD(i) == 16 || OPCD(i) == 18 || (OPCD(i) == 19 && (XO10(i) == 16 || XO10(i) == 528)) ||
 			      !((pc + 4) & (MEM_PAGE_SIZE - 1)))) {
@@ -299,9 +303,13 @@ bool ppc_step(struct ppc_cpu *c, uint32_t i, uint32_t pc)
 	const uint64_t done = 0;
 #define EXIT(e) return false
 #define CHECK_HOOK() do { } while (0)
+#define IN_PLACE 0                      /* (generated code answers those itself) */
+#define UNRETIRED() do { } while (0)
 #include "ppc_exec.inc"
 #undef EXIT
 #undef CHECK_HOOK
+#undef IN_PLACE
+#undef UNRETIRED
 	(void)npc;
 	return true;
 }

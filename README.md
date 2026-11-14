@@ -162,6 +162,14 @@ and the page map's regions), and timers, which fire on the guest timebase.
 `SYSHM_LOG_MP=1` logs them, the switches between tasks, timers firing and
 software interrupts raised.
 
+Mixed Mode asks with every call whether the current task is the blue one
+(`sc` with r0 -1; -2 asks for the task's word too), about a million times
+per billion instructions. Generated code and the interpreter answer those
+themselves, from values the kernel gives them before each run (`sc_*` in
+`src/ppc.h`), unless the kernel would have more to do at that exit (see
+the JIT's kernel calls in place); in a 4-billion-instruction run from the
+CD, 3.3 of 4.5 million `sc` no longer leave generated code.
+
 Tasks besides the blue one run on the same processor, one at a time: each
 has its registers saved while another runs, and the blue task's stay as
 its NanoKernel 1 contexts left them. They're scheduled as NanoKernel 2
@@ -191,12 +199,30 @@ off (it says there's one processor). Then Mac OS makes a process of its
 own and moves the blue task into it.
 
 The CD then starts up to the Finder ("Mac OS 9.1", Starting Up with the
-extensions' icons, then the CD's window), within 2 billion instructions
-(about a second):
+extensions' icons, then the CD's window), within about a billion
+instructions (under a second):
 
 ```
 build/syshm boot --cdrom 91.iso --max 3000000000 --screenshot finder.png
 ```
+
+Startup used to wait 25 s first. 9.1's Start Manager, unlike earlier ones,
+starts up only from the drive Open Firmware booted from until the internal
+disk's wait time (25 s unless set in PRAM) has passed, and only then from
+any drive. It learns which drive that is from StartLib (one of the ROM
+file's libraries), which reads the path Open Firmware leaves in the device
+tree (`/chosen`'s `bootpath`: the device, the partition, and the System
+Folder's ROM file) and asks each disk driver, through DriverGestalt, which
+device-tree node, unit and partition its drives are. syshm's tree had no
+such path. For ROM files with parcels it now names the partition the ROM
+file came from (if it has boot blocks; otherwise, or with `--rom`, the
+first partition with boot blocks, in command-line order), and syshm's disk
+driver answers those questions, its drives being a SCSI target at the
+disk's PCI device number (StartLib knows units only for SCSI, ATA, USB
+and FireWire drives). In real time with fast start the CD is at the
+Finder after 16 s of guest time (1.3 s on the host) instead of 41 (3.8 s);
+what's left is mostly AppleTalk on Ethernet finding no one (5 s, as with
+9.0.4) and the CD's transfers.
 
 The clock and NVRAM work as on an iMac. 9.1 reaches neither through RTAS,
 as 8.5 does: its ROM prepares the libraries in order and stops at the
@@ -326,14 +352,56 @@ lacks: syshm says to install it again from the tools volume.
   an unconditional or computed branch; past a conditional one it goes on
   along the not-taken path, and the taken path leaves through out-of-line
   code. Rarer instructions call the interpreter from inside the block;
-  traps, system calls and host calls go straight to the kernel; anything
-  that faults or touches a device page leaves the block so the interpreter
-  executes it. The time base is read natively.
+  traps, system calls and host calls go straight to the kernel (but for
+  those made in place, below); anything
+  that faults leaves the block so the interpreter executes it (but for
+  device registers, below). The time base is read natively.
   - Exactness: blocks run only when the instruction budget covers them, and
     each instruction checks before it changes anything, so instruction
     counts, device timing and faults are exactly the interpreter's (boots,
     the install and `--fixed-time` runs give identical results either
     way; `tests/test_jit.c` compares random programs).
+  - Kernel calls in place: the 68k emulator's switches to native code and
+    back (kernel calls 1 and 0, RunAlternateContext and
+    ReturnFromException: 7 million in 4 billion instructions of 9.1 from
+    its CD, 2.8 million in 8.5's) and NanoKernel 2's quick `sc` (see Mac
+    OS 9.1) don't leave generated code or the interpreter. For the
+    switches, generated code calls the kernel's function from inside the
+    block (`kcall` in `src/ppc.h`), which makes the call in its common
+    cases (no interrupt pending; verdict 0 or 32-255) with the same code
+    as at an exit, then goes on through the block table. The kernel allows
+    it before each run only while an exit would do nothing more (no
+    devices to update, Multiprocessing Services tick due, task switch,
+    software interrupt or preemption waiting: `in_place()` in
+    `src/nk.c`), and as at an exit the call retires nothing, so runs are
+    the same instruction for instruction. Kernel exits in that 9.1 run
+    went from 11.7 to 1.5 million (8.5: 2.8 to 1.1), host time from 1.50
+    to 1.32 s (8.5: 1.03 to 1.02 s).
+  - Device registers in place: loads and stores to device registers (1.6
+    million in 4 billion instructions of the 8.5 CD boot: the Time Manager
+    programming and reading VIA timer 2, its interrupt flags, and the USB
+    driver polling the frame number; 0.7 million for 8.5 and 8.6
+    installed, nearly all VIA) don't leave generated code or the
+    interpreter either. Both offer a load or store that faults to the
+    kernel's hook (`mmio` in `src/ppc.h`, `device_hook()` in `src/nk.c`),
+    with the instruction count and time base as at the exit; it does what
+    the kernel's loop does at that exit, with the same code (devices
+    brought up to date, the access, interrupts, the next device event,
+    what the engines may do in place), and the run goes on; or it stops
+    right after the access when the loop has more to do (interrupts that
+    changed, a preemption, a Multiprocessing Services tick, a Cuda
+    shutdown or restart: about 2% of accesses). Not on a run's last
+    instruction (see devices below), nor with `clock`. Generated code gets
+    the hook's path, out of line, for instructions whose fastmem access
+    faulted on a page that isn't mapped; it writes all registers back and
+    reloads them afterwards (the hook may change any, CR when it posts an
+    interrupt). In the 8.5 CD boot device-register exits went from 1.64
+    million to 36,000 and host time from 1.00 to 0.96 s (8.5 installed:
+    0.87 to 0.86 s; 8.6: 1.24 to 1.21 s; 9.1's CD, with 17,000, as before)
+    on an M5, where an access cost about 50 ns with its exit and costs
+    about 25 now, nearly all of it the devices' own bookkeeping.
+    `SYSHM_DEVICE_EXITS=1` has every access exit as before, for
+    comparisons.
   - Registers: CR, LR, r1, r3, r4, r24, r27 and r29 (the hottest across the
     68k emulator and native code) live in host registers while generated
     code runs; others are cached within a block and written back at exits
@@ -402,7 +470,8 @@ lacks: syshm says to install it again from the tools volume.
   waits out (AppleTalk on Ethernet looking for other machines, Apple Remote
   Access making sure of its name, USB, DHCP) pass in a tenth of the time;
   meanwhile the guest sees a processor a tenth as fast. Mac OS 9.0.4 is at
-  the Finder in under 3 s instead of 13, the 8.5 CD in about 1.5 s. Most of
+  the Finder in under 3 s instead of 13, the 8.5 CD in about 1.5 s, the 9.1
+  CD in about 1.3 s. Most of
   those waits are busy loops, which don't call `_SynchIdleTime`, so guest
   time runs faster throughout. The Finder counts as up once it has run (the
   Process Manager names the current application in `CurApName`, which stays
@@ -448,7 +517,8 @@ lacks: syshm says to install it again from the tools volume.
   interrupt controller and a Z8530 SCC with nothing attached (LocalTalk sees an
   idle network), and for ROM files with parcels the NVRAM chip behind Mac I/O
   (`src/nvram.c`; see Mac OS 9.1). Device registers are emulated by decoding the faulting
-  load/store (`src/mmio.c`).
+  load/store (`src/mmio.c`), without an exit where it would do nothing more
+  (see the JIT's device registers in place).
 - DBDMA (`src/dbdma.c`): Mac I/O's 16 descriptor-based DMA channels, after
   the CHRP I/O Device Reference (chapter 15): input/output with the MORE and
   LAST forms and streams, STORE_QUAD/LOAD_QUAD (memory, device registers,
@@ -618,6 +688,11 @@ lacks: syshm says to install it again from the tools volume.
   which Apple's emulator makes by design); the interpreter manages about
   200 million. The Mac OS 8.5 install takes under 25 s. On an M5 under
   macOS, the same boot takes 0.8 s with the JIT and 11 s interpreted.
+  Memory copies stay in Mac OS's own code: BlockMove and its relatives
+  (InterfaceLib's, and the 68k emulator's for the `_BlockMove` trap) take
+  0.3-1.2% of guest instructions in the CD boots and a game's startup, and
+  1-2% of host time, mostly in copies too small to be worth a kernel exit
+  (plan.md, Findings).
 
 ## Virtual machine description
 
@@ -642,6 +717,14 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
   (`device_type` and `compatible` `nvram`, `reg` 0x60000 0x20000, `#bytes`
   0x2000, `AAPL,address`), as on Heathrow and Paddington Macs: 8 KB, byte k
   at `+16k`.
+- Where Open Firmware booted from, for ROM files with parcels only:
+  `/chosen`'s `bootpath`, such as `/pci/syshm,disk@2:8,\\:tbxi` (a disk's
+  node is at its PCI device number, the partition is its map entry, none
+  without a map), for the partition the ROM file came from, or else the
+  first partition with boot blocks. The disk
+  driver says, through DriverGestalt, which node ('nmrg'), unit ('intf'
+  'scsi', 'dvrf' with the PCI device number as target ID) and partition
+  ('ofpt') each drive is.
 - ADB/power-manager kind 0 in the universal flags, so the early ROM code uses
   RTAS (tokens in `NKHWInfo`) for clock, NVRAM and power (`NKHWInfo`'s Mac OS
   NVRAM offset, `0x1400`, is where PRAM goes; a ROM file with parcels uses the
@@ -674,13 +757,12 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    interrupt set for the Ethernet node; then the NanoKernel v2 interface,
    which the ROM files from Mac OS ROM 1.7.1 on use, and Mac OS 9.1's needs
    (see Mac OS 9.1).
-4. More JIT speed for disk boots: device register accesses (1.3 million in
-   a boot, mostly the Time Manager programming VIA timer 2) each leave
-   generated code for the interpreter and the kernel's loop, and could be
-   done from inside it (perhaps 3-5%); the interpreter, which runs code
+4. More JIT speed for disk boots: the interpreter, which runs code
    until it's hot at about 10 ns an instruction, mostly in overheads per
    block (about 8%); translating (4%), with the instruction-cache upkeep
-   that follows (4%).
+   that follows (4%); device register accesses, though made in place, still
+   cost about 25 ns each in the devices' bookkeeping (about 4% of the 8.5
+   CD boot).
 
 ## Build and test
 
@@ -739,7 +821,11 @@ exits, never at exits made only for debugging, so tracing and trap logging
 don't change what the guest does. (At exits they are updated only when that
 could change anything: when a VIA timer runs out or a USB frame starts with
 its interrupt enabled, while sound DMA moves, or after something touched
-them.) Tracing and trap logging use the
+them. Kernel calls made in place, without an exit, only happen while an
+exit would do none of that; device register accesses made in place update
+devices as their exits would. An access on the last instruction before a
+sync point still exits, after which the loop goes on to the next sync
+point without servicing that one, as it always has.) Tracing and trap logging use the
 interpreter.
 
 Debugging `boot`: `--trace-from N --trace-reg 24` logs instructions with the

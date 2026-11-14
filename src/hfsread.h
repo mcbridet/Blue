@@ -66,6 +66,7 @@ int hfsread_read(const struct hfsread_volume *v, const struct hfsread_fork *fork
 /* A file found in a drive's System Folder */
 struct hfsread_found {
 	unsigned drive;                 /* which of the images */
+	unsigned part;                  /* ... and which of its partitions (disk.h's order) */
 	char partition[33];             /* its partition's name; "" for an image without a partition map */
 	char path[HFSREAD_PATH_MAX];    /* "Volume:System Folder:Name" */
 	uint8_t *data;                  /* the data fork (malloc'd) */

@@ -536,6 +536,7 @@ struct machine {
 	bool dev_dirty;                 /* devices may have changed since they were last updated */
 	uint64_t dev_next_tb;           /* ... or will by themselves at this timebase (device_next_tb()) */
 	uint64_t mmio_until;            /* device_hook() takes accesses before this instruction count only */
+	bool in_place_on;               /* the main loop's run lets the engines do what they can in place (in_place()) */
 	unsigned long dev_accesses, dev_inline;         /* device register accesses, and those device_hook() did */
 	bool preempt;                   /* end the alternate context for a posted interrupt */
 	bool watch_writable;            /* whether the --watch page is writable (see watch_protect()) */
@@ -547,6 +548,7 @@ struct machine {
 	bool system;                    /* is the System context running? */
 	uint32_t flags;                 /* context flags; exception code in the top byte */
 	uint32_t enables;               /* exception enables of the running context */
+	unsigned long kcalls_in_place[2];       /* kernel calls 0 and 1 the engines made (see kcall_in_place()) */
 	unsigned long exceptions[32];
 	uint8_t kdp[MEM_PAGE_SIZE];     /* kernel's copy of the KernelData page */
 	bool mp_kernel;                 /* the ROM wants Multiprocessing Services from the kernel (see init_info_records()) */
@@ -795,19 +797,37 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	size_t ndrv_size = video_build_ndrv(&m->video, m->display_ndrv, sizeof m->display_ndrv, HOSTCALL_VIDEO_DRIVER);
 
 	size_t disk_ndrv_size[NK_MAX_DISKS] = { 0 };
+	bool parcels = m->rom->format == ROM_FORMAT_PARCELS;
+	bool boot = false;
+	unsigned boot_disk = 0, boot_map_entry = 0;
 	for (unsigned k = 0; k < opt->disks && k < NK_MAX_DISKS; k++) {
 		struct disk *d = &m->disk[k];
 		if (disk_open(d, &m->mem, opt->disk[k], opt->cdrom[k], opt->cdrom[k]))
 			return -1;
 		m->disks = k + 1;
 		d->log = opt->log_hostcalls;
+		d->boot_gestalt = parcels;
+		d->unit = (PCI_DEVFN_DISK + 8 * k) >> 3;
 		disk_ndrv_size[k] = disk_build_ndrv(d, m->disk_ndrv[k], sizeof m->disk_ndrv[k],
 						    HOSTCALL_DISK_DRIVER + k);
-		for (unsigned p = 0; p < d->partitions; p++)
+		for (unsigned p = 0; p < d->partitions; p++) {
 			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, opt->disk[k],
 			       d->read_only ? " (read-only)" : "", (unsigned long long)(d->part[p].size >> 20),
 			       (unsigned long long)d->part[p].offset, d->part[p].name[0] ? ", partition " : "",
 			       d->part[p].name);
+			if (parcels && !boot && disk_bootable(d, p)) {  /* (where Open Firmware would boot from) */
+				boot = true;
+				boot_disk = k;
+				boot_map_entry = d->part[p].map_entry;
+			}
+		}
+	}
+	/* Open Firmware boots from where it found the ROM file */
+	if (parcels && opt->rom_from_disk && opt->rom_disk < m->disks &&
+	    disk_bootable(&m->disk[opt->rom_disk], opt->rom_part)) {
+		boot = true;
+		boot_disk = opt->rom_disk;
+		boot_map_entry = m->disk[opt->rom_disk].part[opt->rom_part].map_entry;
 	}
 
 	static const uint8_t mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };   /* (locally administered) */
@@ -834,7 +854,10 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		.disks = m->disks,
 		.lanlib = m->lanlib,
 		.lanlib_size = lanlib_size,
-		.parcels = m->rom->format == ROM_FORMAT_PARCELS ? &m->rom->parcels : NULL,
+		.parcels = parcels ? &m->rom->parcels : NULL,
+		.boot = boot,
+		.boot_disk = boot_disk,
+		.boot_map_entry = boot_map_entry,
 	};
 	memcpy(hw.mac, mac, 6);
 	for (unsigned k = 0; k < m->disks; k++) {
@@ -1938,10 +1961,14 @@ static const char *device_stop(const struct machine *m)
  * to do the rest (PPC_EXIT_MMIO), as it would after the access at that exit.
  *
  * Not on the last instruction before the loop's next stop (mmio_until): an
- * exit there leaves the device sync point to come for later (the loop
- * counts it past), so that access still makes its exit; nor while the
- * loop sets guest time at every exit (the script's "clock").
+ * exit there has the loop skip the sync point it ends at, so that access
+ * still makes its exit; nor while the loop sets guest time at every exit
+ * (the script's "clock"). What the engines may do in place is worked out
+ * again after the access (as the loop would before its next run), device
+ * time having changed.
  */
+static void in_place(struct machine *m, bool on);
+
 static int device_hook(void *ctx, struct ppc_cpu *cpu)
 {
 	struct machine *m = ctx;
@@ -1960,6 +1987,7 @@ static int device_hook(void *ctx, struct ppc_cpu *cpu)
 	if (changed || m->preempt || device_stop(m) || m->mp.swi || m->mp.yield ||
 	    (m->mp_kernel && mp_due(&m->mp, cpu->tb)))
 		return PPC_MMIO_STOP;
+	in_place(m, m->in_place_on);            /* (as for the run the loop would start next) */
 	return PPC_MMIO_DONE;
 }
 
@@ -2801,6 +2829,60 @@ static const char *kernel_call(struct machine *m, unsigned n)
 }
 
 /*
+ * Kernel calls the engines have made in place (see ppc.h): 0 and 1 in
+ * their common cases, RunAlternateContext with no interrupt pending, and
+ * ReturnFromException resuming (verdict 0) or ending the alternate
+ * context (32-255), which can't fail; anything else exits.
+ */
+static bool kcall_in_place(struct ppc_cpu *cpu, unsigned n)
+{
+	struct machine *m = (struct machine *)((char *)cpu - offsetof(struct machine, cpu));
+	uint32_t r3 = cpu->gpr[3];
+	bool common;
+	if (n == 1)
+		common = !(cpu->gpr[4] & cpu->cr) && mem_ok(&m->mem, r3, CB_SIZE, MEM_RW);
+	else
+		common = n == 0 && (r3 == 0 || (r3 >= 32 && r3 < 256 && !m->system &&
+						 mem_ok(&m->mem, m->system_cb, CB_SIZE, MEM_RW)));
+	if (!common)
+		return false;
+	kernel_call(m, n);
+	cpu->exit_insn = TWI_KCALL | n;         /* (as the exit would leave it) */
+	m->kcalls_in_place[n]++;
+	return true;
+}
+
+/*
+ * What the engines may do in place (see ppc.h) in the main loop's runs
+ * (`on`): what changes nothing else the kernel would do at the exit, so
+ * not once devices are to be updated or Multiprocessing Services' tick is
+ * due, nor with a task switch, a software interrupt or a preemption
+ * waiting, nor with `clock` (each exit sets the time base then). Kernel
+ * calls only while the blue task runs (the others' stop the run).
+ */
+static void in_place(struct machine *m, bool on)
+{
+	struct ppc_cpu *cpu = &m->cpu;
+	const struct mp_object *task = m->mp_kernel ? mp_lookup(&m->mp, m->mp.current, MP_TASK) : NULL;
+	m->in_place_on = on;
+	cpu->sc_until = cpu->kcall_until = 0;
+	if (!on || m->clock_mips || m->dev_dirty || m->mp.swi || m->mp.yield || m->preempt)
+		return;
+	uint64_t until = m->dev_next_tb;
+	if (m->mp_kernel && m->mp.next_tb < until)
+		until = m->mp.next_tb;
+	if (task) {
+		cpu->sc_until = until;
+		cpu->sc_blue = blue_running(m) ? NK2_FLAG_BLUE : 0;
+		cpu->sc_word = task->task.label;
+	}
+	if (blue_running(m)) {
+		cpu->kcall_until = until;
+		cpu->kcall = kcall_in_place;
+	}
+}
+
+/*
  * Builds the machine (m holds only the ROM, the RAM size and the host-side
  * state of a restart) and leaves the 68k emulator about to start at the ROM's
  * entry.
@@ -3055,18 +3137,24 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		}
 		if (opt->watch)
 			watch_protect(&m, opt->watch, true);
+		in_place(&m, !opt->trap_log || trap_log_armed);         /* (trap logging starts at the same exit) */
+		m.mmio_until = m.clock_mips ? 0 : cpu->icount + chunk;         /* (see device_hook()) */
+		if (opt->trap_log && !trap_log_armed && opt->trap_log_from < m.mmio_until)
+			m.mmio_until = opt->trap_log_from;
 		/* (a random one in RUN_SAMPLE timed, for the status bar's speed: see status_lights()) */
 		m.run_sample = m.run_sample * 1664525u + 1013904223u;
 		bool timed = m.display && m.run_sample < UINT32_MAX / RUN_SAMPLE;
 		uint64_t run_from = timed ? host_ns() : 0, insns_from = cpu->icount;
-		m.mmio_until = m.clock_mips ? 0 : cpu->icount + chunk;         /* (see device_hook()) */
-		if (opt->trap_log && !trap_log_armed && opt->trap_log_from < m.mmio_until)
-			m.mmio_until = opt->trap_log_from;
 		enum ppc_exit e = ppc_run(cpu, chunk);
-		m.mmio_until = 0;
 		if (timed) {
 			m.run_ns += host_ns() - run_from;
 			m.run_insns += cpu->icount - insns_from;
+		}
+		in_place(&m, false);
+		m.mmio_until = 0;
+		for (unsigned n = 0; n < 2; n++) {
+			kcalls[n] += m.kcalls_in_place[n];
+			m.kcalls_in_place[n] = 0;
 		}
 		if (opt->watch)
 			watch_protect(&m, opt->watch, false);
@@ -3110,10 +3198,12 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			}
 			break;
 		case PPC_EXIT_SC:
-			if (m.mp_kernel)        /* NanoKernel 2's way to Multiprocessing Services */
+			if (m.mp_kernel) {      /* NanoKernel 2's way to Multiprocessing Services */
+				dev_clean = cpu->gpr[0] >= 0xFFFFFFFEu;         /* (the quick calls touch nothing) */
 				why = system_call(&m);
-			else
+			} else {
 				why = exception(&m, EC_SYSTEM_CALL, cpu->pc + 4);
+			}
 			break;
 		case PPC_EXIT_HOSTCALL:
 			why = host_call(&m, cpu->exit_insn & 0x03FFFFFFu);

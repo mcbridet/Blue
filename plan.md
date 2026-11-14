@@ -72,6 +72,12 @@ Done:
   backed by RTAS's 8 KB and the same `--nvram` file; with it
   NVRAMServicesLib prepares, and so does RTCServicesLib after it, whose
   Cuda RTC driver asks the Cuda for the time. See Findings.
+- **The startup disk** (startup-wait): for ROM files with parcels the
+  device tree has Open Firmware's `/chosen` `bootpath` (the partition the
+  ROM file came from, else the first partition with boot blocks), and the disk driver answers the DriverGestalt
+  selectors by which StartLib finds that drive, so the Start Manager takes
+  it at once instead of after 25 s. See Findings, "The Start Manager's
+  wait".
 
 Where it stops:
 
@@ -80,7 +86,7 @@ build/syshm boot --cdrom 91.iso --max 20000000000
 stopped: instruction limit reached (system context)
 ```
 
-The CD's Finder is up by instruction 2 billion (about 1 s on the host):
+The CD's Finder is up by instruction 1.1 billion (under 1 s on the host):
 "Mac OS 9.1 / Starting Up..." with the extensions' icons, then the desktop
 with the CD's window open (9 items: Before You Install, Installing Mac OS
 9.1.pdf, Mac OS Install, Adobe Software, CD Extras, Utilities...), and it
@@ -92,7 +98,10 @@ zone, as for 8.5), and 9.1 reads NVRAM through its own driver for the
 changed when it shuts down or restarts). Installing 9.1 from the CD
 onto a disk image is left to the user (in a window); scripted, its
 installer got as far as its Important Information page with a new 2 GB
-image as the destination.
+image as the destination. In real time with fast start the Finder is up
+after 16 s of guest time (1.3 s on the host; it was 41 s before the
+startup disk was found at once), against 13.8 s for the 8.5 CD: what's
+left is mostly AppleTalk on Ethernet (5 s) and the CD's transfers.
 
 ## Ground rules for every task
 
@@ -801,3 +810,142 @@ Facts later tasks need, added as they are found.
   68k bus error during Starting Up). `quiet_store()` in `nk.c` now runs
   such a store with the page writable and puts the page back, so the rest
   of the instruction (update forms, other pages) happens as under MemRetry.
+- **The Start Manager's wait** (startup-wait): in real time with fast
+  start the 9.1 CD took 41 s of guest time to the Finder (3.8 s on the
+  host; the 8.5 CD 13.8 s), 25 of them in the Start Manager's
+  FindStartupDevice (68k `0xFFC035EE`), spinning on Ticks 15 at a time
+  (`0xFFC03680`). Until the internal disk's wait time has passed since it
+  began (`_InternalWait` selector 0, PRAM's seconds, 25 when 0;
+  `0xFFC03664`) it accepts only the drive whose number StartLib's
+  GetStartupDevice gives (the test at `0xFFC03A7E`, the call at
+  `0xFFC04190`), then any drive. 8.5's ROM (`0xFFC0295E`) has no such
+  phase. GetStartupDevice walks the drive queue and takes the first drive
+  that matches /chosen's `bootpath` (Open Firmware's: device path,
+  `:partition`, then `,\\:tbxi`, the blessed folder's file of type tbxi):
+  it resolves the device path in the Name Registry from
+  `Devices:device-tree`, by node names and unit addresses (under a `pci`
+  node `@dev[,fn]` is compared with `reg`'s first word; a node of type
+  scsi ends the walk, the rest being the drive's), and asks the drive's
+  driver DriverGestalt 'nmrg' (a pointer to its node's RegEntryID), 'dvrf'
+  and 'intf' (its unit: SCSI's target ID, bits 8-15 of 'dvrf'; ATA's is 0;
+  also USB and FireWire; other interfaces, a PCI card's 'card' among them,
+  fail) and 'ofpt' (qualifier 2 and the map entry counted from 0, to which
+  StartLib adds 1; any other qualifier: any partition). The drive matches
+  when the node is the same, the bootpath's last unit address is the
+  drive's unit, and the partitions agree. The driver needs the
+  DriverGestalt bit in its DCE's flags, which NDRVs have. syshm's tree had
+  no /chosen, so nothing matched until the 25 s were up. Now, for ROM
+  files with parcels, `/chosen` has `bootpath`
+  `/pci/syshm,disk@<PCI device>:<map entry>,\\:tbxi` (no number for a
+  disk without a map) for the partition the ROM file came from if it has
+  boot blocks ('LK'), else the first partition with them, disks in
+  command-line order (`build_tree()` in `bootinfo.c`, chosen in
+  `setup_machine()`), and the disk driver answers 'nmrg' (the RegEntryID
+  from Initialize), 'intf' 'scsi', 'dvrf' target = its PCI device number,
+  and 'ofpt' (`status()` in `disk.c`); earlier ROMs see none of it. A path
+  ending in a unit-only node under the disk's (`/pci/syshm,disk@2/@0:3`,
+  with 'intf' 'ata ') didn't match (the disk nodes have no children). The
+  Finder is then up at instruction 1.05 billion instead of 1.68 (with
+  `--fixed-time`), and in real time after 16 s of guest time (1.3 s). Of
+  what's left (13 s with `clock 400` from the start, reproducibly; 8.5:
+  10.5 s), 5 s are AppleTalk on Ethernet finding no one, as with 9.0.4
+  (Open Transport busy: ten AARP probes 0.2 s apart, then six ZIP
+  GetNetInfo 0.5 s apart, then NBP), and the CD's 18 MB of transfers take
+  4.5 s at 4 MB/s. When the ROM file comes from a startup disk, its
+  partition is the one named (if it has boot blocks).
+- **BlockMove on the host isn't worth it.** InterfaceLib has BlockMove,
+  BlockMoveData, BlockZero and their Uncached forms (`MOS.rom`
+  `0xFFD2CCA0`-`0xFFD2D0EB`; the same code at the same code-section
+  offsets in 8.5's and 8.6's ROM files; 9.1's at `0xFFCFFE74` and
+  `0xFFD272BC`, where the first BlockMove call asks Gestalt `ppcf` for
+  AltiVec and points the TOC's vectors at the G3 or AltiVec versions).
+  BlockMoveData copies backwards when the destination is above the
+  source; the cached forms clear each destination line with `dcbz` first,
+  the Uncached ones don't (BlockZeroUncached stores with `stfd`); BlockMove
+  above 12 bytes then calls FlushEmulatorCacheRange (about 80
+  instructions). The 68k `_BlockMove` (A02E, A22E for -Data) never reaches
+  them: its ROM routine (`0xFFC3DAF0`) is just F-line `$FC12` (flushes)
+  or `$FC14`, which the emulator does natively (emulator `+0xA9AC`,
+  `lswx`/`stswx` up to 20 bytes, a `dcbz` loop from 0x5F). Counted in the
+  interpreter (calls, bytes, instructions until return): the 8.5 CD boot
+  (4 billion) 88,000 calls, 22 MB, 0.34% of instructions (68k 0.17%); the
+  9.1 CD boot (3 billion) 132,000 calls, 39 MB, 0.60%; Unreal Tournament
+  starting from the 8.6 disk (31.5 billion) 11.7 million calls, 1.16%, of
+  which 0.86% is 11.3 million BlockMoveData calls of about 1 byte; a
+  Finder copy of 7 MB 0.1% (large file transfers go to the disk driver on
+  the host). Calls over 256 bytes, the only ones a kernel exit could
+  speed up, are 0.25-0.45%. Sampled host time in their translated blocks
+  is 1.1% of the 9.1 boot (8 runs; single runs 1.0-2.4%), 1.3% of the 8.5
+  boot and 1.9% of UT's startup (four fifths in the 1-byte copies);
+  touching guest RAM in advance doesn't change it. The 68k routine's
+  `lswx`/`stswx`, which the JIT hands to the interpreter, are 99% of the
+  200,000-275,000 string instructions in a boot.
+- **Quick `sc` in the engines:** 4.5 million of a 4-billion-instruction
+  CD run's 12.6 million kernel exits were `sc`, 4 million of them Mixed
+  Mode's r0 -1 (`0xFFCF8DB8`). The kernel's answer (`system_call()`)
+  never counted the `sc` as retired, and an exit for it only services
+  devices and Multiprocessing Services when they're due (or something
+  touched the devices since the last update); `in_place()` gives the
+  engines the answers and a time-base limit (the earlier of the next
+  device event and `mp->next_tb`; 0 when devices are dirty, a switch,
+  software interrupt or preemption waits, with `clock`, or before trap
+  logging starts) for each main-loop run, so the run stays the same
+  instruction for instruction. 0.56 million still exit because the devices
+  were dirty (after each sync point and each real MP call), 0.07 million
+  because the limit had passed. Kernel exits 11.66 → 8.33 million, host
+  time 1.53 → 1.44 s.
+- **Kernel calls 0 and 1 in place:** most of the rest were the 68k
+  emulator's switches to native code and back (3.5 million
+  RunAlternateContext, 5 of them with an interrupt pending, and 3.5
+  million ReturnFromException, all but one with verdict 32-255; 8.5: 1.4
+  and 1.4 million). The engines call the
+  kernel's `kcall_in_place()` for `twi 31,r31,n` while the time base is
+  below the same limit and the blue task runs; it makes the call with
+  `kernel_call()` itself (the same code as at an exit) when it can't fail
+  and there's no interrupt pending (RunAlternateContext's `r4 & cr`), and
+  declines anything else (verdict 1, bad verdicts, unusable context
+  blocks, other calls), which then exits as before. Generated code
+  settles the lazy FPSCR first, and goes on through the block table, but
+  not as a branch (the `_SynchIdleTime` hook doesn't stop there, as it
+  doesn't after an exit). Counts in the end-of-run statistics are as
+  before. 0.28 million still exit (devices dirty, or the limit passed).
+  9.1: kernel exits 8.33 → 1.53 million, host time 1.43 → 1.32 s
+  (main 1.50); 8.5: 2.83 → 1.11 million, 1.03 → 1.02 s.
+- **Device registers in place:** a 4-billion-instruction 8.5 CD run made
+  1.64 million device register accesses, each a DSI exit: 874,000 reads
+  of the USB controller's HcFmNumber (`lwz` at `0xFFE22A4C`, MOS.rom's
+  OHCI driver polling the frame number, from 700 million on), 720,000 of
+  VIA1 (the Time Manager, through the 68k emulator's `lbz(u)x`/`stbx`:
+  T2CL and T2CH read 163,000 and 161,000 times, written 80,000 and
+  160,000, IFR read 117,000, IER 33,000, port B 23,000) and a few
+  thousand of SCC, DBDMA and sound registers; once idle, 18,000 VIA and
+  27,000 USB per 100 million instructions (instruction time makes those
+  rates about 150 times real time's). 8.5 and 8.6 installed: 0.71 and
+  0.77 million, nearly all VIA; 9.1's CD 17,000. On an M5 an access cost
+  about 50 ns with its exit. The engines now offer a faulting load or
+  store to the kernel's `device_hook()` (`cpu->mmio`), which does what
+  the loop does at that exit (devices brought up to date as at any exit,
+  then for the access; the access; interrupts; the next device event)
+  and goes on, unless the loop would do more: interrupts changed (pending,
+  posted or cleared), a preemption, software interrupt or task switch
+  waiting, the MP tick due, a Cuda shutdown or restart. Then the run
+  stops right after the access (`PPC_EXIT_MMIO`, 2% of accesses) and the
+  loop does the rest, without the exit's own device update. Two things
+  had to be exactly as at the exit: an access on a run's last
+  instruction still exits, because after that exit the loop computes its
+  next sync point from the count past it and skips the one there (an
+  old quirk; done in place, the access would leave the sync point to be
+  serviced, though the boots came out the same that way too); and
+  `in_place()` runs again after each access, as before the loop's next
+  run (without it, kernel calls in place ran past the next device event
+  as the access had moved it, and the boot changed). Off with `clock`
+  (each exit sets the time base). Generated code has the hook's path only
+  for instructions whose fastmem fault was on an unmapped page (every
+  checked access with fastmem off): with it for every checked access,
+  code grew 6-10%. The bookkeeping was 30 ns an access; looking the
+  region up and decoding once, no DBDMA poll with nothing to poll, no
+  scan of interrupt levels with nothing pending, and inline line and
+  pending helpers (VIA, USB, Mac I/O) brought it to 23 ns. 8.5 CD:
+  device exits 1.64 million → 36,000, host time 1.00 → 0.96 s; 8.5
+  installed 0.87 → 0.86 s, 8.6 1.24 → 1.21 s, 9.1 CD 1.04 → 1.03 s
+  (medians of 9 alternating runs on a shared machine, ±1-2%).

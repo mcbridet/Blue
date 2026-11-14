@@ -119,10 +119,12 @@ static bool is_rom_file(const char *path)
 /*
  * Loads the Mac OS ROM file from the startup disk, as New World Macs'
  * firmware does: the first drive whose blessed System Folder holds a file of
- * type 'tbxi'. Says where it was in `from`. Returns 0, 1 if no drive has
- * one, or -1 (having said why).
+ * type 'tbxi'. Says where it was in `from`, and which drive and partition in
+ * `drive` and `part` (if not NULL). Returns 0, 1 if no drive has one, or -1
+ * (having said why).
  */
-static int load_startup_rom(const char *const *paths, unsigned count, struct rom *rom, char *from, size_t fromlen)
+static int load_startup_rom(const char *const *paths, unsigned count, struct rom *rom, char *from, size_t fromlen,
+			    unsigned *drive, unsigned *part)
 {
 	struct hfsread_found found;
 	char err[HFSREAD_PATH_MAX + 256], name[HFSREAD_PATH_MAX + 256];
@@ -141,6 +143,10 @@ static int load_startup_rom(const char *const *paths, unsigned count, struct rom
 	}
 	snprintf(from, fromlen, "\"%s\" from %s%s%s%s", found.path, paths[found.drive],
 		 found.partition[0] ? ", partition \"" : "", found.partition, found.partition[0] ? "\"" : "");
+	if (drive)
+		*drive = found.drive;
+	if (part)
+		*part = found.part;
 	return 0;
 }
 
@@ -159,7 +165,7 @@ static int cmd_rom(int argc, char **argv)
 			return 1;
 		}
 	} else {
-		int found = load_startup_rom(&path, 1, &rom, from, sizeof from);
+		int found = load_startup_rom(&path, 1, &rom, from, sizeof from, NULL, NULL);
 		if (found > 0)
 			fprintf(stderr, "%s: not a ROM file, nor a disk image with a Mac OS ROM file in its System Folder\n",
 				path);
@@ -429,7 +435,8 @@ static int cmd_boot(int argc, char **argv)
 		if (found)
 			fprintf(stderr, "%s\n", err);
 	} else {
-		found = load_startup_rom(opt.disk, opt.disks, &rom, from, sizeof from);
+		found = load_startup_rom(opt.disk, opt.disks, &rom, from, sizeof from, &opt.rom_disk, &opt.rom_part);
+		opt.rom_from_disk = !found;
 		if (found > 0 && opt.disks)
 			fprintf(stderr, "no drive has a System Folder with a Mac OS ROM file in it: give one with "
 				"--rom FILE\n");

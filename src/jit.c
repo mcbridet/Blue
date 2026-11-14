@@ -95,6 +95,7 @@ struct jit_state {
 	const void ***l1;
 	uint64_t remaining;
 	bool (*step)(struct ppc_cpu *, uint32_t, uint32_t);
+	bool (*kcall)(struct ppc_cpu *, unsigned);
 	void (*code_store)(struct jit_state *, uint32_t, uint64_t, uint32_t);
 	unsigned (*mmio)(struct ppc_cpu *, uint32_t, uint32_t, uint32_t, uint32_t, uint64_t);
 	uint32_t *link_site;            /* EXIT_LINK: the branch to point at the next block */
@@ -789,7 +790,8 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 		struct cache_state before = t->rc;              /* a fault leaves the registers as they are here */
 		if (!fast) {
 			unsigned bit = size ? FAST_R_BIT : 0;  /* MEM_FAST_R / MEM_R */
-			if (fp != LS_GPR || !io_access(t) || !(io = add_io(t, bit, t->k, t->insn, t->pc, size, false, &before)))
+			if (fp != LS_GPR || !io_access(t) ||
+			    !(io = add_io(t, bit, t->k, t->insn, t->pc, size, false, &before)))
 				exit_if_bit(t, false, 9, bit);
 		}
 		unsigned v = fp ? 2 : wr(t, rd_);
@@ -1591,10 +1593,20 @@ static bool fp_insn(struct tx *t, uint32_t i)
 }
 
 /*
- * Leaves the block for the pc in w0 (after a branch: stop at the hook). The
- * lookup is inline, so that each such exit has its own indirect branch for
- * the host to predict.
+ * Goes on at the pc in w0 through the block table (a branch: the hook's
+ * entry stops there). Inline, so that each such exit has its own indirect
+ * branch for the host to predict.
  */
+static void lookup_jump(struct tx *t)
+{
+	emit(t, a64_bitfield(0, A64_UBFM, 9, 0, MEM_PAGE_SHIFT, 31));
+	emit(t, a64_ldst_uxtw_scaled(3, true, 9, R_TABLE, 9));
+	ubfx(t, 10, 0, 2, MEM_PAGE_SHIFT - 2);
+	emit(t, a64_ldst_uxtw_scaled(3, true, 9, 9, 10));
+	emit(t, a64_br(9));
+}
+
+/* Leaves the block for the pc in w0 (after a branch: stop at the hook) */
 static void finish(struct tx *t, unsigned n, bool after_branch)
 {
 	rc_flush(t);
@@ -1604,11 +1616,7 @@ static void finish(struct tx *t, unsigned n, bool after_branch)
 		branch_to(t, t->j->miss_exit);
 		return;
 	}
-	emit(t, a64_bitfield(0, A64_UBFM, 9, 0, MEM_PAGE_SHIFT, 31));
-	emit(t, a64_ldst_uxtw_scaled(3, true, 9, R_TABLE, 9));
-	ubfx(t, 10, 0, 2, MEM_PAGE_SHIFT - 2);
-	emit(t, a64_ldst_uxtw_scaled(3, true, 9, 9, 10));
-	emit(t, a64_br(9));
+	lookup_jump(t);
 }
 
 /* Leaves the block for `next`: a branch, patched to the block there once it exists */
@@ -1756,12 +1764,11 @@ static int branch(struct tx *t, uint32_t i)
 }
 
 /*
- * rD = the time base (its upper half if `high`), as the interpreter has it:
- * the value when generated code was entered, plus the step for each
- * instruction retired since (those before this block's, then this
- * block's up to here).
+ * x9 = the time base as the interpreter has it: the value when generated
+ * code was entered, plus the step for each instruction retired since
+ * (those before this block's, then this block's up to here). Uses x10, x11.
  */
-static void read_tb(struct tx *t, unsigned rd_, bool high)
+static void time_base(struct tx *t)
 {
 	emit(t, a64_ldst_imm(3, true, 9, R_CPU, OFF(tb)));
 	emit(t, a64_ldst_imm(3, true, 10, R_STATE, (unsigned)offsetof(struct jit_state, entry_budget)));
@@ -1770,6 +1777,12 @@ static void read_tb(struct tx *t, unsigned rd_, bool high)
 		emit(t, a64_addsub_imm(1, 0, 0, 10, 10, t->k));
 	emit(t, a64_ldst_imm(2, true, 11, R_CPU, OFF(tb_step)));
 	emit(t, a64_madd(1, 9, 10, 11, 9));
+}
+
+/* rD = the time base (its upper half if `high`) */
+static void read_tb(struct tx *t, unsigned rd_, bool high)
+{
+	time_base(t);
 	unsigned d = wr(t, rd_);
 	if (high)
 		emit(t, a64_bitfield(1, A64_UBFM, d, 9, 32, 63));
@@ -2137,6 +2150,78 @@ static int kernel_exit(struct tx *t, uint32_t insn, unsigned kind)
 	return EXITED;
 }
 
+/*
+ * sc: NanoKernel 2's quick calls (r0 -1 and -2) are answered here while the
+ * kernel lets them be (see ppc.h), retiring nothing (the budget gets the
+ * instruction back); otherwise the kernel takes it.
+ */
+static int system_call(struct tx *t, uint32_t insn)
+{
+	unsigned r0 = rd(t, 0), xer = rd(t, G_XER);
+	struct cache_state at = t->rc;
+	emit(t, a64_addsub_imm(0, 0, 0, 2, r0, 2));             /* -2, -1: 0, 1 */
+	emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 2, 1));
+	uint32_t *other = fwd(t, a64_bcond(A64_HI, 0));
+	time_base(t);
+	emit(t, a64_ldst_imm(3, true, 10, R_CPU, OFF(sc_until)));
+	emit(t, a64_addsub(1, 1, 1, A64_ZR, 9, 10, A64_LSL, 0));
+	uint32_t *quick = fwd(t, a64_bcond(A64_LO, 0));
+	land(t, other);
+	kernel_exit(t, insn, EXIT_SC);
+	t->rc = at;
+	land(t, quick);
+	ld32(t, 10, OFF(sc_blue));
+	ld32(t, 11, OFF(sc_word));
+	emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 2, 1));
+	emit(t, a64_csel(0, 0, 0, wr(t, 0), 10, 11, A64_EQ));
+	emit(t, a64_movw(0, A64_MOVZ, 5, CR_EQ, 0));
+	emit(t, a64_movw(0, A64_MOVZ, 6, CR_GT, 0));
+	emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 10, 0));
+	emit(t, a64_csel(0, 0, 0, 5, 6, 5, A64_NE));
+	emit(t, a64_logic(0, A64_ORR, 0, 5, 5, xer, A64_LSR, 31));
+	bfi(t, rw(t, G_CR), 5, 28, 4);
+	mov32(t, 9, insn);
+	st32(t, 9, OFF(exit_insn));
+	emit(t, a64_addsub_imm(1, 0, 0, R_BUDGET, R_BUDGET, 1));
+	return EMITTED;
+}
+
+/*
+ * A kernel call (twi 31,r31,n): while the kernel lets it (see ppc.h), its
+ * function makes the call in place, and the block is left for wherever
+ * that leads, retiring nothing; not as a branch (no stop at the hook).
+ * Otherwise, or if the function declines, the kernel takes it.
+ */
+static int kernel_call(struct tx *t, uint32_t insn)
+{
+	rc_flush(t);
+	time_base(t);
+	emit(t, a64_ldst_imm(3, true, 10, R_CPU, OFF(kcall_until)));
+	emit(t, a64_addsub(1, 1, 1, A64_ZR, 9, 10, A64_LSL, 0));
+	uint32_t *late = fwd(t, a64_bcond(A64_HS, 0));
+	fixed_store(t, NFIXED);
+	mov32(t, 0, t->pc);
+	st32(t, 0, OFF(pc));
+	emit(t, a64_logic(1, A64_ORR, 0, 0, A64_ZR, R_CPU, A64_LSL, 0));
+	mov32(t, 1, insn & 0xFFFF);
+	call_c(t, (unsigned)offsetof(struct jit_state, kcall));
+	fixed_load(t, NFIXED);
+	uint32_t *declined = fwd(t, a64_cbz(0, false, 0, 0));
+	rc_reset(t);
+	ld32(t, 0, OFF(pc));
+	if (t->k)
+		emit(t, a64_addsub_imm(1, 1, 0, R_BUDGET, R_BUDGET, t->k));
+	emit(t, a64_ldst_imm(2, true, 9, R_STATE, (unsigned)offsetof(struct jit_state, hook)));
+	emit(t, a64_addsub(0, 1, 1, A64_ZR, 0, 9, A64_LSL, 0));
+	uint32_t *other = fwd(t, a64_bcond(A64_NE, 0));
+	branch_to(t, t->j->miss_exit);
+	land(t, other);
+	lookup_jump(t);
+	land(t, late);
+	land(t, declined);
+	return kernel_exit(t, insn, EXIT_TRAP);
+}
+
 static int insn(struct tx *t, uint32_t i)
 {
 	unsigned op = i >> 26, rd_ = (i >> 21) & 31, ra = (i >> 16) & 31;
@@ -2145,11 +2230,13 @@ static int insn(struct tx *t, uint32_t i)
 
 	switch (op) {
 	case 3:                                 /* twi: unless it always traps, the interpreter tests */
+		if (rd_ == 31 && ra == 31)
+			return kernel_call(t, i);
 		return rd_ == 31 ? kernel_exit(t, i, EXIT_TRAP) : STOPPED;
 	case 6:                                 /* host call */
 		return kernel_exit(t, i, EXIT_HOSTCALL);
 	case 17:                                /* sc */
-		return kernel_exit(t, i, EXIT_SC);
+		return system_call(t, i);
 	case 4:                                 /* AltiVec */
 		return STOPPED;
 	case 7: {                                                       /* mulli */
@@ -2519,6 +2606,13 @@ static bool step(struct ppc_cpu *c, uint32_t insn, uint32_t pc)
 {
 	fp_settle(c->jit, c);
 	return ppc_step(c, insn, pc);
+}
+
+/* The kernel's call in place (see ppc.h), which may read and set the FPSCR */
+static bool kcall(struct ppc_cpu *c, unsigned n)
+{
+	fp_settle(c->jit, c);
+	return c->kcall(c, n);
 }
 
 /* A store by translated code to a page holding translated code; `value` is in guest byte order */
@@ -3141,7 +3235,7 @@ static void build_stubs(struct jit *j)
 	emit(&t, a64_movw(0, A64_MOVZ, 1, EXIT_LINK, 0));
 	branch_to(&t, j->exit);
 
-	/* mmio() for slow_ios(), called with BL (arguments from w1 on set), with every register stored */
+	/* mmio() for slow_ios(), called with BL (its arguments from w1 on set, cached registers written back) */
 	j->mmio_call = t.p;
 	emit(&t, a64_ldst_imm(3, false, 30, R_STATE, (unsigned)offsetof(struct jit_state, mmio_return)));
 	fixed_store(&t, NFIXED);
@@ -3209,6 +3303,7 @@ struct jit *jit_create(struct mem *mem)
 		.pageflags = mem->pageflags,
 		.l1 = j->l1,
 		.step = step,
+		.kcall = kcall,
 		.code_store = code_store,
 		.mmio = mmio,
 		.pages = j->pages,

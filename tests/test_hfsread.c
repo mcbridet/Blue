@@ -517,6 +517,7 @@ static void test_startup_disk(void)
 	CHECK_EQ(hfsread_system_file(paths, 1, TBXI, &found, err, sizeof err), 0);
 	CHECK_EQ(hfsread_system_file(paths, 2, TBXI, &found, err, sizeof err), 1);
 	CHECK_EQ(found.drive, 1);
+	CHECK_EQ(found.part, 1);
 	CHECK(strcmp(found.partition, "Second") == 0);
 	CHECK(strcmp(found.path, "Test Volume:System Folder:Mac OS ROM") == 0);
 	CHECK_EQ(found.size, ROM_BYTES);

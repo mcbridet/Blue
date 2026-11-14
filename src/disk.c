@@ -47,6 +47,8 @@
 #define DATA_EXPIRATION (DRIVE_DATA * DISK_MAX_PARTITIONS)     /* AbsoluteTime */
 #define DATA_TIMER (DATA_EXPIRATION + 8)                        /* TimerID */
 #define DATA_SIZE (DATA_TIMER + 4)
+#define DATA_REG_ENTRY DATA_SIZE                                /* (with boot_gestalt) the node's RegEntryID */
+#define DATA_SIZE_REG_ENTRY (DATA_REG_ENTRY + 16)
 
 enum { IMP_IO_COMPLETE, IMP_POST_EVENT, IMP_SET_TIMER, IMP_COUNT };
 
@@ -66,13 +68,14 @@ static uint32_t os_type(const char *s)
 	return (uint32_t)(uint8_t)s[0] << 24 | (uint32_t)(uint8_t)s[1] << 16 | (uint32_t)(uint8_t)s[2] << 8 | (uint8_t)s[3];
 }
 
-static void add_partition(struct disk *d, uint64_t offset, uint64_t size, const char *name)
+static void add_partition(struct disk *d, uint64_t offset, uint64_t size, const char *name, unsigned map_entry)
 {
 	if (d->partitions >= DISK_MAX_PARTITIONS || offset >= d->size)
 		return;
 	struct disk_partition *p = &d->part[d->partitions++];
 	p->offset = offset;
 	p->size = size < d->size - offset ? size : d->size - offset;
+	p->map_entry = map_entry;
 	snprintf(p->name, sizeof p->name, "%s", name);
 }
 
@@ -100,7 +103,7 @@ static void read_partition_map(struct disk *d)
 		memcpy(type, b + 48, 32);
 		memcpy(name, b + 16, 32);
 		if (strcmp(type, "Apple_HFS") == 0)
-			add_partition(d, (uint64_t)be32(b + 8) * bs, (uint64_t)be32(b + 12) * bs, name);
+			add_partition(d, (uint64_t)be32(b + 8) * bs, (uint64_t)be32(b + 12) * bs, name, k);
 	}
 }
 
@@ -131,8 +134,14 @@ int disk_open(struct disk *d, struct mem *mem, const char *path, bool read_only,
 	d->size = (uint64_t)st.st_size & ~(uint64_t)511;
 	read_partition_map(d);
 	if (!d->partitions)
-		add_partition(d, 0, d->size, "");
+		add_partition(d, 0, d->size, "", 0);
 	return 0;
+}
+
+bool disk_bootable(const struct disk *d, unsigned part)
+{
+	uint8_t sig[2];
+	return part < d->partitions && pread(d->fd, sig, 2, (off_t)d->part[part].offset) == 2 && be16(sig) == 0x4C4B;
 }
 
 void disk_close(struct disk *d)
@@ -171,7 +180,7 @@ size_t disk_build_ndrv(struct disk *d, uint8_t *out, size_t size, uint32_t hostc
 		[IMP_POST_EVENT] = { "InterfaceLib", "PostEvent" },
 		[IMP_SET_TIMER] = { "DriverServicesLib", "SetInterruptTimer" },
 	};
-	static const uint8_t zero[DATA_SIZE];
+	static const uint8_t zero[DATA_SIZE_REG_ENTRY];
 	struct ndrv_spec spec = {
 		.device_name = "syshm,disk",
 		.driver_name = ".syshmDisk",
@@ -183,7 +192,7 @@ size_t disk_build_ndrv(struct disk *d, uint8_t *out, size_t size, uint32_t hostc
 		.imports = imports,
 		.import_count = IMP_COUNT,
 		.extra = zero,
-		.extra_len = sizeof zero,
+		.extra_len = d->boot_gestalt ? DATA_SIZE_REG_ENTRY : DATA_SIZE,
 	};
 	return ndrv_build(&spec, out, size, &d->layout);
 }
@@ -372,6 +381,31 @@ static int32_t status(struct disk *d, uint32_t pb, uint32_t toc)
 			/* kAllowVMNone: no virtual memory backing store on these drives
 			 * (the kernel doesn't page; give the guest more RAM instead) */
 			mem_w32(m, p + 4, 0);
+		} else if (d->boot_gestalt && sel == os_type("nmrg")) {
+			/*
+			 * Mac OS 9.1's StartLib takes a drive for the one Open Firmware
+			 * booted from when /chosen's bootpath leads to the node 'nmrg'
+			 * points to, ends in the drive's unit address, and names the
+			 * partition 'ofpt' gives. It knows units only from 'intf' and
+			 * 'dvrf' for SCSI (the target ID), ATA, USB and FireWire, not a
+			 * PCI card's; so the drives are a SCSI target whose ID is the
+			 * node's PCI device number, the bootpath's last unit address.
+			 */
+			mem_w32(m, p + 4, toc + d->layout.extra + DATA_REG_ENTRY);     /* RegEntryID * */
+		} else if (d->boot_gestalt && sel == os_type("intf")) {
+			mem_w32(m, p + 4, os_type("scsi"));
+		} else if (d->boot_gestalt && sel == os_type("dvrf")) {
+			mem_w32(m, p + 4, d->unit << 8);        /* a DeviceIdent: bus 0, target, LUN 0 */
+		} else if (d->boot_gestalt && sel == os_type("ofpt")) {
+			int k = partition_of(d, pb);
+			if (k < 0)
+				return NO_SUCH_DRIVE_ERR;
+			const struct disk_partition *part = &d->part[k];
+			bool mapped = part->map_entry > 0;
+			mem_w32(m, p + 4, mapped ? 2 : 4);      /* kOFBootSpecifiedPartition, kOFBootNotPartitioned */
+			mem_w32(m, p + 8, mapped ? part->map_entry - 1 : 0);   /* (counted from 0) */
+			mem_w32(m, p + 12, (uint32_t)(part->offset / 512));
+			mem_w32(m, p + 16, (uint32_t)(part->size / 512));
 		} else {
 			return STATUS_ERR;
 		}
@@ -386,7 +420,9 @@ static int32_t driver_io(struct disk *d, uint32_t toc, uint32_t contents, uint32
 {
 	switch (code) {
 	case NDRV_INITIALIZE:
-	case NDRV_REPLACE:
+	case NDRV_REPLACE:      /* DriverInitInfo: refNum, RegEntryID */
+		if (d->boot_gestalt)
+			memcpy(mem_ptr(d->mem, toc + d->layout.extra + DATA_REG_ENTRY), mem_ptr(d->mem, contents + 2), 16);
 		add_drives(d, toc, mem_r16(d->mem, contents));
 		return NO_ERR;
 	case NDRV_FINALIZE:

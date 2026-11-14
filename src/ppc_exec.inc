@@ -5,6 +5,8 @@
  * was updated), hook, and the macros
  *   EXIT(e)       stop with exit reason e; the instruction has changed nothing
  *   CHECK_HOOK()  after a branch has set npc
+ *   IN_PLACE      whether kernel calls may be answered in place (see ppc.h)
+ *   UNRETIRED()   once one is: it completes without counting as retired
  */
 #define RA0(i) (RA(i) ? g[RA(i)] : 0)
 #define DSI(ea, w) do { c->fault_addr = (ea); c->fault_write = (w); EXIT(PPC_EXIT_DSI); } while (0)
@@ -13,8 +15,17 @@
 
 	switch (OPCD(i)) {
 	case 3:                                                         /* twi */
-		if (trap_taken(RD(i), g[RA(i)], SIMM(i)))
+		if (trap_taken(RD(i), g[RA(i)], SIMM(i))) {
+			if (IN_PLACE && (i & 0xFFFF0000u) == 0x0FFF0000u && c->tb + done * c->tb_step < c->kcall_until) {
+				c->pc = pc;
+				if (c->kcall(c, i & 0xFFFF)) {
+					UNRETIRED();
+					npc = c->pc;
+					break;
+				}
+			}
 			EXIT(PPC_EXIT_TRAP);
+		}
 		break;
 	case 6:
 		EXIT(PPC_EXIT_HOSTCALL);
@@ -52,7 +63,14 @@
 		break;
 	}
 	case 17:                                                        /* sc */
-		EXIT(PPC_EXIT_SC);
+		if (!IN_PLACE || (g[0] != 0xFFFFFFFFu && g[0] != 0xFFFFFFFEu) ||
+		    c->tb + done * c->tb_step >= c->sc_until)
+			EXIT(PPC_EXIT_SC);
+		UNRETIRED();
+		set_crf(c, 0, (c->sc_blue ? CR_GT : CR_EQ) | so_bit(c));
+		g[0] = g[0] == 0xFFFFFFFFu ? c->sc_blue : c->sc_word;
+		c->exit_insn = i;                                       /* (as the exit would leave it) */
+		break;
 	case 18: {                                                      /* b */
 		uint32_t li = i & 0x03FFFFFCu;
 		if (li & 0x02000000u)

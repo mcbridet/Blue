@@ -540,6 +540,7 @@ int hfsread_system_file(const char *const *paths, unsigned count, uint32_t type,
 			if (hfsread_path(&v, v.blessed, folder, sizeof folder))
 				snprintf(folder, sizeof folder, "?");
 			found->drive = k;
+			found->part = p;
 			snprintf(found->partition, sizeof found->partition, "%s", d.part[p].name);
 			snprintf(found->path, sizeof found->path, "%s:%s", folder, f.name);
 			int rc = 1;
