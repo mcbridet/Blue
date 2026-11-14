@@ -162,6 +162,14 @@ and the page map's regions), and timers, which fire on the guest timebase.
 `SYSHM_LOG_MP=1` logs them, the switches between tasks, timers firing and
 software interrupts raised.
 
+Mixed Mode asks with every call whether the current task is the blue one
+(`sc` with r0 -1; -2 asks for the task's word too), about a million times
+per billion instructions. Generated code and the interpreter answer those
+themselves, from values the kernel gives them before each run (`sc_*` in
+`src/ppc.h`), unless the kernel would have more to do at that exit (see
+the JIT's kernel calls in place); in a 4-billion-instruction run from the
+CD, 3.3 of 4.5 million `sc` no longer leave generated code.
+
 Tasks besides the blue one run on the same processor, one at a time: each
 has its registers saved while another runs, and the blue task's stay as
 its NanoKernel 1 contexts left them. They're scheduled as NanoKernel 2
@@ -344,7 +352,8 @@ lacks: syshm says to install it again from the tools volume.
   an unconditional or computed branch; past a conditional one it goes on
   along the not-taken path, and the taken path leaves through out-of-line
   code. Rarer instructions call the interpreter from inside the block;
-  traps, system calls and host calls go straight to the kernel; anything
+  traps, system calls and host calls go straight to the kernel (but for
+  those made in place, below); anything
   that faults or touches a device page leaves the block so the interpreter
   executes it. The time base is read natively.
   - Exactness: blocks run only when the instruction budget covers them, and
@@ -352,6 +361,22 @@ lacks: syshm says to install it again from the tools volume.
     counts, device timing and faults are exactly the interpreter's (boots,
     the install and `--fixed-time` runs give identical results either
     way; `tests/test_jit.c` compares random programs).
+  - Kernel calls in place: the 68k emulator's switches to native code and
+    back (kernel calls 1 and 0, RunAlternateContext and
+    ReturnFromException: 7 million in 4 billion instructions of 9.1 from
+    its CD, 2.8 million in 8.5's) and NanoKernel 2's quick `sc` (see Mac
+    OS 9.1) don't leave generated code or the interpreter. For the
+    switches, generated code calls the kernel's function from inside the
+    block (`kcall` in `src/ppc.h`), which makes the call in its common
+    cases (no interrupt pending; verdict 0 or 32-255) with the same code
+    as at an exit, then goes on through the block table. The kernel allows
+    it before each run only while an exit would do nothing more (no
+    devices to update, Multiprocessing Services tick due, task switch,
+    software interrupt or preemption waiting: `in_place()` in
+    `src/nk.c`), and as at an exit the call retires nothing, so runs are
+    the same instruction for instruction. Kernel exits in that 9.1 run
+    went from 11.7 to 1.5 million (8.5: 2.8 to 1.1), host time from 1.50
+    to 1.32 s (8.5: 1.03 to 1.02 s).
   - Registers: CR, LR, r1, r3, r4, r24, r27 and r29 (the hottest across the
     68k emulator and native code) live in host registers while generated
     code runs; others are cached within a block and written back at exits
@@ -771,7 +796,8 @@ exits, never at exits made only for debugging, so tracing and trap logging
 don't change what the guest does. (At exits they are updated only when that
 could change anything: when a VIA timer runs out or a USB frame starts with
 its interrupt enabled, while sound DMA moves, or after something touched
-them.) Tracing and trap logging use the
+them. Kernel calls made in place, without an exit, only happen while an
+exit would do none of that.) Tracing and trap logging use the
 interpreter.
 
 Debugging `boot`: `--trace-from N --trace-reg 24` logs instructions with the

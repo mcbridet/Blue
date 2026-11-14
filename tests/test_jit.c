@@ -17,6 +17,7 @@
 #include "../src/mem.h"
 #include "../src/ppc.h"
 #include "../src/ppc_fp.h"
+#include "ppcasm.h"
 #include "test.h"
 
 #define CODE 0x00010000u
@@ -195,13 +196,47 @@ static uint32_t gen_insn(unsigned k, unsigned n)
 				pick(2);
 		}
 	}
-	switch (pick(5)) {                                              /* kernel-bound and odd ones */
+	switch (pick(6)) {                                              /* kernel-bound and odd ones */
 	case 0:  return 3u << 26 | pick(32) << 21 | rsrc() << 16 | (interesting() & 0xFFFF);  /* twi */
 	case 1:  return x_form(pick(32), rsrc(), rsrc(), 4, 0);                               /* tw */
 	case 2:  return x_form(rdst(), 12, 8, 371, 0);                                        /* mftb */
 	case 3:  return 17u << 26 | 2;                                                        /* sc */
+	case 4:  return 0x0FFF0000u | pick(4);                  /* a kernel call (see fuzz_kcall()) */
 	default: return rnd() << 16 ^ rnd();                                                   /* anything */
 	}
+}
+
+static unsigned fuzz_insns;     /* the program's */
+
+/*
+ * The kernel's calls in place for random programs: odd ones decline;
+ * others move registers about, change the FPSCR, store and load data, and
+ * go on somewhere in the program, as a context switch would (past kernel
+ * calls there, which would retire nothing forever).
+ */
+static bool fuzz_kcall(struct ppc_cpu *c, unsigned n)
+{
+	uint32_t *g = c->gpr;
+	if (n & 1)
+		return false;
+	uint32_t to = CODE + 4 * ((g[5]++ + n) % (fuzz_insns + 1));
+	while ((mem_r32(c->mem, to) & 0xFFFF0000u) == 0x0FFF0000u || mem_r32(c->mem, to) == 0x44000002u)
+		to += 4;
+	mem_w32(c->mem, DATA + 0x100 + 4 * (g[7] & 15), g[3] ^ g[24]);
+	uint32_t t = g[3];
+	g[3] = g[4] + n;
+	g[4] = g[27] ^ c->cr;
+	g[27] = t;
+	g[8] = mem_r32(c->mem, DATA + 0x140);
+	c->cr = c->cr << 4 | c->xer >> 28;
+	c->lr = c->ctr;
+	c->ctr = g[1];
+	c->xer ^= 0x80000000u;
+	c->fpr[1] = c->fpr[2];
+	ppc_fp_set_fpscr(c, c->fpscr ^ (g[5] & 1));
+	c->resv_valid = false;
+	c->pc = to;
+	return true;
 }
 
 struct side {
@@ -230,10 +265,8 @@ static bool same(const struct side *a, const struct side *b, enum ppc_exit ea, e
 		  x->xer == y->xer && x->lr == y->lr && x->ctr == y->ctr && x->fpscr == y->fpscr &&
 		  x->vrsave == y->vrsave && !memcmp(x->gpr, y->gpr, sizeof x->gpr) &&
 		  !memcmp(x->fpr, y->fpr, sizeof x->fpr) && x->resv_valid == y->resv_valid &&
-		  x->hook_match_skip == y->hook_match_skip &&
+		  x->hook_match_skip == y->hook_match_skip && x->exit_insn == y->exit_insn &&
 		  (!x->resv_valid || x->resv_addr == y->resv_addr);
-	if (ok && ea != PPC_EXIT_BUDGET && ea != PPC_EXIT_HOOK)
-		ok = x->exit_insn == y->exit_insn;
 	if (ok && ea == PPC_EXIT_DSI)
 		ok = x->fault_addr == y->fault_addr && x->fault_write == y->fault_write;
 	return ok && !memcmp(mem_ptr(&a->mem, DATA), mem_ptr(&b->mem, DATA), DATA_SIZE) &&
@@ -316,6 +349,9 @@ static void test_random_programs(unsigned programs, bool rom_code)
 		for (unsigned k = 0; k < n; k++)
 			code[k] = gen_insn(k, n);
 		code[n] = 17u << 26 | 2;                                /* sc */
+		for (unsigned k = 1; k < n; k++)                        /* the quick system calls, often */
+			if (code[k] == code[n] && pick(2))
+				code[k - 1] = d_form(14, 0, 0, (uint32_t)-1 - pick(2));       /* li r0, -1 or -2 */
 		for (uint32_t o = 0; o < DATA_SIZE; o++)
 			data[o] = (uint8_t)rnd();
 
@@ -341,6 +377,21 @@ static void test_random_programs(unsigned programs, bool rom_code)
 		init.ctr = pick(2) ? pick(5) : interesting();
 		init.pc = CODE;
 		init.tb = 1000;
+		init.tb_step = pick(8) ? 1 : 0;
+		switch (pick(4)) {                                      /* quick system calls: never, always, until */
+		case 0:  init.sc_until = 0; break;
+		case 1:  init.sc_until = UINT64_MAX; break;
+		default: init.sc_until = init.tb + pick(400); break;
+		}
+		init.sc_blue = pick(2) ? 0x00200000u : 0;
+		init.sc_word = interesting();
+		switch (pick(4)) {                                      /* kernel calls in place: the same */
+		case 0:  init.kcall_until = 0; break;
+		case 1:  init.kcall_until = UINT64_MAX; break;
+		default: init.kcall_until = init.tb + pick(400); break;
+		}
+		init.kcall = fuzz_kcall;
+		fuzz_insns = n;
 		if (pick(4) == 0)
 			init.hook_pc = CODE + 4 * pick(n);
 		if (pick(4) == 0) {                                     /* the match hook: often matching */
@@ -461,10 +512,180 @@ static void test_logic_imm(void)
 	}
 }
 
+/*
+ * NanoKernel 2's quick system calls, by both engines: answered in place,
+ * retiring nothing, while the time base is below sc_until; else (and for
+ * other calls) left to the kernel.
+ */
+static void test_quick_sc(void)
+{
+	const uint32_t prog[] = {
+		LI(0, -1), SC, ORI(5, 0, 0), MFCR(6), LI(0, -2), SC, ORI(7, 0, 0), MFCR(8), LI(0, 5), SC,
+	};
+	const unsigned n = sizeof prog / sizeof prog[0];
+	static struct side s;
+	for (int jit = 0; jit < 2; jit++) {
+		setup(&s, jit);
+		if (jit && !s.cpu.jit) {
+			mem_free(&s.mem);
+			return;
+		}
+		mem_invalidate(&s.mem, CODE, sizeof prog);
+		for (unsigned k = 0; k < n; k++)
+			mem_w32(&s.mem, CODE + 4 * k, prog[k]);
+		/* off; the blue task; another, with XER[SO]; only the first call in time */
+		for (int c = 0; c < 4; c++) {
+			struct jit *j = s.cpu.jit;
+			ppc_init(&s.cpu, &s.mem);
+			s.cpu.jit = j;
+			s.cpu.xer = c == 2 ? XER_SO : 0;
+			s.cpu.sc_until = c == 0 ? 0 : c == 3 ? 1002 : UINT64_MAX;
+			s.cpu.sc_blue = c == 2 ? 0 : 0x00200000u;
+			s.cpu.sc_word = 0xCAFE0001u;
+			for (int run = 0; run < 2; run++) {     /* (again, through what the first run translated) */
+				s.cpu.pc = CODE;
+				s.cpu.icount = 0;
+				s.cpu.tb = 1000;
+				s.cpu.cr = 0x01234567u;
+				s.cpu.gpr[5] = s.cpu.gpr[6] = s.cpu.gpr[7] = s.cpu.gpr[8] = 0;
+				enum ppc_exit e = ppc_run(&s.cpu, 1000);
+				CHECK_EQ(e, PPC_EXIT_SC);
+				if (c == 0) {
+					CHECK_EQ(s.cpu.pc, CODE + 4);
+					CHECK_EQ(s.cpu.icount, 1);
+					CHECK_EQ(s.cpu.gpr[0], 0xFFFFFFFFu);
+					CHECK_EQ(s.cpu.cr, 0x01234567u);
+				} else if (c == 3) {            /* the second call is at time base 1004 */
+					CHECK_EQ(s.cpu.pc, CODE + 4 * 5);
+					CHECK_EQ(s.cpu.icount, 4);
+					CHECK_EQ(s.cpu.tb, 1004);
+					CHECK_EQ(s.cpu.gpr[5], 0x00200000u);
+					CHECK_EQ(s.cpu.gpr[6], 0x41234567u);
+					CHECK_EQ(s.cpu.gpr[0], 0xFFFFFFFEu);
+				} else {
+					uint32_t cr0 = c == 2 ? 0x30000000u : 0x40000000u;
+					CHECK_EQ(s.cpu.pc, CODE + 4 * (n - 1));
+					CHECK_EQ(s.cpu.icount, n - 3);
+					CHECK_EQ(s.cpu.tb, 1000 + n - 3);
+					CHECK_EQ(s.cpu.gpr[5], c == 2 ? 0 : 0x00200000u);
+					CHECK_EQ(s.cpu.gpr[6], cr0 | 0x01234567u);
+					CHECK_EQ(s.cpu.gpr[7], 0xCAFE0001u);
+					CHECK_EQ(s.cpu.gpr[8], cr0 | 0x01234567u);
+					CHECK_EQ(s.cpu.gpr[0], 5);
+				}
+			}
+		}
+		jit_free(s.cpu.jit);
+		mem_free(&s.mem);
+	}
+}
+
+#define NATIVE (CODE + 0x100)
+
+/*
+ * A kernel's context switches for test_kcalls(): 1 runs the native code
+ * (unless r4 & CR), saving the caller's registers; 0 with r3 32 returns to
+ * it, the native r5 in its r3.
+ */
+static struct { uint32_t gpr[32], cr, lr, pc; unsigned made; } kc;
+
+static bool switch_kcall(struct ppc_cpu *c, unsigned n)
+{
+	if (n == 1 && !(c->gpr[4] & c->cr)) {
+		memcpy(kc.gpr, c->gpr, sizeof kc.gpr);
+		kc.cr = c->cr;
+		kc.lr = c->lr;
+		kc.pc = c->pc + 4;
+		for (int r = 0; r < 32; r++)
+			c->gpr[r] = 0x1000u + (uint32_t)r;
+		c->cr = 0;
+		c->pc = NATIVE;
+	} else if (n == 0 && c->gpr[3] == 32) {
+		uint32_t result = c->gpr[5];
+		memcpy(c->gpr, kc.gpr, sizeof kc.gpr);
+		c->gpr[3] = result;
+		c->cr = kc.cr;
+		c->lr = kc.lr;
+		c->pc = kc.pc;
+	} else {
+		return false;
+	}
+	kc.made++;
+	return true;
+}
+
+/* Kernel calls made in place by both engines: there and back; declined; out of time; never */
+static void test_kcalls(void)
+{
+	const uint32_t prog[] = { ORI(0, 0, 0), TWI(31, 31, 1), ORI(6, 3, 0), SC };
+	const uint32_t native[] = { ADDI(5, 5, 1), LI(3, 32), TWI(31, 31, 0) };
+	static struct side s;
+	for (int jit = 0; jit < 2; jit++) {
+		setup(&s, jit);
+		if (jit && !s.cpu.jit) {
+			mem_free(&s.mem);
+			return;
+		}
+		mem_invalidate(&s.mem, CODE, 0x200);
+		for (unsigned k = 0; k < 4; k++)
+			mem_w32(&s.mem, CODE + 4 * k, prog[k]);
+		for (unsigned k = 0; k < 3; k++)
+			mem_w32(&s.mem, NATIVE + 4 * k, native[k]);
+		for (int c = 0; c < 4; c++) {
+			struct jit *j = s.cpu.jit;
+			ppc_init(&s.cpu, &s.mem);
+			s.cpu.jit = j;
+			s.cpu.kcall = switch_kcall;
+			s.cpu.kcall_until = c == 2 ? 1002 : c == 3 ? 0 : UINT64_MAX;
+			for (int run = 0; run < 2; run++) {     /* (again, through what the first run translated) */
+				s.cpu.pc = CODE;
+				s.cpu.icount = 0;
+				s.cpu.tb = 1000;
+				s.cpu.cr = c == 1 ? 0x00800000u : 0x00400000u;
+				s.cpu.gpr[4] = 0x00800000u;
+				s.cpu.gpr[5] = 7;
+				s.cpu.gpr[6] = 0;
+				kc.made = 0;
+				enum ppc_exit e = ppc_run(&s.cpu, 1000);
+				if (c == 0) {                   /* native code ran, and the System code went on */
+					CHECK_EQ(e, PPC_EXIT_SC);
+					CHECK_EQ(s.cpu.pc, CODE + 12);
+					CHECK_EQ(s.cpu.icount, 4);
+					CHECK_EQ(s.cpu.tb, 1004);
+					CHECK_EQ(s.cpu.gpr[6], 0x1006);
+					CHECK_EQ(s.cpu.gpr[5], 7);
+					CHECK_EQ(s.cpu.cr, 0x00400000u);
+					CHECK_EQ(s.cpu.exit_insn, SC);
+					CHECK_EQ(kc.made, 2);
+				} else if (c == 2) {            /* the way back comes too late */
+					CHECK_EQ(e, PPC_EXIT_TRAP);
+					CHECK_EQ(s.cpu.pc, NATIVE + 8);
+					CHECK_EQ(s.cpu.icount, 3);
+					CHECK_EQ(s.cpu.gpr[3], 32);
+					CHECK_EQ(s.cpu.gpr[5], 0x1006);
+					CHECK_EQ(s.cpu.exit_insn, TWI(31, 31, 0));
+					CHECK_EQ(kc.made, 1);
+				} else {                        /* declined (an interrupt pending), or never */
+					CHECK_EQ(e, PPC_EXIT_TRAP);
+					CHECK_EQ(s.cpu.pc, CODE + 4);
+					CHECK_EQ(s.cpu.icount, 1);
+					CHECK_EQ(s.cpu.gpr[5], 7);
+					CHECK_EQ(s.cpu.exit_insn, TWI(31, 31, 1));
+					CHECK_EQ(kc.made, 0);
+				}
+			}
+		}
+		jit_free(s.cpu.jit);
+		mem_free(&s.mem);
+	}
+}
+
 void test_jit(void)
 {
 	const char *n = getenv("SYSHM_JIT_PROGRAMS");
 	unsigned programs = n ? (unsigned)strtoul(n, NULL, 0) : 3000;
+	test_quick_sc();
+	test_kcalls();
 	test_random_programs(programs, false);
 	test_random_programs(programs / 2 + 1, true);
 	setenv("SYSHM_JIT_FAR", "1", 1);        /* again, with the code far from the JIT's stubs */
