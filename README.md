@@ -45,7 +45,7 @@ network, so Internet Explorer loads web pages.
 
 ```
 build/syshm disk create hd.img 2G "Macintosh HD"      # an empty HFS volume
-build/syshm boot MOS.rom --disk hd.img --cdrom 85.iso --window --nvram syshm.nvram
+build/syshm boot --disk hd.img --cdrom 85.iso --window --nvram syshm.nvram
 ```
 
 Run "Mac OS Install" from the CD (about 30 billion instructions, about a
@@ -53,6 +53,22 @@ minute). In its Options, turn off "Update Apple Hard Disk Drivers": Drive
 Setup only knows Apple's own ATA/SCSI drives and quits on ours. Then boot the
 installed system with just `--disk hd.img`. Drives are tried in command-line
 order. In the window, the GUI/Super key is Command and Alt is Option.
+
+As a New World Mac's firmware does, syshm starts the "Mac OS ROM" file from
+the startup disk: the first drive, in command-line order (an image's HFS
+partitions in partition-map order), whose blessed System Folder holds a file
+of type `tbxi`. Above, the new disk is empty, so that's the CD's; once 8.5
+is installed, the disk's own. `src/hfsread.c` reads HFS and HFS+ volumes
+(HFS+ also inside an HFS wrapper), only the blocks it needs. syshm says where
+the file came from:
+
+```
+rom: "Mac OS 9.1:System Folder:Mac OS ROM" from 91.iso, partition "Toast 4.0 PPC Partition" (Mac OS ROM 6.1f9, 2448470 bytes)
+```
+
+`--rom FILE` starts a ROM file (or a raw 4 MB ROM image) of your own
+instead. `syshm rom info` and the other `rom` commands take a disk or CD
+image too, and show the ROM file that would be started from it.
 
 Restart starts the machine over in the same window, from the ROM with
 memory and devices reset as on a real Mac (NVRAM is kept, and so are guest
@@ -119,11 +135,12 @@ then until that time or an interrupt, as for `PowerDispatch`; any other
 
 9.1's System won't start with `MOS.rom` ("This startup disk will not work
 on this Macintosh model"). It needs the ROM file from its own CD (Mac OS ROM
-6.1f9; `MOS91.rom` here is the data fork of "Mac OS ROM" from the CD's
-System Folder), which keeps its contents in parcels (`src/parcels.h`; `rom
-parcels` lists them): the Toolbox image; libraries the ROM prepares and
-registers at startup (MotherBoardHAL, TimeManagerLib, NVRAMServicesLib,
-RTCServicesLib, NativePowerMgrLib, StartLib), which earlier ROMs had inside
+6.1f9, which syshm takes from the CD's System Folder; `MOS91.rom` here is a
+copy of its data fork, for `--rom` and the tools), which keeps its contents
+in parcels (`src/parcels.h`; `rom parcels` lists them): the Toolbox image;
+libraries the ROM prepares and registers at startup (MotherBoardHAL,
+TimeManagerLib, NVRAMServicesLib, RTCServicesLib, NativePowerMgrLib,
+StartLib), which earlier ROMs had inside
 the image; and drivers for machines' devices. syshm loads it and puts the
 libraries, and the drivers that match its devices (Cuda, Grackle, the
 RTC, NVRAM), in the device tree as the Trampoline would. Its ConfigInfo no longer
@@ -177,7 +194,7 @@ extensions' icons, then the CD's window), within 2 billion instructions
 (about a second):
 
 ```
-build/syshm boot MOS91.rom --cdrom 91.iso --max 3000000000 --screenshot finder.png
+build/syshm boot --cdrom 91.iso --max 3000000000 --screenshot finder.png
 ```
 
 The clock and NVRAM work as on an iMac. 9.1 reaches neither through RTAS,
@@ -405,7 +422,11 @@ lacks: syshm says to install it again from the tools volume.
   is that much ahead at first, and right after a minute or two of idling.
   A restart starts guest time over from the host clock. `--no-fast-start`
   turns it off.
-- `syshm boot` builds the user address space from ConfigInfo, does what the
+- `syshm boot` takes the Mac OS ROM file from the startup disk (see above;
+  `src/hfsread.c`: the blessed System Folder is word 0 of the volume's
+  Finder info, its files follow its thread record in the catalog B-tree, and
+  a fragmented file's extents go on in the extents overflow file), or the
+  one `--rom` names. It builds the user address space from ConfigInfo, does what the
   Trampoline would (hardware info record, universal tables, interrupt vector
   tables, device tree), fills in the kernel's info records and starts Apple's
   68k emulator from the ROM.
@@ -679,12 +700,13 @@ pushing a `v*` tag publishes them as a GitHub release.
 
 ```
 build/syshm rom info MOS.rom
+build/syshm rom info 91.iso                      # the Mac OS ROM file in a disk's System Folder
 build/syshm rom config MOS.rom                   # ConfigInfo and user address space
 build/syshm rom parcels MOS91.rom                # a Mac OS 9.1 ROM file's parcels
 build/syshm rom extract MOS.rom build/toolbox.rom
 build/syshm rom trampoline MOS.rom build/trampoline.elf
-build/syshm boot MOS.rom --cdrom 85.iso --window   # interactive
-build/syshm boot MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
+build/syshm boot --rom MOS.rom --cdrom 85.iso --window   # interactive
+build/syshm boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
 build/syshm run-raw code.bin 1000                # SYSHM_TRACE=1 logs every instruction
 ```
 
@@ -779,7 +801,9 @@ screenshots. What they found is in `docs/nk2-reference.md`.
 
 ROMs and OS images are user-supplied and ignored by git: `MOS.rom` (the ROM
 above) and `85.iso` (retail Mac OS 8.5 CD, a bare bootable HFS volume);
-`MOS91.rom` and `91.iso` for Mac OS 9.1 (see above).
+`MOS91.rom` and `91.iso` for Mac OS 9.1 (see above). The ROM files are only
+needed with `--rom` (and for the ROM test and tools): otherwise syshm takes
+the one in the startup disk's System Folder.
 
 ## Layout
 
@@ -793,7 +817,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
           (configuration space), nvram.c (devices), ndrv.c (PEF driver generator),
           video.c, disk.c (native drivers), net.c (Ethernet's lanLib,
-          libslirp), hfs.c (volume formatter),
+          libslirp), hfs.c (volume formatter), hfsread.c (HFS and HFS+
+          reader: the startup disk's ROM file),
           rsrc.c (resource forks), tools.c (guest tools), rave.c + raster.c
           + gpu.c + gl.c (3D engine: software and OpenGL), display.c (SDL2
           window), ui.cpp (its menu, with Dear ImGui), audio.c (SDL2 sound), png.c,

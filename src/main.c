@@ -6,11 +6,14 @@
 #include <unistd.h>
 
 #include "disk.h"
+#include "hfsread.h"
 #include "mem.h"
 #include "nk.h"
 #include "ppc.h"
 #include "rom.h"
 #include "tools.h"
+
+#define TYPE_TBXI 0x74627869u           /* 'tbxi': the Mac OS ROM file's type */
 
 static int usage(void)
 {
@@ -22,7 +25,12 @@ static int usage(void)
 		"  rom parcels <file>           list the parcels of a Mac OS 9.1-or-later ROM file\n"
 		"  rom extract <file> <out>     write the decoded 4 MB Toolbox ROM image\n"
 		"  rom trampoline <file> <out>  write the NewWorld Trampoline (ELF)\n"
-		"  boot <file> [options]        start the ROM's 68k emulator under the native kernel\n"
+		"                               (the file may be a disk or CD image: then the Mac OS\n"
+		"                               ROM file in its System Folder, as boot would use it)\n"
+		"  boot [options]               start Mac OS under the native kernel, from the Mac OS\n"
+		"                               ROM file in the startup disk's System Folder (the first\n"
+		"                               drive with one, as a New World Mac's firmware does)\n"
+		"      --rom <file>             use this Mac OS ROM file or 4 MB ROM image instead\n"
 		"      --ram <MB>               RAM size (default 128)\n"
 		"      --window                 show the screen in a window (keyboard and mouse go to\n"
 		"                               the guest); runs in real time until closed\n"
@@ -50,7 +58,8 @@ static int usage(void)
 		"                               move X Y, click X Y, dblclick X Y, down, up,\n"
 		"                               motion DX DY (the mouse moved, as games read it),\n"
 		"                               key HEX [down|up], resize W H, screenshot FILE\n"
-		"      --max <n>                stop after n PowerPC instructions (default 500000000)\n"
+		"      --max <n>                stop after n PowerPC instructions (default 500000000)\n");
+	fprintf(stderr,
 		"      --io-ram                 back touched I/O pages with plain RAM and keep going\n"
 		"      --trace                  log every instruction to stderr\n"
 		"      --trace-from <n>         start logging after n instructions (implies --trace)\n"
@@ -62,14 +71,14 @@ static int usage(void)
 		"      --traps <n>              log the first n 68k A-line traps\n"
 		"      --traps-after <n>        ... starting after n instructions\n"
 		"      --disk <image>           attach a disk image (writable if the file is);\n"
-		"                               drives are numbered in command-line order\n"
+		"                               drives are numbered, and tried for startup, in\n"
+		"                               command-line order\n"
 		"      --cdrom <image>          attach an image read-only\n"
 		"      --tools                  attach the guest tools volume (see tools create)\n"
 		"      --nvram <file>           keep NVRAM (PRAM, settings) in this file\n"
 		"      --screenshot <file.png>  save the screen when the run ends\n"
 		"      --dump-ram <file>        save guest RAM when the run ends\n"
-		"      --log-hostcalls          log driver requests handled natively\n");
-	fprintf(stderr,
+		"      --log-hostcalls          log driver requests handled natively\n"
 		"  disk create <file> <size> [name]\n"
 		"                               make a disk image holding an empty HFS volume\n"
 		"                               (size in bytes, or with K, M or G)\n"
@@ -93,6 +102,48 @@ static int write_file(const char *path, const void *data, size_t size)
 	return fclose(f) ? 1 : 0;
 }
 
+/* Whether a file is a ROM file (4 MB, or a bootinfo file) rather than a disk image; true if unreadable */
+static bool is_rom_file(const char *path)
+{
+	FILE *f = fopen(path, "rb");
+	char head[11];
+	if (!f)
+		return true;            /* rom_load() says why */
+	bool rom = fread(head, 1, sizeof head, f) == sizeof head && memcmp(head, "<CHRP-BOOT>", sizeof head) == 0;
+	if (!rom && fseek(f, 0, SEEK_END) == 0)
+		rom = ftell(f) == ROM_IMAGE_SIZE;
+	fclose(f);
+	return rom;
+}
+
+/*
+ * Loads the Mac OS ROM file from the startup disk, as New World Macs'
+ * firmware does: the first drive whose blessed System Folder holds a file of
+ * type 'tbxi'. Says where it was in `from`. Returns 0, 1 if no drive has
+ * one, or -1 (having said why).
+ */
+static int load_startup_rom(const char *const *paths, unsigned count, struct rom *rom, char *from, size_t fromlen)
+{
+	struct hfsread_found found;
+	char err[HFSREAD_PATH_MAX + 256], name[HFSREAD_PATH_MAX + 256];
+	int rc = hfsread_system_file(paths, count, TYPE_TBXI, &found, err, sizeof err);
+	if (rc <= 0) {
+		if (rc < 0 && err[0])
+			fprintf(stderr, "%s\n", err);
+		return rc < 0 ? -1 : 1;
+	}
+	snprintf(name, sizeof name, "%s: \"%s\"", paths[found.drive], found.path);
+	rc = rom_load_mem(found.data, found.size, name, rom, err, sizeof err);
+	free(found.data);
+	if (rc) {
+		fprintf(stderr, "%s\n", err);
+		return -1;
+	}
+	snprintf(from, fromlen, "\"%s\" from %s%s%s%s", found.path, paths[found.drive],
+		 found.partition[0] ? ", partition \"" : "", found.partition, found.partition[0] ? "\"" : "");
+	return 0;
+}
+
 static int cmd_rom(int argc, char **argv)
 {
 	if (argc < 2)
@@ -100,20 +151,31 @@ static int cmd_rom(int argc, char **argv)
 
 	const char *sub = argv[0], *path = argv[1];
 	struct rom rom;
-	char err[256];
+	char err[256], from[HFSREAD_PATH_MAX + 256] = "";
 
-	if (rom_load(path, &rom, err, sizeof err)) {
-		fprintf(stderr, "%s\n", err);
-		return 1;
+	if (is_rom_file(path)) {
+		if (rom_load(path, &rom, err, sizeof err)) {
+			fprintf(stderr, "%s\n", err);
+			return 1;
+		}
+	} else {
+		int found = load_startup_rom(&path, 1, &rom, from, sizeof from);
+		if (found > 0)
+			fprintf(stderr, "%s: not a ROM file, nor a disk image with a Mac OS ROM file in its System Folder\n",
+				path);
+		if (found)
+			return 1;
+		if (strcmp(sub, "info") != 0)
+			fprintf(stderr, "rom: %s\n", from);
 	}
 
 	int rc = 0;
 	if (strcmp(sub, "info") == 0) {
-		char nk[40];
+		char nk[40], version[64];
 		uint32_t stored = rom_stored_checksum(&rom), computed = rom_computed_checksum(&rom);
 
 		rom_nanokernel_id(&rom, nk, sizeof nk);
-		printf("file:          %s (%zu bytes)\n", path, rom.file_size);
+		printf("file:          %s (%zu bytes)\n", from[0] ? from : path, rom.file_size);
 		if (rom.format == ROM_FORMAT_BOOTINFO || rom.format == ROM_FORMAT_PARCELS) {
 			printf("format:        NewWorld bootinfo, %s\n",
 			       rom.format == ROM_FORMAT_PARCELS ? "parcels" : "LZSS Toolbox image");
@@ -122,15 +184,10 @@ static int cmd_rom(int argc, char **argv)
 				printf("trampoline:    ELF at 0x%X, %u bytes, entry 0x%08X\n",
 				       rom.elf_offset, rom.elf_size, rom.elf_entry);
 			if (rom.format == ROM_FORMAT_PARCELS) {
-				const struct parcel_blob *v = NULL;
-				for (unsigned k = 0; k < rom.parcels.count && !v; k++)
-					for (unsigned j = 0; j < rom.parcels.list[k].count && !v; j++)
-						if (strcmp(rom.parcels.list[k].blobs[j].name, "MacOSROMFile-version") == 0)
-							v = &rom.parcels.list[k].blobs[j];
 				printf("parcels:       %u at 0x%X, %u bytes (\"rom parcels\" lists them)\n",
 				       rom.parcels.count, rom.lzss_offset, rom.lzss_size);
-				if (v)
-					printf("file version:  %.*s\n", (int)strnlen((const char *)v->data, v->size), v->data);
+				if (rom_file_version(&rom, version, sizeof version))
+					printf("file version:  %s\n", version);
 			} else {
 				printf("toolbox image: %u bytes compressed at 0x%X -> %u bytes\n",
 				       rom.lzss_size, rom.lzss_offset, ROM_IMAGE_SIZE);
@@ -249,9 +306,12 @@ static int cmd_boot(int argc, char **argv)
 		.trace_reg = -1,
 	};
 	bool max_given = false, instruction_time = false;
+	const char *rom_path = NULL;
 	char tools_path[256] = "";
-	for (int k = 1; k < argc; k++) {
-		if (strcmp(argv[k], "--ram") == 0 && k + 1 < argc) {
+	for (int k = 0; k < argc; k++) {
+		if (strcmp(argv[k], "--rom") == 0 && k + 1 < argc) {
+			rom_path = argv[++k];
+		} else if (strcmp(argv[k], "--ram") == 0 && k + 1 < argc) {
 			unsigned long mb = strtoul(argv[++k], NULL, 0);
 			if (mb < 8 || mb > 1024) {
 				fprintf(stderr, "--ram must be between 8 and 1024 MB\n");
@@ -345,6 +405,12 @@ static int cmd_boot(int argc, char **argv)
 		} else if (strcmp(argv[k], "--trace-reg") == 0 && k + 1 < argc) {
 			const char *r = argv[++k];
 			opt.trace_reg = (int)strtol(r[0] == 'r' ? r + 1 : r, NULL, 10) & 31;
+		} else if (argv[k][0] != '-') {
+			fprintf(stderr, "syshm boot: \"%s\": a ROM file goes after --rom (without one, the startup "
+				"disk's is used)\n", argv[k]);
+			if (tools_path[0])
+				unlink(tools_path);
+			return 2;
 		} else {
 			return usage();
 		}
@@ -356,9 +422,28 @@ static int cmd_boot(int argc, char **argv)
 		opt.max_insns = UINT64_MAX;     /* run until the window is closed */
 
 	struct rom rom;
-	char err[256];
-	if (rom_load(argv[0], &rom, err, sizeof err)) {
-		fprintf(stderr, "%s\n", err);
+	char err[256], from[HFSREAD_PATH_MAX + 256], version[64];
+	int found = 0;
+	if (rom_path) {
+		found = rom_load(rom_path, &rom, err, sizeof err);
+		if (found)
+			fprintf(stderr, "%s\n", err);
+	} else {
+		found = load_startup_rom(opt.disk, opt.disks, &rom, from, sizeof from);
+		if (found > 0 && opt.disks)
+			fprintf(stderr, "no drive has a System Folder with a Mac OS ROM file in it: give one with "
+				"--rom FILE\n");
+		else if (found > 0)
+			fprintf(stderr, "no drives to start up from (the ROM file comes from the startup disk's "
+				"System Folder): attach one with --disk or --cdrom, or give a ROM file with --rom FILE\n");
+		if (!found && rom_file_version(&rom, version, sizeof version))
+			printf("rom: %s (Mac OS ROM %s, %zu bytes)\n", from, version, rom.file_size);
+		else if (!found)
+			printf("rom: %s (Toolbox release 0x%04X, %zu bytes)\n", from, rom_release(&rom), rom.file_size);
+	}
+	if (found) {
+		if (tools_path[0])
+			unlink(tools_path);
 		return 1;
 	}
 	int rc = nk_boot(&rom, &opt);

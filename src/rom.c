@@ -37,6 +37,15 @@ static int read_file(const char *path, uint8_t **data, size_t *size, char *err, 
 		return fail(err, errlen, "%s: empty or unreadable", path);
 	}
 
+	/* (a disk image given by mistake isn't read whole) */
+	char head[11];
+	if (len != ROM_IMAGE_SIZE &&
+	    (fread(head, 1, sizeof head, f) != sizeof head || memcmp(head, "<CHRP-BOOT>", sizeof head))) {
+		fclose(f);
+		return fail(err, errlen, "%s: not a 4 MB ROM image or a NewWorld \"Mac OS ROM\" file", path);
+	}
+	rewind(f);
+
 	uint8_t *buf = malloc((size_t)len);
 	if (!buf) {
 		fclose(f);
@@ -184,13 +193,8 @@ static int load_bootinfo(struct rom *rom, const char *path, char *err, size_t er
 	return 0;
 }
 
-int rom_load(const char *path, struct rom *rom, char *err, size_t errlen)
+static int load(struct rom *rom, const char *name, char *err, size_t errlen)
 {
-	memset(rom, 0, sizeof *rom);
-
-	if (read_file(path, &rom->file, &rom->file_size, err, errlen))
-		return -1;
-
 	rom->image = calloc(1, ROM_IMAGE_SIZE);
 	if (!rom->image) {
 		rom_free(rom);
@@ -203,14 +207,50 @@ int rom_load(const char *path, struct rom *rom, char *err, size_t errlen)
 		rom->format = ROM_FORMAT_RAW;
 		rc = 0;
 	} else if (rom->file_size > 11 && memcmp(rom->file, "<CHRP-BOOT>", 11) == 0) {
-		rc = load_bootinfo(rom, path, err, errlen);
+		rc = load_bootinfo(rom, name, err, errlen);
 	} else {
-		rc = fail(err, errlen, "%s: not a 4 MB ROM image or a NewWorld \"Mac OS ROM\" file", path);
+		rc = fail(err, errlen, "%s: not a 4 MB ROM image or a NewWorld \"Mac OS ROM\" file", name);
 	}
 
 	if (rc)
 		rom_free(rom);
 	return rc;
+}
+
+int rom_load(const char *path, struct rom *rom, char *err, size_t errlen)
+{
+	memset(rom, 0, sizeof *rom);
+
+	if (read_file(path, &rom->file, &rom->file_size, err, errlen))
+		return -1;
+	return load(rom, path, err, errlen);
+}
+
+int rom_load_mem(const void *data, size_t size, const char *name, struct rom *rom, char *err, size_t errlen)
+{
+	memset(rom, 0, sizeof *rom);
+
+	rom->file = malloc(size ? size : 1);
+	if (!rom->file)
+		return fail(err, errlen, "out of memory");
+	memcpy(rom->file, data, size);
+	rom->file_size = size;
+	return load(rom, name, err, errlen);
+}
+
+size_t rom_file_version(const struct rom *rom, char *buf, size_t len)
+{
+	const struct parcel_blob *v = NULL;
+	for (unsigned k = 0; k < rom->parcels.count && !v; k++)
+		for (unsigned j = 0; j < rom->parcels.list[k].count && !v; j++)
+			if (strcmp(rom->parcels.list[k].blobs[j].name, "MacOSROMFile-version") == 0)
+				v = &rom->parcels.list[k].blobs[j];
+	size_t n = v ? strnlen((const char *)v->data, v->size) : 0;
+	if (n >= len)
+		n = len - 1;
+	memcpy(buf, v ? (const char *)v->data : "", n);
+	buf[n] = '\0';
+	return n;
 }
 
 void rom_free(struct rom *rom)
