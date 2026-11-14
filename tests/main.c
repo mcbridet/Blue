@@ -36,6 +36,7 @@ int main(int argc, char **argv)
 		{ "jit", test_jit },
 		{ "mp", test_mp },
 		{ "nvram", test_nvram },
+		{ "priv", test_priv },
 	};
 
 	for (size_t s = 0; s < sizeof suites / sizeof suites[0]; s++) {

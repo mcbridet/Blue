@@ -28,6 +28,7 @@
 #include "pci.h"
 #include "perf.h"
 #include "ppc_fp.h"
+#include "priv.h"
 #include "rave.h"
 #include "rtas.h"
 #include "scc.h"
@@ -171,7 +172,7 @@ enum {
 
 #define TWI_KCALL_MASK 0xFFFF0000u
 #define TWI_KCALL 0x0FFF0000u           /* twi 31,r31,N */
-#define USER_MSR 0x0000D032u            /* EE PR ME IR DR RI, as the NanoKernel sets it */
+#define USER_MSR PRIV_USER_MSR          /* EE PR ME IR DR RI, as the NanoKernel sets it */
 
 static uint32_t ci32(const struct rom *rom, uint32_t off)
 {
@@ -572,6 +573,7 @@ struct machine {
 	uint32_t hw_info;               /* ... where HWInfo is in it (see init_info_records()) */
 	bool mp_kernel;                 /* the ROM wants Multiprocessing Services from the kernel (see init_info_records()) */
 	struct mp mp;                   /* ... which are these */
+	struct priv priv;               /* the blue task's MSR, and supervisor mode by the skeleton key (see priv.h) */
 };
 
 /*
@@ -2223,9 +2225,22 @@ static unsigned blue_boost(struct machine *m)
  * blue_boost() for how it gives up being critical.)
  *
  * Returns whether anything changed (what's reported pending, or posted).
+ *
+ * While the blue task's MSR has EE off (the skeleton key: see priv.h),
+ * nothing is taken, as the NanoKernel's interrupt handler wouldn't run:
+ * the sources stay pending and PendingInts as it was, and posting,
+ * preemption, software interrupts, Multiprocessing Services' tick and
+ * task switches wait (blue_interruptible()).
  */
+static bool blue_interruptible(const struct machine *m)
+{
+	return m->priv.msr & MSR_EE;
+}
+
 static bool update_interrupts(struct machine *m, bool force)
 {
+	if (!blue_interruptible(m))
+		return false;
 	macio_set_line(&m->macio, IRQ_VIA1, via_irq(&m->via));
 	macio_set_line(&m->macio, IRQ_USB, ohci_irq(&m->ohci));
 	if (force)
@@ -2305,9 +2320,9 @@ static const char *device_stop(const struct machine *m)
  * preemption, a stop), the run stops right after the access for the loop
  * to do the rest (PPC_EXIT_MMIO), as it would after the access at that exit.
  *
- * Not on the last instruction before the loop's next stop (mmio_until): an
- * exit there has the loop skip the sync point it ends at, so that access
- * still makes its exit; nor while the loop sets guest time at every exit
+ * Not on the last instruction before the loop's next stop (mmio_until):
+ * that access exits, as it always has (the loop then services the sync
+ * point it ends at); nor while the loop sets guest time at every exit
  * (the script's "clock"). What the engines may do in place is worked out
  * again after the access (as the loop would before its next run), device
  * time having changed.
@@ -2572,6 +2587,49 @@ static bool quiet_store(struct machine *m)
 static bool is_mfmsr(uint32_t insn)
 {
 	return (insn & 0xFC0007FEu) == 0x7C0000A6u;
+}
+
+/*
+ * A privileged instruction: the blue task's mfmsr, and in supervisor mode
+ * what the 750 has, are priv.c's; other tasks' mfmsr reads the user MSR.
+ * Else an exception: a privileged instruction in user mode, an illegal one
+ * in supervisor mode.
+ */
+static const char *privileged(struct machine *m)
+{
+	struct ppc_cpu *cpu = &m->cpu;
+	bool blue = blue_running(m);
+	if (blue && priv_insn(&m->priv, cpu))
+		return NULL;
+	if (!blue && is_mfmsr(cpu->exit_insn)) {
+		cpu->gpr[(cpu->exit_insn >> 21) & 31] = USER_MSR;
+		cpu->pc += 4;
+		return NULL;
+	}
+	return exception(m, blue && priv_supervisor(&m->priv) ? EC_INVALID_INSTR : EC_PRIVILEGED_INSTR, cpu->pc);
+}
+
+/*
+ * The registers the kernel gives Mac OS (see priv.h): the BATs of
+ * ConfigInfo's user BAT map (ConfigInfo-relative ones in the ROM's physical
+ * copy; instruction BATs without G), its user segment registers, and SDR1
+ * for SystemInfo's 1 MB hash table at the top of RAM.
+ */
+static void init_priv(struct machine *m)
+{
+	const struct nk_config *ci = &m->ci;
+	uint32_t bat[16] = { 0 }, sr[16];
+	for (int k = 0; k < 8 && ci->batmap_usr; k++) {
+		unsigned idx = (ci->batmap_usr >> (28 - 4 * k)) & 0xF;
+		uint32_t l = ci->bat_range[idx][1];
+		if (l & PATTR_PTE_REL)
+			l = (l & ~PATTR_PTE_REL) + ROM_PHYS_BASE + NK_CONFIGINFO_OFFSET;
+		bat[2 * k] = ci->bat_range[idx][0];
+		bat[2 * k + 1] = k < 4 ? l & ~0x8u : l;
+	}
+	for (int s = 0; s < 16; s++)
+		sr[s] = ci->segmap_usr[s][1];
+	priv_init(&m->priv, CPU_PVR, (m->ram_size - 0x00100000u) | 0x000Fu, bat, sr);
 }
 
 /*
@@ -3003,7 +3061,7 @@ static void switch_task(struct machine *m, uint32_t to)
  */
 static void blue_naps(struct machine *m, uint64_t until)
 {
-	if (m->mp_kernel && blue_running(m) && !m->ipl && mp_nap(&m->mp, until) != MP_NAP_IDLE)
+	if (m->mp_kernel && blue_running(m) && !m->ipl && blue_interruptible(m) && mp_nap(&m->mp, until) != MP_NAP_IDLE)
 		return;
 	idle_wait(m, until);
 }
@@ -3215,7 +3273,10 @@ static const char *kernel_call(struct machine *m, unsigned n)
 	}
 
 	switch (n) {
-	case 2:     /* ResetSystem (68k RESET): the kernel re-initializes itself and resumes */
+	case 2:     /* ResetSystem (68k RESET): the kernel re-initializes itself and resumes (with the skeleton key, see priv.h) */
+		if (priv_skeleton_key(&m->priv, cpu->gpr) && m->priv.keys <= 4)
+			printf("kernel: skeleton key inserted at pc 0x%08X: MSR 0x%08X @%llu\n", cpu->pc, m->priv.msr,
+			       (unsigned long long)cpu->icount);
 		break;
 	case 4:     /* PrioritizeInterrupts: re-evaluate pending interrupts */
 		update_device_time(m);
@@ -3332,6 +3393,7 @@ static int start_machine(struct machine *m, const struct nk_boot_options *opt)
 	}
 	if (setup_machine(m, opt))
 		return -1;
+	init_priv(m);
 	{
 		uint32_t irp = m->ci.la_info_record & ~(MEM_PAGE_SIZE - 1);     /* see kdp_pull() */
 		mem_map(&m->mem, irp, MEM_PAGE_SIZE, m->mem.pageflags[irp >> MEM_PAGE_SHIFT] & ~MEM_W);
@@ -3528,7 +3590,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	 * don't change what the guest does.
 	 */
 	while (!why) {
-		if (m.preempt && blue_running(&m)) {
+		if (m.preempt && blue_running(&m) && blue_interruptible(&m)) {
 			m.preempt = false;
 			if (!m.system && (why = raise_exception(&m, EC_NO_EXCEPTION, cpu->pc)))
 				break;
@@ -3713,12 +3775,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			why = exception(&m, EC_INST_INVALID_ADDRESS, cpu->pc);
 			break;
 		case PPC_EXIT_PRIV:
-			if (is_mfmsr(cpu->exit_insn)) {
-				cpu->gpr[(cpu->exit_insn >> 21) & 31] = USER_MSR;
-				cpu->pc += 4;
-				break;
-			}
-			why = exception(&m, EC_PRIVILEGED_INSTR, cpu->pc);
+			why = privileged(&m);
 			break;
 		case PPC_EXIT_DSI:
 			if (info_write) {
@@ -3773,6 +3830,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 				device_access(&m, &a);
 				dev_clean = true;
 				why = device_stop(&m);
+				if (!sync && cpu->icount >= next_sync)  /* the access ended the chunk */
+					sync = true;
 				break;
 			}
 			if (opt->io_as_ram && cpu->fault_addr >= 0x80000000u &&
@@ -3792,11 +3851,11 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			why = ppc_exit_name(e);
 			break;
 		}
-		if (m.mp_kernel && !why && !debug_exit && mp_due(&m.mp, cpu->tb))
+		if (m.mp_kernel && !why && !debug_exit && blue_interruptible(&m) && mp_due(&m.mp, cpu->tb))
 			mp_tick(&m.mp, cpu->tb, mp_fires(&m.mp, cpu->tb) ? blue_boost(&m) : MP_AS_IS);
-		if (m.mp.swi)
+		if (m.mp.swi && blue_interruptible(&m))
 			post_software_interrupt(&m);
-		if (m.mp.yield && !why)         /* (Multiprocessing Services: the task to run may change) */
+		if (m.mp.yield && !why && blue_interruptible(&m))       /* (Multiprocessing Services: the task to run may change) */
 			switch_task(&m, mp_next(&m.mp, blue_boost(&m)));
 		if (!dev_clean)
 			m.dev_dirty = true;
@@ -3825,6 +3884,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	printf("\n");
 	if (be32(m.kdp + KDP_NK_INFO + NKI_QUIET_WRITES))
 		printf("quiet writes: %u (stores to the ROM, dropped)\n", be32(m.kdp + KDP_NK_INFO + NKI_QUIET_WRITES));
+	if (m.priv.keys)
+		printf("skeleton key: used %u times, MSR now 0x%08X\n", m.priv.keys, m.priv.msr);
 	printf("kernel calls:");
 	for (unsigned n = 0; n < 16; n++)
 		if (kcalls[n])

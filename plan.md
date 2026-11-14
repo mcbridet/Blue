@@ -1057,10 +1057,11 @@ Facts later tasks need, added as they are found.
   stops right after the access (`PPC_EXIT_MMIO`, 2% of accesses) and the
   loop does the rest, without the exit's own device update. Two things
   had to be exactly as at the exit: an access on a run's last
-  instruction still exits, because after that exit the loop computes its
-  next sync point from the count past it and skips the one there (an
-  old quirk; done in place, the access would leave the sync point to be
-  serviced, though the boots came out the same that way too); and
+  instruction still exits, because after that exit the loop computed its
+  next sync point from the count past it and skipped the one there (an
+  old quirk, since fixed: see "MacBench's freeze"; done in place, the
+  access would leave the sync point to be serviced, though the boots came
+  out the same that way too); and
   `in_place()` runs again after each access, as before the loop's next
   run (without it, kernel calls in place ran past the next device event
   as the access had moved it, and the boot changed). Off with `clock`
@@ -1391,3 +1392,72 @@ Facts later tasks need, added as they are found.
   2001, summer time in the northern hemisphere but not where this host is
   (Australia). The CD's Date & Time sets daylight-saving time itself; the
   restored system shows the host's local time like the others.
+- **Gary Davidian's skeleton key** (`src/priv.c`, `priv.h`; ZD MacBench
+  5.0): ResetSystem (kernel call 2, the 68k RESET) with r3 'Gary' and r4
+  0x05051956 doesn't reset: both NanoKernels (1: `KCallResetSystem` in
+  `SoftInts.s`; 2: `kcResetSystem` in `NKInterrupts.s`, which logs
+  "Skeleton key inserted at") return to the caller (LR from the
+  emulator's trap table, else the next instruction) with SRR1 = (MSR &
+  ~r5) | r7, r7 the caller's. MacBench uses it once, right after its
+  registration, from code it puts in RAM and runs in the System context:
+  r5 0xC010 (EE PR DR off), r7 0; then `mtmsr` DR on, a subroutine that
+  stores L2CR and HID0 at 0xA78 and 0xA7C, `mtmsr` DR off, `mtmsr` with
+  0xC010 ORed back in, and back into the emulator (r30 | 0x6084). syshm's
+  processor still runs it in user mode: the kernel keeps the blue task's
+  MSR (`m->priv`; 0xD032 otherwise, and always for other tasks) and,
+  while it has PR clear, does the privileged instructions that exit to it
+  (`privileged()` in `nk.c`, `priv_insn()`): mfmsr, mtmsr (POW never
+  kept: no nap), rfi (MSR = SRR1, pc = SRR0), mfspr/mtspr of the 750's
+  supervisor SPRs, mfsr, mtsr, mfsrin, mtsrin, and tlbie, tlbsync and
+  dcbi, which do nothing; tlbia (the 750 has none) and SPRs it hasn't are
+  an illegal instruction exception, as on the 750 (in user mode,
+  privileged instruction, as before). In user mode only mfmsr is done.
+  The values: PVR 0x00080301 (ProcessorInfo's); HID0 0x8010C0A4 (EMCP DPM
+  ICE DCE SGE BTIC BHT); HID1 0xA0000000 (PLL_CFG 1010, 4x: table 17 of
+  the MPC750 hardware specifications; read-only, as are PVR and the time
+  base's write SPRs, 284/285, whose writes do nothing); L2CR 0xA9000000
+  (L2E, 512 KB, the core clock / 2, pipelined burst SRAM; L2IP reads 0, so
+  a global invalidate is over at once); ICTC 0; THRM1 and THRM2 compare
+  with 40 °C while THRM3 has E and they have V (TIV at once; TIN when
+  above the threshold, bits 2-8, or below it with TID), as Linux's
+  tau_6xx.c and successive approximation read it; DEC counts down with
+  the time base from what was last written (0 at startup); SDR1 (RAM
+  size - 1 MB) | 0xF (SystemInfo's 1 MB hash table at the top of RAM;
+  NanoKernel 1 sizes it for 2 PTEs a page); the BATs as SetSpace loads
+  them from ConfigInfo's user BAT map (ConfigInfo-relative lower words +
+  ConfigInfo's physical address, `ROM_PHYS_BASE` + 0x30D000, as `Reset.s`
+  makes them; no G in instruction BATs; all 0 for ROM files without a
+  map, from 9.1 on), the segment registers its user segment map's; SPRG0-3,
+  SRR0/1, DAR, DSISR, EAR, IABR, DABR and the performance monitor's
+  (952-958) start at 0 and keep what's written (the counters don't count).
+  Real mode (IR or DR off) uses the same address space: RAM is at its
+  physical address there, and so is I/O; elsewhere it's Mac OS's map (the
+  ROM's physical copy at 0x00C00000 isn't there: that's RAM here).
+  Exceptions keep the MSR, as NanoKernel 1 keeps SRR1 through its
+  exception and context-switch paths. With EE off nothing interrupts:
+  `update_interrupts()` returns at once (sources stay pending, PendingInts
+  as it was), and preemption, software interrupts, Multiprocessing
+  Services' tick and task switches wait (`blue_interruptible()`; the blue
+  task never blocks in a nap then), so supervisor code only ever runs as
+  the blue task. MacBench's window has 13 instructions with EE off. Not
+  done: the CPU plugin's routines (`cpu_plugin_run()`, 9.1's
+  MPCpuPlugin) still have only mfmsr; they could use `priv_insn()` with a
+  supervisor MSR.
+- **MacBench's freeze** (real time only): after its registration MacBench
+  times something by reading VIA1's T1C-L in a 4-instruction loop (`lbz
+  r30,0(r31)`, r31 0x81096800, in its heap). In real time the time base
+  only moves at sync points and some exits (the processor's step is 0),
+  and a device register access on a run's last instruction exits and is
+  done by the loop, which then computed its next sync point from the
+  count past it, skipping the one the access ended at. SYNC_INSNS is a
+  multiple of 4, so once the read fell on a sync point it fell on every
+  one: no sync point was ever serviced again, so the time base, the
+  timer and the loop stood still, and so did the window, input and
+  `--seconds` (100% of a host core in `device_hook()`). The loop now
+  services the sync point an access ends (as for quiet and info-record
+  stores). Instruction-time runs are unchanged but for the JIT's count of
+  kernel exits (the 8.5 CD's 4-billion check: 1,106,623 → 1,106,673:
+  the sync point sets `dev_dirty`, so the next run makes no kernel calls
+  in place). Main froze the same way: the user's freeze was this, not
+  the skeleton key (which without it quit MacBench with "an error of type
+  1", in instruction time).

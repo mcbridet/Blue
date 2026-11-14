@@ -467,6 +467,25 @@ Transfers take guest time at the disks' rate. The status bar's floppy light
 make floppies from images in this drive (it looks for Apple's floppy
 drives): put the image in instead, or a copy of it.
 
+### MacBench
+
+ZD MacBench 5.0 runs (tested from a shared folder, on an installed 8.5):
+it registers, opens its main window and runs its Processor test (the
+others are untried). Right after registering it uses Gary Davidian's
+skeleton key, a kernel call that gives a program supervisor mode, to read
+the processor's L2CR and HID0 (see the kernel calls and privileged
+instructions below); without it, MacBench quit with "an error of type 1".
+Its scores are relative to its reference machine, a Power Macintosh G3/300
+(1000 in every test). Benchmark in real time, in a window: in instruction
+time, guest time follows the instruction count, so the guest processor
+looks like a 16.6 MIPS one (Processor: 62, 6% of the G3/300); in one
+real-time run on an M5, with other work on the host, Processor scored
+18,324 (the test took about 25 s). MacBench times things by polling the
+VIA's timer in a tight loop; in real time, a loop whose device register
+read fell on the last instruction before a sync point kept syshm from ever
+reaching one (guest time stood still, and the window froze); it no longer
+does.
+
 ### Guest tools
 
 Some things only code inside Mac OS can do: syshm Enhancements and syshm
@@ -765,7 +784,19 @@ lacks: syshm says to install it again (and a window offers to update it).
   68k emulator from the ROM.
 - Native kernel calls: `ReturnFromException` (all verdicts), `RunAlternateContext`,
   `ResetSystem`, `VMDispatch` (VM off; `VMAllocateMemory` supported),
-  `PrioritizeInterrupts` and `RTASDispatch`.
+  `PrioritizeInterrupts` and `RTASDispatch`. `ResetSystem` with Gary
+  Davidian's skeleton key (r3 'Gary', r4 0x05051956) doesn't reset: its
+  caller goes on with MSR = (MSR & ~r5) | r7, as with both NanoKernels.
+- Privileged instructions: in user mode, `mfmsr` reads the user MSR and the
+  rest raise the privileged instruction exception. In supervisor mode (the
+  skeleton key's MSR with PR off) the kernel does them (`src/priv.c`):
+  `mfmsr`, `mtmsr` (PR on again ends it), `rfi`, the 750's supervisor SPRs
+  with an iMac's values (PVR, HID0, HID1 for 266 MHz on a 66 MHz bus, L2CR
+  for its 512 KB L2 at half speed, the thermal assist unit reading 40 °C,
+  the decrementer, SPRGs, SRR0/1, BATs...), segment registers, and `tlbie`,
+  `tlbsync` and `dcbi`, which do nothing; writes are kept, without effect.
+  Real mode is the same address space (identity for RAM). While the MSR has
+  EE off, interrupts wait.
 - Exceptions go the NanoKernel way: to the running context's handler if
   enabled, otherwise ending the native (alternate) context. An interrupt that
   arrives while native code runs ends that context with exception 0, so the
@@ -1153,8 +1184,7 @@ its interrupt enabled, while sound DMA moves, or after something touched
 them. Kernel calls made in place, without an exit, only happen while an
 exit would do none of that; device register accesses made in place update
 devices as their exits would. An access on the last instruction before a
-sync point still exits, after which the loop goes on to the next sync
-point without servicing that one, as it always has.) Tracing and trap logging use the
+sync point still exits, and the loop then services that sync point.) Tracing and trap logging use the
 interpreter.
 
 Debugging `boot`: `--trace-from N --trace-reg 24` logs instructions with the
@@ -1227,7 +1257,7 @@ the one in the startup disk's System Folder.
 src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           ppc.c + ppc_exec.inc + ppc_fp.c (interpreter), jit.c + a64.h
           (AArch64 JIT), nk.c (native kernel), mp.c (its Multiprocessing
-          Services, NanoKernel 2's),
+          Services, NanoKernel 2's), priv.c (supervisor mode: the skeleton key),
           bootinfo.c + devtree.c (Trampoline replacement, device tree),
           rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
           dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
