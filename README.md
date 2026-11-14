@@ -126,7 +126,7 @@ registers at startup (MotherBoardHAL, TimeManagerLib, NVRAMServicesLib,
 RTCServicesLib, NativePowerMgrLib, StartLib), which earlier ROMs had inside
 the image; and drivers for machines' devices. syshm loads it and puts the
 libraries, and the drivers that match its devices (Cuda, Grackle, the
-RTC), in the device tree as the Trampoline would. Its ConfigInfo no longer
+RTC, NVRAM), in the device tree as the Trampoline would. Its ConfigInfo no longer
 describes the address space (the Trampoline in the same file hands the
 kernel a page map instead), so syshm lays it out as earlier ROMs describe
 it.
@@ -180,10 +180,27 @@ extensions' icons, then the CD's window), within 2 billion instructions
 build/syshm boot MOS91.rom --cdrom 91.iso --max 3000000000 --screenshot finder.png
 ```
 
-Not done yet: the clock (the menu bar says 12:00 AM: 9.1 doesn't ask RTAS
-for the time, as 8.5 does), NVRAM (9.1 doesn't use RTAS for it either, and
-syshm has no NVRAM device of its own), and installing 9.1 onto a disk
-image with its installer and starting up from that.
+The clock and NVRAM work as on an iMac. 9.1 reaches neither through RTAS,
+as 8.5 does: its ROM prepares the libraries in order and stops at the
+first one that fails, and NVRAMServicesLib failed for want of an NVRAM
+device, so RTCServicesLib, the next, never ran (the clock said 12:00 AM
+and never moved). For these ROM files the device tree has the NVRAM an
+iMac has, `nvram` under Mac I/O at `+0x60000` (8 KB, a byte every 16 bytes
+of address space; `src/nvram.c`), which the ROM file's own driver for it
+drives. RTCServicesLib then finds the RTC under via-cuda, whose driver
+(also the ROM file's) asks the Cuda for the time; setting the time in Date
+& Time sets the Cuda's clock, until the next restart (with 8.5, whose RTAS
+clock ignores it, a restart goes back to the host's time as well). The
+NVRAM is the same 8 KB that RTAS serves 8.5–9.0.4, kept in the same
+`--nvram` file, and both keep PRAM in the same place, at `0x1400`, so a
+file goes with an install whichever ROM starts it. 9.1 reads NVRAM at
+startup and keeps its changes in memory until it shuts down or restarts,
+when it writes them to the chip, as on an iMac: changes since startup are
+lost when syshm quits otherwise (closing the window, or Shut down in its
+menu). The end-of-run statistics count the chip's reads and writes.
+
+Not done yet: installing 9.1 onto a disk image with its installer and
+starting up from that.
 
 ### Networking
 
@@ -407,7 +424,8 @@ lacks: syshm says to install it again from the tools volume.
 - Devices: RTAS (clock, NVRAM, power), a 6522 VIA with timers, the Cuda (time,
   PRAM, power, ADB with autopoll), an ADB keyboard and mouse, a Heathrow-style
   interrupt controller and a Z8530 SCC with nothing attached (LocalTalk sees an
-  idle network). Device registers are emulated by decoding the faulting
+  idle network), and for ROM files with parcels the NVRAM chip behind Mac I/O
+  (`src/nvram.c`; see Mac OS 9.1). Device registers are emulated by decoding the faulting
   load/store (`src/mmio.c`).
 - DBDMA (`src/dbdma.c`): Mac I/O's 16 descriptor-based DMA channels, after
   the CHRP I/O Device Reference (chapter 15): input/output with the MORE and
@@ -598,8 +616,14 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 - Ethernet: `ethernet` at Mac I/O `+0x11000` (`bmac+`, DMA channels 2 and 3;
   nothing answers at those addresses, lanLib being the driver's way to the
   hardware), station address 52:54:00:12:34:56.
+- NVRAM, for ROM files with parcels only: `nvram` at Mac I/O `+0x60000`
+  (`device_type` and `compatible` `nvram`, `reg` 0x60000 0x20000, `#bytes`
+  0x2000, `AAPL,address`), as on Heathrow and Paddington Macs: 8 KB, byte k
+  at `+16k`.
 - ADB/power-manager kind 0 in the universal flags, so the early ROM code uses
-  RTAS (tokens in `NKHWInfo`) for clock, NVRAM and power. A flag in
+  RTAS (tokens in `NKHWInfo`) for clock, NVRAM and power (`NKHWInfo`'s Mac OS
+  NVRAM offset, `0x1400`, is where PRAM goes; a ROM file with parcels uses the
+  Cuda's RTC and the `nvram` node instead, through its libraries). A flag in
   ProductInfo (bit 19 at `+0x28`) has the ROM restart through RTAS
   `system-reboot`; otherwise it restarts in place, jumping back to its start
   with the devices still running, and hangs on the first interrupt. Bit 26
@@ -767,7 +791,7 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           bootinfo.c + devtree.c (Trampoline replacement, device tree),
           rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
           dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
-          (configuration space) (devices), ndrv.c (PEF driver generator),
+          (configuration space), nvram.c (devices), ndrv.c (PEF driver generator),
           video.c, disk.c (native drivers), net.c (Ethernet's lanLib,
           libslirp), hfs.c (volume formatter),
           rsrc.c (resource forks), tools.c (guest tools), rave.c + raster.c

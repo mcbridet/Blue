@@ -5,6 +5,7 @@
 
 #include "be.h"
 #include "devtree.h"
+#include "nvram.h"
 #include "ohci.h"
 
 /* Our layout inside the boot info area */
@@ -314,6 +315,22 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 		dt_prop(enet, "lanLib,AAPL,MacOS,PowerPC", hw->lanlib, (uint32_t)hw->lanlib_size);
 	}
 
+	/*
+	 * NVRAM, as the iMac has it, for ROM files with parcels: their NVRAM
+	 * services drive the chip (with the parcel's driver for an nvram under
+	 * mac-io, which takes its address from AAPL,address). Earlier ROMs reach
+	 * NVRAM through RTAS.
+	 */
+	if (hw->parcels) {
+		struct dt_node *nvram = dt_add_node(mio, "nvram");
+		const uint32_t nvram_reg[2] = { MACIO_NVRAM - MACIO_BASE, MACIO_NVRAM_SIZE };
+		dt_prop_str(nvram, "device_type", "nvram");
+		dt_prop_str(nvram, "compatible", "nvram");
+		dt_prop_cells(nvram, "reg", nvram_reg, 2);
+		dt_prop_u32(nvram, "#bytes", MACIO_NVRAM_SIZE / NVRAM_STRIDE);
+		dt_prop_u32(nvram, "AAPL,address", MACIO_NVRAM);
+	}
+
 	dt_add_node(root, "rtas");
 
 	/*
@@ -356,7 +373,10 @@ int bootinfo_build(struct mem *mem, struct bootinfo *bi, const struct bootinfo_m
 
 	/*
 	 * Flags at +0x24: bits 24-26 select the ADB/power manager (3 = Cuda via VIA1).
-	 * We present none; clock, NVRAM and power go through RTAS kernel calls instead.
+	 * We present none; the 1.x ROMs' clock, NVRAM and power code goes through RTAS
+	 * kernel calls instead. (In a ROM file with parcels, the clock and NVRAM code
+	 * calls libraries, which use drivers for devices in the tree: the Cuda's RTC and
+	 * the nvram node.)
 	 */
 	const uint32_t flags24 = 0x00000006;
 

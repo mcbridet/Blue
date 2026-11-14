@@ -29,6 +29,7 @@ int main(int argc, char **argv)
 		{ "display", test_display },
 		{ "jit", test_jit },
 		{ "mp", test_mp },
+		{ "nvram", test_nvram },
 	};
 
 	for (size_t s = 0; s < sizeof suites / sizeof suites[0]; s++) {
