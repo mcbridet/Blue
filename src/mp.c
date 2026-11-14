@@ -3,6 +3,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#define BLOCKED INT32_MIN               /* (a call's status when its task blocks in it) */
+#define NOMINAL_PRIORITY 2              /* (NanoKernel 2's priorities: critical, latency-protected, nominal, idle) */
+#define NAME_BLUE 0x626C7565u           /* 'blue' */
+#define NAME_UNNAMED 0x2D2D2D2Du        /* '----' */
+#define OPTIONS_VALID 6u                /* kMPCreateTaskTakesAllExceptionsMask, kMPCreateTaskNotDebuggableMask */
+
 void mp_init(struct mp *mp)
 {
 	bool log = mp->log;
@@ -12,6 +18,16 @@ void mp_init(struct mp *mp)
 	mp->blue_task = mp_make(mp, MP_TASK);
 	mp->page_queue = mp_make(mp, MP_QUEUE);
 	mp->space = mp_make(mp, MP_ADDRESS_SPACE);
+
+	struct mp_object *blue = mp_lookup(mp, mp->blue_task, MP_TASK);
+	blue->task.process = mp->blue_process;
+	blue->task.name = NAME_BLUE;
+	blue->task.weight = 200;
+	blue->task.priority = NOMINAL_PRIORITY;
+	blue->task.state = MP_TASK_RUNNING;
+	mp->task[0].id = mp->blue_task;
+	mp->tasks = 1;
+	mp->current = mp->blue_task;
 }
 
 uint32_t mp_add_area(struct mp *mp, uint32_t base, uint32_t length, bool writable)
@@ -90,10 +106,97 @@ static int32_t delete(struct mp *mp, uint32_t id, enum mp_class class)
 	return MP_NO_ERR;
 }
 
-/* What waiting comes to when what's waited for isn't there: there's no other task to provide it. */
-static int32_t would_wait(uint32_t timeout)
+/*
+ * What a wait comes to when what's waited for isn't there: with a timeout
+ * of 0, none; the blue task may not block, and polls (and yields to tasks
+ * that are ready); others block.
+ */
+static int32_t unavailable(struct mp *mp, uint32_t timeout)
 {
-	return timeout ? MP_BLUE_BLOCKING_ERR : MP_TIMEOUT_ERR;
+	if (!timeout)
+		return MP_TIMEOUT_ERR;
+	mp->yield = true;
+	if (mp->current == mp->blue_task)
+		return MP_BLUE_BLOCKING_ERR;
+	mp_lookup(mp, mp->current, MP_TASK)->task.state = MP_TASK_BLOCKED;
+	return BLOCKED;
+}
+
+static void make_ready(struct mp *mp, uint32_t task)
+{
+	mp_lookup(mp, task, MP_TASK)->task.state = MP_TASK_READY;
+	mp->ready[mp->readies++] = task;
+}
+
+static void unready(struct mp *mp, uint32_t task)
+{
+	for (unsigned k = 0; k < mp->readies; k++)
+		if (mp->ready[k] == task) {
+			memmove(&mp->ready[k], &mp->ready[k + 1], (--mp->readies - k) * sizeof mp->ready[0]);
+			break;
+		}
+}
+
+uint32_t mp_next(const struct mp *mp)
+{
+	return mp->readies ? mp->ready[0] : mp->blue_task;
+}
+
+struct mp_regs *mp_regs(struct mp *mp, uint32_t task)
+{
+	struct mp_object *o = mp_lookup(mp, task, MP_TASK);
+	return o ? &mp->task[o->task.regs].regs : NULL;
+}
+
+void mp_switch(struct mp *mp, uint32_t task)
+{
+	struct mp_object *from = mp_lookup(mp, mp->current, MP_TASK);
+	if (from && from->task.state == MP_TASK_RUNNING) {
+		if (mp->current == mp->blue_task)
+			from->task.state = MP_TASK_READY;
+		else
+			make_ready(mp, mp->current);
+	}
+	unready(mp, task);
+	mp_lookup(mp, task, MP_TASK)->task.state = MP_TASK_RUNNING;
+	mp->current = task;
+	mp->yield = false;
+}
+
+/*
+ * MPCreateTask (call 7): a task in process r3 whose termination message
+ * goes to queue r4, with options r5 and the word r6 for Multiprocessing
+ * Services (see call 12). Started (call 8), it runs from r8 with r9 in r2
+ * and r7 in r12; its entry point returns to mp->task_return.
+ */
+static int32_t create_task(struct mp *mp, const uint32_t *r, uint32_t *id)
+{
+	unsigned k = 0;
+	while (k < MP_MAX_TASKS && mp->task[k].id)
+		k++;
+	uint32_t made = k < MP_MAX_TASKS ? mp_make(mp, MP_TASK) : 0;
+	if (!made)
+		return MP_INSUFFICIENT_RESOURCES_ERR;
+	struct mp_object *o = mp_lookup(mp, made, MP_TASK);
+	o->task.process = r[3];
+	o->task.queue = r[4];
+	o->task.options = r[5];
+	o->task.label = r[6];
+	o->task.name = NAME_UNNAMED;
+	o->task.weight = 100;
+	o->task.priority = NOMINAL_PRIORITY;
+	o->task.message[2] = (uint32_t)MP_TASK_ABORTED_ERR;
+	o->task.regs = (uint8_t)k;
+	mp->task[k].id = made;
+	struct mp_regs *regs = &mp->task[k].regs;
+	memset(regs, 0, sizeof *regs);
+	regs->gpr[2] = r[9];
+	regs->gpr[12] = r[7];
+	regs->pc = r[8];
+	regs->lr = mp->task_return;
+	mp->tasks++;
+	*id = made;
+	return MP_NO_ERR;
 }
 
 static int32_t notify_queue(struct mp *mp, uint32_t queue, const uint32_t word[3])
@@ -128,6 +231,29 @@ static int32_t set_event(struct mp *mp, uint32_t event, uint32_t flags)
 	return MP_NO_ERR;
 }
 
+/* Sets what a notification or timer does to r4: signal it (a semaphore); send it words r5 r6 r7 (a queue); set flags r5 in it (an event group). */
+static int32_t set_notify(struct mp *mp, struct mp_notify *n, const uint32_t *r)
+{
+	const struct mp_object *what = &mp->obj[(r[4] >> 16) % MP_MAX_OBJECTS];
+	if (!mp_lookup(mp, r[4], what->class))
+		return MP_INVALID_ID_ERR;
+	switch (what->class) {
+	case MP_SEMAPHORE:
+		n->sem = r[4];
+		return MP_NO_ERR;
+	case MP_QUEUE:
+		n->queue = r[4];
+		memcpy(n->word, &r[5], sizeof n->word);
+		return MP_NO_ERR;
+	case MP_EVENT_GROUP:
+		n->event = r[4];
+		n->flags = r[5];
+		return MP_NO_ERR;
+	default:
+		return MP_INVALID_ID_ERR;
+	}
+}
+
 static int32_t cause_notification(struct mp *mp, uint32_t id)
 {
 	struct mp_object *o = mp_lookup(mp, id, MP_NOTIFICATION);
@@ -145,6 +271,23 @@ static int32_t cause_notification(struct mp *mp, uint32_t id)
 	return status;
 }
 
+int32_t mp_terminate(struct mp *mp, uint32_t task, uint32_t result)
+{
+	struct mp_object *o = mp_lookup(mp, task, MP_TASK);
+	if (!o)
+		return MP_INVALID_ID_ERR;
+	if (o->task.state == MP_TASK_TERMINATED || task == mp->blue_task)
+		return MP_INSUFFICIENT_RESOURCES_ERR;
+	unready(mp, task);
+	if (task == mp->current)
+		mp->yield = true;
+	o->task.state = MP_TASK_TERMINATED;
+	o->task.message[2] = result;
+	if (mp_lookup(mp, o->task.queue, MP_QUEUE))
+		notify_queue(mp, o->task.queue, o->task.message);
+	return MP_NO_ERR;
+}
+
 bool mp_call(struct mp *mp, struct ppc_cpu *cpu, struct mem *mem)
 {
 	uint32_t *r = cpu->gpr;
@@ -153,16 +296,55 @@ bool mp_call(struct mp *mp, struct ppc_cpu *cpu, struct mem *mem)
 	(void)mem;
 
 	switch (r[0]) {
+	case 7:         /* MPCreateTask(process r3, termination queue r4, options r5, ...: see create_task()) -> r10 */
+		if (r[5] & ~OPTIONS_VALID)
+			status = MP_INSUFFICIENT_RESOURCES_ERR;
+		else if (!mp_lookup(mp, r[3], MP_PROCESS))
+			status = MP_INVALID_ID_ERR;
+		else
+			status = create_task(mp, r, &r[10]);
+		break;
+	case 8:         /* (task r3, name r4, its r3 r5, termination message words r6 r7, its r1 r8; r9: its stack's end) starts it */
+		if (!(o = mp_lookup(mp, r[3], MP_TASK))) {
+			status = MP_INVALID_ID_ERR;
+		} else if (o->task.state != MP_TASK_NEW) {
+			status = MP_INSUFFICIENT_RESOURCES_ERR;
+		} else {
+			struct mp_regs *regs = &mp->task[o->task.regs].regs;
+			o->task.name = r[4];
+			o->task.message[0] = r[6];
+			o->task.message[1] = r[7];
+			regs->gpr[3] = r[5];
+			regs->gpr[1] = r[8];
+			make_ready(mp, r[3]);
+		}
+		break;
+	case 9:         /* MPTerminateTask(r3, result r4) */
+		status = mp_terminate(mp, r[3], r[4]);
+		break;
+	case 10:        /* (r3): deletes a terminated task */
+		if (!(o = mp_lookup(mp, r[3], MP_TASK))) {
+			status = MP_INVALID_ID_ERR;
+		} else if (o->task.state != MP_TASK_TERMINATED) {
+			status = MP_INSUFFICIENT_RESOURCES_ERR;
+		} else {
+			mp->task[o->task.regs].id = 0;
+			o->class = MP_FREE;
+			mp->tasks--;
+		}
+		break;
 	case 11:        /* MPIsTaskBlue(task r3, 0: the current) -> r3 (not a status) */
-		status = !r[3] || r[3] == mp->blue_task;
+		status = (r[3] ? r[3] : mp->current) == mp->blue_task;
 		break;
 	case 12:        /* -> the current task r3 (not a status), and the word call 63 set for it r4 */
-		status = (int32_t)mp->blue_task;
-		r[4] = mp_lookup(mp, mp->blue_task, MP_TASK)->task.label;
+		status = (int32_t)mp->current;
+		r[4] = mp_lookup(mp, mp->current, MP_TASK)->task.label;
 		break;
 	case 14:        /* MPSetTaskWeight(r3, weight r4 1-10000) */
-		if (r[4] < 1 || r[4] > 10000 || !mp_lookup(mp, r[3], MP_TASK))
+		if (r[4] < 1 || r[4] > 10000 || !(o = mp_lookup(mp, r[3], MP_TASK)))
 			status = MP_INVALID_ID_ERR;
+		else
+			o->task.weight = r[4];
 		break;
 	case 15:        /* MPCreateQueue -> r4 */
 		status = create(mp, MP_QUEUE, &r[4]);
@@ -185,7 +367,7 @@ bool mp_call(struct mp *mp, struct ppc_cpu *cpu, struct mem *mem)
 		if (!mp_lookup(mp, r[3], MP_QUEUE)) {
 			status = MP_INVALID_ID_ERR;
 		} else if (k == mp->messages) {
-			status = would_wait(r[7]);
+			status = unavailable(mp, r[7]);
 		} else {
 			memcpy(&r[4], mp->msg[k].word, sizeof mp->msg[k].word);
 			memmove(&mp->msg[k], &mp->msg[k + 1], (--mp->messages - k) * sizeof mp->msg[0]);
@@ -221,7 +403,7 @@ bool mp_call(struct mp *mp, struct ppc_cpu *cpu, struct mem *mem)
 		else if (o->sem.value)
 			o->sem.value--;
 		else
-			status = would_wait(r[4]);
+			status = unavailable(mp, r[4]);
 		break;
 	case 25:        /* MPCreateCriticalRegion -> r4 */
 		status = create(mp, MP_CRITICAL_REGION, &r[4]);
@@ -236,7 +418,7 @@ bool mp_call(struct mp *mp, struct ppc_cpu *cpu, struct mem *mem)
 			o->region.depth++;
 			o->region.key = r[5];
 		} else {
-			status = would_wait(r[4]);
+			status = unavailable(mp, r[4]);
 		}
 		break;
 	case 28:        /* MPExitCriticalRegion(r3, key r4) */
@@ -246,6 +428,36 @@ bool mp_call(struct mp *mp, struct ppc_cpu *cpu, struct mem *mem)
 			status = MP_INSUFFICIENT_RESOURCES_ERR;
 		else
 			o->region.depth--;
+		break;
+	case 40:        /* NKCreateTimer -> r4 */
+		status = create(mp, MP_TIMER, &r[4]);
+		break;
+	case 30:        /* NKSetTimerNotify(timer r3, what r4: see set_notify()) */
+		if (!(o = mp_lookup(mp, r[3], MP_TIMER)))
+			status = MP_INVALID_ID_ERR;
+		else
+			status = set_notify(mp, &o->timer.notify, r);
+		break;
+	case 31:        /* MPArmTimer(r3, time r4:r5, options r6: 1 keeps the timer once fired): when it fires (they don't yet) */
+		if (r[6] & ~1u)
+			return false;   /* (2: the time is from the last one; 4: it's a Duration, in r4) */
+		if (!(o = mp_lookup(mp, r[3], MP_TIMER))) {
+			status = MP_INVALID_ID_ERR;
+		} else {
+			o->timer.time = (uint64_t)r[4] << 32 | r[5];
+			o->timer.armed = true;
+			o->timer.keep = r[6] & 1;
+		}
+		break;
+	case 32:        /* MPCancelTimer(r3) -> the time it had left r4:r5 (0 if it wasn't armed) */
+		if (!(o = mp_lookup(mp, r[3], MP_TIMER))) {
+			status = MP_INVALID_ID_ERR;
+		} else {
+			uint64_t left = o->timer.armed && o->timer.time > cpu->tb ? o->timer.time - cpu->tb : 0;
+			o->timer.armed = false;
+			r[4] = (uint32_t)(left >> 32);
+			r[5] = (uint32_t)left;
+		}
 		break;
 	case 49:        /* MPCreateEvent -> r4 */
 		status = create(mp, MP_EVENT_GROUP, &r[4]);
@@ -263,7 +475,7 @@ bool mp_call(struct mp *mp, struct ppc_cpu *cpu, struct mem *mem)
 			r[4] = o->event.flags;
 			o->event.flags = 0;
 		} else {
-			status = would_wait(r[5]);
+			status = unavailable(mp, r[5]);
 		}
 		break;
 	case 54:        /* MPSetSWIEvent(r3, level r4 1-8, else 1): setting the group raises that software interrupt */
@@ -278,9 +490,21 @@ bool mp_call(struct mp *mp, struct ppc_cpu *cpu, struct mem *mem)
 		else
 			o->task.exceptions = r[4];
 		break;
+	case 59:        /* (queue r3 or 0): the debugger's, for tasks' exceptions (NanoKernel 2's ThrowTaskToDebugger) */
+		if (r[3] && !mp_lookup(mp, r[3], MP_QUEUE))
+			status = MP_INVALID_ID_ERR;
+		else
+			mp->debugger = r[3];
+		break;
 	case 63:        /* (task r3, value r4): a word NanoKernel 2 keeps for the task */
 		if ((o = mp_lookup(mp, r[3], MP_TASK)))
 			o->task.label = r[4];
+		else
+			status = MP_INVALID_ID_ERR;
+		break;
+	case 126:       /* KCSetTaskType(r3, name r4) */
+		if ((o = mp_lookup(mp, r[3], MP_TASK)))
+			o->task.name = r[4];
 		else
 			status = MP_INVALID_ID_ERR;
 		break;
@@ -290,23 +514,12 @@ bool mp_call(struct mp *mp, struct ppc_cpu *cpu, struct mem *mem)
 	case 65:        /* MPDeleteNotification(r3) */
 		status = delete(mp, r[3], MP_NOTIFICATION);
 		break;
-	case 66: {      /* MPModifyNotification(r3, what r4: a semaphore; a queue, words r5 r6 r7; an event group, flags r5) */
-		struct mp_object *what = &mp->obj[(r[4] >> 16) % MP_MAX_OBJECTS];
-		if (!(o = mp_lookup(mp, r[3], MP_NOTIFICATION)) || !mp_lookup(mp, r[4], what->class)) {
+	case 66:        /* MPModifyNotification(r3, what r4: see set_notify()) */
+		if (!(o = mp_lookup(mp, r[3], MP_NOTIFICATION)))
 			status = MP_INVALID_ID_ERR;
-		} else if (what->class == MP_SEMAPHORE) {
-			o->note.sem = r[4];
-		} else if (what->class == MP_QUEUE) {
-			o->note.queue = r[4];
-			memcpy(o->note.word, &r[5], sizeof o->note.word);
-		} else if (what->class == MP_EVENT_GROUP) {
-			o->note.event = r[4];
-			o->note.flags = r[5];
-		} else {
-			status = MP_INVALID_ID_ERR;
-		}
+		else
+			status = set_notify(mp, &o->note, r);
 		break;
-	}
 	case 67:        /* MPCauseNotification(r3) */
 		status = cause_notification(mp, r[3]);
 		break;
@@ -337,8 +550,19 @@ bool mp_call(struct mp *mp, struct ppc_cpu *cpu, struct mem *mem)
 	default:
 		return false;
 	}
-	if (mp->log)
-		printf("mp: call %u (r3=0x%08X r4=0x%08X r5=0x%08X) -> %d\n", r[0], r[3], r[4], r[5], status);
-	r[3] = (uint32_t)status;
+	if (mp->log) {
+		printf("mp: call %u (r3=0x%08X r4=0x%08X r5=0x%08X) -> ", r[0], r[3], r[4], r[5]);
+		if (status == BLOCKED)
+			printf("blocks");
+		else
+			printf("%d", status);
+		if (r[0] == 7 && status == MP_NO_ERR)
+			printf(", task 0x%08X", r[10]);
+		if (mp->current != mp->blue_task)
+			printf(" (task 0x%08X)", mp->current);
+		printf("\n");
+	}
+	if (status != BLOCKED)
+		r[3] = (uint32_t)status;
 	return true;
 }
