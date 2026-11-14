@@ -253,8 +253,10 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 6. Reference run under QEMU (optional, research only)
 
-- **Status:** not started. Needs QEMU (`qemu-system-ppc`; not installed
-  here: ask the user before installing) and hfsutils.
+- **Status:** done. `docs/nk2-reference.md` answers the questions; 9.1
+  boots to the Finder on QEMU's `mac99` unpatched. Tools:
+  `tools/qemu-ref/run91.sh`, `shots.py`, `rsp.py` (gdbstub client, no gdb
+  needed), `mptrace.py` (MP call trace), `nk2dump.py` (decodes RAM dumps).
 - **Owns:** `tools/qemu-ref/` (new files only), a notes file
   `docs/nk2-reference.md`.
 - **Goal:** what Apple's 9.1 Trampoline and NanoKernel 2 really do, to
@@ -346,3 +348,19 @@ Facts later tasks need, added as they are found.
   `MPCreateTask` in r10; call 12 returns the current task's ID in r3 (not a
   status) and its call-63 word in r4; `MPWaitOnQueue` takes its timeout
   in r7 and returns the message in r4-r6.
+- **Reference run** (`docs/nk2-reference.md`, QEMU `mac99`): up to call 7
+  the real sequence is syshm's, plus a first MPYieldWithHint (13) from the
+  emulator. Right after the third task is named, Mixed Mode starts making
+  `sc` with r0 = -1 (53k per boot): not an MP call; the kernel sets r0 =
+  0x00200000 (CR0 GT) for the blue task, 0 (CR0 EQ) otherwise, and changes
+  nothing else. NanoKernelInfo.TaskCount is 2 at startup (blue + idle);
+  MPLibrary sets the page-fault queue's reserve from it. The real kernel
+  holds 22 objects before the first call (blue task 0x00050001, page queue
+  0x00040001, RAM area 0x000A0001; first MP result 0x00160001). The new
+  tasks first run at the blue task's first kernel call 4 and block at once
+  ('deth', 'dbgr': MPWaitOnQueue forever; 'ager': MPWaitForEvent, 3 s).
+  Level-1 software interrupts (Time Manager timers) fire from 0.2 s after
+  call 63; the emulator takes them as 68k vector 0x58 with the event
+  group's ID pushed, and the ROM's handler calls MPWaitForEvent(group, 0).
+  The Trampoline puts AAPL,CodePrepare and AAPL,CodeRegister first among
+  `/`'s children.
