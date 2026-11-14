@@ -24,6 +24,7 @@ int main(int argc, char **argv)
 		{ "hfs", test_hfs },
 		{ "hfsread", test_hfsread },
 		{ "tools", test_tools },
+		{ "clip", test_clip },
 		{ "raster", test_raster },
 		{ "rave", test_rave },
 		{ "gpu", test_gpu },

@@ -37,6 +37,7 @@ void test_net(void);
 void test_hfs(void);
 void test_hfsread(void);
 void test_tools(void);
+void test_clip(void);
 void test_raster(void);
 void test_rave(void);
 void test_gpu(void);

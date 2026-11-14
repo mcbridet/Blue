@@ -282,7 +282,44 @@ the same volume to a file):
   resizes the window instead. Without it, the window scales the
   screen. On high-density displays a screen pixel is a point, so Mac OS
   appears at the size of other programs; with `--integer-scale` it is a
-  whole number of pixels instead (2 at 1.7x), for the crispest pixels.
+  whole number of pixels instead (2 at 1.7x), for the crispest pixels. It
+  also shares the clipboard (below). Its data carries its version, as the
+  3D engine's does: one installed by a syshm from before the clipboard
+  still switches modes, and syshm says to install it again (drag the new
+  one onto the System Folder, replacing the old, and restart). An `appe`
+  only starts from Extensions, so a CD's system can't run it; to try it
+  there, `SYSHM_TOOLS_APPL=1` makes the tools volume's copy an application
+  the Finder opens with a double-click.
+- **Clipboard** (with syshm Enhancements, in a window in real time): text
+  copied in Mac OS is on the host's clipboard, and text copied on the host
+  is what Command-V pastes in Mac OS, in the front application, without
+  switching applications (tested: SimpleText, Note Pad, Scrapbook, the
+  Finder's names and Internet Explorer 4's fields, on 8.5; SimpleText on
+  9.1). Mac OS keeps text in Mac OS Roman with CR line ends (`TEXT`), and
+  applications that know Unicode (Mac OS 9's MLTE) in UTF-16 too (`utxt`);
+  the host has UTF-8 with LF. Accents
+  come out precomposed (macOS often decomposes them), and characters Mac
+  OS Roman lacks become something close where there is one (½ "1/2", →
+  "->", other spaces a space) or else "?"; `utxt`, which syshm puts in
+  the scrap too, has them all, for applications that read it, and is what
+  the host gets when an application puts both. Styles (`styl`) and pictures
+  aren't passed, nor texts over 4 MB (syshm says so).
+  How: each application has a scrap of its own (the Process Manager hands
+  it to the next one brought to the front), and many keep a private one
+  besides, such as TextEdit's, which they take from the scrap only when
+  resumed with "the clipboard has changed". Enhancements patches ZeroScrap
+  and PutScrap to see what applications copy; puts the host's new text in
+  the front application's scrap just before it gets its next event (a
+  GetNextEvent filter: some read the scrap's size in low memory rather
+  than asking); and posts it a resume event saying the clipboard has
+  changed, as the Process Manager does when one switches applications. Keys
+  typed in the window meanwhile wait for that (at most half a second), so
+  that a quick Command-V pastes the new text. An application that puts its
+  copy in the scrap only when switched out (from a private scrap, at a
+  suspend) reaches the host once another Mac application comes to the
+  front. Scripted runs have a stand-in for the host's clipboard (`clipboard`
+  and `print-clipboard`, see Debugging boot); other runs without a window,
+  or in instruction time, leave the clipboard alone.
 - **syshm 3D Engine**: a QuickDraw 3D RAVE drawing engine (put it in
   Extensions). QuickDraw 3D's interactive renderer and RAVE games then find
   an accelerator: it reports itself as an ATI engine (vendor 1, engine 5),
@@ -781,7 +818,14 @@ counts, for example:
 3500000000 motion 40 -10         # the mouse moved 40 right, 10 up (through the ADB mouse, as games read it)
 3600000000 screenshot after.png
 3700000000 clock 800             # guest time at 800 million instructions a second from here
+3800000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)
+3900000000 print-clipboard       # prints the host's clipboard, with what Mac OS copied since
 ```
+
+`clipboard` and `print-clipboard` stand in for the host's clipboard (a
+scripted run leaves the window's alone), for syshm Enhancements to share
+(see Guest tools): the text is as if copied on the host with the window
+then brought to the front.
 
 `clock N` keeps a run reproducible while making guest time pass as on a
 guest processor of N MIPS, so that work paced by guest time (sound, timer
@@ -878,7 +922,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           video.c, disk.c (native drivers), net.c (Ethernet's lanLib,
           libslirp), hfs.c (volume formatter), hfsread.c (HFS and HFS+
           reader: the startup disk's ROM file),
-          rsrc.c (resource forks), tools.c (guest tools), rave.c + raster.c
+          rsrc.c (resource forks), tools.c (guest tools), clip.c (the
+          clipboard they share with the host), rave.c + raster.c
           + gpu.c + gl.c (3D engine: software and OpenGL), display.c (SDL2
           window), ui.cpp (its menu, with Dear ImGui), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), main.c

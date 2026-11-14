@@ -338,55 +338,235 @@ static void test_custom_modes(void)
 	CHECK_EQ(listed, fixed + VIDEO_CUSTOM_MODES);
 }
 
-/* The helper as the guest drives it: main, then resumptions after each callout */
-static void helper_step(struct helper *h, struct ndrv_call *c, uint32_t entry, uint32_t result)
+/*
+ * The helper as the guest drives it: main, then resumptions after each
+ * callout; and its patches, called meanwhile by applications (on other stacks)
+ */
+static void helper_step(struct helper *h, struct clip *clip, struct ndrv_call *c, uint32_t entry, uint32_t result)
 {
 	*c = (struct ndrv_call){ .mem = &mem, .entry = entry, .toc = TOC, .frame = FRAME };
 	c->arg[0] = result;
-	helper_call(h, c, &video);
+	helper_call(h, c, &video, clip);
+}
+
+static void patch_step(struct helper *h, struct clip *clip, struct ndrv_call *c, uint32_t entry, uint32_t arg0)
+{
+	*c = (struct ndrv_call){ .mem = &mem, .entry = entry, .toc = TOC, .frame = FRAME + 0x100 };
+	c->arg[0] = arg0;
+	helper_call(h, c, &video, clip);
+}
+
+/* Its imports' TVectors (TVECTORS + 8 * k), and its data: this syshm's copy, or an older one */
+enum { IMP_WNE, IMP_GET_MAIN_DEVICE, IMP_DM_SET_DISPLAY_MODE, IMP_CALL_UNIVERSAL_PROC, IMP_TEMP_NEW_HANDLE, IMP_HLOCK,
+       IMP_DISPOSE_HANDLE, IMP_GET_CURRENT_PROCESS, IMP_GET_FRONT_PROCESS, IMP_SAME_PROCESS, IMP_POST_EVENT };
+#define IMPORT(k) (TVECTORS + 8u * (k))
+
+static void helper_load(struct helper *h, bool current)
+{
+	helper_init(h);
+	memset(mem_ptr(&mem, TOC), 0, 0x1000);
+	for (unsigned k = 0; k < NDRV_MAX_IMPORTS && (k == 0 || h->layout.import[k]); k++)
+		mem_w32(&mem, TOC + h->layout.import[k], IMPORT(k));
+	if (current) {                                          /* 'syHp', version 2 */
+		mem_w32(&mem, TOC + h->layout.extra, FOURCC('s', 'y', 'H', 'p'));
+		mem_w32(&mem, TOC + h->layout.extra + 4, 2);
+	}
+}
+
+static void quit(struct helper *h, struct clip *clip, uint32_t event)
+{
+	struct ndrv_call c;
+	mem_w16(&mem, event, 23);
+	mem_w32(&mem, event + 2, FOURCC('a', 'e', 'v', 't'));
+	mem_w32(&mem, event + 10, FOURCC('q', 'u', 'i', 't'));
+	helper_step(h, clip, &c, NDRV_ENTRY_RESUME, 1);
+	CHECK(c.done && !h->running);
 }
 
 static void test_helper(void)
 {
 	struct helper h;
-	helper_init(&h);
+	struct clip clip = { 0 };
+	helper_load(&h, true);
 	video_init(&video, &mem, FB, FB_SIZE);
-	for (unsigned k = 0; k < 3; k++)                        /* the imports' TVectors */
-		mem_w32(&mem, TOC + h.layout.import[k], TVECTORS + 8 * k);
-	const uint32_t event = TOC + h.layout.extra;
+	const uint32_t event = TOC + h.layout.extra + 8;
 	struct ndrv_call c;
 
-	helper_step(&h, &c, 0, 0);
-	CHECK(h.running && !c.done);
-	CHECK_EQ(c.tvector, TVECTORS);                          /* WaitNextEvent(everyEvent, &event, sleep, NULL) */
+	helper_step(&h, &clip, &c, 0, 0);
+	CHECK(h.running && !h.old && !h.patched && !c.done);
+	CHECK_EQ(c.tvector, IMPORT(IMP_WNE));                   /* WaitNextEvent(everyEvent, &event, sleep, NULL) */
 	CHECK_EQ(c.out[0], 0xFFFF);
 	CHECK_EQ(c.out[1], event);
 	memset(mem_ptr(&mem, event), 0, 16);
-	helper_step(&h, &c, NDRV_ENTRY_RESUME, 0);
-	CHECK_EQ(c.tvector, TVECTORS);                          /* nothing to do: wait again */
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c.tvector, IMPORT(IMP_WNE));                   /* nothing to do: wait again */
 
 	video_request_size(&video, 1024, 640);
-	helper_step(&h, &c, NDRV_ENTRY_RESUME, 0);
-	CHECK_EQ(c.tvector, TVECTORS + 8);                      /* GetMainDevice() */
-	helper_step(&h, &c, NDRV_ENTRY_RESUME, 0x5000);
-	CHECK_EQ(c.tvector, TVECTORS + 16);                     /* DMSetDisplayMode(gd, mode, &depth, 0, NULL) */
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c.tvector, IMPORT(IMP_GET_MAIN_DEVICE));
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0x5000);
+	CHECK_EQ(c.tvector, IMPORT(IMP_DM_SET_DISPLAY_MODE));   /* DMSetDisplayMode(gd, mode, &depth, 0, NULL) */
 	CHECK_EQ(c.out[0], 0x5000);
 	CHECK_EQ(c.out[1], video_mode_count + 1);
 	CHECK_EQ(mem_r32(&mem, c.out[2]), 0x83);
 	CHECK_EQ(c.out[3], 0);
 	CHECK_EQ(c.out[4], 0);
-	helper_step(&h, &c, NDRV_ENTRY_RESUME, (uint32_t)-50);  /* paramErr */
-	CHECK_EQ(c.tvector, TVECTORS);
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, (uint32_t)-50);  /* paramErr */
+	CHECK_EQ(c.tvector, IMPORT(IMP_WNE));
 	CHECK_EQ(h.failures, 1);
 	CHECK_EQ(h.last_error, -50);
 	CHECK_EQ(video.switching, -1);
 
-	/* quit: main returns */
-	mem_w16(&mem, event, 23);
-	mem_w32(&mem, event + 2, FOURCC('a', 'e', 'v', 't'));
-	mem_w32(&mem, event + 10, FOURCC('q', 'u', 'i', 't'));
-	helper_step(&h, &c, NDRV_ENTRY_RESUME, 1);
-	CHECK(c.done && !h.running);
+	quit(&h, &clip, event);
+}
+
+/* One installed by an older syshm: it switches modes as it did, at its data's addresses */
+static void test_helper_v1(void)
+{
+	struct helper h;
+	struct clip clip = { .enabled = true };
+	helper_load(&h, false);
+	video_init(&video, &mem, FB, FB_SIZE);
+	const uint32_t event = TOC + h.v1_extra;
+	struct ndrv_call c;
+
+	CHECK_EQ(h.v1_extra, 24);                               /* (three imports and main: as version 1 had it) */
+	mem_w32(&mem, 0xE00 + 4 * 0x1FC, 0x1111);
+	helper_step(&h, &clip, &c, 0, 0);                       /* (says to install it again) */
+	CHECK(h.running && h.old && !h.patched && !clip.listening);
+	CHECK_EQ(mem_r32(&mem, 0xE00 + 4 * 0x1FC), 0x1111);
+	CHECK_EQ(c.tvector, IMPORT(IMP_WNE));
+	CHECK_EQ(c.out[1], event);
+	memset(mem_ptr(&mem, event), 0, 16);
+	video_request_size(&video, 800, 512);
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c.tvector, IMPORT(IMP_GET_MAIN_DEVICE));
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0x5000);
+	CHECK_EQ(c.tvector, IMPORT(IMP_DM_SET_DISPLAY_MODE));
+	CHECK_EQ(c.out[2], TOC + h.v1_extra + 16);
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(h.switches, 1);
+	quit(&h, &clip, event);
+	clip_free(&clip);
+}
+
+/* A Mixed Mode routine descriptor for one PowerPC routine */
+static void check_descriptor(uint32_t rd, uint32_t proc_info, uint32_t tvector)
+{
+	CHECK_EQ(mem_r16(&mem, rd), 0xAAFE);
+	CHECK_EQ(mem_r8(&mem, rd + 2), 7);
+	CHECK_EQ(mem_r16(&mem, rd + 10), 0);                    /* one routine */
+	CHECK_EQ(mem_r32(&mem, rd + 12), proc_info);
+	CHECK_EQ(mem_r8(&mem, rd + 17), 1);                     /* PowerPC */
+	CHECK_EQ(mem_r32(&mem, rd + 20), tvector);
+}
+
+#define ZERO_SCRAP_ENTRY (0xE00 + 4 * 0x1FC)
+#define PUT_SCRAP_ENTRY (0xE00 + 4 * 0x1FE)
+#define JGNE_FILTER 0x29A
+#define SCRAP_TEXT 0x50000u
+#define TEMP 0x60000u                                           /* a handle's master pointer, then its block */
+
+static void test_helper_clipboard(void)
+{
+	struct helper h;
+	struct clip clip = { .enabled = true };
+	helper_load(&h, true);
+	video_init(&video, &mem, FB, FB_SIZE);
+	const uint32_t event = TOC + h.layout.extra + 8;
+	struct ndrv_call c;
+
+	/* main: patches ZeroScrap, PutScrap and the GetNextEvent filter */
+	mem_w32(&mem, ZERO_SCRAP_ENTRY, 0x1111);
+	mem_w32(&mem, PUT_SCRAP_ENTRY, 0x2222);
+	mem_w32(&mem, JGNE_FILTER, 0x3333);
+	helper_step(&h, &clip, &c, 0, 0);
+	CHECK(h.patched && clip.listening);
+	CHECK_EQ(c.tvector, IMPORT(IMP_WNE));
+	check_descriptor(mem_r32(&mem, ZERO_SCRAP_ENTRY), 0x30, TOC + h.layout.entry[1]);
+	check_descriptor(mem_r32(&mem, PUT_SCRAP_ENTRY), 0xFF0, TOC + h.layout.entry[2]);
+	uint32_t filter = mem_r32(&mem, JGNE_FILTER);
+	CHECK_EQ(mem_r32(&mem, filter), 0x48E7E0C0);           /* movem.l d0-d2/a0-a1,-(sp) */
+	CHECK_EQ(mem_r16(&mem, filter + 6), 0x4EB9);            /* jsr ... */
+	check_descriptor(mem_r32(&mem, filter + 8), 0xC0, TOC + h.layout.entry[3]);
+	CHECK_EQ(mem_r16(&mem, filter + 16), 0x2F3C);           /* ... then the filter before it */
+	CHECK_EQ(mem_r32(&mem, filter + 18), 0x3333);
+
+	/* an application's copy: ZeroScrap, PutScrap, each calling the routine patched over */
+	patch_step(&h, &clip, &c, 1, 0);
+	CHECK_EQ(c.tvector, IMPORT(IMP_CALL_UNIVERSAL_PROC));
+	CHECK(c.out[0] == 0x1111 && c.out[1] == 0x30);
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK(c.done && c.result == 0);
+	memcpy(mem_ptr(&mem, SCRAP_TEXT), "caf\x8E\rok", 7);
+	c = (struct ndrv_call){ .mem = &mem, .entry = 2, .toc = TOC, .frame = FRAME + 0x100,
+				.arg = { 7, FOURCC('T', 'E', 'X', 'T'), SCRAP_TEXT } };
+	helper_call(&h, &c, &video, &clip);
+	CHECK_EQ(c.tvector, IMPORT(IMP_CALL_UNIVERSAL_PROC));
+	CHECK(c.out[0] == 0x2222 && c.out[1] == 0xFF0 && c.out[2] == 7 && c.out[4] == SCRAP_TEXT);
+	CHECK(!clip.got);
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK(c.done && c.result == 0);
+	const char *got = clip_take(&clip);
+	CHECK(got && strcmp(got, "caf\xC3\xA9\nok") == 0);
+	CHECK_EQ(h.scrap_calls, 2);
+
+	/* the host's text: a resume event for the front application, saying the clipboard has changed */
+	clip_host_text(&clip, "na\xC3\xAFve");
+	memset(mem_ptr(&mem, event), 0, 16);
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c.tvector, IMPORT(IMP_POST_EVENT));
+	CHECK(c.out[0] == 15 && c.out[1] == 0x01000003);
+	CHECK(!clip_telling(&clip));
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c.tvector, IMPORT(IMP_WNE));
+
+	/* the filter in a background application: not for it */
+	patch_step(&h, &clip, &c, 3, event);
+	CHECK_EQ(c.tvector, IMPORT(IMP_GET_CURRENT_PROCESS));
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c.tvector, IMPORT(IMP_GET_FRONT_PROCESS));
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c.tvector, IMPORT(IMP_SAME_PROCESS));
+	uint32_t same = c.out[2];
+	mem_w8(&mem, same, 0);
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK(c.done && clip.pending);
+
+	/* ... and in the front one: into its scrap, as 'TEXT' and 'utxt' */
+	patch_step(&h, &clip, &c, 3, event);
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	mem_w8(&mem, same, 1);
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c.tvector, IMPORT(IMP_TEMP_NEW_HANDLE));
+	CHECK_EQ(c.out[0], 10);                                 /* (room for either) */
+	mem_w32(&mem, TEMP, TEMP + 16);
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, TEMP);
+	CHECK(c.tvector == IMPORT(IMP_HLOCK) && c.out[0] == TEMP);
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK(c.tvector == IMPORT(IMP_CALL_UNIVERSAL_PROC) && c.out[0] == 0x1111);      /* ZeroScrap */
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK(c.out[0] == 0x2222 && c.out[2] == 5 && c.out[3] == FOURCC('T', 'E', 'X', 'T') && c.out[4] == TEMP + 16);
+	CHECK(!memcmp(mem_ptr(&mem, TEMP + 16), "na\x95ve", 5));
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK(!clip.pending && clip.to_mac == 1);
+	CHECK(c.out[0] == 0x2222 && c.out[2] == 10 && c.out[3] == FOURCC('u', 't', 'x', 't'));
+	CHECK(!memcmp(mem_ptr(&mem, TEMP + 16), "\0n\0a\0\xEF\0v\0e", 10));
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK(c.tvector == IMPORT(IMP_DISPOSE_HANDLE) && c.out[0] == TEMP);
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK(c.done && !h.delivering);
+	patch_step(&h, &clip, &c, 3, event);                   /* (nothing more to put there) */
+	CHECK(c.done);
+
+	/* quitting: the patches go */
+	quit(&h, &clip, event);
+	CHECK_EQ(mem_r32(&mem, ZERO_SCRAP_ENTRY), 0x1111);
+	CHECK_EQ(mem_r32(&mem, PUT_SCRAP_ENTRY), 0x2222);
+	CHECK_EQ(mem_r32(&mem, JGNE_FILTER), 0x3333);
+	CHECK(!clip.listening);
+	clip_free(&clip);
 }
 
 void test_tools(void)
@@ -404,5 +584,7 @@ void test_tools(void)
 	mem_map(&mem, FB, FB_SIZE, MEM_RW);
 	test_custom_modes();
 	test_helper();
+	test_helper_v1();
+	test_helper_clipboard();
 	mem_free(&mem);
 }
