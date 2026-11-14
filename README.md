@@ -18,12 +18,13 @@ Linux today; other hosts / bare metal later
 
 ## Target
 
-- **ROM:** `MOS.rom`, a 1.x NewWorld `Mac OS ROM` file (NanoKernel ID
-  `NewWorld v1.0`, compatible with `iMac,1 PowerMac1,1 PowerBook1,1`). Same
-  family SheepShaver uses; ships with Mac OS 8.5–8.6.
-- **OS:** the retail Mac OS 8.5 CD (`85.iso`). It boots, with `MOS.rom` or
-  with the older ROM file it carries itself (1.1.x, no `<COMPATIBLE>` list;
-  see Status).
+- **ROM:** the "Mac OS ROM" file from the startup disk's System Folder, as
+  a New World Mac's firmware starts it (see Status); `--rom` for one of your
+  own. Tested: 8.5's own (Toolbox release 0x44F3), 8.6's (0x44B5), 9.1's
+  (6.1f9, in parcels), and `MOS.rom`, a 1.x file (0x44F1, compatible with
+  `iMac,1 PowerMac1,1 PowerBook1,1`; the family SheepShaver uses).
+- **OS:** the retail Mac OS 8.5 CD (`85.iso`). It boots with the ROM file it
+  carries itself (1.1.x, no `<COMPATIBLE>` list) or with `MOS.rom`.
 - **Machine identity:** to be decided by the universal info tables syshm
   builds. Retail 8.5 predates the Blue & White G3, so an iMac identity is the
   safer first choice; B&W G3 (`PowerMac1,1`) for 8.5.1 and later.
