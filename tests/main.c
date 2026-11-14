@@ -22,6 +22,7 @@ int main(int argc, char **argv)
 		{ "drivers", test_drivers },
 		{ "net", test_net },
 		{ "hfs", test_hfs },
+		{ "hfsread", test_hfsread },
 		{ "tools", test_tools },
 		{ "raster", test_raster },
 		{ "rave", test_rave },

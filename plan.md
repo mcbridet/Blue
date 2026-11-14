@@ -71,7 +71,7 @@ Done:
 Where it stops:
 
 ```
-build/syshm boot MOS91.rom --cdrom 91.iso --max 20000000000
+build/syshm boot --cdrom 91.iso --max 20000000000
 stopped: instruction limit reached (system context)
 ```
 
@@ -95,13 +95,13 @@ image as the destination.
 - **Don't change 8.5–9.0.4.** Everything new is for NanoKernel 2 ROMs only,
   behind `m->mp_kernel` (true for ROM files with parcels). Before handing
   back, check that the 8.5 CD still reaches the Finder:
-  `build/syshm boot MOS.rom --cdrom 85.iso --max 4000000000 --screenshot
+  `build/syshm boot --rom MOS.rom --cdrom 85.iso --max 4000000000 --screenshot
   /tmp/85.png` (only the menu-bar clock may differ between runs).
 - **Stay reproducible.** Runs in instruction time (no `--window` or
   `--realtime`) must stay exactly reproducible: guest tasks run on the one
   host thread, scheduled at instruction counts and guest timebase values,
   never by host time.
-- **The 9.1 check:** `build/syshm boot MOS91.rom --cdrom 91.iso --max
+- **The 9.1 check:** `build/syshm boot --cdrom 91.iso --max
   20000000000` (a few seconds). Add `SYSHM_LOG_MP=1` for the calls, and
   `--screenshot f.png` once something may be on screen. Report the new
   stopping point (the last lines of output).
@@ -407,6 +407,18 @@ the kernel); 8 onwards as the boot progresses.
 - **Goal:** their ROM files (newer parcels, possibly newer kernel
   features) on the same path. Find out first whether they list `iMac,1`
   in `<COMPATIBLE>`.
+
+### 11. ROM from the startup disk
+
+- **Status:** done. Without `--rom`, `syshm boot` takes the "Mac OS ROM"
+  file from the startup disk, as a New World Mac's firmware does: the first
+  drive in command-line order (partitions in map order) whose blessed
+  System Folder (Finder info word 0) holds a file of type `tbxi`, the first
+  in catalog order (`src/hfsread.c`: HFS, HFS+, HFS+ in an HFS wrapper;
+  extents overflow). It prints where from (`rom: "Mac OS 9.1:System
+  Folder:Mac OS ROM" from 91.iso, ...`); the run is otherwise as with
+  `--rom MOS91.rom`. `rom info 91.iso` (and the other `rom` commands) read
+  a disk image's the same way. `tests/test_hfsread.c` covers the reader.
 
 ## Findings
 

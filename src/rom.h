@@ -40,7 +40,12 @@ struct rom {
 
 /* Returns 0 on success; on failure returns -1 and writes a message to err. */
 int rom_load(const char *path, struct rom *rom, char *err, size_t errlen);
+/* The same from a file's contents in memory (copied); `name` is for messages. */
+int rom_load_mem(const void *data, size_t size, const char *name, struct rom *rom, char *err, size_t errlen);
 void rom_free(struct rom *rom);
+
+/* The ROM file's version from its parcels ("6.1f9"), or "" for files without one; returns its length. */
+size_t rom_file_version(const struct rom *rom, char *buf, size_t len);
 
 uint32_t rom_stored_checksum(const struct rom *rom);
 uint32_t rom_computed_checksum(const struct rom *rom);
