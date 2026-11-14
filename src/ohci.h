@@ -65,6 +65,9 @@ void ohci_set_time(struct ohci *o, uint64_t bit_times);
 uint64_t ohci_next_event(const struct ohci *o);
 
 /* Whether the interrupt line is asserted. */
-bool ohci_irq(const struct ohci *o);
+static inline bool ohci_irq(const struct ohci *o)
+{
+	return (o->int_enable & OHCI_INT_MIE) && (o->int_status & o->int_enable & ~OHCI_INT_MIE);
+}
 
 #endif

@@ -246,6 +246,7 @@ static inline __attribute__((always_inline)) enum ppc_exit interp(struct ppc_cpu
 #include "ppc_exec.inc"
 #undef EXIT
 #undef CHECK_HOOK
+	retired:
 		if (block && (OPCD(i) == 16 || OPCD(i) == 18 || (OPCD(i) == 19 && (XO10(i) == 16 || XO10(i) == 528)) ||
 			      !((pc + 4) & (MEM_PAGE_SIZE - 1)))) {
 			pc = npc;
@@ -255,6 +256,21 @@ static inline __attribute__((always_inline)) enum ppc_exit interp(struct ppc_cpu
 		pc = npc;
 		continue;
 	stop:
+		if (ex == PPC_EXIT_DSI && c->mmio) {    /* a device register, perhaps */
+			c->pc = pc;
+			c->exit_insn = i;
+			int r = ppc_mmio(c, done);
+			if (r == PPC_MMIO_DONE) {
+				ex = PPC_EXIT_BUDGET;
+				goto retired;
+			}
+			if (r == PPC_MMIO_STOP) {
+				pc = npc;
+				done++;
+				ex = PPC_EXIT_MMIO;
+				break;
+			}
+		}
 		c->exit_insn = i;
 		break;
 	}
@@ -290,6 +306,17 @@ bool ppc_step(struct ppc_cpu *c, uint32_t i, uint32_t pc)
 	return true;
 }
 
+int ppc_mmio(struct ppc_cpu *c, uint64_t done)
+{
+	uint64_t icount = c->icount, tb = c->tb;
+	c->icount += done;
+	c->tb += done * c->tb_step;
+	int r = c->mmio(c->mmio_ctx, c);
+	c->icount = icount;
+	c->tb = tb;
+	return r;
+}
+
 enum ppc_exit ppc_run(struct ppc_cpu *c, uint64_t budget)
 {
 	if (c->jit && !c->trace && c->break_lo == c->break_hi && c->break_pc == PPC_NO_HOOK)
@@ -322,6 +349,7 @@ const char *ppc_exit_name(enum ppc_exit e)
 	case PPC_EXIT_HOSTCALL: return "hostcall";
 	case PPC_EXIT_BREAK:    return "break";
 	case PPC_EXIT_HOOK:     return "hook";
+	case PPC_EXIT_MMIO:     return "mmio";
 	case PPC_EXIT_NONE:     return "none";
 	}
 	return "?";

@@ -7,7 +7,9 @@
  * Memory: code and data in RAM, and a read-only page whose neighbours in
  * the same 16 KB are unmapped, so that fastmem faults (genuinely, or just
  * because of the host page size) for loads and stores of every kind, and
- * for stores into the code.
+ * for stores into the code. And an unmapped page with a device behind it,
+ * through the mmio hook (fake_device() below), which must see the same
+ * accesses, at the same instruction counts and times, either way.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +17,7 @@
 #include "../src/a64.h"
 #include "../src/jit.h"
 #include "../src/mem.h"
+#include "../src/mmio.h"
 #include "../src/ppc.h"
 #include "../src/ppc_fp.h"
 #include "test.h"
@@ -24,6 +27,7 @@
 #define DATA 0x00040000u                /* 64 KB, read/write */
 #define DATA_SIZE 0x10000u
 #define RO_PAGE 0x00050000u             /* readable only */
+#define IO_PAGE 0x00060000u             /* a device's registers (unmapped) */
 #define BASE_A 0x00044000u              /* r31 */
 #define BASE_B 0x00048000u              /* r29 (update forms) */
 #define BASE_END (DATA + DATA_SIZE - 0x1000u)   /* r31 sometimes: crossing into RO_PAGE */
@@ -207,7 +211,76 @@ static uint32_t gen_insn(unsigned k, unsigned n)
 struct side {
 	struct mem mem;
 	struct ppc_cpu cpu;
+	struct device *dev;
 };
+
+/*
+ * The device behind IO_PAGE: what its registers read follows from all it
+ * has seen, the accesses and the instruction counts and times of them
+ * (mixed into `state`). As the kernel's hook would, it takes an access or
+ * not depending on its address and its state, and not on the run's last
+ * instruction; and having taken one, it sometimes changes CR (as posting
+ * an interrupt does), data, or the code (as DMA might), or stops the run.
+ */
+struct device {
+	struct mmio_bus bus;
+	struct mem *mem;
+	uint64_t state;
+	unsigned long accesses;
+	uint64_t until;                 /* the run's end */
+};
+
+static uint64_t mix(uint64_t h, uint64_t v)
+{
+	h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+	return h * 0xBF58476D1CE4E5B9ull;
+}
+
+static uint32_t device_read(void *ctx, uint32_t off, unsigned size)
+{
+	struct device *d = ctx;
+	d->state = mix(d->state, off << 4 | size);
+	return (uint32_t)(d->state >> 13) & (uint32_t)(0xFFFFFFFFull >> (32 - 8 * size));
+}
+
+static void device_write(void *ctx, uint32_t off, unsigned size, uint32_t v)
+{
+	struct device *d = ctx;
+	d->state = mix(d->state, (uint64_t)v << 32 | off << 4 | size);
+}
+
+static const struct mmio_ops device_ops = { device_read, device_write };
+
+static int fake_device(void *ctx, struct ppc_cpu *cpu)
+{
+	struct device *d = ctx;
+	struct mmio_access a;
+	if (cpu->icount + 1 >= d->until || (cpu->fault_addr & 0x700) == 0x700 || !((d->state ^ cpu->fault_addr) & 15) ||
+	    !mmio_decode(&d->bus, cpu, &a))
+		return PPC_MMIO_NO;
+	d->state = mix(mix(mix(d->state, cpu->icount), cpu->tb), cpu->pc);
+	mmio_perform(&a, cpu);
+	d->accesses++;
+	switch (d->state >> 60) {
+	case 0:
+		cpu->cr ^= (uint32_t)d->state;
+		break;
+	case 1:
+		mem_w32(d->mem, DATA + ((uint32_t)(d->state >> 20) & (DATA_SIZE - 4)), (uint32_t)d->state);
+		break;
+	case 2: {                                                       /* (just ahead: the block that's running, perhaps) */
+		uint32_t at = cpu->pc + 4 * ((uint32_t)(d->state >> 32) % 8);
+		if (at - CODE < 4 * CODE_MAX) {
+			mem_invalidate(d->mem, at, 4);
+			mem_w32(d->mem, at, 0x60000000u);                      /* nop */
+		}
+		break;
+	}
+	case 3: case 4:
+		return PPC_MMIO_STOP;
+	}
+	return PPC_MMIO_DONE;
+}
 
 static void setup(struct side *s, bool jit)
 {
@@ -216,6 +289,9 @@ static void setup(struct side *s, bool jit)
 	mem_map(&s->mem, DATA, DATA_SIZE, MEM_RW);
 	mem_map(&s->mem, RO_PAGE, MEM_PAGE_SIZE, MEM_R);
 	ppc_init(&s->cpu, &s->mem);
+	s->dev = calloc(1, sizeof *s->dev);
+	s->dev->mem = &s->mem;
+	mmio_add(&s->dev->bus, IO_PAGE, MEM_PAGE_SIZE, &device_ops, s->dev, "device");
 	if (jit) {
 		setenv("SYSHM_JIT_HOT", "0", 1);        /* translate at once: blocks here run a few times */
 		s->cpu.jit = jit_create(&s->mem);
@@ -231,10 +307,11 @@ static bool same(const struct side *a, const struct side *b, enum ppc_exit ea, e
 		  x->vrsave == y->vrsave && !memcmp(x->gpr, y->gpr, sizeof x->gpr) &&
 		  !memcmp(x->fpr, y->fpr, sizeof x->fpr) && x->resv_valid == y->resv_valid &&
 		  x->hook_match_skip == y->hook_match_skip &&
-		  (!x->resv_valid || x->resv_addr == y->resv_addr);
+		  (!x->resv_valid || x->resv_addr == y->resv_addr) &&
+		  a->dev->state == b->dev->state && a->dev->accesses == b->dev->accesses;
 	if (ok && ea != PPC_EXIT_BUDGET && ea != PPC_EXIT_HOOK)
 		ok = x->exit_insn == y->exit_insn;
-	if (ok && ea == PPC_EXIT_DSI)
+	if (ok && (ea == PPC_EXIT_DSI || ea == PPC_EXIT_MMIO))
 		ok = x->fault_addr == y->fault_addr && x->fault_write == y->fault_write;
 	return ok && !memcmp(mem_ptr(&a->mem, DATA), mem_ptr(&b->mem, DATA), DATA_SIZE) &&
 	       !memcmp(mem_ptr(&a->mem, CODE), mem_ptr(&b->mem, CODE), CODE_MAX * 4 + 64);
@@ -260,6 +337,9 @@ static void report(const struct side *a, const struct side *b, enum ppc_exit ea,
 	if (x->ctr != y->ctr) fprintf(stderr, "  ctr %08x / %08x\n", x->ctr, y->ctr);
 	if (x->fpscr != y->fpscr) fprintf(stderr, "  fpscr %08x / %08x\n", x->fpscr, y->fpscr);
 	if (x->fault_addr != y->fault_addr) fprintf(stderr, "  fault %08x / %08x\n", x->fault_addr, y->fault_addr);
+	if (a->dev->state != b->dev->state || a->dev->accesses != b->dev->accesses)
+		fprintf(stderr, "  device %016llx (%lu accesses) / %016llx (%lu)\n", (unsigned long long)a->dev->state,
+			a->dev->accesses, (unsigned long long)b->dev->state, b->dev->accesses);
 	for (uint32_t o = 0; o < DATA_SIZE; o += 4)
 		if (mem_r32(&a->mem, DATA + o) != mem_r32(&b->mem, DATA + o)) {
 			fprintf(stderr, "  mem %08x: %08x / %08x\n", DATA + o, mem_r32(&a->mem, DATA + o),
@@ -301,10 +381,13 @@ static void test_random_programs(unsigned programs, bool rom_code)
 	if (!b.cpu.jit) {
 		mem_free(&a.mem);
 		mem_free(&b.mem);
+		free(a.dev);
+		free(b.dev);
 		return;         /* no JIT on this host */
 	}
 	uint8_t *data = malloc(DATA_SIZE);
 	unsigned failures = 0;
+	unsigned long device_accesses = 0;
 	const char *first = getenv("SYSHM_JIT_SEED");
 	uint64_t base = first ? strtoull(first, NULL, 0) : 0;
 
@@ -323,10 +406,10 @@ static void test_random_programs(unsigned programs, bool rom_code)
 		ppc_init(&init, NULL);
 		for (int r = 0; r < 32; r++)
 			init.gpr[r] = interesting();
-		init.gpr[28] = pick(4) ? DATA + 0x100 : CODE + 4 * pick(n);     /* sometimes stores hit code */
+		init.gpr[28] = pick(4) ? DATA + 0x100 : pick(2) ? CODE + 4 * pick(n) : IO_PAGE + 0x400;  /* sometimes stores hit code */
 		init.gpr[29] = BASE_B;
 		init.gpr[30] = pick(64) * 4 + pick(4);
-		init.gpr[31] = pick(8) ? BASE_A : pick(2) ? RO_PAGE + 0x800 : BASE_END;
+		init.gpr[31] = pick(8) ? BASE_A : pick(3) == 0 ? RO_PAGE + 0x800 : pick(2) ? IO_PAGE + 0x800 : BASE_END;
 		for (int r = 0; r < 32; r++)
 			init.fpr[r] = fp_value();
 		switch (pick(8)) {                                      /* FPSCR: mostly as programs run */
@@ -354,6 +437,8 @@ static void test_random_programs(unsigned programs, bool rom_code)
 						a - DATA < DATA_SIZE - 1 ? (uint16_t)(data[a - DATA] << 8 | data[a - DATA + 1]) : 0;
 		}
 
+		bool device = pick(4) != 0;                             /* (otherwise its accesses all fault) */
+		uint64_t device_state = (uint64_t)rnd() << 32 | rnd();
 		for (int side = 0; side < 2; side++) {
 			struct side *s = side ? &b : &a;
 			struct jit *j = s->cpu.jit;
@@ -364,11 +449,19 @@ static void test_random_programs(unsigned programs, bool rom_code)
 			s->cpu = init;
 			s->cpu.mem = &s->mem;
 			s->cpu.jit = j;
+			if (device) {
+				s->cpu.mmio = fake_device;
+				s->cpu.mmio_ctx = s->dev;
+			}
+			s->dev->state = device_state;
+			s->dev->accesses = 0;
 		}
 
 		/* several runs with random budgets, as the kernel would make them */
 		for (int run = 0; run < 6; run++) {
 			uint64_t budget = 1 + pick(run & 1 ? 8 : 400);
+			a.dev->until = a.cpu.icount + budget;
+			b.dev->until = b.cpu.icount + budget;
 			enum ppc_exit ea = ppc_interp(&a.cpu, budget);
 			enum ppc_exit eb = ppc_run(&b.cpu, budget);
 			if (!same(&a, &b, ea, eb)) {
@@ -377,7 +470,7 @@ static void test_random_programs(unsigned programs, bool rom_code)
 				test_failures++;
 				break;
 			}
-			if (ea == PPC_EXIT_HOOK || ea == PPC_EXIT_BUDGET)
+			if (ea == PPC_EXIT_HOOK || ea == PPC_EXIT_BUDGET || ea == PPC_EXIT_MMIO)
 				continue;
 			if (ea == PPC_EXIT_SC || ea == PPC_EXIT_TRAP || ea == PPC_EXIT_ILLEGAL || ea == PPC_EXIT_PRIV ||
 			    ea == PPC_EXIT_DSI || ea == PPC_EXIT_UNIMPL) {
@@ -388,12 +481,16 @@ static void test_random_programs(unsigned programs, bool rom_code)
 			}
 			break;
 		}
+		device_accesses += b.dev->accesses;
 	}
 	free(data);
 	check_fastmem(b.cpu.jit);
+	CHECK(device_accesses > 0);
 	jit_free(b.cpu.jit);
 	mem_free(&a.mem);
 	mem_free(&b.mem);
+	free(a.dev);
+	free(b.dev);
 }
 
 /* The value of a logical immediate N:immr:imms (DecodeBitMasks, in the Arm ARM); 0 if invalid */

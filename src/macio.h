@@ -26,9 +26,22 @@ struct macio {
 };
 
 void macio_init(struct macio *mio);
-void macio_set_line(struct macio *mio, unsigned source, bool asserted);
 void macio_pulse(struct macio *mio, unsigned source);
-uint32_t macio_pending(const struct macio *mio, int bank);
+
+static inline void macio_set_line(struct macio *mio, unsigned source, bool asserted)
+{
+	uint32_t bit = 0x80000000u >> (source & 31);
+	int bank = source >= 32;
+	if (asserted)
+		mio->levels[bank] |= bit;
+	else
+		mio->levels[bank] &= ~bit;
+}
+
+static inline uint32_t macio_pending(const struct macio *mio, int bank)
+{
+	return mio->mask[bank] & (mio->levels[bank] | mio->events[bank] | mio->taken[bank]);
+}
 
 /*
  * The kernel's external interrupt handler acknowledges the latched pulses it

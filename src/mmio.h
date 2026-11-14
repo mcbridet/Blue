@@ -44,4 +44,15 @@ enum mmio_result {
 /* Emulates the load/store that just faulted (cpu->exit_insn at cpu->fault_addr). */
 enum mmio_result mmio_emulate(const struct mmio_bus *bus, struct ppc_cpu *cpu);
 
+/* ... in two steps: decoded, then done */
+struct mmio_access {
+	const struct mmio_region *region;       /* NULL: not a device register */
+	bool store, update, reverse, sign;
+	unsigned size, rt, ra;
+};
+
+/* false (changing nothing) if mmio_emulate() wouldn't return MMIO_DONE */
+bool mmio_decode(const struct mmio_bus *bus, const struct ppc_cpu *cpu, struct mmio_access *a);
+void mmio_perform(const struct mmio_access *a, struct ppc_cpu *cpu);
+
 #endif

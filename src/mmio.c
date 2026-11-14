@@ -20,16 +20,11 @@ const struct mmio_region *mmio_find(const struct mmio_bus *bus, uint32_t addr)
 	return NULL;
 }
 
-struct access {
-	bool store, update, reverse, sign;
-	unsigned size, rt, ra;
-};
-
-static bool decode(uint32_t i, struct access *a)
+static bool decode(uint32_t i, struct mmio_access *a)
 {
 	unsigned op = i >> 26;
 
-	*a = (struct access){ .rt = (i >> 21) & 31, .ra = (i >> 16) & 31 };
+	*a = (struct mmio_access){ .region = a->region, .rt = (i >> 21) & 31, .ra = (i >> 16) & 31 };
 	switch (op) {
 	case 32: case 33: a->size = 4; break;                           /* lwz lwzu */
 	case 34: case 35: a->size = 1; break;                           /* lbz lbzu */
@@ -69,35 +64,41 @@ static uint32_t swap(uint32_t v, unsigned size)
 	return size == 4 ? __builtin_bswap32(v) : size == 2 ? __builtin_bswap16((uint16_t)v) : v;
 }
 
-enum mmio_result mmio_emulate(const struct mmio_bus *bus, struct ppc_cpu *cpu)
+bool mmio_decode(const struct mmio_bus *bus, const struct ppc_cpu *cpu, struct mmio_access *a)
 {
-	uint32_t ea = cpu->fault_addr;
-	const struct mmio_region *r = mmio_find(bus, ea);
-	if (!r)
-		return MMIO_NOT_DEVICE;
+	a->region = mmio_find(bus, cpu->fault_addr);
+	return a->region && decode(cpu->exit_insn, a) && a->store == cpu->fault_write;
+}
 
-	struct access a;
-	if (!decode(cpu->exit_insn, &a) || a.store != cpu->fault_write)
-		return MMIO_BAD_INSN;
-
-	uint32_t off = ea - r->base;
-	if (a.store) {
-		uint32_t v = cpu->gpr[a.rt];
-		if (a.size < 4)
-			v &= (1u << (8 * a.size)) - 1;
-		r->ops->write(r->ctx, off, a.size, a.reverse ? swap(v, a.size) : v);
+void mmio_perform(const struct mmio_access *a, struct ppc_cpu *cpu)
+{
+	const struct mmio_region *r = a->region;
+	uint32_t ea = cpu->fault_addr, off = ea - r->base;
+	if (a->store) {
+		uint32_t v = cpu->gpr[a->rt];
+		if (a->size < 4)
+			v &= (1u << (8 * a->size)) - 1;
+		r->ops->write(r->ctx, off, a->size, a->reverse ? swap(v, a->size) : v);
 	} else {
-		uint32_t v = r->ops->read(r->ctx, off, a.size);
-		if (a.reverse)
-			v = swap(v, a.size);
-		if (a.sign)
+		uint32_t v = r->ops->read(r->ctx, off, a->size);
+		if (a->reverse)
+			v = swap(v, a->size);
+		if (a->sign)
 			v = (uint32_t)(int32_t)(int16_t)v;
-		cpu->gpr[a.rt] = v;
+		cpu->gpr[a->rt] = v;
 	}
-	if (a.update)
-		cpu->gpr[a.ra] = ea;
+	if (a->update)
+		cpu->gpr[a->ra] = ea;
 	cpu->pc += 4;
 	cpu->icount++;
 	cpu->tb += cpu->tb_step;
+}
+
+enum mmio_result mmio_emulate(const struct mmio_bus *bus, struct ppc_cpu *cpu)
+{
+	struct mmio_access a;
+	if (!mmio_decode(bus, cpu, &a))
+		return a.region ? MMIO_BAD_INSN : MMIO_NOT_DEVICE;
+	mmio_perform(&a, cpu);
 	return MMIO_DONE;
 }

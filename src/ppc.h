@@ -29,8 +29,12 @@ enum ppc_exit {
 	PPC_EXIT_BREAK,     /* pc entered [break_lo, break_hi) or is break_pc (instruction not executed) */
 	PPC_EXIT_HOOK,      /* a branch arrived at hook_pc (the branch is done, the target isn't),
 			       or the match hook stopped at its pc (nothing there done) */
+	PPC_EXIT_MMIO,      /* the mmio hook did a load/store and asked to stop after it (see below) */
 	PPC_EXIT_NONE,      /* (internal: keep going) */
 };
+
+/* What the mmio hook did (see struct ppc_cpu) */
+enum { PPC_MMIO_NO, PPC_MMIO_DONE, PPC_MMIO_STOP };
 
 #define PPC_NO_HOOK 1u      /* never a branch target */
 
@@ -84,6 +88,18 @@ struct ppc_cpu {
 	uint16_t hook_match_value;
 	uint8_t hook_match_reg;
 	bool hook_match_skip;
+	/*
+	 * The mmio hook, for device registers (NULL for none): a load or store
+	 * that faults (DSI) is offered to it first, by the interpreter and by
+	 * generated code, with pc, icount, tb, exit_insn, fault_addr and
+	 * fault_write as they would be at the DSI exit. It returns PPC_MMIO_NO
+	 * having changed nothing (the exit follows), or does what the kernel
+	 * would do after that exit, retiring the instruction as mmio_emulate()
+	 * does, and returns PPC_MMIO_DONE to go on, or PPC_MMIO_STOP to stop
+	 * right after it (PPC_EXIT_MMIO) for the kernel to do the rest.
+	 */
+	int (*mmio)(void *ctx, struct ppc_cpu *cpu);
+	void *mmio_ctx;
 
 	struct mem *mem;
 	struct jit *jit;        /* translate to host code (NULL: interpret) */
@@ -108,6 +124,14 @@ enum ppc_exit ppc_interp_block(struct ppc_cpu *cpu, uint64_t budget);
  * base must be current (no mftb). For the JIT's slow paths.
  */
 bool ppc_step(struct ppc_cpu *cpu, uint32_t insn, uint32_t pc);
+
+/*
+ * Offers the load/store that faulted (exit_insn at pc, fault_addr) to the
+ * mmio hook, `done` instructions into a run that hasn't added them to
+ * icount and tb yet; afterwards those are as they were, for the caller to
+ * count the instruction with the others it retires.
+ */
+int ppc_mmio(struct ppc_cpu *cpu, uint64_t done);
 const char *ppc_exit_name(enum ppc_exit e);
 void ppc_dump(const struct ppc_cpu *cpu, FILE *f);
 
