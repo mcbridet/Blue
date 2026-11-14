@@ -106,7 +106,7 @@ the next process's wake time with Multiprocessing Services call 55
 then until that time or an interrupt, as for `PowerDispatch`; any other
 `MPDispatch` call stops the run, naming it.
 
-### Mac OS 9.1 (not yet)
+### Mac OS 9.1 (from its CD)
 
 9.1's System won't start with `MOS.rom` ("This startup disk will not work
 on this Macintosh model"). It needs the ROM file from its own CD (Mac OS ROM
@@ -151,10 +151,30 @@ or naps while they do. Startup makes three tasks, which first run once the
 one for the debugger's queue, and the page ager, which then waits for 3
 seconds. Meanwhile the Time Manager's timers fire, each setting an event
 group that raises a level-1 software interrupt; the 68k handler takes the
-group's flags and the Time Manager carries on, and so does startup. When
-the page ager's 3 seconds are up it looks through the areas for pages to
-age, asking for each area's details, which syshm doesn't give yet: the run
-stops there, with the screen still blank.
+group's flags and the Time Manager carries on, and so does startup. Every
+3 seconds the page ager looks through the areas for pages to age: it asks
+for each area's details, skips the contiguous ones (all but Mac OS's RAM),
+and makes some of the RAM's pages older (with no virtual memory, nothing
+makes them younger again).
+
+Later in startup Mac OS looks for a CPU plugin, code that knows the
+machine's processors, and registers the one for G3 machines with Grackle;
+the kernel runs its routines when asked, there and then, with interrupts
+off (it says there's one processor). Then Mac OS makes a process of its
+own and moves the blue task into it.
+
+The CD then starts up to the Finder ("Mac OS 9.1", Starting Up with the
+extensions' icons, then the CD's window), within 2 billion instructions
+(about a second):
+
+```
+build/syshm boot MOS91.rom --cdrom 91.iso --max 3000000000 --screenshot finder.png
+```
+
+Not done yet: the clock (the menu bar says 12:00 AM: 9.1 doesn't ask RTAS
+for the time, as 8.5 does), NVRAM (9.1 doesn't use RTAS for it either, and
+syshm has no NVRAM device of its own), and installing 9.1 onto a disk
+image with its installer and starting up from that.
 
 ### Networking
 

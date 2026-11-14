@@ -37,11 +37,12 @@ Done:
   (20-23), critical regions (25-28), event groups (49-52, 54),
   notifications (64-67, 128), task queries (11, 12, 14, 56, 59, 63),
   `MPYieldWithHint` (13), `MPGetNextID` (37), areas (77, 80; one per
-  startup region plus Mac OS's RAM), the page ager's (82, 100, and 116 for
-  an invalid process), timers (40, 41, 30, 31, 32), delays (33, and 55 for
-  tasks), and `sc` with r0 -1 and -2 (`system_call()`: is the current task
-  the blue one). `SYSHM_LOG_MP=1` logs each, the task switches, timers
-  firing and software interrupts raised.
+  startup region plus Mac OS's RAM; 78 their records, 93/94 page ages),
+  the page ager's (82, 100), timers (40, 41, 30, 31, 32), delays (33, and
+  55 for tasks), processes (3, 4, 5, 6, 99, 116), the CPU plugin (2, 46,
+  in `nk.c`), and `sc` with r0 -1 and -2 (`system_call()`: is the current
+  task the blue one). `SYSHM_LOG_MP=1` logs each, the task switches,
+  timers firing and software interrupts raised.
 - **Tasks** (Task 1): tasks other than the blue one are made, started,
   terminated and deleted, and run on the one processor: registers saved
   in `struct mp`, swapped by `switch_task()`.
@@ -61,31 +62,30 @@ Done:
   `MPWaitForEvent` takes it out (`swi_taken()`). The emulator's
   PriorityShifty bits (0x100, the top bit) are kept as NanoKernel 2 keeps
   them, so the emulator yields its boost when it unmasks interrupts.
+- **The rest of startup** (Task 8): the page ager's area records (78) and
+  page ages (93, 94); the CPU plugin (2, 46: Mac OS registers its G3
+  plugin, whose routines run as NanoKernel 2's SIGP runs them);
+  `MPProcessors` (3); processes (4, 5, 6, 99, 116). The 9.1 CD boots to
+  the Finder.
 
 Where it stops:
 
 ```
 build/syshm boot MOS91.rom --cdrom 91.iso --max 20000000000
-MPDispatch: call 78 (unnamed; r3=0x00040001 r4=0x00000001 r5=0x00000000 r6=0x00068D28) at pc 0xFFCE2AF4, lr 0xFFCE1FB0
-stopped: unimplemented Multiprocessing Services call (task 0x00230001)
+stopped: instruction limit reached (system context)
 ```
 
-The first of the Time Manager's timers armed for real (0x00450001) fires
-at instruction 54,160,000 and raises the level-1 software interrupt; the
-emulator takes it 20 instructions later (vector 0x58, group 0x00160001
-pushed), and its handler's `MPWaitForEvent` gets flags 8, then the Time
-Manager's loop runs (18, 31, 13, 18 → -29296, as on the real kernel). From
-then on one comes about every 17 ms of guest time (186 to the stop). When
-the 68k code unmasks interrupts the emulator yields (13), so the blue task
-keeps the processor until its time slice ends and startup's three tasks
-first run at instruction 54,320,000: 'deth' and 'dbgr' block on their
-queues; 'ager' sets itself up (100, 64, 15, 39, 49, 66, 66, 82, 116, 100,
-the real kernel's sequence) and waits 3 s in `MPWaitForEvent`. The blue
-task carries on with startup (68k traps all along; syshm's display driver
-is opened, the screen stays white) until the page ager's 3 s are up at
-instruction 104,444,849: it walks the areas for pages to age,
-`MPGetNextID` (37) for the first area (0x00040001, Mac OS's RAM), then
-call 78 (the area's details: Task 8's, see Findings).
+The CD's Finder is up by instruction 2 billion (about 1 s on the host):
+"Mac OS 9.1 / Starting Up..." with the extensions' icons, then the desktop
+with the CD's window open (9 items: Before You Install, Installing Mac OS
+9.1.pdf, Mac OS Install, Adobe Software, CD Extras, Utilities...), and it
+idles there (MP calls 11, 13, 18, 31, 32, 52 as the Time Manager runs; the
+page ager every 3 s). Two runs are identical. The menu-bar clock says 12:00
+AM whatever `--fixed-time` says (see Findings, "The clock"); 9.1 makes no
+RTAS calls, so it neither reads nor keeps NVRAM. Installing 9.1 from the CD
+onto a disk image is left to the user (in a window); scripted, its
+installer got as far as its Important Information page with a new 2 GB
+image as the destination.
 
 ## Ground rules for every task
 
@@ -115,7 +115,7 @@ call 78 (the area's details: Task 8's, see Findings).
 - **Hand back:** a short report (what changed, what was found, the new
   stopping point), and update this file: the task's **Status** line, and
   anything learned that later tasks need under **Findings** at the end.
-  Update the README's "Mac OS 9.1 (not yet)" section in the README's
+  Update the README's "Mac OS 9.1 (from its CD)" section in the README's
   style when behaviour changes.
 
 ## References
@@ -359,7 +359,14 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 8. The rest of startup
 
-- **Status:** not started. **Needs:** 2, then whatever the boot needs.
+- **Status:** the 9.1 CD reaches the Finder; installing from it is left to
+  the user (in a window). Done: the page ager's area records (78) and page
+  ages (93, 94); the CPU plugin (2, 46: `cpu_plugin_register()`,
+  `cpu_plugin_call()` in `nk.c`); `MPProcessors` (3); processes (4, 5, 6,
+  99, 116, with every object's owning process). `tests/test_mp.c` covers
+  areas and processes. Open: the clock (12:00 AM; see Findings), NVRAM
+  (9.1 makes no RTAS calls), and whether an installed 9.1 boots. Task 4
+  wasn't needed: no task faulted. See Findings.
 - **Goal:** take the 9.1 check from wherever it stops to the Finder,
   fixing one stop at a time. Expected along the way:
   - More MP calls (areas and pages: `MPCreateArea` 72, `MPGetPhysicalAddress`
@@ -385,7 +392,7 @@ the kernel); 8 onwards as the boot progresses.
 - **Status:** ongoing. Run after every task that changes behaviour.
 - **Checks:** `make test`; the 8.5 CD to the Finder (above); 8.6 and
   9.0.4 if their images are available (copy writable disks first).
-- **Documentation:** the README's "Mac OS 9.1 (not yet)" section and Next
+- **Documentation:** the README's "Mac OS 9.1 (from its CD)" section and Next
   steps; the site's Status window (`site/index.html`, "Mac OS 9.1–9.2.2"
   row) once 9.1 works.
 
@@ -582,21 +589,34 @@ Facts later tasks need, added as they are found.
   highest level left, or 0, in ECB+0xD0 (`swi_taken()`). Without a table
   (ECB+0xC8 0), ECB+0xD0 holds the group itself, one at a time. Deleting a
   group leaves its entry (as NanoKernel 2 does).
-- **The page ager's pass** (every 3 s; Task 8): it walks the areas with
-  `MPGetNextID` (37: class r3, 0 any; the previous ID r4, 0 from the
+- **The page ager's pass** (every 3 s; Task 8, done): it walks the areas
+  with `MPGetNextID` (37: class r3, 0 any; the previous ID r4, 0 from the
   first; the next ID in r4, `kMPInvalidIDErr` after the last, when it
   starts again from 0: with no areas it would spin) and asks for each
   one's record with call 78 (`MPCall_78` in `NKAddressSpaces.s`: area r3,
   r4 must be 1, r5 the offset, 0x00/0x10/0x20/0x30/0x3C; four words back
-  in r6-r9, their byte count in r10). The record, from the Area structure
-  (`NKOpaque.a`): 1, ProcessID, AddressSpaceID, ParentAreaID;
-  BackingProviderID, PTEConfig, FlagsAndMinAlign, LogicalBase; Length,
-  LogicalSeparation, Counter, BytesMapped; PageSize, +0x80, +0x84 (12
-  bytes). The ager skips aliases (ParentAreaID) and areas with 0x8000 in
-  FlagsAndMinAlign, and ages the rest's pages (LogicalBase, Length,
-  PageSize) with 93/94 (`MPGetPageAge`/`MPSetPageAge`: area r3, address r4,
-  age r5, 15 bits); the real kernel's boot makes 520 of each, on the RAM
-  area.
+  in r6-r9, three at 0x30, none at 0x3C, their byte count in r10). The
+  record, from the Area structure (`NKOpaque.a`): 1, ProcessID,
+  AddressSpaceID, ParentAreaID; BackingProviderID, PTEConfig,
+  FlagsAndMinAlign, LogicalBase; Length, LogicalSeparation, Counter (page
+  faults), BytesMapped; PageSize, +0x80, BackingProviderMisc. The real
+  kernel's RAM area: 1, 1, 0x00030001, 0; 0x001A0001, 7, 0x600C, 0;
+  0x0FA1C000, 0, 0, 0x0FA1C000; 0x1000, 0, 0 (`mptrace.py` in the
+  reference run). The kernel's other startup areas are contiguous
+  (FlagsAndMinAlign 0xE00C; PTEConfig from the page map's attributes: 4,
+  |1 unless PP 1, |2 for PP 2 (0 counts as 2), |8 for PP 1, |0x40 W,
+  |0x20 I, |0x80 G: 7 read-write, 5 read-only, 0xA7 I/O). The ager skips
+  aliases (ParentAreaID) and areas with 0x8000, and in each pass ages a
+  number of random pages (40 here) of the next paged area it comes to:
+  `MPGetPageAge` (93: area r3, address r4 → r5) and `MPSetPageAge` (94:
+  age r5, 15 bits), age × 1.25 + 1, at most 0x7FFF. Ages are a halfword
+  per page of a paged area (its FaultCtrArray), 0x7FFF to start with; with
+  0x8000 the page is held (get says 0, set fails with
+  `kMPInsufficientResourcesErr`). NanoKernel 2's 94 also takes the page out
+  of the hash table, and the next use of the page (a hash-table miss)
+  halves its age; syshm has no hash table, so ages only grow.
+  `MPFindVictimPage` (95) takes the oldest; nothing calls it while the free
+  page count stays at `mp->free_pages`.
 - **The page ager:** `MPGetFreePageCount` (100) returns `mp->free_pages`,
   NanoKernel 2's primed free list size, 18 + RAM pages / 2048 (34 at
   128 MB; the real kernel said 16 at 256 MB, its pool having taken some).
@@ -646,3 +666,60 @@ Facts later tasks need, added as they are found.
   group's ID pushed, and the ROM's handler calls MPWaitForEvent(group, 0).
   The Trampoline puts AAPL,CodePrepare and AAPL,CodeRegister first among
   `/`'s children.
+- **The CPU plugin** (Task 8; `nk.c`): code Mac OS registers for the
+  machine's processors (starting others, their clocks, power and
+  temperature). Before one is registered, `MPCpuPlugin` (46: selector r3,
+  arguments r4-r10) returns -29286; Mac OS's probes make it with selector 0
+  (two of them on syshm, from candidate plugins: a 9500/9600 one looking
+  for Hammerhead, then the one that registers). `MPRegisterCpuPlugin` (2:
+  coherence group r3, 0 the machine's; code r4 and size r5, page-aligned;
+  descriptor r6 inside it: +0 a table of stacks by processor, +0x1C the
+  routine count, at most 64, +0x20 their transition vectors) then takes
+  "G3Plugin", which finds Grackle (on QEMU's mac99 a 52 KB one registers
+  instead). Its routines: 0 CountProcessors (it says 1), 1-5 start,
+  resume, stop, reset, signal a processor, 6-7 processor status, 8
+  SynchClock, 9 GotSignal, 10 ProcessorState, 11 RunSIGPRun, 12 PowerMgt
+  (temperature, power: the one touching SPRs), 13-16 empty (0). NanoKernel
+  2's SIGP runs a routine at once, in supervisor mode with interrupts off,
+  on the processor's stack, r3 the processor's index, returning to the
+  emulator's ReturnFromException trap; the routine's r3/r4 are the call's.
+  An exception in it gives -29285, a selector out of range -29287. syshm
+  runs it in an inner loop (`cpu_plugin_run()`): no interrupts, timers or
+  task switches meanwhile; mfmsr and device registers work, any other
+  privileged instruction counts as an exception. The kernel's own SIGPs
+  (12 from the idle task, 4060 per boot on QEMU; those for other
+  processors) don't happen in syshm (no idle task, one processor). After
+  registering, Mac OS calls selector 0 once more, then `MPProcessors` (3:
+  r3 0 all, else scheduled; the count in r3, 1).
+- **Processes** (Task 8): `MPCreateProcess` (4: address space r3, 0 the
+  system's → r5) makes one late in startup (0x01B40001 in syshm,
+  0x01C00001 on QEMU), and `MPSetBlueProcessID` (99: process r3, word r4;
+  blue task only, else `kMPInsufficientResourcesErr`) moves the blue task
+  into it, twice (r4 0x00AAF520, r5 'MACS', then a pointer): it sets the
+  blue task's process and its call-63 word. NanoKernelInfo's
+  blueProcessID stays 1. `MPTerminateProcess` (5) only marks it (no tasks
+  can be made in it then; `kMPInsufficientResourcesErr` the second time);
+  `MPDeleteProcess` (6) wants it terminated with no tasks left. Every
+  object belongs to the process of the task that made it (a task to its
+  own; startup's to the blue process), for `MPGetNextIDOwnedByProcess`
+  (116: process r3, class r4, previous ID r5 → the next r5 of that class
+  that belongs to it; class process, CPU or coherence group: paramErr).
+- **The clock** (open): 9.1 shows 12:00 AM whatever `--fixed-time` says.
+  The ROM's ReadDateTime (68k at `0xFFC0C572`, the same code as 8.5's)
+  calls the platform's clock primitive (ProductInfo +0x44, table +0x1C) and
+  copies low memory 0x1E4 to Time (0x20C): at instruction 52.6 million it
+  stores 0xFFFFFFFF, and Time never ticks after. 8.5's primitive reads the
+  clock with RTAS get-time-of-day; 9.1 makes no RTAS calls at all, nor
+  Cuda's get-time (its Cuda commands: autopoll, set 6805 address, device
+  list, power messages, combined-format IIC, as 8.5 makes them), so its
+  clock primitive goes elsewhere: presumably
+  RTCServicesLib and the RTC driver under via-cuda from the parcels. Next:
+  trace the primitive (from `0xFFC0C57C`) to see what it asks for.
+- **NVRAM** (open): with no RTAS calls, 9.1 neither reads nor writes NVRAM
+  (8.5 makes about 600 nvram-fetch/store calls per boot). Its
+  NVRAMServicesLib looks for an NVRAM device (the ROM file has a driver
+  for `mac-io/nvram`, and QEMU's tree a `/nvram` node with one); syshm
+  keeps NVRAM behind RTAS and has no such node. A design decision:
+  an NVRAM node (and device) for 9.1 only, or a different way.
+- **Task 4** (exceptions in tasks other than the blue one) wasn't needed
+  to reach the Finder: no task faulted.
