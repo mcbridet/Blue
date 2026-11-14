@@ -108,6 +108,11 @@ image as the destination.
 - **Leave the user's files alone.** `hd.img`, `hd86.img`, `86update.img`
   and the NVRAM files are the user's installs. CDs go in with `--cdrom`
   (read-only). For a writable disk, copy one to a temporary directory.
+- **Go easy on the host's memory.** Never load a whole disk or CD image, or
+  a large RAM dump, into a Python process (machfs `Volume.read()` on a 2 GB
+  image, `f.read()` of a whole image): read only the blocks needed, or mmap.
+  Run one heavy process at a time, leave none running when a step is done,
+  and delete big scratch files as soon as they're no longer needed.
 - **Parallel work:** the project is not a git repository, so two subagents
   editing the same file will clobber each other. Tasks below list the
   files they own; run tasks that share files one after another. (Making
