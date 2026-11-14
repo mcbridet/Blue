@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "hfs.h"
 #include "ndrv.h"
 #include "video.h"
 
@@ -25,12 +26,23 @@
 #define HOSTCALL_TOOLS_RAVE 0x102u
 #define TOOLS_VOLUME_SIZE (2u << 20)
 
+/* The tools' files, in the volume's order */
+enum { TOOLS_ENHANCEMENTS, TOOLS_3D_ENGINE, TOOLS_FILES };
+
+/*
+ * The files as the tools volume holds them: names, type and creator, Finder
+ * flags and forks (in static buffers, the same at every call). Returns 0, or
+ * -1 if they can't be made.
+ */
+int tools_files(struct hfs_file files[TOOLS_FILES]);
+
 /* Writes the tools volume (a disk image) to `path`. Returns 0 on success. */
 int tools_create(const char *path);
 
 struct helper {
 	struct ndrv_layout layout;      /* of the helper's fragment */
 	bool running;
+	bool quit;                      /* to quit when it next looks (see install.h) */
 	unsigned long launches, switches, failures;
 	int32_t last_error;             /* of the last mode switch that failed */
 };

@@ -223,8 +223,12 @@ static enum ui_action menu(const struct ui_state *s)
 	ImGui::SetItemDefaultFocus();
 	if (ImGui::Button("Restart", wide))
 		action = UI_RESTART;
-	if (ImGui::Button("Shut down", wide))
+	if (ImGui::Button("Shut down...", wide))
 		action = UI_SHUT_DOWN;
+	if (ImGui::Button("Turn off", wide))
+		action = UI_TURN_OFF;
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("At once, as if the power went: unsaved work is lost");
 	if (s->floppy) {
 		enum ui_action chosen = floppy_menu(s->floppy, wide);
 		if (chosen != UI_NONE)
@@ -255,6 +259,43 @@ static enum ui_action menu(const struct ui_state *s)
 	}
 	ImGui::Separator();
 	ImGui::TextDisabled("F12 or Esc resumes");
+	ImGui::End();
+	return action;
+}
+
+#define PROMPT_WIDTH 440.0f             /* (its text's) */
+#define PROMPT_BUTTON 110.0f
+
+/*
+ * A question (or news) in a box over the screen, the guest running on
+ * underneath; the default button last, on the right, as Mac OS has it.
+ * While the menu is open, it waits.
+ */
+static enum ui_action prompt(const struct ui_state *s)
+{
+	enum ui_action action = UI_NONE;
+	const ImGuiViewport *vp = ImGui::GetMainViewport();
+	ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+	ImGui::Begin("syshm##prompt", nullptr,
+		     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+			     ImGuiWindowFlags_NoSavedSettings);
+	ImGui::BeginDisabled(s->menu);
+	ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + PROMPT_WIDTH);
+	ImGui::TextUnformatted(s->prompt);
+	ImGui::PopTextWrapPos();
+	ImGui::Dummy(ImVec2(PROMPT_WIDTH, 4));
+	float buttons = s->prompt_no ? 2 * PROMPT_BUTTON + ImGui::GetStyle().ItemSpacing.x : PROMPT_BUTTON;
+	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + PROMPT_WIDTH - buttons);
+	if (s->prompt_no) {
+		if (ImGui::Button(s->prompt_no, ImVec2(PROMPT_BUTTON, 0)))
+			action = UI_PROMPT_NO;
+		ImGui::SameLine();
+	}
+	if (ImGui::Button(s->prompt_yes, ImVec2(PROMPT_BUTTON, 0)))
+		action = UI_PROMPT_YES;
+	if (!s->menu)
+		ImGui::SetItemDefaultFocus();
+	ImGui::EndDisabled();
 	ImGui::End();
 	return action;
 }
@@ -438,7 +479,9 @@ enum ui_action ui_draw(struct ui *u, const struct ui_state *s, int w, int h, flo
 	ImGui::NewFrame();
 	if (s->status_bar > 0)
 		status_bar(s);
-	enum ui_action action = s->menu ? menu(s) : UI_NONE;
+	enum ui_action action = s->prompt ? prompt(s) : UI_NONE;
+	if (s->menu)
+		action = menu(s);
 	ImGui::Render();
 	render(u, ImGui::GetDrawData());
 	return action;

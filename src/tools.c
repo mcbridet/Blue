@@ -106,9 +106,11 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v)
 	switch (ndrv_state(c, 0)) {
 	case STEP_WAITED: {
 		uint32_t ev = data + DATA_EVENT, mode, depth;
-		if (mem_r16(m, ev) == HIGH_LEVEL_EVENT && mem_r32(m, ev + 2) == FOURCC('a', 'e', 'v', 't') &&
-		    mem_r32(m, ev + 10) == FOURCC('q', 'u', 'i', 't')) {
-			h->running = false;     /* the Process Manager asks us to quit (shutting down) */
+		if (h->quit || (mem_r16(m, ev) == HIGH_LEVEL_EVENT && mem_r32(m, ev + 2) == FOURCC('a', 'e', 'v', 't') &&
+				mem_r32(m, ev + 10) == FOURCC('q', 'u', 'i', 't'))) {
+			/* the Process Manager asks us to quit (shutting down), or syshm does (to replace us) */
+			h->quit = false;
+			h->running = false;
 			ndrv_finish(c, 0);
 			return;
 		}
@@ -148,7 +150,7 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v)
 
 /* ---- the volume -------------------------------------------------------------- */
 
-int tools_create(const char *path)
+int tools_files(struct hfs_file files[TOOLS_FILES])
 {
 	static uint8_t helper[8192], helper_rsrc[1024], engine[8192], engine_rsrc[1024];
 	struct ndrv_layout layout;
@@ -174,20 +176,27 @@ int tools_create(const char *path)
 	if (!helper_len || !rsrc_len || !engine_len || !engine_rsrc_len)
 		return -1;
 
-	const struct hfs_file files[] = {
-		{ "syshm Enhancements", FOURCC('a', 'p', 'p', 'e'), FOURCC('s', 'y', 'H', 'p'), 0, 40, 60,
-		  helper, helper_rsrc, (uint32_t)helper_len, (uint32_t)rsrc_len },
-		{ "syshm 3D Engine", FOURCC('s', 'h', 'l', 'b'), FOURCC('t', 'n', 's', 'l'), 0, 40, 160,
-		  engine, engine_rsrc, (uint32_t)engine_len, (uint32_t)engine_rsrc_len },
-	};
+	files[TOOLS_ENHANCEMENTS] = (struct hfs_file){
+		"syshm Enhancements", FOURCC('a', 'p', 'p', 'e'), FOURCC('s', 'y', 'H', 'p'), 0, 40, 60,
+		helper, helper_rsrc, (uint32_t)helper_len, (uint32_t)rsrc_len };
+	files[TOOLS_3D_ENGINE] = (struct hfs_file){
+		"syshm 3D Engine", FOURCC('s', 'h', 'l', 'b'), FOURCC('t', 'n', 's', 'l'), 0, 40, 160,
+		engine, engine_rsrc, (uint32_t)engine_len, (uint32_t)engine_rsrc_len };
+	return 0;
+}
+
+int tools_create(const char *path)
+{
+	struct hfs_file files[TOOLS_FILES];
+	if (tools_files(files))
+		return -1;
 	int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
 	if (fd < 0) {
 		fprintf(stderr, "%s: %s\n", path, strerror(errno));
 		return -1;
 	}
 	int err = ftruncate(fd, TOOLS_VOLUME_SIZE) ? -1 :
-		  hfs_format(fd, TOOLS_VOLUME_SIZE, "syshm Tools", hfs_mac_time_now(), files,
-			     sizeof files / sizeof files[0]);
+		  hfs_format(fd, TOOLS_VOLUME_SIZE, "syshm Tools", hfs_mac_time_now(), files, TOOLS_FILES);
 	if (close(fd))
 		err = -1;
 	if (err)

@@ -34,7 +34,9 @@ static int usage(void)
 		"      --rom <file>             use this Mac OS ROM file or 4 MB ROM image instead\n"
 		"      --ram <MB>               RAM size (default 128)\n"
 		"      --window                 show the screen in a window (keyboard and mouse go to\n"
-		"                               the guest); runs in real time until closed\n"
+		"                               the guest); runs in real time until closed. Once the\n"
+		"                               Finder is up, offers to install the guest tools on the\n"
+		"                               startup disk if they're missing or another syshm's\n"
 		"      --realtime               guest time follows the host clock\n"
 		"      --instruction-time       with --window: guest time counts instructions, as\n"
 		"                               without a window (scripted runs are reproducible)\n"
@@ -59,7 +61,8 @@ static int usage(void)
 		"                               move X Y, click X Y, dblclick X Y, down, up,\n"
 		"                               motion DX DY (the mouse moved, as games read it),\n"
 		"                               key HEX [down|up], resize W H, screenshot FILE,\n"
-		"                               floppy insert FILE, floppy eject\n"
+		"                               floppy insert FILE, floppy eject,\n"
+		"                               tools install|later (the answer to that offer)\n"
 		"      --max <n>                stop after n PowerPC instructions (default 500000000)\n");
 	fprintf(stderr,
 		"      --io-ram                 back touched I/O pages with plain RAM and keep going\n"

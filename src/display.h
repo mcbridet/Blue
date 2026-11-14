@@ -95,6 +95,15 @@ void display_menu_state(struct display *d, enum ui_mouse mouse, const char *stat
 void display_floppy_state(struct display *d, const struct ui_floppy *f);
 
 /*
+ * Shows a question or news over the screen, with one or two buttons (`no`
+ * may be NULL; all are copied), until one is chosen (DISPLAY_EVENT_MENU_ACTION,
+ * UI_PROMPT_YES or UI_PROMPT_NO; Esc is no) or it's taken away (text NULL).
+ * Meanwhile input goes to it, but the guest runs on. False if it can't be
+ * shown (no menu).
+ */
+bool display_prompt(struct display *d, const char *text, const char *yes, const char *no);
+
+/*
  * The status bar (with the menu's SDL only), below the screen: shown or
  * hidden (the menu toggles it too); what it shows, drawn when the window
  * next is (by display_present() or display_update()); and drawing the

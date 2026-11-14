@@ -159,6 +159,8 @@ struct display {
 	double menu_time;               /* (when it was last drawn, in seconds) */
 	enum ui_mouse menu_mouse;       /* what it shows */
 	char menu_status[480];
+	bool prompt;                    /* a question or news is shown (display_prompt()): input goes to it */
+	char prompt_text[1024], prompt_yes[32], prompt_no[32];
 	bool fullscreen;
 	bool status_bar;                /* shown, below the screen (only with the menu's SDL) */
 	struct ui_status bar;           /* what it shows */
@@ -406,7 +408,7 @@ static void draw(struct display *d)
 	SDL_Rect dst = { v.x, v.y, v.w, v.h };
 	d->sdl.RenderClear(d->renderer);
 	d->sdl.RenderCopy(d->renderer, src ? src : d->texture, NULL, &dst);
-	if (d->ui && (d->menu || d->status_bar)) {
+	if (d->ui && (d->menu || d->status_bar || d->prompt)) {
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 		double now = (double)ts.tv_sec + 1e-9 * (double)ts.tv_nsec;
@@ -418,6 +420,9 @@ static void draw(struct display *d)
 			.fullscreen = d->fullscreen,
 			.mouse = d->menu_mouse,
 			.news = d->menu_status[0] ? d->menu_status : NULL,
+			.prompt = d->prompt ? d->prompt_text : NULL,
+			.prompt_yes = d->prompt_yes,
+			.prompt_no = d->prompt_no[0] ? d->prompt_no : NULL,
 			.floppy = d->has_floppy ? &d->floppy : NULL,
 		};
 		enum ui_action action = ui_draw(d->ui, &s, ww, wh, ww > 0 ? (float)pw / (float)ww : 1, now - d->menu_time);
@@ -584,6 +589,8 @@ bool display_poll(struct display *d, struct display_event *ev)
 		} else if (action == UI_STATUS_BAR) {
 			show_status_bar(d, !d->status_bar);
 		} else {
+			if (action == UI_PROMPT_YES || action == UI_PROMPT_NO)
+				display_prompt(d, NULL, NULL, NULL);
 			ev->type = action == UI_RESUME ? DISPLAY_EVENT_MENU : DISPLAY_EVENT_MENU_ACTION;
 			ev->action = action;
 			return true;
@@ -642,6 +649,18 @@ bool display_poll(struct display *d, struct display_event *ev)
 				menu_key(d, sc, down);
 				continue;
 			}
+			if (d->prompt) {                /* (Esc is its "no") */
+				if (sc != SDL_SCANCODE_ESCAPE) {
+					menu_key(d, sc, down);
+					continue;
+				}
+				if (!down)
+					continue;
+				ev->type = DISPLAY_EVENT_MENU_ACTION;
+				ev->action = d->prompt_no[0] ? UI_PROMPT_NO : UI_PROMPT_YES;
+				display_prompt(d, NULL, NULL, NULL);
+				return true;
+			}
 			/* Control and Option (Ctrl and Alt) together: the release key (and keys to the guest too) */
 			if (sc == SDL_SCANCODE_LCTRL || sc == SDL_SCANCODE_RCTRL)
 				d->ctrl[sc == SDL_SCANCODE_RCTRL] = down;
@@ -667,7 +686,7 @@ bool display_poll(struct display *d, struct display_event *ev)
 			return true;
 		}
 		case SDL_MOUSEMOTION:
-			if (d->menu) {
+			if (d->menu || d->prompt) {
 				if (d->ui)
 					ui_mouse_move(d->ui, (float)e.motion.x, (float)e.motion.y);
 				continue;
@@ -679,7 +698,7 @@ bool display_poll(struct display *d, struct display_event *ev)
 			return true;
 		case SDL_MOUSEBUTTONDOWN:
 		case SDL_MOUSEBUTTONUP:
-			if (d->menu) {
+			if (d->menu || d->prompt) {
 				/* (SDL's buttons are left, middle, right; Dear ImGui's left, right, middle) */
 				static const int buttons[4] = { -1, 0, 2, 1 };
 				if (d->ui && e.button.button < 4)
@@ -695,7 +714,7 @@ bool display_poll(struct display *d, struct display_event *ev)
 			to_screen(d, e.button.x, e.button.y, &ev->x, &ev->y);
 			return true;
 		case SDL_MOUSEWHEEL:
-			if (d->menu && d->ui) {
+			if ((d->menu || d->prompt) && d->ui) {
 				float flip = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
 				ui_mouse_wheel(d->ui, flip * (float)e.wheel.x, flip * (float)e.wheel.y);
 			}
@@ -738,7 +757,7 @@ void display_menu(struct display *d, bool open)
 	d->menu_action = UI_NONE;
 	d->ctrl[0] = d->ctrl[1] = d->alt[0] = d->alt[1] = false;
 	/* (the guest's cursor doesn't move meanwhile: the host's is shown for the menu) */
-	d->sdl.ShowCursor(open && d->ui ? 1 : 0);
+	d->sdl.ShowCursor((open || d->prompt) && d->ui ? 1 : 0);
 	if (!d->ui)
 		d->sdl.SetWindowTitle(d->window, open ? "syshm (paused: F12 resumes)" : "syshm");
 	if (open) {
@@ -762,6 +781,22 @@ void display_floppy_state(struct display *d, const struct ui_floppy *f)
 		d->floppy = *f;
 }
 
+bool display_prompt(struct display *d, const char *text, const char *yes, const char *no)
+{
+	if (!d || (text && !d->ui))
+		return false;
+	d->prompt = text != NULL;
+	snprintf(d->prompt_text, sizeof d->prompt_text, "%s", text ? text : "");
+	snprintf(d->prompt_yes, sizeof d->prompt_yes, "%s", yes ? yes : "");
+	snprintf(d->prompt_no, sizeof d->prompt_no, "%s", no ? no : "");
+	if (d->menu_action == UI_PROMPT_YES || d->menu_action == UI_PROMPT_NO)
+		d->menu_action = UI_NONE;
+	d->ctrl[0] = d->ctrl[1] = d->alt[0] = d->alt[1] = false;
+	d->sdl.ShowCursor((d->prompt || d->menu) && d->ui ? 1 : 0);
+	draw(d);
+	return true;
+}
+
 void display_refresh(struct display *d)
 {
 	draw(d);
@@ -783,7 +818,7 @@ void display_status(struct display *d, const struct ui_status *s)
 
 void display_update(struct display *d)
 {
-	if (d->bar_stale)
+	if (d->bar_stale || d->prompt)  /* (a prompt answers the pointer, every frame) */
 		draw(d);
 }
 
