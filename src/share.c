@@ -64,6 +64,7 @@ struct share {
 	struct hfs_entry *entries;
 	unsigned n, cap;
 	uint32_t next_id;
+	uint32_t clock;                 /* the guest's clock at the start (Mac OS time): no date is later */
 	unsigned skipped;
 	struct hfs_layout layout;
 	struct span *spans;
@@ -276,6 +277,20 @@ static int add_item(struct share *s)
 	return (int)s->n++;
 }
 
+/*
+ * An item's dates: the host's, but none later than the guest's clock
+ * (Norton Utilities takes a date in the future for damage: in the MDB,
+ * "damage to the Master Directory Block"), and created no later than
+ * modified (a file copied or unpacked on the host is born anew but keeps
+ * its modification date; Norton Disk Doctor calls that a bad date too).
+ */
+static void host_dates(const struct share *s, struct hfs_entry *e, const struct stat *st)
+{
+	uint32_t created = hfs_mac_time(birth_time(st)), modified = hfs_mac_time(st->st_mtime);
+	e->modified = modified < s->clock ? modified : s->clock;
+	e->created = created < e->modified ? created : e->modified;
+}
+
 /* Finder info, resource fork and dates from the host */
 static void metadata(struct share *s, unsigned k, const struct stat *st)
 {
@@ -284,8 +299,7 @@ static void metadata(struct share *s, unsigned k, const struct stat *st)
 	char path[PATH_MAX], ad[PATH_MAX];
 	if (host_path(s, it->path, path, sizeof path))
 		return;
-	e->created = hfs_mac_time(birth_time(st));
-	e->modified = hfs_mac_time(st->st_mtime);
+	host_dates(s, e, st);
 	it->ino = st->st_ino;
 	it->size = (uint64_t)st->st_size;
 	it->mtime_ns = mtime_ns(st);
@@ -503,7 +517,7 @@ static int scan(struct share *s, const struct stat *st)
 	if (!len)
 		e->name[1] = '_';
 	e->folder = true;
-	e->created = e->modified = hfs_mac_time(st->st_mtime);
+	host_dates(s, e, st);           /* (the volume's too: created when the folder was, on macOS) */
 	hfs_to_utf8(e->name + 1, e->name[0], s->volume, sizeof s->volume);
 	s->next_id = HFS_FIRST_ID;
 	for (unsigned k = 0; k < s->n; k++)
@@ -694,7 +708,7 @@ static int share_write(void *ctx, const void *buf, size_t len, uint64_t at)
 	return 0;
 }
 
-struct share *share_open(const char *dir)
+struct share *share_open(const char *dir, int64_t start)
 {
 	struct share *s = calloc(1, sizeof *s);
 	struct stat st;
@@ -703,6 +717,7 @@ struct share *share_open(const char *dir)
 		return NULL;
 	errno = 0;
 	s->overlay = -1;
+	s->clock = hfs_mac_time(start ? start : (int64_t)time(NULL));
 	for (unsigned k = 0; k < OPEN_FILES; k++)
 		s->open[k].fd = -1;
 	if (!realpath(dir, real) || stat(real, &st) || !S_ISDIR(st.st_mode)) {

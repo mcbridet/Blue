@@ -351,6 +351,13 @@ shows them; one longer than 31 characters, or the same as another's to
 Mac OS (which ignores case), is shortened with the item's ID, as Mac OS 9
 does (`A very long file name#1A.txt`). Dot files, symbolic links to
 folders and files over 2 GB (HFS's limit) are left out, and syshm says so.
+Dates are the host's, but none later than the guest's clock as the run
+starts (`--fixed-time`'s, else the host's), and none created after it was
+modified (as a file macOS copied or unpacked is: it's created when it was
+modified): Norton Utilities takes either for damage, a volume's creation
+date in the future for "damage to the Master Directory Block (Error
+16,005)". The volume was created when the folder was (on Linux, when it
+last changed), so Mac OS knows it from run to run.
 Resource forks and Finder info (type, creator, flags) are the host's: on
 macOS the file's own (`..namedfork/rsrc`, `com.apple.FinderInfo`), and
 otherwise an AppleDouble file, `._name` beside it or in a `__MACOSX` folder

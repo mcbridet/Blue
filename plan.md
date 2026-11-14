@@ -502,8 +502,8 @@ the kernel); 8 onwards as the boot progresses.
   in place of a file. `hfsread` reads through a callback too, and walks
   the whole catalog (`hfsread_walk()`). `tests/test_share.c` covers names,
   volumes (checked with hfsutils, and on Linux Apple's `fsck_hfs` from
-  hfsprogs), and writing back. 8.5 and 9.1 from their CDs and 8.6 from a
-  disk show the volume; Finder copies, new folders, renames, moves,
+  hfsprogs), dates, and writing back. 8.5 and 9.1 from their CDs and 8.6
+  from a disk show the volume; Finder copies, new folders, renames, moves,
   deletions and a SimpleText save came back to the folder. Open: writing
   back when the volume is ejected, and offering the folder again as new
   media (needs the disk driver's removable media).
@@ -1095,6 +1095,36 @@ Facts later tasks need, added as they are found.
   The Finder makes `Desktop DB` and `Desktop DF` on every writable volume
   it mounts, and Desktop Printing (8.6) an invisible `DesktopPrinters DB`;
   the Trash and the `Desktop Folder` come when used.
+- **Norton Utilities and the shared volume's dates:** Norton FileSaver
+  (Norton Utilities 6, scanning every disk at startup after a crash) said
+  "There is damage to the Master Directory Block. (Error 16,005)" of the
+  shared volume, whose MDB's creation and modification dates were the
+  folder's (2026) and so later than the guest's clock in instruction-time
+  runs (`--fixed-time 1000000000`, 2001). Disk Doctor names it: "The
+  creation date is invalid" (5,1,3), then the modification date (5,1,4),
+  the alternate MDB's (5,2,3 and 5,2,4), and every file's "bad creation
+  dates" (15,2,8, minor). Norton allows a minute or so in the future, not
+  an hour (scanned with the guest's clock 60 s, 1 h, 1 day, 1 and 20 years
+  behind the folder's dates; FileSaver's 16,005 is any MDB damage). It also
+  takes a file modified before it was created for "bad modification dates"
+  (15,2,9), as macOS's copies and unpacked files are (born anew, modified
+  when they were): 316 files of a copy of the user's folder, with the
+  guest's clock at the host's time. `share_open()` now takes the guest's
+  clock at the start (`--fixed-time`, else the host's) and no date is
+  later, nor created after modified. With that, FileSaver, Disk Doctor
+  ("No Problems Found"), Disk First Aid 8.5 and Linux's `fsck.hfs` find
+  nothing wrong, on that copy too, in instruction time and real time; but
+  for the dates they found nothing before either. A Macintosh HD made later
+  than such a run's clock is flagged the same way (`syshm disk create`
+  dates it then). Mac OS 8.5's Disk Initialization of a volume the share's
+  size gives the same geometry (63,569 blocks of 16,896 bytes from sector
+  19, the alternate MDB right after the last), but 1 MB B-trees. FileSaver
+  scans after a crash: a run ended by `--max` leaves an image as one.
+  macOS's own `fsck_hfs` (hfs-753.41.1) can't check HFS volumes with
+  files: it stops at a bounds check (`brk #0x5512`) in
+  `hfs_swap_HFSBTInternalNode`, which swaps a file record's six extents
+  through its three-entry `dataExtents`; it does the same on a Mac OS-made
+  HD.
 - **The catalog's order of names** is Apple's FastRelString (the HFS code
   in Apple's open-source `hfs`, `UCStringCompareData.h`'s `gCompareTable`):
   case-insensitive, each accented letter after its plain one, a

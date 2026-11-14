@@ -495,7 +495,7 @@ static int cmd_boot(int argc, char **argv)
 		if (opt.disks >= NK_MAX_DISKS)
 			fprintf(stderr, "at most %d disks, the shared folder's included\n", NK_MAX_DISKS);
 		else
-			share = share_open(share_dir);
+			share = share_open(share_dir, opt.fixed_time);
 		if (!share) {
 			rom_free(&rom);
 			found = 1;
