@@ -764,8 +764,8 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    cost about 25 ns each in the devices' bookkeeping (about 4% of the 8.5
    CD boot).
 
-future.md has ideas not planned yet: a modem, infrared, 3D sound and sound
-input.
+future.md has ideas not planned yet: a modem, infrared, 3D sound, sound
+input and AltiVec.
 
 ## Build and test
 
