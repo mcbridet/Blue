@@ -72,6 +72,12 @@ Done:
   backed by RTAS's 8 KB and the same `--nvram` file; with it
   NVRAMServicesLib prepares, and so does RTCServicesLib after it, whose
   Cuda RTC driver asks the Cuda for the time. See Findings.
+- **The startup disk** (startup-wait): for ROM files with parcels the
+  device tree has Open Firmware's `/chosen` `bootpath` (the first partition
+  with boot blocks), and the disk driver answers the DriverGestalt
+  selectors by which StartLib finds that drive, so the Start Manager takes
+  it at once instead of after 25 s. See Findings, "The Start Manager's
+  wait".
 
 Where it stops:
 
@@ -80,7 +86,7 @@ build/syshm boot --cdrom 91.iso --max 20000000000
 stopped: instruction limit reached (system context)
 ```
 
-The CD's Finder is up by instruction 2 billion (about 1 s on the host):
+The CD's Finder is up by instruction 1.1 billion (under 1 s on the host):
 "Mac OS 9.1 / Starting Up..." with the extensions' icons, then the desktop
 with the CD's window open (9 items: Before You Install, Installing Mac OS
 9.1.pdf, Mac OS Install, Adobe Software, CD Extras, Utilities...), and it
@@ -92,7 +98,10 @@ zone, as for 8.5), and 9.1 reads NVRAM through its own driver for the
 changed when it shuts down or restarts). Installing 9.1 from the CD
 onto a disk image is left to the user (in a window); scripted, its
 installer got as far as its Important Information page with a new 2 GB
-image as the destination.
+image as the destination. In real time with fast start the Finder is up
+after 16 s of guest time (1.3 s on the host; it was 41 s before the
+startup disk was found at once), against 13.8 s for the 8.5 CD: what's
+left is mostly AppleTalk on Ethernet (5 s) and the CD's transfers.
 
 ## Ground rules for every task
 
@@ -801,3 +810,46 @@ Facts later tasks need, added as they are found.
   68k bus error during Starting Up). `quiet_store()` in `nk.c` now runs
   such a store with the page writable and puts the page back, so the rest
   of the instruction (update forms, other pages) happens as under MemRetry.
+- **The Start Manager's wait** (startup-wait): in real time with fast
+  start the 9.1 CD took 41 s of guest time to the Finder (3.8 s on the
+  host; the 8.5 CD 13.8 s), 25 of them in the Start Manager's
+  FindStartupDevice (68k `0xFFC035EE`), spinning on Ticks 15 at a time
+  (`0xFFC03680`). Until the internal disk's wait time has passed since it
+  began (`_InternalWait` selector 0, PRAM's seconds, 25 when 0;
+  `0xFFC03664`) it accepts only the drive whose number StartLib's
+  GetStartupDevice gives (the test at `0xFFC03A7E`, the call at
+  `0xFFC04190`), then any drive. 8.5's ROM (`0xFFC0295E`) has no such
+  phase. GetStartupDevice walks the drive queue and takes the first drive
+  that matches /chosen's `bootpath` (Open Firmware's: device path,
+  `:partition`, then `,\\:tbxi`, the blessed folder's file of type tbxi):
+  it resolves the device path in the Name Registry from
+  `Devices:device-tree`, by node names and unit addresses (under a `pci`
+  node `@dev[,fn]` is compared with `reg`'s first word; a node of type
+  scsi ends the walk, the rest being the drive's), and asks the drive's
+  driver DriverGestalt 'nmrg' (a pointer to its node's RegEntryID), 'dvrf'
+  and 'intf' (its unit: SCSI's target ID, bits 8-15 of 'dvrf'; ATA's is 0;
+  also USB and FireWire; other interfaces, a PCI card's 'card' among them,
+  fail) and 'ofpt' (qualifier 2 and the map entry counted from 0, to which
+  StartLib adds 1; any other qualifier: any partition). The drive matches
+  when the node is the same, the bootpath's last unit address is the
+  drive's unit, and the partitions agree. The driver needs the
+  DriverGestalt bit in its DCE's flags, which NDRVs have. syshm's tree had
+  no /chosen, so nothing matched until the 25 s were up. Now, for ROM
+  files with parcels, `/chosen` has `bootpath`
+  `/pci/syshm,disk@<PCI device>:<map entry>,\\:tbxi` (no number for a
+  disk without a map) for the first partition with boot blocks ('LK'),
+  disks in command-line order (`build_tree()` in `bootinfo.c`, chosen in
+  `setup_machine()`), and the disk driver answers 'nmrg' (the RegEntryID
+  from Initialize), 'intf' 'scsi', 'dvrf' target = its PCI device number,
+  and 'ofpt' (`status()` in `disk.c`); earlier ROMs see none of it. A path
+  ending in a unit-only node under the disk's (`/pci/syshm,disk@2/@0:3`,
+  with 'intf' 'ata ') didn't match (the disk nodes have no children). The
+  Finder is then up at instruction 1.05 billion instead of 1.68 (with
+  `--fixed-time`), and in real time after 16 s of guest time (1.3 s). Of
+  what's left (13 s with `clock 400` from the start, reproducibly; 8.5:
+  10.5 s), 5 s are AppleTalk on Ethernet finding no one, as with 9.0.4
+  (Open Transport busy: ten AARP probes 0.2 s apart, then six ZIP
+  GetNetInfo 0.5 s apart, then NBP), and the CD's 18 MB of transfers take
+  4.5 s at 4 MB/s. When the ROM file comes from a startup disk, its
+  partition is the one to name (`boot_disk`, `boot_map_entry` in
+  `struct bootinfo_machine`).

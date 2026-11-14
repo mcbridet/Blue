@@ -74,7 +74,7 @@ void test_nvram(void)
 	CHECK_EQ(n.reads, 4);
 	CHECK_EQ(n.writes, 3);
 
-	/* the device tree has the iMac's nvram node for ROM files with parcels only */
+	/* the device tree has the iMac's nvram node for ROM files with parcels only (and /chosen) */
 	struct mem mem;
 	if (mem_init(&mem)) {
 		CHECK(!"mem_init");
@@ -82,12 +82,14 @@ void test_nvram(void)
 	}
 	mem_map(&mem, BOOTINFO_BASE, BOOTINFO_SIZE, MEM_RW);
 	struct parcels none = { 0 };
-	struct bootinfo_machine hw = { .ram_size = 32u << 20, .timebase_hz = 16600000 };
+	struct bootinfo_machine hw = { .ram_size = 32u << 20, .timebase_hz = 16600000, .disks = 2,
+				       .boot = true, .boot_disk = 1, .boot_map_entry = 3 };
 	struct bootinfo bi;
 	CHECK(bootinfo_build(&mem, &bi, &hw) == 0);
 	const uint8_t *tree = mem_ptr(&mem, bi.device_tree);
 	CHECK(flat_find(tree, NULL, "via-cuda", "mac-io") != NULL);
 	CHECK(flat_find(tree, NULL, "nvram", NULL) == NULL);
+	CHECK(flat_find(tree, NULL, "chosen", NULL) == NULL);
 
 	hw.parcels = &none;
 	CHECK(bootinfo_build(&mem, &bi, &hw) == 0);
@@ -103,5 +105,15 @@ void test_nvram(void)
 		CHECK_EQ(flat_u32(node, "#bytes", 0), sizeof bytes);
 		CHECK_EQ(flat_u32(node, "AAPL,address", 0), MACIO_NVRAM);
 	}
+	/* where Open Firmware booted from: the second disk (PCI device 3), map entry 3 */
+	node = flat_find(tree, NULL, "chosen", NULL);
+	CHECK(node != NULL);
+	if (node) {
+		uint32_t len;
+		const uint8_t *path = flat_prop(node, "bootpath", &len);
+		static const char want[] = "/pci/syshm,disk@3:3,\\\\:tbxi";
+		CHECK(path && len == sizeof want && memcmp(path, want, len) == 0);
+	}
+	CHECK(flat_find(tree, NULL, "syshm,disk", "pci") != NULL);
 	mem_free(&mem);
 }

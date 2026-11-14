@@ -793,19 +793,30 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	size_t ndrv_size = video_build_ndrv(&m->video, m->display_ndrv, sizeof m->display_ndrv, HOSTCALL_VIDEO_DRIVER);
 
 	size_t disk_ndrv_size[NK_MAX_DISKS] = { 0 };
+	bool parcels = m->rom->format == ROM_FORMAT_PARCELS;
+	bool boot = false;
+	unsigned boot_disk = 0, boot_map_entry = 0;
 	for (unsigned k = 0; k < opt->disks && k < NK_MAX_DISKS; k++) {
 		struct disk *d = &m->disk[k];
 		if (disk_open(d, &m->mem, opt->disk[k], opt->cdrom[k], opt->cdrom[k]))
 			return -1;
 		m->disks = k + 1;
 		d->log = opt->log_hostcalls;
+		d->boot_gestalt = parcels;
+		d->unit = (PCI_DEVFN_DISK + 8 * k) >> 3;
 		disk_ndrv_size[k] = disk_build_ndrv(d, m->disk_ndrv[k], sizeof m->disk_ndrv[k],
 						    HOSTCALL_DISK_DRIVER + k);
-		for (unsigned p = 0; p < d->partitions; p++)
+		for (unsigned p = 0; p < d->partitions; p++) {
 			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, opt->disk[k],
 			       d->read_only ? " (read-only)" : "", (unsigned long long)(d->part[p].size >> 20),
 			       (unsigned long long)d->part[p].offset, d->part[p].name[0] ? ", partition " : "",
 			       d->part[p].name);
+			if (parcels && !boot && disk_bootable(d, p)) {  /* (where Open Firmware would boot from) */
+				boot = true;
+				boot_disk = k;
+				boot_map_entry = d->part[p].map_entry;
+			}
+		}
 	}
 
 	static const uint8_t mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };   /* (locally administered) */
@@ -832,7 +843,10 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		.disks = m->disks,
 		.lanlib = m->lanlib,
 		.lanlib_size = lanlib_size,
-		.parcels = m->rom->format == ROM_FORMAT_PARCELS ? &m->rom->parcels : NULL,
+		.parcels = parcels ? &m->rom->parcels : NULL,
+		.boot = boot,
+		.boot_disk = boot_disk,
+		.boot_map_entry = boot_map_entry,
 	};
 	memcpy(hw.mac, mac, 6);
 	for (unsigned k = 0; k < m->disks; k++) {
