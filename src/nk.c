@@ -818,6 +818,13 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 			}
 		}
 	}
+	/* Open Firmware boots from where it found the ROM file */
+	if (parcels && opt->rom_from_disk && opt->rom_disk < m->disks &&
+	    disk_bootable(&m->disk[opt->rom_disk], opt->rom_part)) {
+		boot = true;
+		boot_disk = opt->rom_disk;
+		boot_map_entry = m->disk[opt->rom_disk].part[opt->rom_part].map_entry;
+	}
 
 	static const uint8_t mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };   /* (locally administered) */
 	net_init(&m->net, &m->mem, mac, TIMEBASE_HZ);

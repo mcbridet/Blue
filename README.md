@@ -206,8 +206,9 @@ file's libraries), which reads the path Open Firmware leaves in the device
 tree (`/chosen`'s `bootpath`: the device, the partition, and the System
 Folder's ROM file) and asks each disk driver, through DriverGestalt, which
 device-tree node, unit and partition its drives are. syshm's tree had no
-such path. For ROM files with parcels it now names the first partition
-with boot blocks, the disks taken in command-line order, and syshm's disk
+such path. For ROM files with parcels it now names the partition the ROM
+file came from (if it has boot blocks; otherwise, or with `--rom`, the
+first partition with boot blocks, in command-line order), and syshm's disk
 driver answers those questions, its drives being a SCSI target at the
 disk's PCI device number (StartLib knows units only for SCSI, ATA, USB
 and FireWire drives). In real time with fast start the CD is at the
@@ -663,7 +664,8 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 - Where Open Firmware booted from, for ROM files with parcels only:
   `/chosen`'s `bootpath`, such as `/pci/syshm,disk@2:8,\\:tbxi` (a disk's
   node is at its PCI device number, the partition is its map entry, none
-  without a map), for the first partition with boot blocks. The disk
+  without a map), for the partition the ROM file came from, or else the
+  first partition with boot blocks. The disk
   driver says, through DriverGestalt, which node ('nmrg'), unit ('intf'
   'scsi', 'dvrf' with the PCI device number as target ID) and partition
   ('ofpt') each drive is.

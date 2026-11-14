@@ -73,8 +73,8 @@ Done:
   NVRAMServicesLib prepares, and so does RTCServicesLib after it, whose
   Cuda RTC driver asks the Cuda for the time. See Findings.
 - **The startup disk** (startup-wait): for ROM files with parcels the
-  device tree has Open Firmware's `/chosen` `bootpath` (the first partition
-  with boot blocks), and the disk driver answers the DriverGestalt
+  device tree has Open Firmware's `/chosen` `bootpath` (the partition the
+  ROM file came from, else the first partition with boot blocks), and the disk driver answers the DriverGestalt
   selectors by which StartLib finds that drive, so the Start Manager takes
   it at once instead of after 25 s. See Findings, "The Start Manager's
   wait".
@@ -837,8 +837,9 @@ Facts later tasks need, added as they are found.
   no /chosen, so nothing matched until the 25 s were up. Now, for ROM
   files with parcels, `/chosen` has `bootpath`
   `/pci/syshm,disk@<PCI device>:<map entry>,\\:tbxi` (no number for a
-  disk without a map) for the first partition with boot blocks ('LK'),
-  disks in command-line order (`build_tree()` in `bootinfo.c`, chosen in
+  disk without a map) for the partition the ROM file came from if it has
+  boot blocks ('LK'), else the first partition with them, disks in
+  command-line order (`build_tree()` in `bootinfo.c`, chosen in
   `setup_machine()`), and the disk driver answers 'nmrg' (the RegEntryID
   from Initialize), 'intf' 'scsi', 'dvrf' target = its PCI device number,
   and 'ofpt' (`status()` in `disk.c`); earlier ROMs see none of it. A path
