@@ -67,6 +67,11 @@ Done:
   plugin, whose routines run as NanoKernel 2's SIGP runs them);
   `MPProcessors` (3); processes (4, 5, 6, 99, 116). The 9.1 CD boots to
   the Finder.
+- **The clock and NVRAM** (Task 8): for ROM files with parcels the device
+  tree has the iMac's NVRAM chip (`nvram` under mac-io, `src/nvram.c`),
+  backed by RTAS's 8 KB and the same `--nvram` file; with it
+  NVRAMServicesLib prepares, and so does RTCServicesLib after it, whose
+  Cuda RTC driver asks the Cuda for the time. See Findings.
 
 Where it stops:
 
@@ -80,9 +85,11 @@ The CD's Finder is up by instruction 2 billion (about 1 s on the host):
 with the CD's window open (9 items: Before You Install, Installing Mac OS
 9.1.pdf, Mac OS Install, Adobe Software, CD Extras, Utilities...), and it
 idles there (MP calls 11, 13, 18, 31, 32, 52 as the Time Manager runs; the
-page ager every 3 s). Two runs are identical. The menu-bar clock says 12:00
-AM whatever `--fixed-time` says (see Findings, "The clock"); 9.1 makes no
-RTAS calls, so it neither reads nor keeps NVRAM. Installing 9.1 from the CD
+page ager every 3 s). Two runs are identical. The menu-bar clock shows the
+guest time (`--fixed-time` and the guest time since, in the host's time
+zone, as for 8.5), and 9.1 reads NVRAM through its own driver for the
+`nvram` node (`nvram: 320 reads, 0 writes` at the end; it writes what it
+changed when it shuts down or restarts). Installing 9.1 from the CD
 onto a disk image is left to the user (in a window); scripted, its
 installer got as far as its Important Information page with a new 2 GB
 image as the destination.
@@ -369,9 +376,9 @@ the kernel); 8 onwards as the boot progresses.
   ages (93, 94); the CPU plugin (2, 46: `cpu_plugin_register()`,
   `cpu_plugin_call()` in `nk.c`); `MPProcessors` (3); processes (4, 5, 6,
   99, 116, with every object's owning process). `tests/test_mp.c` covers
-  areas and processes. Open: the clock (12:00 AM; see Findings), NVRAM
-  (9.1 makes no RTAS calls), and whether an installed 9.1 boots. Task 4
-  wasn't needed: no task faulted. See Findings.
+  areas and processes. The clock and NVRAM work (the iMac's `nvram` node
+  and chip for these ROM files; `tests/test_nvram.c`). Open: whether an
+  installed 9.1 boots. Task 4 wasn't needed: no task faulted. See Findings.
 - **Goal:** take the 9.1 check from wherever it stops to the Finder,
   fixing one stop at a time. Expected along the way:
   - More MP calls (areas and pages: `MPCreateArea` 72, `MPGetPhysicalAddress`
@@ -384,8 +391,8 @@ the kernel); 8 onwards as the boot progresses.
     `0xFFC015E0`/`0xFFC016B0` walks `Devices:device-tree:AAPL,CodePrepare`
     and `AAPL,CodeRegister`): check they load.
   - The parcels' drivers against syshm's devices: the Cuda library, the
-    RTC driver under via-cuda, and NVRAM (the ROM has a driver for
-    `mac-io/nvram`; syshm has no such node and keeps NVRAM behind RTAS).
+    RTC driver under via-cuda, and NVRAM (done: the ROM's driver for
+    `mac-io/nvram` drives syshm's `nvram` node; see Findings).
   - The display, disk and Ethernet drivers syshm makes (NDRVs, lanLib)
     under 9.1, and idle (does 9.1's Process Manager still nap through
     call 55 and `_SynchIdleTime`?), fast start.
@@ -709,22 +716,61 @@ Facts later tasks need, added as they are found.
   own; startup's to the blue process), for `MPGetNextIDOwnedByProcess`
   (116: process r3, class r4, previous ID r5 → the next r5 of that class
   that belongs to it; class process, CPU or coherence group: paramErr).
-- **The clock** (open): 9.1 shows 12:00 AM whatever `--fixed-time` says.
-  The ROM's ReadDateTime (68k at `0xFFC0C572`, the same code as 8.5's)
-  calls the platform's clock primitive (ProductInfo +0x44, table +0x1C) and
-  copies low memory 0x1E4 to Time (0x20C): at instruction 52.6 million it
-  stores 0xFFFFFFFF, and Time never ticks after. 8.5's primitive reads the
-  clock with RTAS get-time-of-day; 9.1 makes no RTAS calls at all, nor
-  Cuda's get-time (its Cuda commands: autopoll, set 6805 address, device
-  list, power messages, combined-format IIC, as 8.5 makes them), so its
-  clock primitive goes elsewhere: presumably
-  RTCServicesLib and the RTC driver under via-cuda from the parcels. Next:
-  trace the primitive (from `0xFFC0C57C`) to see what it asks for.
-- **NVRAM** (open): with no RTAS calls, 9.1 neither reads nor writes NVRAM
-  (8.5 makes about 600 nvram-fetch/store calls per boot). Its
-  NVRAMServicesLib looks for an NVRAM device (the ROM file has a driver
-  for `mac-io/nvram`, and QEMU's tree a `/nvram` node with one); syshm
-  keeps NVRAM behind RTAS and has no such node. A design decision:
-  an NVRAM node (and device) for 9.1 only, or a different way.
+- **Preparing `AAPL,CodePrepare`** (Task 8): the 68k code at `0xFFC015E0`
+  has `0xFFC01300` walk the node's properties (those `AAPL,prepare_order`
+  names first: here only "Placeholder", which isn't there; then the rest
+  in order: MotherBoardHAL, TimeManagerLib, NVRAMServicesLib,
+  RTCServicesLib) and prepare each library (`0xFFC01250`), and it stops
+  at the first one that fails (its init returns an error). So a library
+  that can't find its device keeps every later one from running.
+- **The clock** (Task 8, done): 9.1 showed 12:00 AM because RTCServicesLib
+  never ran: NVRAMServicesLib, before it, failed (`nrNotFoundErr`, -2539:
+  no node with `device_type` nvram), and the walk above stopped. The ROM's
+  ReadDateTime (`0xFFC0C572`) calls the platform's primitive (ProductInfo
+  +0x44, table +0x1C: `0xFFC080F6` → `0xFFC08300`), which calls RTCGetTime
+  through the table RTCServicesLib's init puts at ExpandMem +0x300 (+8
+  RTCGetTime, +0xC RTCSetTime, routine descriptors; SetDateTime goes
+  through table +0x20, `0xFFC08350`); with no table it returns -2405 and
+  Time (0x20C) stayed 0xFFFFFFFF. RTCServicesLib's init finds the node with
+  `device_type` rtc, prepares its `driver,AAPL,MacOS,PowerPC` (the
+  via-cuda/rtc parcel's "Cuda RTC Plugin") and takes its
+  `ThePluginDispatchTable` (version 1; +0x10, +0x14 init, +0x24 get time,
+  +0x28 set time), sets Time from it, and installs a Time Manager task that
+  adds 1 to Time every second. The plugin calls `_EgretDispatch` (OS trap
+  0x92, through the trap table at 0x648 with `CallOSTrapUniversalProc`)
+  with a pseudo packet, 3 to get the time and 9 to set it (seconds since
+  1904, local time); the ROM's 68k Cuda Manager (`0xFFC09C00`) sends it
+  over the VIA, and syshm's Cuda answers from the guest clock (SET_TIME
+  moves its offset until the next restart). With the `nvram` node below,
+  the run makes one more Cuda packet (the get) and the clock is right;
+  Date & Time (8.6's, from a second disk) sets it with one more.
+- **NVRAM** (Task 8, done): NVRAMServicesLib's init finds the node with
+  `device_type` nvram and prepares its driver, which for an `nvram` under a
+  node named mac-io is the ROM file's "Cuda NVRAM Plugin" (`nvram,cuda`;
+  parcel flags: device_type and parent's name): it reads `AAPL,address`
+  and moves byte k of NVRAM at that address + 16k (`lbzu`/`stbu`, one byte
+  at a time), and says NVRAM is 8 KB, kind 2. Any kind but 1 has the
+  library keep a copy in RAM in 32-byte blocks, each read from the chip
+  when first used, and written back only by NVRAMFlush (kind 4: after every
+  write): on the sleep queue's sleep and doze demands (installed through a
+  Notification Manager task), and from the Shutdown Manager on Shut Down
+  and Restart (`0xFFC2E7F0`, from `0xFFC2DEF8` and `0xFFC2E028`). Its
+  table at ExpandMem +0x2FC: +0xC NVRAMRead, +0x10 NVRAMWrite, +0x14
+  NVRAMFlush. The 68k PRAM routines (`0xFFC08230` read, `0xFFC082A0` write)
+  use offset NKHWInfo +0x3C (0x1400, as syshm gives 8.5's ROM) plus the
+  PRAM address, so 9.1 keeps PRAM where 8.5 does through RTAS, and one
+  `--nvram` file serves both (each started from the other's file without
+  reinitializing PRAM). A boot reads 0x1400-0x151F and 0x0000-0x001F (the
+  partition header NVRAMFindPartition looks at; syshm's NVRAM has no
+  partitions, and nothing seen depends on them). A first boot on a blank
+  file writes PRAM's 256 bytes at shutdown; later ones the blocks that
+  changed. The real node (a beige G3's Open Firmware listing; the iMac's
+  Paddington is a Heathrow): `nvram@60000`, compatible nvram; Linux's
+  powermac nvram.c
+  takes the stride from the one `reg` range (0x20000 / 8 KB), QEMU's
+  macio NVRAM is `addr >> 4 & (size - 1)`, and OpenBIOS gives `#bytes`
+  0x2000, `reg` 0x60000 0x20000. syshm's node and chip are only in trees
+  for ROM files with parcels; RTAS keeps the bytes (`src/nvram.c` points
+  at them).
 - **Task 4** (exceptions in tasks other than the blue one) wasn't needed
   to reach the Finder: no task faulted.

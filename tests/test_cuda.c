@@ -91,6 +91,18 @@ void test_cuda(void)
 	uint32_t t = (uint32_t)r[3] << 24 | (uint32_t)r[4] << 16 | (uint32_t)r[5] << 8 | r[6];
 	CHECK(t > 3786825600u);                 /* after 2024-01-01 in Mac time */
 
+	/* SET_TIME moves the clock: GET_TIME counts on from the time set */
+	uint64_t tb = 0;
+	const struct guest_clock fixed = { 1000000000, &tb, 1000 };
+	cuda.clock = &fixed;
+	static const uint8_t set_time[] = { 0x01, 0x09, 0xB0, 0x00, 0x00, 0x00 };
+	send(set_time, sizeof set_time);
+	CHECK_EQ(receive(r, sizeof r), 3);
+	tb = 5000;
+	send(get_time, sizeof get_time);
+	CHECK_EQ(receive(r, sizeof r), 7);
+	CHECK_EQ((uint32_t)r[3] << 24 | (uint32_t)r[4] << 16 | (uint32_t)r[5] << 8 | r[6], 0xB0000005u);
+
 	/* ADB talk to an absent device times out */
 	static const uint8_t talk[] = { 0x00, 0x2C };
 	send(talk, sizeof talk);
@@ -107,7 +119,7 @@ void test_cuda(void)
 	send(get_pram, sizeof get_pram);
 	CHECK_EQ(receive(r, sizeof r), 4);
 	CHECK_EQ(r[3], 0xA5);
-	CHECK_EQ(cuda.packets, 4);
+	CHECK_EQ(cuda.packets, 6);
 
 	/* T2 one-shot: flag after the loaded count elapses */
 	via_set_time(&via, 1000);

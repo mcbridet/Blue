@@ -26,6 +26,8 @@
 #define MACIO_DBDMA (MACIO_BASE + 0x8000u)     /* DMA channel registers */
 #define MACIO_SOUND (MACIO_BASE + 0x14000u)    /* AWACS-family sound chip ("davbus") */
 #define MACIO_ENET (MACIO_BASE + 0x11000u)     /* Ethernet ("bmac+"; lanLib drives it) */
+#define MACIO_NVRAM (MACIO_BASE + 0x60000u)    /* NVRAM, a byte every 16 (ROM files with parcels only) */
+#define MACIO_NVRAM_SIZE 0x20000u
 #define MACIO_DMA_ENET_TX (MACIO_DBDMA + 2 * 0x100u)
 #define MACIO_DMA_ENET_RX (MACIO_DBDMA + 3 * 0x100u)
 #define MACIO_DMA_SOUND_OUT (MACIO_DBDMA + 8 * 0x100u)

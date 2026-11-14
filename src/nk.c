@@ -21,6 +21,7 @@
 #include "mp.h"
 #include "ndrv.h"
 #include "net.h"
+#include "nvram.h"
 #include "ohci.h"
 #include "pci.h"
 #include "perf.h"
@@ -431,6 +432,7 @@ struct machine {
 	struct ppc_cpu cpu;
 	struct bootinfo bootinfo;
 	struct rtas rtas;
+	struct nvram nvram;             /* RTAS's NVRAM as a device (ROM files with parcels; see nvram.h) */
 	struct mmio_bus bus;
 	struct macio macio;
 	struct dbdma dbdma;
@@ -876,6 +878,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->rtas.pci = &m->pci;
 	m->mp_kernel = m->rom->format == ROM_FORMAT_PARCELS;
 	if (m->mp_kernel) {
+		nvram_init(&m->nvram, m->rtas.nvram, RTAS_NVRAM_SIZE);
+		mmio_add(&m->bus, MACIO_NVRAM, MACIO_NVRAM_SIZE, &nvram_mmio_ops, &m->nvram, "nvram");
 		m->mp.log = getenv("SYSHM_LOG_MP") != NULL;
 		mp_init(&m->mp, TIMEBASE_HZ);
 		/* the areas a NanoKernel 2 makes from the page map: Mac OS's RAM, then the rest */
@@ -3159,6 +3163,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		if (m.rtas.calls[t])
 			printf(" %s=%lu", rtas_name(t), m.rtas.calls[t]);
 	printf("\n");
+	if (m.mp_kernel)
+		printf("nvram: %lu reads, %lu writes\n", m.nvram.reads, m.nvram.writes);
 	ppc_dump(cpu, stdout);
 	if (opt->screenshot) {
 		if (video_screenshot(&m.video, opt->screenshot))
