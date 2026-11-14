@@ -1,17 +1,19 @@
 /*
  * Shared folders: names in Mac OS Roman and the catalog's order, volumes
  * made from host folders (read back with hfsread, and with hfsutils if
- * installed), and Mac OS's changes written back: new, changed, renamed,
- * moved and deleted files, the recovery folder, changes on both sides, and
- * a volume Mac OS didn't put away.
+ * installed), their dates, and Mac OS's changes written back: new,
+ * changed, renamed, moved and deleted files, the recovery folder, changes
+ * on both sides, and a volume Mac OS didn't put away.
  */
 #include <dirent.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #ifdef __APPLE__
+#include <sys/attr.h>
 #include <sys/xattr.h>
 #endif
 
@@ -338,7 +340,7 @@ static void test_volume(void)
 #endif
 
 	quiet(true);
-	struct share *s = share_open(dir);
+	struct share *s = share_open(dir, 0);
 	quiet(false);
 	CHECK(s != NULL);
 	if (!s)
@@ -440,7 +442,7 @@ static void test_big_files(void)
 	put_text(dir, "small", "small");
 
 	quiet(true);
-	struct share *s = share_open(dir);
+	struct share *s = share_open(dir, 0);
 	quiet(false);
 	CHECK(s != NULL);
 	if (s) {
@@ -606,7 +608,7 @@ static void test_write_back(void)
 	put_text(dir, ".hidden", "not Mac OS's business");
 
 	quiet(true);
-	struct share *s = share_open(dir);
+	struct share *s = share_open(dir, 0);
 	quiet(false);
 	CHECK(s != NULL);
 	if (!s) {
@@ -675,7 +677,7 @@ static void test_write_back(void)
 
 	/* the folder as it is now, shown again */
 	quiet(true);
-	s = share_open(dir);
+	s = share_open(dir, 0);
 	quiet(false);
 	CHECK(s != NULL);
 	if (s) {
@@ -703,7 +705,7 @@ static void test_not_put_away(void)
 	put_text(dir, "a.txt", "a");
 	for (int changes = 0; changes < 2; changes++) {
 		quiet(true);
-		struct share *s = share_open(dir);
+		struct share *s = share_open(dir, 0);
 		quiet(false);
 		CHECK(s != NULL);
 		if (!s)
@@ -740,11 +742,103 @@ static void test_not_put_away(void)
 	remove_tree(dir);
 }
 
+/* ---- dates ------------------------------------------------------------------------ */
+
+static void set_mtime(const char *dir, const char *rel, time_t t)
+{
+	char path[1024];
+	snprintf(path, sizeof path, "%s%s%s", dir, rel[0] ? "/" : "", rel);
+	struct timespec ts[2] = { { t, 0 }, { t, 0 } };
+	CHECK(utimensat(AT_FDCWD, path, ts, 0) == 0);
+}
+
+struct dated {
+	uint32_t latest;                /* no date may be later */
+	unsigned items, bad;
+	uint32_t root_created, old_modified, reborn_created, reborn_modified;
+};
+
+static int check_dates(void *ctx, const struct hfsread_file *f)
+{
+	struct dated *d = ctx;
+	d->items++;
+	if (f->created > f->modified || f->modified > d->latest)
+		d->bad++;
+	if (f->id == 2)
+		d->root_created = f->created;
+	if (!strcmp(f->name, "old.txt"))
+		d->old_modified = f->modified;
+	if (!strcmp(f->name, "reborn.txt")) {
+		d->reborn_created = f->created;
+		d->reborn_modified = f->modified;
+	}
+	return 0;
+}
+
+/*
+ * No date on the volume is later than the guest's clock (Norton FileSaver
+ * took the MDB's for damage, "error 16,005", when the folder's were later),
+ * and none is created after it was modified.
+ */
+static void test_dates(void)
+{
+	char dir[512];
+	if (temp_dir(dir, sizeof dir)) {
+		CHECK(!"temp_dir");
+		return;
+	}
+	const time_t start = 1000000000, old = 778982400, future = time(NULL) + 30 * 86400;
+	put_text(dir, "old.txt", "1994");
+	set_mtime(dir, "old.txt", old);
+	put_text(dir, "reborn.txt", "unpacked: born now, changed in 1994");
+	set_mtime(dir, "reborn.txt", old);
+#ifdef __APPLE__
+	char path[1024];
+	struct attrlist al = { .bitmapcount = ATTR_BIT_MAP_COUNT, .commonattr = ATTR_CMN_CRTIME };
+	struct timespec born = { time(NULL), 0 };
+	snprintf(path, sizeof path, "%s/reborn.txt", dir);
+	CHECK(setattrlist(path, &al, &born, sizeof born, 0) == 0);
+#endif
+	put_text(dir, "new.txt", "from the future");
+	set_mtime(dir, "new.txt", future);
+	make(dir, "sub");
+	put_text(dir, "sub/in.txt", "in");
+	set_mtime(dir, "sub", future);
+	set_mtime(dir, "", future);
+
+	for (unsigned pass = 0; pass < 2; pass++) {
+		quiet(true);
+		struct share *s = share_open(dir, pass ? 0 : start);    /* (--fixed-time, then the host's clock) */
+		quiet(false);
+		CHECK(s != NULL);
+		if (!s)
+			break;
+		const struct disk_backend *b = share_disk(s);
+		struct dated d = { .latest = hfs_mac_time(pass ? time(NULL) + 1 : start) };
+		uint8_t mdb[512], alt[512];
+		CHECK(b->read(b->ctx, mdb, 512, 1024) == 0 && b->read(b->ctx, alt, 512, b->size - 1024) == 0);
+		CHECK(!memcmp(mdb, alt, 512));
+		CHECK(be32(mdb + 2) <= be32(mdb + 6) && be32(mdb + 6) <= d.latest);       /* drCrDate, drLsMod */
+		struct hfsread_volume v;
+		CHECK(hfsread_open_with(&v, b->read, b->ctx, b->size) == 0 && hfsread_walk(&v, check_dates, &d) == 0);
+		CHECK_EQ(d.items, 6);
+		CHECK_EQ(d.bad, 0);
+		CHECK_EQ(d.root_created, be32(mdb + 2));
+		CHECK_EQ(d.old_modified, hfs_mac_time(old));                           /* (earlier ones stay) */
+		CHECK(d.reborn_created == hfs_mac_time(old) && d.reborn_modified == hfs_mac_time(old));
+		quiet(true);
+		CHECK_EQ(share_close(s), 0);
+		quiet(false);
+	}
+	remove_tree(dir);
+}
+
 void test_share(void)
 {
 	test_names();
 	test_volume();
 	test_big_files();
+	test_dates();
 	test_write_back();
 	test_not_put_away();
 }

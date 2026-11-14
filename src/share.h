@@ -22,8 +22,12 @@
 
 struct share;
 
-/* Builds the volume for a folder (saying what it leaves out, and why it fails). NULL on failure. */
-struct share *share_open(const char *dir);
+/*
+ * Builds the volume for a folder (saying what it leaves out, and why it
+ * fails). `start` is where the guest's clock starts (Unix time; 0: the
+ * host's, now): no date on the volume is later. NULL on failure.
+ */
+struct share *share_open(const char *dir, int64_t start);
 
 /* The drive's blocks: base and overlay */
 const struct disk_backend *share_disk(struct share *s);
