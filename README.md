@@ -338,6 +338,69 @@ at the end. Text files keep their line endings (a host's LF shows as boxes
 in SimpleText). Folders' Finder info (window positions, custom icons) and
 the Locked checkbox aren't written back.
 
+### Floppies
+
+`--floppy IMAGE` puts a floppy disk image in a floppy drive, mainly to
+install software that came on floppies; give it several times for a set of
+disks. The first is in the drive at startup; the others are listed in the
+window's menu (F12), where a click puts one in, and dragging an image file
+onto the window puts it in too. `--floppy-drive` gives a drive that's empty
+at startup (with `--floppy` images only listed). Mac OS ejects a disk as
+on any Mac: Put Away or dragging it to the Trash, Eject in the Finder's
+Special menu, an installer's own eject, an Initialize dialog's Eject. The
+drive is then empty, and syshm says so (`floppy: Mac OS ejected ...`).
+
+```
+build/syshm boot --disk hd.img --floppy "Install 1.image" --floppy "Install 2.image" --window
+```
+
+A multi-disk installer ejects disk 1 and asks for disk 2: press F12 and
+click disk 2 (the menu closes and Mac OS goes on), or drag disk 2's image
+onto the window. Mac OS learns of a disk going in as from a real drive,
+by a disk-inserted event, so whatever application is in front and waiting
+for a disk (an installer, Disk Copy) gets it. syshm won't take a disk out
+that Mac OS has mounted (it's using it; the menu says so, and how to
+eject it there); one that isn't mounted (unreadable, say) can be ejected or
+replaced from the menu. Input scripts have `floppy insert FILE` (the rest
+of the line) and `floppy eject`, which follow the same rules.
+
+Images: raw ones of 400K, 720K, 800K, 1440K and 2880K disks (`.img`,
+`.dsk`, `.ima`, `.flp`), and Disk Copy 4.2 ones (`.image`: an 84-byte
+header, the blocks, then the 400K and 800K disks' tags; also in
+MacBinary), whose checksums syshm keeps right as Mac OS writes (they're
+worked out again a second after the last write, and when the disk is
+ejected or flushed). They're told apart by their contents and size, not
+their names. Compressed images and archives (Disk Copy 6's NDIF, DART,
+UDIF `.dmg`, StuffIt, zip, gzip, BinHex) aren't taken: syshm says what
+they are, or that their size is no floppy's. Convert them to a raw or Disk
+Copy 4.2 image first (with Disk Copy in Mac OS, or a tool on the host). An
+image is read-only (Mac OS shows it locked) if its file can't be written,
+or is locked in the Finder; lock an image to keep it as it was, as Mac OS
+writes to a writable disk as soon as it mounts it (its volume information,
+the desktop database). Mac OS mounts what it can read: HFS, FAT (PC
+floppies) with File Exchange, which a full install has (the 8.5 CD's
+System doesn't: it offers to initialize them). MFS disks (System 1-6 era,
+400K) are refused: Mac OS 8.5 and later can't read them. A blank image (or
+one Mac OS can't read) brings up Mac OS's "unreadable, initialize?"
+dialog, and Erase Disk works on floppies (Format, Verify, then a new
+volume; the format offered is the image's size). `syshm disk create
+blank.img 1440K "Untitled"` makes a blank formatted floppy (400K, 720K,
+800K or 1440K).
+
+The iMac has no floppy controller, so none is emulated: the drive is a
+third kind of drive of syshm's own disk driver (`src/disk.c`, images in
+`src/floppy.c`), at PCI device 7, much as a USB floppy drive is on a real
+iMac, and needs nothing installed in Mac OS. It answers as a floppy drive
+(DriverGestalt 'devt' 'flop', a floppy disk's icon and the drive's, in
+color, the 'where' of Get Info, the format list) and says its disk is
+ejectable, and Mac OS keeps the disk in at a restart. A floppy is never the
+startup disk: the drive is empty as far as Mac OS knows until applications
+run (see plan.md, Findings), and syshm doesn't look for a ROM file on it.
+Transfers take guest time at the disks' rate. The status bar's floppy light
+(with a floppy drive only) is dimmed while it's empty. Disk Copy can't
+make floppies from images in this drive (it looks for Apple's floppy
+drives): put the image in instead, or a copy of it.
+
 ### Guest tools
 
 Some things only code inside Mac OS can do. `--tools` attaches a small
@@ -633,7 +696,8 @@ lacks: syshm says to install it again from the tools volume.
   - Disk: host files as drives (`--disk`, writable; `--cdrom`, read-only;
     the 8.5 CD's System refuses to start from a writable drive, as from a
     copy of the CD), and a host folder (`--share`; see Shared folder),
-    whose blocks come from `src/share.c` rather than a file.
+    whose blocks come from `src/share.c` rather than a file; and a floppy
+    drive (`--floppy`; see Floppies), whose disk comes and goes.
     An Apple partition map gives one drive per HFS partition; otherwise the
     file is one volume. (When there's a map entry at offset 512, entries are
     512 bytes apart and count 512-byte blocks even if the driver descriptor
@@ -726,13 +790,15 @@ lacks: syshm says to install it again from the tools volume.
   keeps NVRAM, as closing the window does); a screenshot of the Mac's screen
   (a PNG on the Desktop, or in the current directory without one, named
   for when it was taken); fullscreen (at the desktop's resolution); the
-  status bar; and whether the pointer is captured while the Mac hides its
-  cursor. In real time guest time doesn't count the pause, so the Mac's
+  status bar; whether the pointer is captured while the Mac hides its
+  cursor; and with a floppy drive, what's in it, Eject, and the floppy
+  images to put in (see Floppies). In real time guest time doesn't count the pause, so the Mac's
   clock is that much behind afterwards.
   The status bar (shown unless `--no-status-bar`; the menu toggles it) sits
   below the screen, so the window grows by its height rather than covering
   anything (fullscreen, or maximized, the screen fitted to the window
-  shrinks instead). It has lights for the disks, CD-ROMs and network, lit
+  shrinks instead). It has lights for the disks, CD-ROMs, the floppy drive
+  (if there's one) and network, lit
   for a tenth of a second whenever they move data (green, amber while a
   disk is written; a light is dimmed if there's no such device), each with
   what it read and wrote over the last second (the network's what it
@@ -774,7 +840,8 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 - Model `iMac,1`, a 266 MHz PowerPC 750 on a 66 MHz bus, timebase 16.6 MHz.
 - Grackle PCI host bridge; on it the display (device 1, framebuffer at
   `0x82000000`), up to four disks (devices 2-5; a shared folder is one),
-  the USB controller (device 6, registers at `0x81000000`) and Mac I/O
+  the USB controller (device 6, registers at `0x81000000`), the floppy
+  drive if there's one (device 7, `syshm,floppy`) and Mac I/O
   (device 16) at `0x81080000`:
   Heathrow-style interrupt controller (`+0x10`), DMA channels (`+0x8000`,
   0x100 bytes each), SCC (`+0x12000`), VIA1 with Cuda (`+0x16000`).
@@ -872,6 +939,8 @@ build/syshm rom trampoline MOS.rom build/trampoline.elf
 build/syshm boot --rom MOS.rom --cdrom 85.iso --window   # interactive
 build/syshm boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
 build/syshm boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
+build/syshm boot --rom MOS.rom --cdrom 85.iso --floppy disk1.img --floppy disk2.img --window   # a floppy drive
+build/syshm disk create blank.img 1440K "Untitled"          # a blank floppy
 build/syshm run-raw code.bin 1000                # SYSHM_TRACE=1 logs every instruction
 ```
 
@@ -888,7 +957,11 @@ counts, for example:
 3500000000 motion 40 -10         # the mouse moved 40 right, 10 up (through the ADB mouse, as games read it)
 3600000000 screenshot after.png
 3700000000 clock 800             # guest time at 800 million instructions a second from here
+3800000000 floppy insert Disk 2.img
 ```
+
+(`floppy insert` takes the rest of its line as the image's path, comments
+included; `floppy eject` takes it out: see Floppies.)
 
 `clock N` keeps a run reproducible while making guest time pass as on a
 guest processor of N MIPS, so that work paced by guest time (sound, timer
@@ -985,7 +1058,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
           dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
           (configuration space), nvram.c (devices), ndrv.c (PEF driver generator),
-          video.c, disk.c (native drivers), net.c (Ethernet's lanLib,
+          video.c, disk.c (native drivers), floppy.c (floppy images),
+          net.c (Ethernet's lanLib,
           libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
           reader: the startup disk's ROM file), share.c (shared folder),
           rsrc.c (resource forks), tools.c (guest tools), rave.c + raster.c

@@ -182,9 +182,14 @@ static enum ui_action floppy_menu(const struct ui_floppy *f, const ImVec2 &wide)
 	} else {
 		ImGui::TextUnformatted("Floppy drive: empty");
 	}
-	bool others = f->count > (f->current >= 0 ? 1u : 0u);
+	const unsigned others = f->count - (f->current >= 0 ? 1u : 0u);
 	if (others)
 		ImGui::TextDisabled(f->in[0] ? "Put in instead:" : "Put in:");
+	/* (more than a few scroll, to keep the menu inside small windows) */
+	const bool scroll = others > 3;
+	if (scroll)
+		ImGui::BeginChild("floppies", ImVec2(wide.x + ImGui::GetStyle().ScrollbarSize + 4,
+						     ImGui::GetFrameHeightWithSpacing() * 3.5f));
 	for (unsigned k = 0; k < f->count && k < UI_FLOPPIES; k++) {
 		if ((int)k == f->current)
 			continue;
@@ -195,6 +200,8 @@ static enum ui_action floppy_menu(const struct ui_floppy *f, const ImVec2 &wide)
 		ImGui::EndDisabled();
 		ImGui::PopID();
 	}
+	if (scroll)
+		ImGui::EndChild();
 	ImGui::TextDisabled(others ? "(or drop an image on the window)" : "(drop an image on the window to put it in)");
 	return action;
 }
@@ -242,7 +249,9 @@ static enum ui_action menu(const struct ui_state *s)
 			    "(while the Mac hides its cursor; Control-Option releases it)");
 	if (s->news) {
 		ImGui::Separator();
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 520);  /* (floppies' news can be long) */
 		ImGui::TextUnformatted(s->news);
+		ImGui::PopTextWrapPos();
 	}
 	ImGui::Separator();
 	ImGui::TextDisabled("F12 or Esc resumes");

@@ -188,6 +188,11 @@ int floppy_probe(int fd, struct floppy_image *img, char *why, size_t len)
 			return -1;
 		}
 	} else if (!dc42_header(h, 0, size, img) || DC42_HEADER + img->data_size + img->tag_size != size) {
+		if (size > MAX_FLOPPY) {
+			snprintf(why, len, "too big for a floppy (%llu MB): disk and CD images go on syshm's command "
+				 "line (--disk, --cdrom)", (unsigned long long)(size >> 20));
+			return -1;
+		}
 		if (!floppy_raw_size(size)) {
 			snprintf(why, len, "%llu bytes is no floppy's size: syshm takes raw images of 400K, 720K, "
 				 "800K, 1440K or 2880K disks, and Disk Copy 4.2 images", (unsigned long long)size);

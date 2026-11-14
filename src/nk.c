@@ -740,6 +740,18 @@ static void fill_page_holes(struct machine *m)
 	}
 }
 
+/* What went in the floppy drive */
+static void floppy_said(const struct disk *d)
+{
+	printf("floppy: %s in the drive (%lluK%s, %s%s)\n", d->media_path,
+	       (unsigned long long)(d->image.data_size >> 10),
+	       d->image.kind == FLOPPY_DC42 ? " Disk Copy 4.2 image" : "", d->image.volume,
+	       d->read_only ? ", locked" : "");
+	if (d->image.kind == FLOPPY_DC42 && !d->image.checksums_ok)
+		printf("floppy: %s: its Disk Copy checksums don't match what's in it (it may be damaged)\n",
+		       d->media_path);
+}
+
 static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 {
 	const struct nk_config *ci = &m->ci;
@@ -852,6 +864,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		if (m->floppy_in >= 0 && disk_insert(&m->floppy, m->floppy_list[m->floppy_in], why, sizeof why)) {
 			fprintf(stderr, "floppy: %s: %s\n", m->floppy_list[m->floppy_in], why);
 			m->floppy_in = -1;
+		} else if (m->floppy_in >= 0) {
+			floppy_said(&m->floppy);
 		}
 	}
 
@@ -1377,31 +1391,31 @@ static bool floppy_insert(struct machine *m, const char *path)
 {
 	char why[400];
 	if (!m->has_floppy) {
-		snprintf(m->menu_status, sizeof m->menu_status,
-			 "There's no floppy drive: start syshm with --floppy IMAGE, or --floppy-drive for an empty one");
+		snprintf(m->menu_status, sizeof m->menu_status, "There's no floppy drive: start syshm with "
+			 "--floppy IMAGE, or --floppy-drive for an empty one");
 		fprintf(stderr, "floppy: %s\n", m->menu_status);
+		return false;
+	}
+	if (floppy_check(path, why, sizeof why)) {
+		snprintf(m->menu_status, sizeof m->menu_status, "%.60s: %s", file_name(path), why);
+		fprintf(stderr, "floppy: %s: %s\n", path, why);
 		return false;
 	}
 	if (m->floppy.media && disk_in_use(&m->floppy)) {
 		snprintf(m->menu_status, sizeof m->menu_status,
-			 "The floppy drive has %s in it, which Mac OS is using: put it away there first (drag it to "
-			 "the Trash), then put in %s", file_name(m->floppy.media_path), file_name(path));
+			 "The floppy drive has %.100s in it, which Mac OS is using: put it away there first (drag it to "
+			 "the Trash), then put in %.100s", file_name(m->floppy.media_path), file_name(path));
 		fprintf(stderr, "floppy: %s\n", m->menu_status);
 		return false;
 	}
 	if (disk_insert(&m->floppy, path, why, sizeof why)) {
-		snprintf(m->menu_status, sizeof m->menu_status, "%s: %s", file_name(path), why);
+		snprintf(m->menu_status, sizeof m->menu_status, "%.60s: %s", file_name(path), why);
 		fprintf(stderr, "floppy: %s: %s\n", path, why);
 		return false;
 	}
 	m->floppy_in = floppy_listed(m, path);
-	const struct disk *d = &m->floppy;
-	snprintf(m->menu_status, sizeof m->menu_status, "Put %s in the floppy drive", file_name(path));
-	printf("floppy: %s in the drive (%lluK%s, %s%s)\n", path, (unsigned long long)(d->image.data_size >> 10),
-	       d->image.kind == FLOPPY_DC42 ? " Disk Copy 4.2 image" : "", d->image.volume,
-	       d->read_only ? ", locked" : "");
-	if (d->image.kind == FLOPPY_DC42 && !d->image.checksums_ok)
-		printf("floppy: %s: its Disk Copy checksums don't match what's in it (it may be damaged)\n", path);
+	snprintf(m->menu_status, sizeof m->menu_status, "Put %.100s in the floppy drive", file_name(path));
+	floppy_said(&m->floppy);
 	return true;
 }
 
@@ -1412,13 +1426,13 @@ static void floppy_eject(struct machine *m)
 		return;
 	if (disk_in_use(&m->floppy)) {
 		snprintf(m->menu_status, sizeof m->menu_status,
-			 "Mac OS is using %s: put it away there (drag it to the Trash) to eject it",
+			 "Mac OS is using %.100s: put it away there (drag it to the Trash) to eject it",
 			 file_name(m->floppy.media_path));
 		fprintf(stderr, "floppy: %s\n", m->menu_status);
 		return;
 	}
 	printf("floppy: %s taken out\n", m->floppy.media_path);
-	snprintf(m->menu_status, sizeof m->menu_status, "Took %s out of the floppy drive",
+	snprintf(m->menu_status, sizeof m->menu_status, "Took %.100s out of the floppy drive",
 		 file_name(m->floppy.media_path));
 	disk_eject(&m->floppy);
 	m->floppy_in = -1;
@@ -1435,14 +1449,14 @@ static void floppy_state(struct machine *m)
 	memset(&f, 0, sizeof f);
 	f.current = -1;
 	if (m->floppy.media) {
-		snprintf(f.in, sizeof f.in, "%s", file_name(m->floppy.media_path));
+		snprintf(f.in, sizeof f.in, "%.63s", file_name(m->floppy.media_path));
 		f.locked = m->floppy.read_only;
 		f.in_use = disk_in_use(&m->floppy);
 		f.current = m->floppy_in;
 	}
 	f.count = m->floppy_count < UI_FLOPPIES ? m->floppy_count : UI_FLOPPIES;
 	for (unsigned k = 0; k < f.count; k++)
-		snprintf(f.names[k], sizeof f.names[k], "%s", file_name(m->floppy_list[k]));
+		snprintf(f.names[k], sizeof f.names[k], "%.63s", file_name(m->floppy_list[k]));
 	display_floppy_state(m->display, &f);
 }
 
@@ -1810,7 +1824,7 @@ static int script_load(struct script *s, const char *path)
 			sscanf(rest, " %255s", e.arg);
 		} else if (strcmp(e.cmd, "key") == 0) {
 			sscanf(rest, " %x %255s", (unsigned *)&e.a, e.arg);
-		} else if (strcmp(e.cmd, "floppy") == 0) {      /* floppy insert FILE (the rest of the line), floppy eject */
+		} else if (strcmp(e.cmd, "floppy") == 0) {      /* floppy insert FILE (the rest of the line), eject */
 			e.a = sscanf(rest, " insert %255[^\n]", e.arg) == 1 ? 1 : strstr(rest, "eject") ? 2 : 0;
 			for (size_t n = strlen(e.arg); n && (e.arg[n - 1] == ' ' || e.arg[n - 1] == '\r'); n--)
 				e.arg[n - 1] = '\0';
@@ -3579,8 +3593,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		       (unsigned long long)(m.disk[k].bytes_read >> 10), m.disk[k].writes,
 		       (unsigned long long)(m.disk[k].bytes_written >> 10));
 	if (m.has_floppy)
-		printf("\nfloppy: %lu driver calls, drive %u, %lu reads (%llu KB), %lu writes (%llu KB), %lu ejected by "
-		       "Mac OS; %s", m.floppy.calls, m.floppy.part[0].drive_num, m.floppy.reads,
+		printf("\nfloppy: %lu driver calls, drive %u, %lu reads (%llu KB), %lu writes (%llu KB), "
+		       "%lu ejected by Mac OS; %s", m.floppy.calls, m.floppy.part[0].drive_num, m.floppy.reads,
 		       (unsigned long long)(m.floppy.bytes_read >> 10), m.floppy.writes,
 		       (unsigned long long)(m.floppy.bytes_written >> 10), m.floppy.ejects,
 		       m.floppy.media ? m.floppy.media_path : "empty");
