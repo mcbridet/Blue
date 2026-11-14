@@ -153,3 +153,98 @@ commands for reproducible tests.
 - **Size:** large, comparable to a big part of the JIT. Worth it when a
   program needs AltiVec, or vector-heavy work turns out too slow; try the
   program first.
+
+## Printing
+
+- **The iMac's:** no printer port. Printers were USB ones with their own
+  drivers, or network printers: LaserWriters over AppleTalk, or any
+  PostScript printer by LPR over TCP/IP (LaserWriter 8's Desktop Printer
+  Utility makes an LPR desktop printer).
+- **What for:** printing from Mac programs to a PDF on the host, or to the
+  host's printer.
+- **How:** syshm's network gateway (10.0.2.2) answers LPR (port 515);
+  Mac OS's LaserWriter 8 sends it PostScript, and syshm writes the job out
+  as a PDF in a folder (an option, the Desktop by default) with
+  Ghostscript's pdfwrite (found at run time; recent macOS no longer
+  converts PostScript itself), or hands it to the host's printing system
+  (`lp`: CUPS, on macOS and Linux). Without Ghostscript the PostScript file
+  is kept and syshm says so. The guest tools carry a PPD for a "syshm PDF
+  Printer" (paper sizes, colour), and the install prompt could set up the
+  desktop printer. Programs that draw with QuickDraw print too: LaserWriter
+  8 turns QuickDraw into PostScript. The NAT has to accept connections to
+  the gateway's own address for this. Real-time runs only, as for all
+  networking.
+- **Alternatives:** a LaserWriter on AppleTalk (PAP) at the gateway, which
+  needs AppleTalk to get past the NAT (only IP does today), or a printer
+  driver of syshm's own in the Chooser (far more work).
+- **Size:** moderate: an LPD listener in the NAT, the job handling, the PPD.
+
+## Game controllers
+
+- **The iMac's:** USB only. Gamepads and joysticks (Gravis GamePad Pro USB,
+  MacAlly iShock, Thrustmaster and others) were used through InputSprocket
+  (Game Sprockets), with drivers from their makers or a generic USB HID
+  driver.
+- **Where syshm is:** the host's gamepads don't reach Mac OS; games see the
+  keyboard and mouse only.
+- **What for:** games with InputSprocket support, which most Mac action
+  games of the late 90s have (Unreal Tournament among them).
+- **Host side:** SDL2's game controller API (loaded at run time like the
+  rest of SDL; macOS and Linux; plugging in and out; the standard layouts of
+  Xbox, PlayStation and Switch pads), in window runs only, with script
+  commands for tests.
+- **Guest side, options:**
+  - An InputSprocket driver among the guest tools, its logic in syshm
+    through host calls like the 3D engine's: the pad appears in each game's
+    InputSprocket configuration with named buttons, sticks and triggers,
+    and no USB emulation is needed. How InputSprocket finds its drivers
+    (plug-ins in the Extensions folder, to confirm) decides the packaging.
+    The first choice.
+  - A virtual USB gamepad (HID) on syshm's USB controller, which has no
+    devices yet, for Mac OS's own USB drivers: more general (games that
+    read USB HID themselves; a base for other USB devices), but it needs
+    USB device emulation and depends on what Mac OS 8.5-9.1's USB HID
+    support does with gamepads (to check).
+  - A host-side mapping of the pad to keys and the mouse, for games without
+    InputSprocket (set up in the F12 menu, say).
+- **Related, small:** right-click as Control-click (Mac OS 8's contextual
+  menus), and the scroll wheel (Mac OS 9 had no system-wide support; the
+  guest tools could turn it into scrolling).
+- **Size:** small to moderate for the InputSprocket driver and the key
+  mapping; moderate for the USB gamepad.
+
+## More CD formats, and CD audio
+
+- **Where syshm is:** a `--cdrom` image is an Apple partition map with HFS
+  partitions, or a bare HFS or HFS+ volume (`86.iso`, "International 8.6
+  Update", is one of those: it attaches, it just has no blessed System
+  Folder). That covers most Mac CDs, and Toast and `.cdr` images are often
+  exactly that. Hybrid Mac/PC discs usually carry a partition map too and
+  should work (not yet tried).
+- **Formats missing:**
+  - Raw-sector images: `.bin`/`.cue` (2352-byte sectors, mode 1 or 2,
+    several tracks), and the likes of `.nrg`, `.mdf`/`.mds` and `.chd`:
+    read the track layout, take the 2048-byte data out of each raw sector.
+  - Compressed images: UDIF `.dmg` (zlib, bzip2, ADC or LZFSE chunks,
+    read-only, decompressed as read) and Disk Copy 6 NDIF `.img` (whose map
+    is in the resource fork, so only where the fork survived, or from
+    MacBinary). Meanwhile, macOS's `hdiutil convert` makes a plain image.
+  - Pure ISO 9660 discs (PC CDs, and some Mac ones): Mac OS reads them with
+    ISO 9660 File Access. Whether that works through syshm's driver, which
+    answers as a disk rather than as Apple's CD-ROM driver, is to check (it
+    may want the CD-ROM driver's calls, such as the table of contents).
+- **CD audio:** many games of the time played their soundtracks from audio
+  tracks on the CD, and AppleCD Audio Player plays music CDs. On the real
+  machine the drive played them itself, into the sound chip's input; Mac OS
+  drives that with the Apple CD-ROM driver's control calls (table of
+  contents, play, pause, stop, status, volume), and Audio CD Access shows
+  the tracks as AIFF files by reading them digitally. To do it: images with
+  audio tracks (`.cue` sheets with `.bin` or `.wav` tracks), syshm's CD
+  driver answering as a CD-ROM drive with those calls and digital reads,
+  and the audio mixed into syshm's sound output on the host, paced by guest
+  time so instruction-time runs stay reproducible. First check what Mac OS
+  8.5-9.1 and games ask of a CD-ROM drive (DriverGestalt `devt` `cdrm`,
+  the control calls) that a read-only disk doesn't answer today.
+- **Size:** moderate: the formats are self-contained readers behind the
+  disk driver; CD audio needs the CD-ROM driver interface and the sound
+  mixing.

@@ -765,7 +765,8 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    CD boot).
 
 future.md has ideas not planned yet: a modem, infrared, 3D sound, sound
-input and AltiVec.
+input, AltiVec, printing, game controllers, and more CD formats with CD
+audio.
 
 ## Build and test
 
