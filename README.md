@@ -699,6 +699,13 @@ interrupt sources from the patched tree, so every vector in `NKHWInfo` is
 is still the reference for what the Trampoline and kernel produce: the
 snapshot gave syshm its info records, universal tables and low-memory setup.
 
+For Mac OS 9.1, QEMU's `mac99` runs Apple's real Trampoline and NanoKernel 2
+unpatched, to the Finder: `tools/qemu-ref/run91.sh [91.iso]` boots the CD,
+`mptrace.py` logs every Multiprocessing Services call with its results
+through QEMU's gdbstub (`rsp.py`, no gdb needed), `nk2dump.py` decodes the
+kernel's state and the device tree from a RAM dump, and `shots.py` takes
+screenshots. What they found is in `docs/nk2-reference.md`.
+
 ## Assets
 
 ROMs and OS images are user-supplied and ignored by git: `MOS.rom` (the ROM
@@ -726,6 +733,7 @@ tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
           devtree.py (device-tree copy dumper), disasm.py (disassembler)
-docs/     gpu-plan.md (the 3D engine's OpenGL backend)
+docs/     gpu-plan.md (the 3D engine's OpenGL backend), nk2-reference.md
+          (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2 does)
 third_party/imgui/  Dear ImGui 1.93.0 (MIT; its core files only, as released)
 ```
