@@ -182,6 +182,120 @@ static void test_input(void)
 	CHECK_EQ(played_frames, 0);
 }
 
+/* An analog input of constant frames, while `on` */
+static struct {
+	bool on;
+	int16_t l, r;
+	unsigned long pulled;
+	unsigned rate;
+	uint64_t time;
+} analog;
+
+static void analog_run(void *ctx, uint64_t time)
+{
+	(void)ctx;
+	analog.time = time;
+}
+
+static bool analog_pull(void *ctx, int16_t *frames, unsigned count, unsigned rate)
+{
+	(void)ctx;
+	if (!analog.on)
+		return false;
+	for (unsigned k = 0; k < count; k++)
+		frames[2 * k] = analog.l, frames[2 * k + 1] = analog.r;
+	analog.pulled += count;
+	analog.rate = rate;
+	return true;
+}
+
+static bool analog_active(const void *ctx)
+{
+	(void)ctx;
+	return analog.on;
+}
+
+static void test_analog_input(void)
+{
+	reset();
+	snd.input = (struct awacs_input){ analog_run, analog_pull, analog_active, NULL };
+	analog.on = false;
+	analog.pulled = 0;
+	CHECK(awacs_through(&snd));                     /* (no input selected yet) */
+	CHECK(!awacs_playing(&snd));
+	awacs_set_time(&snd, 100);
+	CHECK_EQ(played_frames, 0);                     /* silent: nothing */
+
+	/* alone */
+	analog.on = true;
+	analog.l = 1000, analog.r = -1000;
+	CHECK(awacs_playing(&snd));
+	CHECK(awacs_moving(&snd));
+	awacs_set_time(&snd, 300);
+	CHECK_EQ(analog.time, 300);
+	CHECK_EQ(played_frames, 200);
+	CHECK_EQ(played_rate, 44100);
+	CHECK_EQ((int16_t)be16(played), 1000);
+	CHECK_EQ((int16_t)be16(played + 4 * 199 + 2), -1000);
+	CHECK_EQ(snd.frames_through, 200);
+	CHECK_EQ(snd.frames_played, 0);
+
+	/* with the DMA's frames, mixed: as many frames as time, the input taken once for each */
+	start_ring(AWACS_DMA_OUT, DBDMA_OUTPUT_MORE);
+	played_frames = 0;
+	analog.pulled = 0;
+	awacs_set_time(&snd, 400);
+	CHECK_EQ(played_frames, 100);
+	CHECK_EQ(analog.pulled, 100);
+	const uint8_t *buf = mem_ptr(&mem, BUF);
+	CHECK_EQ((int16_t)be16(played), (int16_t)be16(buf) + 1000);
+	CHECK_EQ((int16_t)be16(played + 4 * 50 + 2), (int16_t)be16(buf + 4 * 50 + 2) - 1000);
+	CHECK_EQ(snd.frames_played, 100);
+
+	/* clipped, not wrapped */
+	analog.l = 32000, analog.r = -32000;
+	for (unsigned k = 0; k < 2048; k += 4)
+		put_be16(mem_ptr(&mem, BUF + k), 0x7000), put_be16(mem_ptr(&mem, BUF + k + 2), 0x9000);
+	played_frames = 0;
+	awacs_set_time(&snd, 410);
+	CHECK_EQ(be16(played), 32767);
+	CHECK_EQ(be16(played + 2), 0x8000);
+
+	/* not played through: the microphone selected, or the CD without loop-through; still taken */
+	wr(0x10, 0x00000400);
+	CHECK(!awacs_through(&snd));
+	played_frames = 0;
+	analog.pulled = 0;
+	awacs_set_time(&snd, 420);
+	CHECK_EQ(played_frames, 10);
+	CHECK_EQ(be16(played), 0x7000);
+	CHECK_EQ(analog.pulled, 10);
+	wr(0x10, 0x00000233);
+	wr(0x10, 0x00001880);
+	CHECK(!awacs_through(&snd));
+	dma_control(AWACS_DMA_OUT, DBDMA_RUN, 0);
+	played_frames = 0;
+	awacs_set_time(&snd, 500);
+	CHECK_EQ(played_frames, 0);
+	CHECK_EQ(analog.pulled, 90);
+	wr(0x10, 0x000018C0);                           /* as Mac OS 8.5 leaves it */
+	CHECK(awacs_through(&snd));
+	awacs_set_time(&snd, 600);
+	CHECK_EQ(played_frames, 100);
+
+	/* at the codec's rate */
+	wr(0x00, 0x00000200);
+	analog.rate = 0;
+	awacs_set_time(&snd, 800);
+	CHECK_EQ(analog.rate, 22050);
+	CHECK_EQ(played_rate, 22050);
+	CHECK_EQ(played_frames, 200);
+
+	analog.on = false;
+	CHECK(!awacs_playing(&snd));
+	snd.input = (struct awacs_input){ 0 };
+}
+
 void test_awacs(void)
 {
 	if (mem_init(&mem))
@@ -190,5 +304,6 @@ void test_awacs(void)
 	test_registers();
 	test_output();
 	test_input();
+	test_analog_input();
 	mem_free(&mem);
 }

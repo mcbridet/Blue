@@ -2,7 +2,8 @@
  * The screen for the window: converting the framebuffer to 32-bit pixels
  * at every depth (the same colours as the RGB screenshots take), finding
  * the rows that changed, and the hardware cursor the driver takes from
- * Mac OS.
+ * Mac OS. The display's VBL interrupt: its timing on the timebase, and the
+ * driver's handler for it in the node's interrupt set.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,12 @@
 #define CURSOR_REF 0x50000u
 #define FB 0x1000000u
 #define FB_SIZE (8u << 20)
+#define TIMEBASE 16600000u
+
+/* The driver's imports and entry points, as video.c numbers them */
+enum { IMP_IO_COMPLETE, IMP_GET_INT, IMP_INSTALL_INT, IMP_QUEUE_SECONDARY, IMP_PROPERTY_GET, IMP_VSL_NEW_SERVICE,
+       IMP_VSL_DO_SERVICE, IMP_VSL_PREPARE_CURSOR, IMPORTS };
+enum { ENTRY_DRIVER_IO, ENTRY_VBL_INTERRUPT, ENTRY_VBL_SECONDARY };
 
 static struct mem mem;
 static struct video video;
@@ -37,7 +44,7 @@ static void test_convert(void)
 {
 	struct video *v = &video;
 	static const unsigned widths[] = { 640, 1003 };
-	video_init(v, &mem, FB, FB_SIZE);
+	video_init(v, &mem, FB, FB_SIZE, TIMEBASE);
 	for (int k = 0; k < 256; k++)
 		for (int c = 0; c < 3; c++)
 			v->clut[k][c] = next_byte();
@@ -118,7 +125,7 @@ static bool driver(struct video *v, struct ndrv_call *c, unsigned code, unsigned
 	c->arg[4] = NDRV_KIND_IMMEDIATE;
 	mem_w16(&mem, PB + 26, (uint16_t)cs);
 	mem_w32(&mem, PB + 28, param);
-	video_driver_call(v, c, 16600000);
+	video_driver_call(v, c);
 	return c->done;
 }
 
@@ -126,7 +133,7 @@ static bool resume(struct video *v, struct ndrv_call *c, uint32_t result)
 {
 	*c = (struct ndrv_call){ .mem = &mem, .entry = NDRV_ENTRY_RESUME, .toc = TOC, .frame = FRAME };
 	c->arg[0] = result;
-	video_driver_call(v, c, 16600000);
+	video_driver_call(v, c);
 	return c->done;
 }
 
@@ -136,6 +143,19 @@ static bool has_string(const uint8_t *p, size_t len, const char *s)
 		if (memcmp(p + k, s, strlen(s)) == 0)
 			return true;
 	return false;
+}
+
+/*
+ * The driver's data section, loaded as the Code Fragment Manager would,
+ * the imports' TVectors filled in: import k's at TVECTORS + 8k (the
+ * hardware cursor's library's, the last, only with the hardware cursor)
+ */
+static void load_driver(const struct video *v, const uint8_t *ndrv)
+{
+	const uint8_t *section = ndrv + 40 + 28;
+	mem_load(&mem, TOC, ndrv + be32(section + 20), be32(section + 16));
+	for (unsigned k = 0; k < (v->hw_cursor ? IMPORTS : IMP_VSL_PREPARE_CURSOR); k++)
+		mem_w32(&mem, TOC + v->layout.import[k], TVECTORS + 8 * k);
 }
 
 /*
@@ -180,7 +200,7 @@ static void test_cursor(void)
 	struct ndrv_call c;
 
 	/* without the hardware cursor, the driver is as before: SetHardwareCursor fails, there's none */
-	video_init(v, &mem, FB, FB_SIZE);
+	video_init(v, &mem, FB, FB_SIZE, TIMEBASE);
 	size_t size = video_build_ndrv(v, ndrv, sizeof ndrv, 1);
 	CHECK(size && !has_string(ndrv, size, "VSLPrepareCursorForHardwareCursor"));
 	mem_w32(&mem, PARAM, CURSOR_REF);
@@ -192,22 +212,18 @@ static void test_cursor(void)
 	CHECK_EQ(c.result, (uint32_t)-17);
 
 	/* with it */
-	video_init(v, &mem, FB, FB_SIZE);
+	video_init(v, &mem, FB, FB_SIZE, TIMEBASE);
 	v->hw_cursor = true;
 	size = video_build_ndrv(v, ndrv, sizeof ndrv, 1);
 	CHECK(size && has_string(ndrv, size, "VSLPrepareCursorForHardwareCursor"));
-	/* (its data section, loaded as the Code Fragment Manager would, the imports' TVectors filled in) */
-	const uint8_t *section = ndrv + 40 + 28;
-	mem_load(&mem, TOC, ndrv + be32(section + 20), be32(section + 16));
-	for (unsigned k = 0; k < 6; k++)                        /* (the last is the library's) */
-		mem_w32(&mem, TOC + v->layout.import[k], TVECTORS + 8 * k);
+	load_driver(v, ndrv);
 	CHECK(driver(v, &c, NDRV_STATUS, 22, PARAM));
 	CHECK_EQ(c.result, 0);
 	CHECK_EQ(mem_r32(&mem, PARAM), 1);
 
 	mem_w32(&mem, PARAM, CURSOR_REF);
 	CHECK(!driver(v, &c, NDRV_CONTROL, 22, PARAM));
-	CHECK_EQ(c.tvector, TVECTORS + 8 * 5);
+	CHECK_EQ(c.tvector, TVECTORS + 8 * IMP_VSL_PREPARE_CURSOR);
 	uint32_t desc = c.out[1], info = c.out[2];
 	CHECK(desc > TOC && info > desc);
 	vsl_prepare(&c, desc, info);
@@ -259,6 +275,180 @@ static void test_cursor(void)
 	CHECK(!v->cursor.set && !v->cursor.visible);
 }
 
+/* One of the driver's other entry points, with r3-r6 */
+static bool entry(struct video *v, struct ndrv_call *c, uint32_t n, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
+{
+	*c = (struct ndrv_call){ .mem = &mem, .entry = n, .toc = TOC, .frame = FRAME };
+	c->arg[0] = a0;
+	c->arg[1] = a1;
+	c->arg[2] = a2;
+	c->arg[3] = a3;
+	video_driver_call(v, c);
+	return c->done;
+}
+
+/*
+ * Vertical blanks: VIDEO_VBL_HZ a guest second, vertical blank n at
+ * timebase n * 16.6 MHz / 60 (rounded up), each latching the status, which
+ * raises the line while the interrupt is on; several before an
+ * acknowledgement are one interrupt.
+ */
+static void test_vbl_timing(void)
+{
+	struct video *v = &video;
+	video_init(v, &mem, FB, FB_SIZE, TIMEBASE);
+	video_set_time(v, 0);
+	CHECK(v->vbl_status && !video_irq(v));          /* (the interrupt is off) */
+	CHECK_EQ(video_next_vbl(v), UINT64_MAX);
+	v->vbl_enabled = true;                          /* (the driver's to turn on: see test_vbl_driver()) */
+	CHECK(video_irq(v));
+	CHECK_EQ(video_next_vbl(v), UINT64_MAX);        /* (raised already) */
+	v->vbl_status = false;                          /* (acknowledged, as the driver's handler does) */
+	CHECK(!video_irq(v));
+	CHECK_EQ(video_next_vbl(v), 276667);
+	video_set_time(v, 276666);
+	CHECK(!video_irq(v));
+	video_set_time(v, 276667);
+	CHECK(video_irq(v));
+	v->vbl_status = false;
+
+	/* a guest second: 60 of them, 276,666 or 276,667 ticks apart, the last a second after the first */
+	uint64_t from = 10ull * TIMEBASE, at = from;
+	video_set_time(v, from);
+	CHECK(video_irq(v));
+	v->vbl_status = false;
+	unsigned n = 0;
+	for (uint64_t next; (next = video_next_vbl(v)) <= from + TIMEBASE; at = next, n++) {
+		CHECK(next - at == 276666 || next - at == 276667);
+		video_set_time(v, next - 1);
+		CHECK(!video_irq(v));
+		video_set_time(v, next);
+		CHECK(video_irq(v));
+		v->vbl_status = false;
+	}
+	CHECK_EQ(n, 60);
+	CHECK_EQ(at, from + TIMEBASE);
+
+	/* 3 s without an acknowledgement: one interrupt; the next where it would have been anyway */
+	video_set_time(v, from + 4 * TIMEBASE + 5);
+	CHECK(video_irq(v));
+	v->vbl_status = false;
+	CHECK_EQ(video_next_vbl(v), from + 4 * TIMEBASE + 276667);
+	/* time doesn't go back */
+	video_set_time(v, from);
+	CHECK(!video_irq(v));
+}
+
+/*
+ * The driver: at Open, its handler in the display node's interrupt set
+ * (the set's own refCon, enabler and disabler kept), the VBL service, the
+ * interrupt enabled; the handler acknowledges a vertical blank and queues
+ * the secondary handler (once), which runs the VBL service; SetInterrupt
+ * (Control 7) turns the interrupt off and on.
+ */
+#define REG_ENTRY 0x30002u              /* (in DriverInitInfo, after the refNum) */
+#define SET 0x00037930u
+#define REFCON 0x5555u
+#define ENABLER 0x7777u
+#define DISABLER 0x8888u
+#define SERVICE 0x05E0u
+
+static void test_vbl_driver(void)
+{
+	struct video *v = &video;
+	static uint8_t ndrv[8192];
+	struct ndrv_call c;
+
+	video_init(v, &mem, FB, FB_SIZE, TIMEBASE);
+	size_t size = video_build_ndrv(v, ndrv, sizeof ndrv, 1);
+	CHECK(size && !has_string(ndrv, size, "SetInterruptTimer"));
+	load_driver(v, ndrv);
+	for (unsigned k = 0; k < 16; k++)
+		mem_w8(&mem, REG_ENTRY + k, (uint8_t)(0xA0 + k));
+	CHECK(driver(v, &c, NDRV_INITIALIZE, 0, 0));
+	CHECK_EQ(c.result, 0);
+
+	/* Open: the node's driver-ist; without one, no VBL interrupts (and no VBL service) */
+	CHECK(!driver(v, &c, NDRV_OPEN, 0, 0));
+	CHECK_EQ(c.tvector, TVECTORS + 8 * IMP_PROPERTY_GET);
+	uint32_t reg_entry = c.out[0], ist = c.out[2], ist_size = c.out[3];
+	CHECK(!memcmp(mem_ptr(&mem, reg_entry), mem_ptr(&mem, REG_ENTRY), 16));
+	CHECK(!strcmp((const char *)mem_ptr(&mem, c.out[1]), "driver-ist"));
+	CHECK_EQ(mem_r32(&mem, ist_size), 24);
+	CHECK(resume(v, &c, (uint32_t)-2539));          /* nrNotFoundErr */
+	CHECK_EQ(c.result, 0);
+	CHECK(!v->vbl_service && !v->vbl_enabled);
+
+	/* with one: the handler installed in member 1 of the set, the service, the member enabled */
+	CHECK(!driver(v, &c, NDRV_OPEN, 0, 0));
+	mem_w32(&mem, ist, SET);
+	mem_w32(&mem, ist + 4, 1);
+	mem_w32(&mem, ist_size, 24);
+	CHECK(!resume(v, &c, 0));
+	CHECK_EQ(c.tvector, TVECTORS + 8 * IMP_GET_INT);
+	CHECK(c.out[0] == SET && c.out[1] == 1);
+	uint32_t funcs = c.out[2];
+	CHECK(c.out[3] == funcs + 4 && c.out[4] == funcs + 8 && c.out[5] == funcs + 12);
+	mem_w32(&mem, funcs, REFCON);
+	mem_w32(&mem, funcs + 4, 0x6666);               /* (the set's default handler) */
+	mem_w32(&mem, funcs + 8, ENABLER);
+	mem_w32(&mem, funcs + 12, DISABLER);
+	CHECK(!resume(v, &c, 0));
+	CHECK_EQ(c.tvector, TVECTORS + 8 * IMP_INSTALL_INT);
+	CHECK(c.out[0] == SET && c.out[1] == 1 && c.out[2] == REFCON && c.out[4] == ENABLER && c.out[5] == DISABLER);
+	CHECK_EQ(c.out[3], TOC + v->layout.entry[ENTRY_VBL_INTERRUPT]);
+	CHECK(!resume(v, &c, 0));
+	CHECK_EQ(c.tvector, TVECTORS + 8 * IMP_VSL_NEW_SERVICE);
+	CHECK(c.out[0] == reg_entry && c.out[1] == 0x76626C20u);       /* 'vbl ' */
+	mem_w32(&mem, c.out[2], SERVICE);
+	CHECK(!resume(v, &c, 0));
+	CHECK(c.tvector == ENABLER && c.out[0] == SET && c.out[1] == 1 && c.out[2] == REFCON);
+	CHECK(resume(v, &c, 0));
+	CHECK_EQ(c.result, 0);
+	CHECK_EQ(v->vbl_service, SERVICE);
+	CHECK(v->vbl_enabled);
+
+	/* a vertical blank: the handler acknowledges it and queues the secondary handler */
+	video_set_time(v, 5 * TIMEBASE);
+	CHECK(video_irq(v));
+	CHECK(!entry(v, &c, ENTRY_VBL_INTERRUPT, SET, 1, REFCON, 1));
+	CHECK(!video_irq(v));
+	CHECK_EQ(c.tvector, TVECTORS + 8 * IMP_QUEUE_SECONDARY);
+	CHECK_EQ(c.out[0], TOC + v->layout.entry[ENTRY_VBL_SECONDARY]);
+	CHECK(resume(v, &c, 0));
+	CHECK_EQ(c.result, 0);                          /* kIsrIsComplete */
+	CHECK_EQ(v->vbls, 1);
+	/* none to acknowledge: not ours */
+	CHECK(entry(v, &c, ENTRY_VBL_INTERRUPT, SET, 1, REFCON, 1));
+	CHECK_EQ(c.result, (uint32_t)-1);               /* kIsrIsNotComplete */
+	/* another before the secondary handler ran: acknowledged, not queued again */
+	video_set_time(v, video_next_vbl(v));
+	CHECK(entry(v, &c, ENTRY_VBL_INTERRUPT, SET, 1, REFCON, 1));
+	CHECK_EQ(c.result, 0);
+	CHECK(!video_irq(v));
+	CHECK_EQ(v->vbls, 2);
+	/* the secondary handler: Mac OS's VBL tasks */
+	CHECK(!entry(v, &c, ENTRY_VBL_SECONDARY, 0, 0, 0, 0));
+	CHECK(c.tvector == TVECTORS + 8 * IMP_VSL_DO_SERVICE && c.out[0] == SERVICE);
+	CHECK(resume(v, &c, 0));
+	CHECK_EQ(c.result, 0);
+	CHECK(!v->vbl_queued);
+
+	/* SetInterrupt: off, no more interrupts (GetInterrupt says so); on, the next vertical blank's */
+	mem_w8(&mem, PARAM, 1);
+	CHECK(driver(v, &c, NDRV_CONTROL, 7, PARAM));
+	CHECK(!v->vbl_enabled && video_next_vbl(v) == UINT64_MAX);
+	video_set_time(v, 6 * TIMEBASE);
+	CHECK(!video_irq(v));
+	CHECK(driver(v, &c, NDRV_STATUS, 7, PARAM + 16));
+	CHECK_EQ(mem_r8(&mem, PARAM + 16), 1);
+	CHECK(entry(v, &c, ENTRY_VBL_SECONDARY, 0, 0, 0, 0));          /* (one queued before: no VBL tasks) */
+	mem_w8(&mem, PARAM, 0);
+	CHECK(driver(v, &c, NDRV_CONTROL, 7, PARAM));
+	CHECK(!video_irq(v));                           /* (the one while it was off doesn't count) */
+	CHECK_EQ(video_next_vbl(v), 6 * TIMEBASE + 276667);
+}
+
 void test_video(void)
 {
 	if (mem_init(&mem)) {
@@ -270,5 +460,7 @@ void test_video(void)
 	test_convert();
 	test_changed_rows();
 	test_cursor();
+	test_vbl_timing();
+	test_vbl_driver();
 	mem_free(&mem);
 }

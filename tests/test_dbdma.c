@@ -498,6 +498,32 @@ static void test_macio_latch(void)
 	macio_release(&mio);
 	CHECK_EQ(macio_pending(&mio, 0), 0x08000000u);
 	CHECK_EQ(mio.events[1], 0x00800000u);          /* (masked: not taken) */
+
+	/*
+	 * One Mac OS hasn't handled (cleared or masked) by then stays, for one
+	 * more re-evaluation (a dispatch that hasn't seen it yet); masking it
+	 * handles it, and a new pulse of its source before the release is one
+	 * more to handle
+	 */
+	macio_set_line(&mio, 4, false);
+	macio_pulse(&mio, 3);
+	macio_take(&mio);
+	macio_release(&mio);
+	CHECK_EQ(macio_pending(&mio, 0), 0x10000000u);
+	macio_release(&mio);
+	CHECK_EQ(macio_pending(&mio, 0), 0);
+	macio_pulse(&mio, 3);
+	macio_take(&mio);
+	macio_mmio_ops.write(&mio, MACIO_INTCTL_OFFSET + 0x14, 4, 0x08000000u);         /* masked ... */
+	macio_mmio_ops.write(&mio, MACIO_INTCTL_OFFSET + 0x14, 4, 0x18000000u);         /* ... and back */
+	CHECK_EQ(macio_pending(&mio, 0), 0x10000000u);
+	macio_pulse(&mio, 3);                           /* (again, before the release) */
+	macio_take(&mio);
+	macio_release(&mio);
+	CHECK_EQ(macio_pending(&mio, 0), 0x10000000u);
+	macio_mmio_ops.write(&mio, MACIO_INTCTL_OFFSET + 0x18, 4, 0x10000000u);
+	macio_release(&mio);
+	CHECK_EQ(macio_pending(&mio, 0), 0);
 }
 
 void test_dbdma(void)

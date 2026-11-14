@@ -20,13 +20,19 @@ void macio_take(struct macio *mio)
 	for (int b = 0; b < 2; b++) {
 		uint32_t t = mio->events[b] & mio->mask[b];
 		mio->taken[b] |= t;
+		mio->handled[b] &= ~t;
+		mio->kept[b] &= ~t;
 		mio->events[b] &= ~t;
 	}
 }
 
 void macio_release(struct macio *mio)
 {
-	mio->taken[0] = mio->taken[1] = 0;
+	for (int b = 0; b < 2; b++) {
+		mio->taken[b] &= ~(mio->handled[b] | mio->kept[b]);
+		mio->kept[b] = mio->taken[b];
+		mio->handled[b] = 0;
+	}
 }
 
 /* Reads `size` bytes at `offset` out of a big-endian 32-bit register value. */
@@ -76,10 +82,15 @@ static void macio_write(void *ctx, uint32_t offset, unsigned size, uint32_t valu
 	unsigned reg;
 
 	if (intctl_reg(offset, &bank, &reg)) {
-		if (reg == REG_MASK)
-			mio->mask[bank] = insert(mio->mask[bank], offset, size, value);
-		else if (reg == REG_CLEAR)      /* (level-triggered sources stay as their lines are) */
-			mio->events[bank] &= ~insert(0, offset, size, value);
+		if (reg == REG_MASK) {
+			uint32_t mask = insert(mio->mask[bank], offset, size, value);
+			mio->handled[bank] |= mio->taken[bank] & ~mask;
+			mio->mask[bank] = mask;
+		} else if (reg == REG_CLEAR) {  /* (level-triggered sources stay as their lines are) */
+			uint32_t clear = insert(0, offset, size, value);
+			mio->events[bank] &= ~clear;
+			mio->handled[bank] |= mio->taken[bank] & clear;
+		}
 		return;
 	}
 	uint32_t *w = &mio->regs[(offset & (MACIO_PAGE_SIZE - 1)) / 4];

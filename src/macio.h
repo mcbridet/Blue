@@ -22,6 +22,8 @@ struct macio {
 	uint32_t levels[2];     /* current interrupt line levels */
 	uint32_t events[2];     /* latched pulses */
 	uint32_t taken[2];      /* pulses the kernel acknowledged, still reported (see macio_take()) */
+	uint32_t handled[2];    /* ... of them, those Mac OS has cleared or masked since */
+	uint32_t kept[2];       /* ... and those the last macio_release() kept, not handled then */
 	uint32_t regs[MACIO_PAGE_SIZE / 4];
 };
 
@@ -47,7 +49,11 @@ static inline uint32_t macio_pending(const struct macio *mio, int bank)
  * The kernel's external interrupt handler acknowledges the latched pulses it
  * reports, as on hardware: they leave the events register but stay pending
  * until macio_release(), when Mac OS asks for interrupts to be re-evaluated
- * after handling them.
+ * after handling them. A pulse goes then only once Mac OS has handled it
+ * (cleared it in the controller, or masked its source, as interrupt sets'
+ * dispatchers do around a handler), or at the release after: Mac OS also
+ * re-evaluates when it lowers its 68k interrupt mask, and at the end of a
+ * dispatch that began before the pulse came, neither having seen it.
  */
 void macio_take(struct macio *mio);
 void macio_release(struct macio *mio);

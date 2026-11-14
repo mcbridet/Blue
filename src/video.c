@@ -62,12 +62,13 @@ static const uint8_t depth_bits[VIDEO_DEPTHS] = { 1, 2, 4, 8, 16, 32 };
 #define DEFAULT_MODE 1
 #define DEFAULT_DEPTH 3
 
-void video_init(struct video *v, struct mem *mem, uint32_t fb_base, uint32_t fb_size)
+void video_init(struct video *v, struct mem *mem, uint32_t fb_base, uint32_t fb_size, uint32_t timebase_hz)
 {
 	memset(v, 0, sizeof *v);
 	v->mem = mem;
 	v->fb_base = fb_base;
 	v->fb_size = fb_size;
+	v->timebase_hz = timebase_hz;
 	v->mode = v->preferred_mode = DEFAULT_MODE;
 	v->depth = v->preferred_depth = DEFAULT_DEPTH;
 	v->power_state = 3;
@@ -78,20 +79,47 @@ void video_init(struct video *v, struct mem *mem, uint32_t fb_base, uint32_t fb_
 		v->clut[k][0] = v->clut[k][1] = v->clut[k][2] = (uint8_t)(255 - k);
 }
 
+void video_set_time(struct video *v, uint64_t tb)
+{
+	uint64_t hz = v->timebase_hz;
+	uint64_t count = tb / hz * VIDEO_VBL_HZ + tb % hz * VIDEO_VBL_HZ / hz + 1;     /* (the first at timebase 0) */
+	if (count > v->vbl_count) {
+		v->vbl_count = count;
+		v->vbl_status = true;
+	}
+}
+
+uint64_t video_next_vbl(const struct video *v)
+{
+	if (!v->vbl_enabled || v->vbl_status)
+		return UINT64_MAX;
+	uint64_t n = v->vbl_count, hz = v->timebase_hz;        /* (vertical blank n: n * hz / 60, rounded up) */
+	return n / VIDEO_VBL_HZ * hz + (n % VIDEO_VBL_HZ * hz + VIDEO_VBL_HZ - 1) / VIDEO_VBL_HZ;
+}
+
+/* The chip's VBL interrupt on or off; turned on, a vertical blank from before is acknowledged first */
+static void enable_vbl(struct video *v, bool on)
+{
+	if (on && !v->vbl_enabled)
+		v->vbl_status = false;
+	v->vbl_enabled = on;
+}
+
 /* Driver data (after the description): see video_build_ndrv */
 #define EXTRA_GAMMA 0u                  /* GammaTbl, 12 + 256 bytes */
 #define EXTRA_REG_ENTRY 272u            /* RegEntryID of our device node */
 #define EXTRA_SERVICE 288u              /* InterruptServiceIDType */
-#define EXTRA_TIMER 292u                /* TimerID */
-#define EXTRA_NOW 296u                  /* AbsoluteTime from UpTime */
-#define EXTRA_EXPIRATION 304u           /* AbsoluteTime for SetInterruptTimer */
-#define EXTRA_SIZE 312u
+#define EXTRA_IST_SIZE 292u             /* RegistryPropertyGet's size (in and out) */
+#define EXTRA_IST 296u                  /* the node's driver-ist: (set, member) of each interrupt, 3 at most */
+#define EXTRA_FUNCS 320u                /* the VBL member's refCon, handler, enabler, disabler */
+#define EXTRA_IST_NAME 336u             /* "driver-ist" */
+#define EXTRA_SIZE 348u
 /* ... and with the hardware cursor: what VSLPrepareCursorForHardwareCursor converts it to, and into */
-#define EXTRA_CURSOR_DESC 312u          /* HardwareCursorDescriptorRec, 100 bytes */
-#define EXTRA_CURSOR_INFO 412u          /* HardwareCursorInfoRec, 44 bytes */
-#define EXTRA_CURSOR_ENCODINGS 456u     /* colorEncodings: a word for each of CURSOR_COLORS */
-#define EXTRA_CURSOR_CTAB 1472u         /* ColorTable for colorMap: 8 bytes, then a ColorSpec for each */
-#define EXTRA_CURSOR_IMAGE 3512u        /* the cursor: a byte a pixel */
+#define EXTRA_CURSOR_DESC 348u          /* HardwareCursorDescriptorRec, 100 bytes */
+#define EXTRA_CURSOR_INFO 448u          /* HardwareCursorInfoRec, 44 bytes */
+#define EXTRA_CURSOR_ENCODINGS 492u     /* colorEncodings: a word for each of CURSOR_COLORS */
+#define EXTRA_CURSOR_CTAB 1508u         /* ColorTable for colorMap: 8 bytes, then a ColorSpec for each */
+#define EXTRA_CURSOR_IMAGE 3548u        /* the cursor: a byte a pixel */
 #define EXTRA_CURSOR_SIZE (EXTRA_CURSOR_IMAGE + VIDEO_CURSOR_SIZE * VIDEO_CURSOR_SIZE)
 
 /*
@@ -106,17 +134,24 @@ void video_init(struct video *v, struct mem *mem, uint32_t fb_base, uint32_t fb_
 #define TRANSPARENT_ENCODED_PIXEL 0x1u  /* supportedSpecialEncodings */
 #define INVERTING_ENCODED_PIXEL 0x4u
 
-enum { IMP_IO_COMPLETE, IMP_SET_TIMER, IMP_UPTIME, IMP_VSL_NEW_SERVICE, IMP_VSL_DO_SERVICE, IMP_VSL_PREPARE_CURSOR,
-       IMP_COUNT };
+enum { IMP_IO_COMPLETE, IMP_GET_INT, IMP_INSTALL_INT, IMP_QUEUE_SECONDARY, IMP_PROPERTY_GET, IMP_VSL_NEW_SERVICE,
+       IMP_VSL_DO_SERVICE, IMP_VSL_PREPARE_CURSOR, IMP_COUNT };
+
+/* The driver's entry points: DoDriverIO, the VBL interrupt's handler and the secondary handler it queues */
+enum { ENTRY_DRIVER_IO, ENTRY_VBL_INTERRUPT, ENTRY_VBL_SECONDARY, ENTRY_COUNT };
 
 #define VBL_SERVICE_TYPE 0x76626C20u      /* 'vbl ' */
+#define ISR_IS_COMPLETE 0u                /* an interrupt handler's results */
+#define ISR_IS_NOT_COMPLETE 0xFFFFFFFFu
 
 size_t video_build_ndrv(struct video *v, uint8_t *out, size_t size, uint32_t hostcall)
 {
 	static const struct ndrv_import imports[IMP_COUNT] = {
 		[IMP_IO_COMPLETE] = { "DriverServicesLib", "IOCommandIsComplete" },
-		[IMP_SET_TIMER] = { "DriverServicesLib", "SetInterruptTimer" },
-		[IMP_UPTIME] = { "DriverServicesLib", "UpTime" },
+		[IMP_GET_INT] = { "DriverServicesLib", "GetInterruptFunctions" },
+		[IMP_INSTALL_INT] = { "DriverServicesLib", "InstallInterruptFunctions" },
+		[IMP_QUEUE_SECONDARY] = { "DriverServicesLib", "QueueSecondaryInterruptHandler" },
+		[IMP_PROPERTY_GET] = { "NameRegistryLib", "RegistryPropertyGet" },
 		[IMP_VSL_NEW_SERVICE] = { "VideoServicesLib", "VSLNewInterruptService" },
 		[IMP_VSL_DO_SERVICE] = { "VideoServicesLib", "VSLDoInterruptService" },
 		[IMP_VSL_PREPARE_CURSOR] = { "VideoServicesLib", "VSLPrepareCursorForHardwareCursor" },
@@ -130,6 +165,7 @@ size_t video_build_ndrv(struct video *v, uint8_t *out, size_t size, uint32_t hos
 	gamma[11] = 8;                  /* gDataWidth */
 	for (int k = 0; k < 256; k++)
 		gamma[12 + k] = (uint8_t)k;
+	memcpy(extra + EXTRA_IST_NAME, "driver-ist", sizeof "driver-ist");
 
 	/* HardwareCursorDescriptorRec (colorEncodings is filled in when the driver runs) */
 	uint8_t *desc = extra + EXTRA_CURSOR_DESC;
@@ -152,6 +188,7 @@ size_t video_build_ndrv(struct video *v, uint8_t *out, size_t size, uint32_t hos
 		.type = 0x76696465u,            /* 'vide' */
 		.version = DRIVER_VERSION,
 		.hostcall = hostcall,
+		.entries = ENTRY_COUNT,
 		.imports = imports,
 		/* (without the hardware cursor, the driver is as it was before there was one) */
 		.import_count = v->hw_cursor ? IMP_COUNT : IMP_VSL_PREPARE_CURSOR,
@@ -349,8 +386,10 @@ static int32_t control(struct video *v, uint32_t pb, uint32_t toc)
 	case 6:         /* SetGray (VDGrayRecord) */
 		v->luminance_mapping = mem_r8(m, p) != 0;
 		return NO_ERR;
-	case 7:         /* SetInterrupt (VDFlagRecord): 0 enables, 1 disables */
+	case 7:         /* SetInterrupt (VDFlagRecord): 0 enables VBL interrupts, 1 disables them */
 		v->vbl_disabled = mem_r8(m, p) != 0;
+		if (v->vbl_service)
+			enable_vbl(v, !v->vbl_disabled);
 		return NO_ERR;
 	case 10:        /* SwitchMode (VDSwitchInfoRec) */
 		d = depth_index(mem_r16(m, p));
@@ -657,12 +696,13 @@ static int32_t driver_io_logged(struct video *v, uint32_t toc, uint32_t contents
 
 /* Steps of the driver's flows (state word 0) */
 enum {
-	STEP_OPEN_SERVICE = 1,          /* VSLNewInterruptService returned */
-	STEP_OPEN_UPTIME,               /* UpTime returned; arm the first VBL timer */
-	STEP_OPEN_TIMER,                /* SetInterruptTimer returned */
+	STEP_OPEN_IST = 1,              /* RegistryPropertyGet returned the node's driver-ist */
+	STEP_OPEN_FUNCTIONS,            /* GetInterruptFunctions returned the VBL member's */
+	STEP_OPEN_INSTALL,              /* InstallInterruptFunctions returned */
+	STEP_OPEN_SERVICE,              /* VSLNewInterruptService returned */
+	STEP_OPEN_ENABLE,               /* the member's enabler returned */
+	STEP_VBL_QUEUED,                /* QueueSecondaryInterruptHandler returned */
 	STEP_VBL_SERVICE,               /* VSLDoInterruptService returned */
-	STEP_VBL_UPTIME,
-	STEP_VBL_TIMER,
 	STEP_CURSOR_PREPARED,           /* VSLPrepareCursorForHardwareCursor returned */
 };
 
@@ -721,31 +761,77 @@ static int32_t cursor_prepared(struct video *v, struct ndrv_call *c, uint32_t ok
 	return NO_ERR;
 }
 
-/* Arms the VBL timer one period after the UpTime result in EXTRA_NOW. */
-static void arm_timer(struct video *v, struct ndrv_call *c, uint32_t next_step)
+/*
+ * VBL interrupts, set up at Open as a PCI card's driver does it: our handler
+ * in the display node's interrupt set (its driver-ist property names the
+ * set and member), keeping the set's refCon, enabler and disabler; then the
+ * Video Services Library's VBL service, which Mac OS hangs the screen's VBL
+ * tasks on; then the chip's interrupt and the set's member enabled. Each
+ * step runs after the last one's callout returns. Without an interrupt set,
+ * there are no VBL interrupts (and no VBL service, which would wait for
+ * them).
+ */
+static void open_step(struct video *v, struct ndrv_call *c)
 {
 	struct mem *m = v->mem;
 	uint32_t data = c->toc + v->layout.extra;
-	uint64_t now = mem_r64(m, data + EXTRA_NOW);
-	mem_w64(m, data + EXTRA_EXPIRATION, now + v->vbl_period);
-	ndrv_set_state(c, 0, next_step);
-	ndrv_callout(c, ndrv_import(c, &v->layout, IMP_SET_TIMER), data + EXTRA_EXPIRATION,
-		     c->toc + v->layout.entry[1], 0, data + EXTRA_TIMER);
+	uint32_t set = mem_r32(m, data + EXTRA_IST), member = mem_r32(m, data + EXTRA_IST + 4);
+	uint32_t refcon = mem_r32(m, data + EXTRA_FUNCS), enabler = mem_r32(m, data + EXTRA_FUNCS + 8);
+	uint32_t step = ndrv_state(c, 0), status = c->arg[0];
+
+	switch (step) {
+	case STEP_OPEN_IST:
+		if (status || mem_r32(m, data + EXTRA_IST_SIZE) < 8)
+			break;
+		ndrv_set_state(c, 0, STEP_OPEN_FUNCTIONS);
+		ndrv_callout(c, ndrv_import(c, &v->layout, IMP_GET_INT), set, member, data + EXTRA_FUNCS,
+			     data + EXTRA_FUNCS + 4);
+		c->out[4] = data + EXTRA_FUNCS + 8;
+		c->out[5] = data + EXTRA_FUNCS + 12;
+		return;
+	case STEP_OPEN_FUNCTIONS:
+		if (status)
+			break;
+		ndrv_set_state(c, 0, STEP_OPEN_INSTALL);
+		ndrv_callout(c, ndrv_import(c, &v->layout, IMP_INSTALL_INT), set, member, refcon,
+			     c->toc + v->layout.entry[ENTRY_VBL_INTERRUPT]);
+		c->out[4] = enabler;
+		c->out[5] = mem_r32(m, data + EXTRA_FUNCS + 12);
+		return;
+	case STEP_OPEN_INSTALL:
+		if (status)
+			break;
+		ndrv_set_state(c, 0, STEP_OPEN_SERVICE);
+		ndrv_callout(c, ndrv_import(c, &v->layout, IMP_VSL_NEW_SERVICE), data + EXTRA_REG_ENTRY,
+			     VBL_SERVICE_TYPE, data + EXTRA_SERVICE, 0);
+		return;
+	case STEP_OPEN_SERVICE:
+		if (status)
+			break;
+		v->vbl_service = mem_r32(m, data + EXTRA_SERVICE);
+		enable_vbl(v, !v->vbl_disabled);
+		ndrv_set_state(c, 0, STEP_OPEN_ENABLE);
+		if (enabler) {
+			ndrv_callout(c, enabler, set, member, refcon, 0);
+			return;
+		}
+		break;
+	default:                        /* STEP_OPEN_ENABLE */
+		break;
+	}
+	if (v->log && v->vbl_service)
+		printf("video: VBL interrupts from interrupt set %08X, member %u\n", set, member);
+	else if (v->log)
+		printf("video: no VBL interrupts (step %u, status %d)\n", step, (int32_t)status);
+	ndrv_complete(c, &v->layout, IMP_IO_COMPLETE, ndrv_state(c, 2), ndrv_state(c, 3), (int32_t)ndrv_state(c, 1));
 }
 
-static void uptime(struct video *v, struct ndrv_call *c, uint32_t next_step)
-{
-	ndrv_set_state(c, 0, next_step);
-	ndrv_callout(c, ndrv_import(c, &v->layout, IMP_UPTIME), c->toc + v->layout.extra + EXTRA_NOW, 0, 0, 0);
-}
-
-void video_driver_call(struct video *v, struct ndrv_call *c, uint32_t timebase_hz)
+void video_driver_call(struct video *v, struct ndrv_call *c)
 {
 	struct mem *m = v->mem;
 	uint32_t data = c->toc + v->layout.extra;
 
-	v->vbl_period = timebase_hz / 60;
-	if (c->entry == 0) {            /* DoDriverIO(spaceID, cmdID, contents, code, kind) */
+	if (c->entry == ENTRY_DRIVER_IO) {      /* DoDriverIO(spaceID, cmdID, contents, code, kind) */
 		uint32_t cmd_id = c->arg[1], contents = c->arg[2], code = c->arg[3], kind = c->arg[4];
 		if (code == NDRV_INITIALIZE || code == NDRV_REPLACE)    /* DriverInitInfo: refNum, RegEntryID */
 			memcpy(mem_ptr(m, data + EXTRA_REG_ENTRY), mem_ptr(m, contents + 2), 16);
@@ -759,59 +845,61 @@ void video_driver_call(struct video *v, struct ndrv_call *c, uint32_t timebase_h
 		}
 		int32_t status = driver_io_logged(v, c->toc, contents, code, kind);
 		if (code == NDRV_OPEN && status == 0 && !v->vbl_service) {
-			/* VBL interrupts come from a timer, as there is no hardware to raise them */
-			ndrv_set_state(c, 0, STEP_OPEN_SERVICE);
+			ndrv_set_state(c, 0, STEP_OPEN_IST);
 			ndrv_set_state(c, 1, (uint32_t)status);
 			ndrv_set_state(c, 2, cmd_id);
 			ndrv_set_state(c, 3, kind);
-			ndrv_callout(c, ndrv_import(c, &v->layout, IMP_VSL_NEW_SERVICE), data + EXTRA_REG_ENTRY,
-				     VBL_SERVICE_TYPE, data + EXTRA_SERVICE, 0);
+			mem_w32(m, data + EXTRA_IST_SIZE, 24);
+			ndrv_callout(c, ndrv_import(c, &v->layout, IMP_PROPERTY_GET), data + EXTRA_REG_ENTRY,
+				     data + EXTRA_IST_NAME, data + EXTRA_IST, data + EXTRA_IST_SIZE);
 			return;
 		}
 		ndrv_complete(c, &v->layout, IMP_IO_COMPLETE, cmd_id, kind, status);
 		return;
 	}
-	if (c->entry == 1) {            /* VBL timer (secondary interrupt handler) */
+	if (c->entry == ENTRY_VBL_INTERRUPT) {  /* (set, member, refCon, count), at hardware interrupt level */
+		if (!v->vbl_status) {
+			ndrv_finish(c, ISR_IS_NOT_COMPLETE);
+			return;
+		}
+		v->vbl_status = false;          /* acknowledged */
 		v->vbls++;
+		if (v->vbl_queued || !v->vbl_service) {
+			ndrv_finish(c, ISR_IS_COMPLETE);
+			return;
+		}
+		v->vbl_queued = true;
+		ndrv_set_state(c, 0, STEP_VBL_QUEUED);
+		ndrv_callout(c, ndrv_import(c, &v->layout, IMP_QUEUE_SECONDARY),
+			     c->toc + v->layout.entry[ENTRY_VBL_SECONDARY], 0, 0, 0);
+		return;
+	}
+	if (c->entry == ENTRY_VBL_SECONDARY) {  /* the VBL tasks, at secondary interrupt level */
+		v->vbl_queued = false;
 		if (v->vbl_service && !v->vbl_disabled) {
 			ndrv_set_state(c, 0, STEP_VBL_SERVICE);
 			ndrv_callout(c, ndrv_import(c, &v->layout, IMP_VSL_DO_SERVICE), v->vbl_service, 0, 0, 0);
-		} else {
-			uptime(v, c, STEP_VBL_UPTIME);
+			return;
 		}
+		ndrv_finish(c, 0);
 		return;
 	}
 
 	uint32_t result = c->arg[0];    /* resuming after a callout */
 	switch (ndrv_state(c, 0)) {
+	case STEP_OPEN_IST:
+	case STEP_OPEN_FUNCTIONS:
+	case STEP_OPEN_INSTALL:
 	case STEP_OPEN_SERVICE:
-		if (result == 0) {
-			v->vbl_service = mem_r32(m, data + EXTRA_SERVICE);
-			uptime(v, c, STEP_OPEN_UPTIME);
-			return;
-		}
-		if (v->log)
-			printf("video: VSLNewInterruptService failed (%d)\n", (int32_t)result);
-		ndrv_complete(c, &v->layout, IMP_IO_COMPLETE, ndrv_state(c, 2), ndrv_state(c, 3), (int32_t)ndrv_state(c, 1));
+	case STEP_OPEN_ENABLE:
+		open_step(v, c);
 		return;
-	case STEP_OPEN_UPTIME:
-		if (v->log)
-			printf("video: UpTime %016llX, timebase %016llX\n",
-			       (unsigned long long)mem_r64(m, data + EXTRA_NOW), (unsigned long long)c->tb);
-		arm_timer(v, c, STEP_OPEN_TIMER);
-		return;
-	case STEP_OPEN_TIMER:
-		if (result != 0 && v->log)
-			printf("video: SetInterruptTimer failed (%d)\n", (int32_t)result);
-		ndrv_complete(c, &v->layout, IMP_IO_COMPLETE, ndrv_state(c, 2), ndrv_state(c, 3), (int32_t)ndrv_state(c, 1));
+	case STEP_VBL_QUEUED:
+		if (result)
+			v->vbl_queued = false;
+		ndrv_finish(c, ISR_IS_COMPLETE);
 		return;
 	case STEP_VBL_SERVICE:
-		uptime(v, c, STEP_VBL_UPTIME);
-		return;
-	case STEP_VBL_UPTIME:
-		arm_timer(v, c, STEP_VBL_TIMER);
-		return;
-	case STEP_VBL_TIMER:
 		ndrv_finish(c, 0);
 		return;
 	case STEP_CURSOR_PREPARED: {

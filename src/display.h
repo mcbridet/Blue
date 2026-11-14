@@ -120,8 +120,8 @@ void display_refresh(struct display *d);
 /* What the menu shows of the machine: the mouse, and news (copied; NULL for none) */
 void display_menu_state(struct display *d, enum ui_mouse mouse, const char *status);
 
-/* ... and of the floppy drive (copied; NULL: there's none) */
-void display_floppy_state(struct display *d, const struct ui_floppy *f);
+/* ... and of the drives with removable media (copied; NULL: there are none) */
+void display_drives_state(struct display *d, const struct ui_drives *drives);
 
 /*
  * Shows a question or news over the screen, with one or two buttons (`no`

@@ -46,6 +46,7 @@
 #define IRQ_SCC_B 16u
 #define IRQ_SOUND 17u
 #define IRQ_VIA1 18u
+#define IRQ_DISPLAY 22u                 /* (the iMac's ATI chip's PCI interrupt) */
 #define IRQ_USB 28u
 
 /* The USB controller's registers (PCI memory, below Mac I/O) */

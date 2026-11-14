@@ -93,6 +93,28 @@ Done:
   calls 44, 45, 62 and 132; kernel call 7 answers unknown selectors; the
   floppy controller's Mac I/O cell reads as zeros; syshm's lanLib stays in
   the Ethernet node. See Findings, "Mac OS 9.2.2: the CD" and after.
+- **CD swapping** (`--cdrom`, `--cdrom-drive`; removable CD-ROM drives in
+  `src/disk.c`, where images go and the menu in `src/drives.c`): CD-ROM
+  drives' discs come and go like the floppy's, through the same media
+  changes, wherever they can be swapped (a window or real time, an empty
+  drive, a script with `cdrom` commands); dropped images go by size, a
+  floppy's to the floppy drive, others to a CD-ROM drive. The menu shows
+  each drive's disc with Eject; its list of images is gone, and the
+  `--floppy` images after the first go in as Mac OS ejects. Eject, Put
+  Away and the Trash work on an installed 8.5 with a second CD-ROM drive
+  (`ut.iso` out, `86.iso` in, by script), 9.1 and 8.5 still start up from
+  ejectable CDs, and runs where discs can't be swapped are the same as
+  before. See Findings, "Ejectable drives".
+- **CD audio** (Task 16; `src/cdimage.c`, `src/cdaudio.c`, `src/cdrom.c`):
+  CD-ROM drives answer as Apple's CD-ROM driver, with CD icons; cue sheets
+  with audio tracks; the drive's audio played through the sound chip's
+  input and read digitally. See Findings, "CD audio".
+- **The display's VBL interrupt** (Task 17; `src/video.c`, `src/macio.c`,
+  `src/bootinfo.c`, `src/nk.c`): a 60 Hz vertical-blank interrupt on the
+  iMac's ATI line (source 22), through the display node's interrupt set,
+  in place of the Driver Services timer. The restored 9.2.2 reaches the
+  Finder in instruction time without a key. See Findings, "The display's
+  interrupt".
 
 Where it stops:
 
@@ -125,9 +147,10 @@ real time with fast start the Finder is up after 13.2 s of guest time (0.9
 s on the host), and the host then sleeps 25 s of 30. Its installer, Apple
 Software Restore, restores the CD's image onto a blank disk from `disk
 create` (671 MB, by instruction 40 billion of a scripted run), and the
-restored system starts up to the Finder in real time; in instruction time
-it waits before the Finder until a key is pressed (Findings, "The restored
-9.2.2 waits for a key"). After half an hour of idling the power manager
+restored system starts up to the Finder (the Setup Assistant over it the
+first time), in real time and, since the display has its vertical-blank
+interrupt, in instruction time too (Findings, "The restored 9.2.2 waits
+for a key"). After half an hour of idling the power manager
 dozes (PowerDispatch
 1, CacheDispatch 4), and at 55 minutes its 'powr' task stops and restarts
 scheduling around a sleep that doesn't happen; the system carries on.
@@ -459,8 +482,10 @@ the kernel); 8 onwards as the boot progresses.
   the floppy controller's cell (`empty_cell_ops`, `setup_machine()`);
   syshm's lanLib kept over the ROM file's `bmac+` one (`build_tree()`).
   `tests/test_mp.c` and `tests/test_nvram.c` cover them. Open: Apple's own
-  9.2/9.2.2 CDs (not tried: none here); the installed system's wait for a
-  key in instruction time (see Findings).
+  9.2/9.2.2 CDs (not tried: none here); interrupt sets for the USB
+  controller, the sound chip and lanLib on 9.2.2 (they need
+  `AAPL,interrupt-index`: see Findings, "The display's interrupt"). The
+  installed system's wait for a key in instruction time is gone (Task 17).
 - **Goal:** their ROM files (newer parcels, possibly newer kernel
   features) on the same path. Find out first whether they list `iMac,1`
   in `<COMPATIBLE>`.
@@ -490,8 +515,8 @@ the kernel); 8 onwards as the boot progresses.
   in place of a file. `hfsread` reads through a callback too, and walks
   the whole catalog (`hfsread_walk()`). `tests/test_share.c` covers names,
   volumes (checked with hfsutils, and on Linux Apple's `fsck_hfs` from
-  hfsprogs), and writing back. 8.5 and 9.1 from their CDs and 8.6 from a
-  disk show the volume; Finder copies, new folders, renames, moves,
+  hfsprogs), dates, and writing back. 8.5 and 9.1 from their CDs and 8.6
+  from a disk show the volume; Finder copies, new folders, renames, moves,
   deletions and a SimpleText save came back to the folder. Open: writing
   back when the volume is ejected, and offering the folder again as new
   media (needs the disk driver's removable media).
@@ -561,9 +586,140 @@ the kernel); 8 onwards as the boot progresses.
   runs are unchanged. Measurements in Findings. Open: presenting on a
   thread of its own; tracking framebuffer writes instead of comparing.
 
+### 16. CD audio
+
+- **Status:** done (8.5; 9.1 has no installed image here to try
+  AppleCD Audio Player on). CD images with audio as cue sheets
+  (`src/cdimage.c`: `.bin` in raw, 2048- or 2336-byte sectors, `MOTOROLA`,
+  WAVE and AIFF tracks, `INDEX 00` and `PREGAP`/`POSTGAP`, sessions; the
+  table of contents, the data track's 2048 bytes a sector as a
+  `disk_backend`, raw sectors, the Q and P-W subchannel; `syshm disk toc`
+  lists it). The drive's player (`src/cdaudio.c`): ranges or the driver's
+  play lists, pause, stop, scan, volume, channel routing, its position a
+  function of guest time; frames in a FIFO taken by the sound chip's analog
+  input (`struct awacs_input` in `src/awacs.c`), mixed with the DMA's or
+  alone, resampled to the codec's rate, through when the codec selects the
+  CD with loop-through (or nothing). Every CD-ROM drive answers as Apple's
+  CD-ROM driver (`src/cdrom.c`, after Technical Note DV22: ReadTOC 1-6,
+  ReadTheQSubcode, ReadHeader, AudioTrackSearch, AudioPlay, AudioPause,
+  AudioStop, AudioStatus, AudioScan, AudioControl, ReadMCN, ReadISRC,
+  ReadAudioVolume, spindle speed, ReadAudio, the play lists 122-126;
+  GetDriveType, GetBlockSize, ReturnDeviceIdent, GetCDFeatures,
+  Get2KOffset), named `.AppleCD`, with DriverGestalt `devt` `cdrm`,
+  `intf`, `dvrf`, `minf`, and a CD and CD-ROM drive icon (Control 21/22,
+  `mics`/`dics`/`mnam`; drawn in `src/cdrom.c` with the floppy's palette).
+  Tests: `tests/test_cd.c` (synthetic discs: an HFS data track made with
+  `hfs_format()` read back with hfsread, audio tracks of patterns in each
+  kind of file; the player's positions, pauses, lists, volume, pacing by
+  guest time, resampling, through the codec), `tests/test_awacs.c` (the
+  analog input with and without DMA), `tests/test_drives.c` (the driver
+  calls on a cue sheet's disc). Checked on an installed 8.5 with the real
+  Quake CD (`Quake [1996].cue`): the ISO 9660 data track mounts
+  (QUAKE106), AppleCD Audio Player lists the 10 audio tracks with their
+  lengths and plays, shuffles and scans them; `SYSHM_SOUND_WAV` holds
+  track 2's samples bit for bit (scaled by Mac OS's volume), in
+  instruction time (reproducibly) and in real time; a synthetic audio disc
+  mounts as "Audio CD 1", and MoviePlayer's conversion of a track to AIFF
+  holds its samples bit for bit. Instruction-time runs of the 8.5 and 9.1
+  CDs reach the Finder as before, but for the CD icon (on the desktop and
+  in the window's title). Open: see future.md, "More CD formats".
+
+### 17. The display's VBL interrupt
+
+- **Status:** done. The display interrupts at each vertical blank, as the
+  iMac's ATI chip does, instead of the driver's Driver Services timer
+  (which ran on the Time Manager, so stopped with it). The chip
+  (`src/video.c`: `video_set_time()`, `video_next_vbl()`, `video_irq()`)
+  counts vertical blanks on the timebase, n at n/60 s rounded up, so 60
+  a guest second exactly and the same in every run; each latches its VBL
+  status, which holds the display's line (source 22, level 2: `bootinfo.h`,
+  `bootinfo_level_masks()`) while the interrupt is on, until the driver
+  acknowledges it. The kernel brings it up to date with the other devices
+  (`update_device_time()`, `device_next_tb()`, `update_interrupts()`, and
+  `idle_wait()` wakes for it in real time). The display node has
+  `interrupts` and an interrupt set (`interrupt_set()` in `bootinfo.c`, with
+  `AAPL,interrupt-index` for 9.2's ROM files). The driver
+  (`video_driver_call()`, `open_step()`) at Open: RegistryPropertyGet of
+  `driver-ist`, GetInterruptFunctions, InstallInterruptFunctions with its
+  handler (entry 1) and the set's refCon, enabler and disabler,
+  VSLNewInterruptService, the chip's interrupt on and the set's enabler;
+  without an interrupt set, no VBL service. The handler acknowledges the
+  vertical blank (kIsrIsNotComplete if there was none) and queues the
+  secondary handler (entry 2) unless it's queued already; that calls
+  VSLDoInterruptService. SetInterrupt (Control 7) turns the chip's
+  interrupt off and on (a vertical blank from while it was off doesn't
+  count). The timer path is gone: every system here has interrupt sets.
+  With more level-2 interrupts, latched DMA pulses got lost (see Findings,
+  "Pulses lost at PrioritizeInterrupts"): `macio_release()` keeps one Mac
+  OS hasn't handled for one more re-evaluation. Tests: `tests/test_video.c`
+  (the timing: 60 in a guest second, 276,666 or 276,667 ticks apart, one
+  interrupt for several unacknowledged; the driver's Open with and without
+  a set, the handler, the secondary handler, SetInterrupt),
+  `tests/test_nvram.c` (the display node's properties),
+  `tests/test_dbdma.c` (pulses kept and released). Checked (instruction
+  time, against main): the 8.5 CD, installed 8.5 and 8.6, the 9.1 and
+  9.2.2 CDs reach the Finder as before, two runs identical but for the JIT's
+  links; VBLs 59 a guest second (14,298 in the 8.5 CD's 4 billion
+  instructions, 241 s; main's timer: 13,750), fewer where Mac OS keeps
+  interrupts masked longer than a frame (Unreal Tournament: 52); the restored
+  9.2.2 reaches the Setup Assistant over the Finder in all of 6 runs with
+  different `--fixed-time`s (main: stuck in 3, stalled 17-25 s in the
+  others); Unreal Tournament (8.6, with its CD) plays its intro with sound
+  (main, merged: black screen, sound stopped, waiting for it); the hardware
+  cursor follows the pointer in window runs (8.5 and 9.2.2 CDs); fast start
+  in real time as main's (8.5 CD 13.8 s of guest time, 9.1 16.2 s, 9.2.2
+  13.1 s, 8.6 installed 18.5-18.7 s); host time the same within noise.
+- **Open:** on the restored 9.2.2's first startup (a disk Apple Software
+  Restore left unmounted), quitting the Setup Assistant leaves the desktop
+  without a menu bar, idle (with the VBL interrupt kept off too, and with
+  the old timer); quitting it on a cleanly unmounted restore works.
+
 ## Findings
 
 Facts later tasks need, added as they are found.
+
+- **CD audio, Apple's CD-ROM driver** (Technical Note DV22, "CD-ROM Driver
+  Calls", developer.apple.com/library/archive/technotes/dv/dv_22.html):
+  csParam layouts as in the note; addresses are a type word and a long (0
+  LBA, 1 MSF `0x00MMSSFF` in BCD, 2 a track in BCD, 3 a play-list entry in
+  BCD, from 0); a track number as a stop address means the end of that
+  track (AppleCD Audio Player stops "at" the last track, 0x11 on the Quake
+  CD; AudioStop with track 0, which it sends at launch, means none);
+  AudioStop with an address sets the stop for the next play too (the
+  Control Strip's module sets it, then plays). DriveStatus's disc-in-place
+  byte is 1 with a disc, as the note has it, whatever the drive queue's
+  flags say (AppleCD Audio Player polls DriveStatus with drive 0 and wants
+  exactly 1; a fixed drive's flags say 8). ReadAudio returns samples
+  little-endian, as drives do; QuickTime's import reads 75 sectors and
+  moves on 68 (its jitter correction finds the overlap by content, so a
+  periodic test tone fools it: test with aperiodic audio).
+- **CD audio, who asks what (8.5):** AppleCD Audio Player 2.2 walks the unit
+  table from unit 32; for drivers with `dCtlFlags` bit 2 (DriverGestalt)
+  it asks `devt` (`cdrm` or `dvdr`) and ReturnDeviceIdent (120), for others
+  it compares the DRVR name with `.AppleCD`; its parameter block's
+  ioVRefNum is 0. It numbers a mixed disc's audio tracks from 1. The
+  Control Strip's CD module (CDStrip) asks `devt` of every DriverGestalt
+  driver (drive 0) about every second, `intf` (`atpi` or `scsi`, then 120
+  for "SCSI ID n"), reads the table of contents at startup and, with its
+  AutoPlay, plays from the first audio track when a disc mounts, with the
+  table it read at startup. Foreign File Access tries its file systems
+  when MountVol fails (reads of an audio-only disc must succeed: with
+  ioErr it gives up and the Finder offers to initialize); Audio CD Access
+  4.0 then reads ReadTOC 5, 3, 1, 2, 3 and mounts "Audio CD n" with
+  'trak'/'aucd' documents. ISO 9660 File Access reads 2048-byte sectors at
+  32768. The Device Manager shows a native driver's name at
+  `dCtlDriver + 18` (unit 49 `.AppleCD`), so `OpenDriver(".AppleCD")`
+  finds it; Apple CD/DVD Driver 1.0.1 (68k DRVRs `.AppleCD` for SCSI and
+  ATAPI) finds no drives of its own and leaves it alone.
+- **CD audio, the codec:** Mac OS 8.5's sound driver writes register 0 =
+  0x233 (input: the CD, gain 3) and register 1 = 0x8C0 (loop-through on,
+  the speaker muted); Mac OS 9.1 here writes 0x000 and 0x880 (no input
+  selected, no loop-through: its input component isn't loaded, see Mac OS
+  9), so the CD plays through when nothing is selected too. Output
+  attenuation 0x249 (9 steps, 13851/65536) applies to the CD as to DMA
+  sound. In instruction time CD audio costs about 1 s per 8 billion
+  instructions with 385 s of it playing (an installed 8.5 boot: 4.85 s
+  against 3.83 s); the player reads 16 sectors at a time.
 
 - **ID format:** slot << 16 | the slot's use count; the first ID made is
   1 (the blue process). Classes (`NKOpaque.a`): process 1, task 2, timer
@@ -1083,6 +1239,36 @@ Facts later tasks need, added as they are found.
   The Finder makes `Desktop DB` and `Desktop DF` on every writable volume
   it mounts, and Desktop Printing (8.6) an invisible `DesktopPrinters DB`;
   the Trash and the `Desktop Folder` come when used.
+- **Norton Utilities and the shared volume's dates:** Norton FileSaver
+  (Norton Utilities 6, scanning every disk at startup after a crash) said
+  "There is damage to the Master Directory Block. (Error 16,005)" of the
+  shared volume, whose MDB's creation and modification dates were the
+  folder's (2026) and so later than the guest's clock in instruction-time
+  runs (`--fixed-time 1000000000`, 2001). Disk Doctor names it: "The
+  creation date is invalid" (5,1,3), then the modification date (5,1,4),
+  the alternate MDB's (5,2,3 and 5,2,4), and every file's "bad creation
+  dates" (15,2,8, minor). Norton allows a minute or so in the future, not
+  an hour (scanned with the guest's clock 60 s, 1 h, 1 day, 1 and 20 years
+  behind the folder's dates; FileSaver's 16,005 is any MDB damage). It also
+  takes a file modified before it was created for "bad modification dates"
+  (15,2,9), as macOS's copies and unpacked files are (born anew, modified
+  when they were): 316 files of a copy of the user's folder, with the
+  guest's clock at the host's time. `share_open()` now takes the guest's
+  clock at the start (`--fixed-time`, else the host's) and no date is
+  later, nor created after modified. With that, FileSaver, Disk Doctor
+  ("No Problems Found"), Disk First Aid 8.5 and Linux's `fsck.hfs` find
+  nothing wrong, on that copy too, in instruction time and real time; but
+  for the dates they found nothing before either. A Macintosh HD made later
+  than such a run's clock is flagged the same way (`syshm disk create`
+  dates it then). Mac OS 8.5's Disk Initialization of a volume the share's
+  size gives the same geometry (63,569 blocks of 16,896 bytes from sector
+  19, the alternate MDB right after the last), but 1 MB B-trees. FileSaver
+  scans after a crash: a run ended by `--max` leaves an image as one.
+  macOS's own `fsck_hfs` (hfs-753.41.1) can't check HFS volumes with
+  files: it stops at a bounds check (`brk #0x5512`) in
+  `hfs_swap_HFSBTInternalNode`, which swaps a file record's six extents
+  through its three-entry `dataExtents`; it does the same on a Mac OS-made
+  HD.
 - **The catalog's order of names** is Apple's FastRelString (the HFS code
   in Apple's open-source `hfs`, `UCStringCompareData.h`'s `gCompareTable`):
   case-insensitive, each accented letter after its plain one, a
@@ -1163,6 +1349,25 @@ Facts later tasks need, added as they are found.
   floppies" says it needs a drive that can make 720K/1440K disks, without
   a call to the driver: it looks for other drives, the Sony driver's
   presumably), though it offers to make an image of one put in.
+- **Ejectable drives** (CD swapping): the flags' "ejectable" (1) rather
+  than "non-ejectable" (8) changes what Mac OS does from early on: with
+  only that changed, the 8.5 CD's 4-billion-instruction run ended
+  elsewhere (its screen the same) and 9.1's screen differed, as Mac OS
+  reads the flags as it runs; set only once the CD was mounted, the runs
+  still diverged. With flags 8, the Finder's Eject is disabled and Put
+  Away asks "Do you really want to remove the disk ... It will reappear on
+  the desktop when the computer is restarted", then unmounts it without a
+  call to the driver (only DriverGestalt 'flus' queries), so nothing could
+  tell the driver to release the image or start its timer again (it stops
+  once its volumes are mounted). Hence CD-ROM drives are ejectable only
+  where discs can be swapped. With flags 1, Put Away, the Trash and the
+  Finder's Eject unmount the volume and call Control 7; the Finder refuses
+  for the startup disk. What 8.5 asks of an ejectable CD drive is what it
+  asks of the disks (DriverGestalt 'flus', 'intf', 'minf', 'mics', Control
+  20, 21, 22, 23 at mount), all declined as before, so a CD keeps its
+  look: the generic disk's icon or the disc's own, the same in at startup
+  or put in later. 'ejec' (kRestartDontEject) keeps the startup CD in at a
+  restart.
 - **Each application has its own scrap:** its scrap handle is in its
   heap, and the low-memory scrap globals (`0x960`) are switched with it;
   the Process Manager hands the front application's scrap to the next one
@@ -1386,7 +1591,63 @@ Facts later tasks need, added as they are found.
   native code within 16 ms, while syshm's VBL is a Driver Services timer
   that itself needs the Time Manager. Options: a VBL interrupt from the
   display device (`video.c`, its node's interrupt set), or timers firing at
-  their exact time in instruction time.
+  their exact time in instruction time. **Resolved** by the first (Task
+  17); see the next.
+- **The display's interrupt** (Task 17): on the iMac the ATI chip's PCI
+  interrupt goes to Paddington's source 22 (MAME's `imacg3.cpp` wires its
+  Rage IIc there; its OHCI is source 28, as syshm's, and NetBSD on a Bondi
+  iMac says the same of the OHCI; QEMU's g3beige wires Grackle's four PCI
+  lines to Heathrow's 21-24). Real NDRVs install their handler in the
+  node's `driver-ist` set and either call VSLDoInterruptService there
+  (QemuMacDrivers' QemuVga, `USE_PCI_IRQ`) or from a secondary handler, as
+  syshm's does; VSLDoInterruptService runs the screen's VBL tasks (the
+  cursor's) and was called from a Driver Services timer's secondary
+  handler before, so either level works. Mac OS 9.2's ROM file (10.2f1)
+  has no InterruptTreeNew: DriverServicesLib builds the sets itself
+  (`0xFFD860F4`: a RegistryEntrySearch for `AAPL,interrupt-priorities`,
+  then four RegistryPropertyGets, each failing the node:
+  `AAPL,interrupt-priorities`, `-vectors`, `-index`, `AAPL,interrupts`),
+  one set per 68k level with members numbered in order, adding each to the
+  node's `driver-ist` (`0xFFD85E24`). `AAPL,interrupt-index` is the
+  source's entry in its table of 32-byte entries (above 0x3F: a cascaded
+  controller's, from CascadeInfo; the real Trampoline makes the property).
+  Without it no node had a set on 9.2.2: the display's Open got
+  nrNotFoundErr, USB's UIM never enables its interrupts, the sound DMA
+  plug-in doesn't start (no codec writes) and lanLib polls. With it on all
+  of them, 9.2.2 plays sound (and keeps its DMA running, which holds fast
+  start back: the CD's Finder at 22 s of guest time instead of 13, and
+  the host idles less), so only the display has it for now.
+- **The restored 9.2.2's hang, resolved:** reproduced with a restore whose
+  run was stopped without quitting Apple Software Restore (its first
+  startup then differs; a cleanly unmounted one didn't hang). On main, of
+  6 runs to 8 billion with `--fixed-time` 1.0-1.5 billion, 3 stopped short
+  of the Finder for good (a level-1 software interrupt never taken; 1679
+  later raises dropped as "already set") and 3 stalled 17-25 s the same
+  way before going on. With the vertical blank: none, the longest a
+  software interrupt waited 18 ms, and all 6 reach the Setup Assistant (the
+  restore's first startup). The same build with the chip's interrupt kept
+  off stalls as main does, so it's the VBL that ends them: each one ends
+  the native code the blue task naps in (exception 0), and the emulator,
+  taking it, takes the waiting software interrupt too. A software
+  interrupt dropped on purpose (its CR bits never posted) at 250 s of
+  guest time waited 22.5 s without the VBL, under 18 ms with it; at 30 s,
+  forever without.
+- **Pulses lost at PrioritizeInterrupts** (Task 17): `macio_release()`
+  dropped every taken pulse at each PrioritizeInterrupts, but Mac OS calls
+  that not only once it has handled what it dispatched: also when it
+  lowers its 68k interrupt mask, and at the end of a dispatch that began
+  before the pulse came. A DMA pulse taken in between was dropped unseen.
+  With the display's level-2 interrupts it happened often enough that
+  Unreal Tournament's sound DMA (8.6, its CD) stopped after 12 s, and the
+  game waited for it in SndChannelStatus at a black screen (merged main
+  does that too, by its timing). Mac OS 8.5-8.6's sound driver
+  clears its pulse in the controller and masks and unmasks its source;
+  Mac OS 9's interrupt sets mask and unmask. So a taken pulse now goes once
+  it's been cleared or masked, or at the PrioritizeInterrupts after the one
+  that found it unhandled. In that UT run a PrioritizeInterrupts found one
+  not handled yet 4,435 times (of 44,568 sound interrupts), none stayed
+  unhandled to the next, and the sound plays on (22.8 million frames by
+  instruction 20 billion, against 0.57 million before it stopped).
 - **The clock with `--fixed-time 1000000000`** reads an hour later on the
   9.2.2 CD than on 9.1's or 8.5's (12:50 PM against 11:50 AM): September
   2001, summer time in the northern hemisphere but not where this host is

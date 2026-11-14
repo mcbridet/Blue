@@ -3,6 +3,14 @@
  * DoDriverIO is a host call (see ndrv.h); the framebuffer is ordinary guest
  * memory that QuickDraw draws into directly, and the host reads it back to
  * show (or save) the screen.
+ *
+ * The display interrupts at each vertical blank, as the iMac's ATI chip
+ * does: VIDEO_VBL_HZ times a second of guest time, on the timebase. Each
+ * vertical blank latches the chip's VBL status, which raises its interrupt
+ * line while the interrupt is enabled, until the driver acknowledges it.
+ * The driver's handler for it, in the display node's interrupt set, does
+ * that and queues a secondary interrupt handler, which runs Mac OS's VBL
+ * tasks for the screen (the Video Services Library's VBL service).
  */
 #ifndef SYSHM_VIDEO_H
 #define SYSHM_VIDEO_H
@@ -17,6 +25,7 @@
 #define VIDEO_DEPTHS 6                  /* 1, 2, 4, 8, 16, 32 bits per pixel */
 #define VIDEO_CUSTOM_MODES 2            /* sized to the host window on request (see below) */
 #define VIDEO_FIRST_DEPTH_MODE 0x80u
+#define VIDEO_VBL_HZ 60u
 
 struct video_mode {
 	uint16_t width, height;
@@ -49,7 +58,7 @@ struct video {
 	unsigned preferred_mode, preferred_depth;
 	uint8_t clut[256][3];
 	bool luminance_mapping;
-	bool vbl_disabled;
+	bool vbl_disabled;              /* Mac OS turned VBL interrupts off (SetInterrupt) */
 	uint8_t sync;
 	uint32_t power_state;
 	unsigned open_count;
@@ -60,8 +69,13 @@ struct video {
 	bool log;                       /* print each request */
 	struct ndrv_layout layout;      /* of the generated driver */
 	uint32_t vbl_service;           /* Video Services Library VBL interrupt service */
-	uint64_t vbl_period;            /* AbsoluteTime units between VBLs */
-	unsigned long vbls;
+	/* the chip's vertical blank (see above) */
+	uint32_t timebase_hz;
+	uint64_t vbl_count;             /* vertical blanks since timebase 0 */
+	bool vbl_status;                /* ... one since the driver last acknowledged one */
+	bool vbl_enabled;               /* ... which interrupts (the driver's to set) */
+	bool vbl_queued;                /* the handler queued the secondary handler, which hasn't run yet */
+	unsigned long vbls;             /* VBL interrupts the driver took */
 	bool hw_cursor;                 /* offer Mac OS a hardware cursor (set before building the driver) */
 	struct video_cursor cursor;
 };
@@ -69,16 +83,34 @@ struct video {
 extern const struct video_mode video_modes[];
 extern const unsigned video_mode_count;
 
-void video_init(struct video *v, struct mem *mem, uint32_t fb_base, uint32_t fb_size);
+/* `timebase_hz`: the timebase's rate, which vertical blanks are timed by */
+void video_init(struct video *v, struct mem *mem, uint32_t fb_base, uint32_t fb_size, uint32_t timebase_hz);
 
 /* Builds the driver fragment; returns its size or 0. */
 size_t video_build_ndrv(struct video *v, uint8_t *out, size_t size, uint32_t hostcall);
 
 /*
- * Runs the driver for one host call: DoDriverIO (entry 0) or the VBL timer
- * (entry 1), or resumes one after a callout. `timebase_hz` sets the VBL rate.
+ * Runs the driver for one host call: DoDriverIO (entry 0), the VBL
+ * interrupt's handler (entry 1) or the secondary handler it queues (entry
+ * 2), or resumes one after a callout.
  */
-void video_driver_call(struct video *v, struct ndrv_call *c, uint32_t timebase_hz);
+void video_driver_call(struct video *v, struct ndrv_call *c);
+
+/*
+ * The vertical blank, as a device: video_set_time() brings it up to the
+ * timebase `tb` (latching the VBL status if one has passed);
+ * video_next_vbl() is the timebase at which the interrupt line next
+ * rises, UINT64_MAX if nothing would change it (the interrupt is off, or
+ * already raised).
+ */
+void video_set_time(struct video *v, uint64_t tb);
+uint64_t video_next_vbl(const struct video *v);
+
+/* Whether the display's interrupt line is raised */
+static inline bool video_irq(const struct video *v)
+{
+	return v->vbl_enabled && v->vbl_status;
+}
 
 unsigned video_width(const struct video *v);
 unsigned video_height(const struct video *v);

@@ -614,12 +614,13 @@ int hfsread_system_file(const char *const *paths, unsigned count, uint32_t type,
 	err[0] = '\0';
 	for (unsigned k = 0; k < count; k++) {
 		struct disk d;
-		if (disk_open(&d, NULL, paths[k], true, true))
+		if (disk_open(&d, NULL, paths[k], true, cdimage_is_cue(paths[k])))     /* (any image, read-only) */
 			return -1;
 		for (unsigned p = 0; p < d.partitions; p++) {
 			struct hfsread_volume v;
 			struct hfsread_file f;
-			if (hfsread_open(&v, d.fd, d.part[p].offset, d.part[p].size) || !v.blessed ||
+			struct disk_reader r = { &d, p };
+			if (hfsread_open_with(&v, disk_read, &r, d.part[p].size) || !v.blessed ||
 			    hfsread_find(&v, v.blessed, type, &f) != 1)
 				continue;
 			char folder[HFSREAD_PATH_MAX];

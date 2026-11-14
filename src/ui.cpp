@@ -166,43 +166,35 @@ static void render(struct ui *u, ImDrawData *dd)
 	u->r.RenderSetScale(u->r.renderer, 1, 1);
 }
 
-/* The floppy drive's part of the menu: what's in it, and the images to put in */
-static enum ui_action floppy_menu(const struct ui_floppy *f, const ImVec2 &wide)
+/*
+ * The drives with removable media: what's in each, with an Eject button
+ * (disabled while Mac OS uses the disc: it's the one to eject it then).
+ */
+static enum ui_action drives_menu(const struct ui_drives *dr)
 {
 	enum ui_action action = UI_NONE;
+	bool in_use = false;
 	ImGui::Separator();
-	if (f->in[0]) {
-		ImGui::Text("Floppy drive: %s%s", f->in, f->locked ? " (locked)" : "");
-		ImGui::BeginDisabled(f->in_use);
-		if (ImGui::Button("Eject", wide))
-			action = UI_FLOPPY_EJECT;
-		ImGui::EndDisabled();
-		if (f->in_use)
-			ImGui::TextDisabled("(Mac OS is using it: drag it to the Trash there to eject it)");
-	} else {
-		ImGui::TextUnformatted("Floppy drive: empty");
-	}
-	const unsigned others = f->count - (f->current >= 0 ? 1u : 0u);
-	if (others)
-		ImGui::TextDisabled(f->in[0] ? "Put in instead:" : "Put in:");
-	/* (more than a few scroll, to keep the menu inside small windows) */
-	const bool scroll = others > 3;
-	if (scroll)
-		ImGui::BeginChild("floppies", ImVec2(wide.x + ImGui::GetStyle().ScrollbarSize + 4,
-						     ImGui::GetFrameHeightWithSpacing() * 3.5f));
-	for (unsigned k = 0; k < f->count && k < UI_FLOPPIES; k++) {
-		if ((int)k == f->current)
-			continue;
+	for (unsigned k = 0; k < dr->count && k < UI_DRIVES; k++) {
+		const struct ui_drive *d = &dr->drive[k];
 		ImGui::PushID((int)k);
-		ImGui::BeginDisabled(f->in_use);
-		if (ImGui::Button(f->names[k], wide))
-			action = (enum ui_action)(UI_FLOPPY_INSERT + k);
+		ImGui::BeginDisabled(!d->in[0] || d->in_use);
+		if (ImGui::Button("Eject", ImVec2(70, 0)))
+			action = (enum ui_action)(UI_EJECT + k);
 		ImGui::EndDisabled();
+		ImGui::SameLine();
+		ImGui::Text("%s: %s%s", d->name, d->in[0] ? d->in : "empty", d->locked ? " (locked)" : "");
 		ImGui::PopID();
+		in_use |= d->in_use;
 	}
-	if (scroll)
-		ImGui::EndChild();
-	ImGui::TextDisabled(others ? "(or drop an image on the window)" : "(drop an image on the window to put it in)");
+	if (in_use)
+		ImGui::TextDisabled("(Mac OS is using a disc: drag it to the Trash there to eject it)");
+	if (dr->next[0]) {
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 520);
+		ImGui::TextDisabled("Next floppies, as Mac OS ejects: %s", dr->next);
+		ImGui::PopTextWrapPos();
+	}
+	ImGui::TextDisabled("(drop an image on the window to put it in)");
 	return action;
 }
 
@@ -229,8 +221,8 @@ static enum ui_action menu(const struct ui_state *s)
 		action = UI_TURN_OFF;
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("At once, as if the power went: unsaved work is lost");
-	if (s->floppy) {
-		enum ui_action chosen = floppy_menu(s->floppy, wide);
+	if (s->drives) {
+		enum ui_action chosen = drives_menu(s->drives);
 		if (chosen != UI_NONE)
 			action = chosen;
 	}
@@ -253,7 +245,7 @@ static enum ui_action menu(const struct ui_state *s)
 			    "(while the Mac hides its cursor; Control-Option releases it)");
 	if (s->news) {
 		ImGui::Separator();
-		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 520);  /* (floppies' news can be long) */
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 520);  /* (the drives' news can be long) */
 		ImGui::TextUnformatted(s->news);
 		ImGui::PopTextWrapPos();
 	}

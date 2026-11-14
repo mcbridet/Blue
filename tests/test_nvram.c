@@ -91,6 +91,24 @@ void test_nvram(void)
 	CHECK(flat_find(tree, NULL, "nvram", NULL) == NULL);
 	CHECK(flat_find(tree, NULL, "chosen", NULL) == NULL);
 
+	/*
+	 * Interrupt sets: the display's (a vertical blank's, on the line the
+	 * iMac's ATI chip has), at 68k level 2, with the index Mac OS 9.2's
+	 * DriverServicesLib wants as well; the USB controller's without it
+	 */
+	const uint8_t *display = flat_find(tree, NULL, "display", "pci");
+	CHECK(display != NULL);
+	if (display) {
+		CHECK_EQ(flat_u32(display, "interrupts", 0), IRQ_DISPLAY);
+		CHECK_EQ(flat_u32(display, "AAPL,interrupts", 0), IRQ_DISPLAY);
+		CHECK_EQ(flat_u32(display, "AAPL,interrupt-priorities", 0), 2);
+		CHECK_EQ(flat_u32(display, "AAPL,interrupt-vectors", 0), IRQ_DISPLAY);
+		CHECK_EQ(flat_u32(display, "AAPL,interrupt-index", 0), IRQ_DISPLAY);
+	}
+	const uint8_t *usb = flat_find(tree, NULL, "usb", "pci");
+	CHECK(usb && flat_u32(usb, "AAPL,interrupts", 0) == IRQ_USB);
+	CHECK(usb && flat_u32(usb, "AAPL,interrupt-index", 0) == 0xDEADBEEFu);
+
 	hw.parcels = &none;
 	CHECK(bootinfo_build(&mem, &bi, &hw) == 0);
 	tree = mem_ptr(&mem, bi.device_tree);

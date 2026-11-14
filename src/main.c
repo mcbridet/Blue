@@ -5,6 +5,7 @@
 
 #include <unistd.h>
 
+#include "cdimage.h"
 #include "disk.h"
 #include "hfsread.h"
 #include "mem.h"
@@ -61,7 +62,8 @@ static int usage(void)
 		"                               move X Y, click X Y, dblclick X Y, down, up,\n"
 		"                               motion DX DY (the mouse moved, as games read it),\n"
 		"                               key HEX [down|up], resize W H, screenshot FILE,\n"
-		"                               floppy insert FILE, floppy eject,\n"
+		"                               floppy insert FILE, floppy eject, cdrom insert FILE,\n"
+		"                               cdrom eject,\n"
 		"                               tools install|later (the answer to that offer)\n"
 		"      --max <n>                stop after n PowerPC instructions (default 500000000)\n");
 	fprintf(stderr,
@@ -78,10 +80,12 @@ static int usage(void)
 		"      --disk <image>           attach a disk image (writable if the file is);\n"
 		"                               drives are numbered, and tried for startup, in\n"
 		"                               command-line order\n"
-		"      --cdrom <image>          attach an image read-only\n"
+		"      --cdrom <image>          attach an image read-only, in a CD-ROM drive (whose\n"
+		"                               disc can be swapped in a window: drop an image on it)\n"
+		"      --cdrom-drive            an empty CD-ROM drive\n"
 		"      --floppy <image>         a floppy image for the floppy drive (raw 400K-1440K, or\n"
 		"                               Disk Copy 4.2); the first is in it at startup, the\n"
-		"                               others go in from the window's menu (F12)\n"
+		"                               others go in, in turn, as Mac OS ejects the one in\n"
 		"      --floppy-drive           a floppy drive, empty at startup (drop images on the\n"
 		"                               window to put them in)\n"
 		"      --tools                  attach the guest tools volume (see tools create)\n"
@@ -91,6 +95,8 @@ static int usage(void)
 		"      --screenshot <file.png>  save the screen when the run ends\n"
 		"      --dump-ram <file>        save guest RAM when the run ends\n"
 		"      --log-hostcalls          log driver requests handled natively\n"
+		"  disk toc <image>             list a CD image's tracks (a .cue sheet's, or one data\n"
+		"                               track) as its CD-ROM drive gives them\n"
 		"  disk create <file> <size> [name]\n"
 		"                               make a disk image holding an empty HFS volume\n"
 		"                               (size in bytes, or with K, M or G; 1M or more, or a\n"
@@ -386,6 +392,13 @@ static int cmd_boot(int argc, char **argv)
 			}
 			opt.cdrom[opt.disks] = strcmp(argv[k], "--cdrom") == 0;
 			opt.disk[opt.disks++] = argv[++k];
+		} else if (strcmp(argv[k], "--cdrom-drive") == 0) {
+			if (opt.disks >= NK_MAX_DISKS) {
+				fprintf(stderr, "at most %d disks\n", NK_MAX_DISKS);
+				return 2;
+			}
+			opt.cdrom[opt.disks] = true;
+			opt.disk[opt.disks++] = NULL;
 		} else if (strcmp(argv[k], "--floppy") == 0 && k + 1 < argc) {
 			if (opt.floppies >= NK_MAX_FLOPPIES) {
 				fprintf(stderr, "at most %d floppy images\n", NK_MAX_FLOPPIES);
@@ -458,9 +471,18 @@ static int cmd_boot(int argc, char **argv)
 		if (found)
 			fprintf(stderr, "%s\n", err);
 	} else {
-		found = load_startup_rom(opt.disk, opt.disks, &rom, from, sizeof from, &opt.rom_disk, &opt.rom_part);
+		const char *paths[NK_MAX_DISKS];       /* (the drives with images: not an empty CD-ROM drive) */
+		unsigned drive[NK_MAX_DISKS], images = 0;
+		for (unsigned k = 0; k < opt.disks; k++)
+			if (opt.disk[k]) {
+				drive[images] = k;
+				paths[images++] = opt.disk[k];
+			}
+		found = load_startup_rom(paths, images, &rom, from, sizeof from, &opt.rom_disk, &opt.rom_part);
 		opt.rom_from_disk = !found;
-		if (found > 0 && opt.disks)
+		if (!found)
+			opt.rom_disk = drive[opt.rom_disk];
+		if (found > 0 && images)
 			fprintf(stderr, "no drive has a System Folder with a Mac OS ROM file in it: give one with "
 				"--rom FILE\n");
 		else if (found > 0)
@@ -476,7 +498,7 @@ static int cmd_boot(int argc, char **argv)
 		if (opt.disks >= NK_MAX_DISKS)
 			fprintf(stderr, "at most %d disks, the shared folder's included\n", NK_MAX_DISKS);
 		else
-			share = share_open(share_dir);
+			share = share_open(share_dir, opt.fixed_time);
 		if (!share) {
 			rom_free(&rom);
 			found = 1;
@@ -504,8 +526,49 @@ static int cmd_tools(int argc, char **argv)
 	return tools_create(argv[1]) ? 1 : 0;
 }
 
+static void print_msf(uint32_t lba, bool length)
+{
+	uint8_t m, s, f;
+	cd_msf(length ? lba - CD_MSF_OFFSET : lba, &m, &s, &f);
+	printf("%02u:%02u:%02u", m, s, f);
+}
+
+/* A CD image's table of contents, as the CD-ROM drive gives it */
+static int cmd_toc(const char *path)
+{
+	char why[400];
+	struct cdimage *c = cdimage_open(path, why, sizeof why);
+	if (!c) {
+		fprintf(stderr, "%s: %s\n", path, why);
+		return 1;
+	}
+	printf("%s: %u track%s, %u session%s, lead-out at ", path, c->tracks, c->tracks == 1 ? "" : "s", c->sessions,
+	       c->sessions == 1 ? "" : "s");
+	print_msf(c->leadout, false);
+	printf(" (LBA %u)\n", c->leadout);
+	for (unsigned k = 0; k < c->tracks; k++) {
+		const struct cd_track *t = &c->track[k];
+		printf("  %2u  %-6s  ", t->number, t->mode ? (t->mode == 1 ? "mode 1" : "mode 2") : "audio");
+		print_msf(t->start, false);
+		printf("  LBA %6u  ", t->start);
+		print_msf(t->end - t->start, true);
+		if (t->start > t->pregap) {
+			printf("  (pregap ");
+			print_msf(t->start - t->pregap, true);
+			printf(")");
+		}
+		if (c->sessions > 1)
+			printf("  session %u", t->session);
+		printf("%s\n", (int)k == c->data ? "  (Mac OS sees its data)" : "");
+	}
+	cdimage_close(c);
+	return 0;
+}
+
 static int cmd_disk(int argc, char **argv)
 {
+	if (argc == 2 && strcmp(argv[0], "toc") == 0)
+		return cmd_toc(argv[1]);
 	if (argc < 3 || argc > 4 || strcmp(argv[0], "create") != 0)
 		return usage();
 	char *end;
