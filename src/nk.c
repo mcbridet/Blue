@@ -1400,7 +1400,7 @@ static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
  */
 #define LED_HOLD_NS 100000000u
 #define SPEED_EVERY_NS 1000000000u
-#define SPEED_BUSY_NS 100000000u        /* (busy for less of a second than this: the speed stands) */
+#define SPEED_BUSY_NS 100000000u        /* (busy for less of a second than this: no speed shown) */
 #define RUN_SAMPLE 32u
 
 static void status_lights(struct machine *m, uint64_t now, bool paused)
@@ -1454,6 +1454,7 @@ static void status_lights(struct machine *m, uint64_t now, bool paused)
 		if (paused) {
 			memset(m->rate_in, 0, sizeof m->rate_in);
 			memset(m->rate_out, 0, sizeof m->rate_out);
+			m->speed_mhz = 0;
 		} else if (m->speed_ns) {
 			double secs = (double)(now - m->speed_ns) / 1e9;
 			for (int k = 0; k < UI_LEDS; k++) {
@@ -1461,7 +1462,9 @@ static void status_lights(struct machine *m, uint64_t now, bool paused)
 				m->rate_in[k] = in[k] >= m->rate_from_in[k] ? (uint64_t)((double)i / secs + 0.5) : 0;
 				m->rate_out[k] = out[k] >= m->rate_from_out[k] ? (uint64_t)((double)o / secs + 0.5) : 0;
 			}
-			if (m->busy_ns >= SPEED_BUSY_NS && m->run_ns)
+			if (m->busy_ns < SPEED_BUSY_NS)
+				m->speed_mhz = 0;       /* (napping: no speed to show) */
+			else if (m->run_ns)
 				m->speed_mhz = (uint32_t)(m->run_insns * 1000u / m->run_ns);
 		}
 		m->speed_ns = paused ? 0 : now;         /* (0: the next frame starts again) */

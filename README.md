@@ -746,8 +746,9 @@ lacks: syshm says to install it again from the tools volume.
   idle sleep). Beside that is its speed: millions of instructions a second of
   the time actually spent running them, as a clock rate (the Mac thinks it
   has a 266 MHz G3, which runs about one instruction a cycle), worked out
-  once a second from a random 1 in 32 runs (timing each costs too much)
-  and left as it was when the guest is busy less than a tenth of the time.
+  once a second from a random 1 in 32 runs (timing each costs too much),
+  and not shown while the guest naps (busy less than a tenth of the time)
+  or the menu pauses it.
   In narrow windows (640 wide, say) the names are shortened and the text
   made smaller to fit.
   SDL2 sound output (`src/audio.c`; in real time, `--no-sound` turns it
