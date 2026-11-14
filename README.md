@@ -299,6 +299,12 @@ creator from its extension (`.sit`, `.hqx`, `.bin`, `.zip` for StuffIt
 Expander; `.txt`; `.jpg`, `.gif`, `.png` for PictureViewer; `.pdf`; `.img`,
 `.dmg`, `.toast`, `.dsk` for Disk Copy; `.mov`, `.mp3`, `.aiff`, `.html`
 and a few more), else SimpleText's if it's plain text, else `????`.
+Archives in the StuffIt 5 format (from 1998 on; `lsar` calls them "StuffIt
+5") need StuffIt Expander 5 or later; Mac OS 8.5 and 8.6 come with 4.5,
+which quits without a word on them. Either install Expander 5.5 (as a
+`.hqx` or `.bin`, which 4.5 opens), or expand on the host with The
+Unarchiver's `unar` (Homebrew's `unar`), which keeps resource forks and
+Finder info on macOS, so they reach Mac OS through the share.
 
 What Mac OS writes goes to a temporary file (in `$TMPDIR`, gone when
 syshm exits), never to the folder during the run. At the end of the run,
