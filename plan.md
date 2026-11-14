@@ -507,6 +507,27 @@ the kernel); 8 onwards as the boot progresses.
   scrap only at a suspend, and the real host clipboard, which only a
   window run by hand uses.
 
+### 15. Showing the screen
+
+- **Status:** done. Three changes to what the window costs the emulation
+  thread (which stops the Mac meanwhile): only the rows that changed are
+  shown (`video_changed_rows()`: bands of them, compared with the copy last
+  shown; whole frames still for mode and CLUT changes, the window's
+  exposes and once a second), each band converted once, straight into a
+  locked ARGB8888 streaming texture (`video_palette()`, `video_convert()`;
+  `display_rows()` in `src/display.c`) and drawn again only there in the
+  prescaled copy; and a hardware cursor (`src/video.c`), which the window
+  draws over the screen (`display_cursor()`), in window runs in real time
+  only. `video_to_rgb()` stays for screenshots, which draw the hardware
+  cursor in. `tests/test_video.c` checks the conversion against
+  `video_to_rgb()` at every depth, the bands, and the cursor calls with a
+  stand-in Video Services Library. Checked in 8.5 and 9.1 from their CDs
+  and 8.6 from a disk: the arrow, the I-beam (all inverting pixels), the
+  watch (animated, with inverting pixels), hiding while typing; with SDL's
+  software renderer too (inverting pixels are black there). Instruction-time
+  runs are unchanged. Measurements in Findings. Open: presenting on a
+  thread of its own; tracking framebuffer writes instead of comparing.
+
 ## Findings
 
 Facts later tasks need, added as they are found.
@@ -1148,3 +1169,75 @@ Facts later tasks need, added as they are found.
   macOS, and on Linux the X11 CLIPBOARD selection (an `image/png` target,
   answering SelectionRequest events) and a Wayland data source, each
   separately.
+- **Showing the screen** (Task 15; M5, window runs, the pointer moved in
+  circles by a timed script, 50 moves a second; per presented frame, and
+  the share of the emulation thread's time in `display_frame()`; medians
+  of 3-5 runs, their range in brackets. The machine was shared and the
+  thread's core and clock vary: the same run gave 1.4% and 7.5%.)
+  At 800x600, 8 bits (the 8.5 CD): main showed 45 frames a second,
+  converting each in 0.57 ms [0.26-1.01], uploading it in 0.62 [0.28-1.03]
+  and drawing in 0.21, 6.5% [2.7-11.0] of the thread; showing changed rows
+  only, 44 a second of 31 rows, 0.05, 0.08 and 0.14 ms, 1.2% [0.7-2.8];
+  with the hardware cursor nothing in the framebuffer changes: 46 draws a
+  second at 0.34 ms and a whole frame a second, 2.0% [0.5-2.6]. At
+  1920x1080, 8 bits (8.6 from a disk): 48 a second at 1.82, 1.68 and 0.18
+  ms, 17.8% [10.7-19.0]; changed rows, 46 a second of 44 rows at 0.27,
+  0.13 and 0.25 ms, 3.2% [1.2-6.0]; the hardware cursor, 48 draws a second
+  at 0.34 ms, 3.3% [2.2-3.9]. At 1920x1080, 32 bits: 47 a second at 0.71,
+  1.32 and 0.17 ms, 10.8% [7.8-17.2]; changed rows, 1.06 (nearly all of it
+  comparing), 0.18 and 0.34 ms, 8.7% [1.9-10.2]; the hardware cursor, 46
+  draws a second at 0.14 ms, 2.0% [1.8-2.1].
+  On the 8.6 desktop at 1920x1080, 32 bits: idle (the menu-bar clock
+  changes once a minute), main 3.7% [1.7-7.3], now 3.3% [3.1-7.1]; typing
+  in Sherlock's field, 10 keys a second (7 frames a second change),
+  main 0.67 + 1.74 ms a frame and 3.2% [2.3-10.2], now 12 rows a frame,
+  0.33 + 0.08 ms and 1.7% [1.3-7.5]. Pixels converted a second while the
+  pointer moves: 21.6 million at 800x600 before, 1.1 million in bands, 0.5
+  million with the hardware cursor (the frame a second); 99.5, 3.9 and 2.1
+  million at 1920x1080. What's left is mostly comparing the framebuffer
+  with the copy each frame (2 x 8 MB at 32 bits: 0.23 ms in a cold-cache
+  benchmark, up to 1 ms in the emulator), which main did too for frames
+  that hadn't changed; row by row costs what one memcmp does. Standalone,
+  converting 1920x1080 takes 0.13 ms at 32 bits (a byte swap), 0.37 ms at
+  16 (shifts and masks: a 32K-entry table took 0.56), 0.39 ms at 8 (a
+  table of 256); in the emulator a whole frame takes 0.7-2.3 ms with the
+  copy and the first writes to the buffer SDL locks (Metal's renderer
+  allocates one for each lock). SDL's renderers take ARGB8888 as it is
+  (Metal's, here, lists it first; so do OpenGL's and the software one);
+  RGB24 was converted again by SDL on the CPU.
+- **The hardware cursor** (Task 15; Designing PCI Cards and Drivers, the
+  Display Device Driver Guide; Apple's IOGraphics, whose NDRV support
+  implements the same library on Mac OS X). Control 22 SetHardwareCursor
+  (VDSetHardwareCursorRec: csCursorRef, two reserved words), Control 23
+  DrawHardwareCursor (csCursorX, csCursorY, csCursorVisible, two
+  reserved); Status 22 SupportsHardwareCursor (csSupportsHardwareCursor),
+  Status 23 GetHardwareCursorDrawState (x, y, visible, set). Mac OS 8.5 to
+  9.1 call SetHardwareCursor with each new cursor, immediate, without
+  asking Status 22 first (never called in these runs); before, it failed
+  (controlErr) and Mac OS drew the cursor itself, as it still does in
+  headless and instruction-time runs. Once one is taken, DrawHardwareCursor
+  comes from the cursor's VBL task as the pointer moves, asynchronous
+  (kind 2: completed with IOCommandIsComplete); x and y are the image's top
+  left, the hot spot already taken off (an arrow at 100,100 comes as
+  99,99), so the window needs no hot spot. The same arrow is handed over
+  again and again (21 times as the 8.5 CD starts). csCursorRef points at a
+  CursorImageRec (version 1.0, a PixMapHandle and a BitMapHandle: the
+  cursor's 1- or 8-bit 16x16 pixmap and its mask), opaque to drivers:
+  `VSLPrepareCursorForHardwareCursor(cursorRef, &descriptor, &info)`
+  converts it. HardwareCursorDescriptorRec (version 1.0): height, width,
+  bitDepth, maskBitDepth, numColors, colorEncodings (each colour's pixel
+  value), flags, supportedSpecialEncodings (1 transparent, 4 inverting),
+  specialEncodings[16] (their values). HardwareCursorInfoRec (version 1.0):
+  cursorHeight and cursorWidth (filled in), colorMap (a ColorTable of the
+  driver's: the library fills the ColorSpecs after its 8-byte header, not
+  the header) and hardwareCursor (the driver's buffer, rows of the
+  descriptor's width). The library in 8.5-9.1 converts to 2, 4 and 8 bits
+  a pixel; 1 and 32 (direct) fail. syshm asks for 8: 254 colours (the
+  value is the colour's index), 254 transparent, 255 inverting. The
+  I-beam is all inverting pixels; the watch has two (its crown) and
+  animates through SetHardwareCursor; ObscureCursor (typing) hides it
+  with DrawHardwareCursor. With the library's import, the descriptor, the
+  colour table and the buffer the driver is 3.8 KB bigger, so it's built
+  so only for window runs in real time. (SheepShaver reads the
+  CursorImage's pixmap itself, 1-bit cursors only, and guesses the hot
+  spot.)

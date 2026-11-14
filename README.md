@@ -762,6 +762,16 @@ lacks: syshm says to install it again (and a window offers to update it).
     modes take the host window's size on request (up to what the 16 MB
     framebuffer holds at 32 bits per pixel), for syshm Enhancements (a guest
     tool) to switch between; each is listed only while in use.
+    In window runs in real time it has a hardware cursor: Mac OS hands it
+    each new cursor (SetHardwareCursor, which Video Services'
+    `VSLPrepareCursorForHardwareCursor` converts to 8 bits a pixel, with
+    values for transparent and inverting pixels) and where it is, as it
+    moves (DrawHardwareCursor), and the window draws it over the screen, so
+    the pointer moving changes nothing in the framebuffer. Cursors the
+    library can't convert, Mac OS draws itself. Headless and
+    instruction-time runs have none (the driver is as it was without it),
+    so Mac OS draws the pointer into the framebuffer as before; screenshots
+    show it either way.
   - Disk: host files as drives (`--disk`, writable; `--cdrom`, read-only;
     the 8.5 CD's System refuses to start from a writable drive, as from a
     copy of the CD), and a host folder (`--share`; see Shared folder),
@@ -834,9 +844,16 @@ lacks: syshm says to install it again (and a window offers to update it).
 - Host side: an SDL2 window loaded at run time (`src/display.c`; no build
   dependency, headless without it; on macOS also found in Homebrew's and
   MacPorts' directories, which aren't searched for bare library names;
-  redrawn only when the screen or the status bar changes;
+  redrawn only when the screen, the pointer or the status bar changes;
   drawn at the display's full resolution, so high-density displays don't
-  blur it). The screen is scaled to fill the window above the status bar,
+  blur it). Up to 60 times a second the framebuffer is compared with a
+  copy of what was last shown, row by row, and only the bands of rows that
+  changed are converted, straight into a streaming texture in the 32-bit
+  format renderers take as it is (ARGB8888: a byte swap at 32 bits per
+  pixel, the 5-bit channels widened at 16, the CLUT expanded to 32-bit
+  colours at 8 and fewer), and drawn again in the scaled copy below (all
+  of it when the mode or colours change, and once a second if nothing
+  has). The screen is scaled to fill the window above the status bar,
   keeping its shape:
   whole multiples exactly, other sizes by drawing it at the multiple above
   on the GPU and filtering that down, so every screen pixel comes out the
@@ -983,6 +1000,11 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    that follows (4%); device register accesses, though made in place, still
    cost about 25 ns each in the devices' bookkeeping (about 4% of the 8.5
    CD boot).
+6. The window: drawing and presenting on a thread of their own, so the
+   Mac doesn't stop for them; and knowing which framebuffer pages were
+   written (by protecting them) rather than comparing it with a copy each
+   frame, which is most of what showing a 32-bit screen still costs (plan.md,
+   Findings, "Showing the screen").
 
 future.md has ideas not planned yet: a modem, infrared, 3D sound, sound
 input, AltiVec, printing, game controllers, and more CD formats with CD

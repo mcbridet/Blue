@@ -467,24 +467,31 @@ static bool cursor_textures(struct display *d, unsigned k, bool filtered)
 	bool inverts = false;
 	for (unsigned y = 0; y < h; y++) {
 		for (unsigned x = 0; x < w; x++) {
-			uint32_t px = d->cursor_pixels[y / k * d->cursor.width + x / k];
-			bool inv = px == DISPLAY_CURSOR_INVERT;
-			color[y * w + x] = !inv ? px : d->invert_mode < 0 ? 0xFF000000u : DISPLAY_CURSOR_CLEAR;
-			invert[y * w + x] = inv ? 0xFFFFFFFFu : 0xFF000000u;
+			bool inv = d->cursor_pixels[y / k * d->cursor.width + x / k] == DISPLAY_CURSOR_INVERT;
+			invert[y * w + x] = inv ? 0xFFFFFFFFu : 0;
 			inverts |= inv;
+		}
+	}
+	if (inverts && d->invert_mode >= 0) {
+		d->cursor_invert = make_texture(d, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, w, h, filtered);
+		if (d->cursor_invert && d->sdl.SetTextureBlendMode(d->cursor_invert, d->invert_mode) != 0) {
+			d->sdl.DestroyTexture(d->cursor_invert);        /* (the renderer can't: SDL's software one) */
+			d->cursor_invert = NULL;
+			d->invert_mode = -1;
+		}
+		if (d->cursor_invert)
+			d->sdl.UpdateTexture(d->cursor_invert, NULL, invert, (int)w * 4);
+	}
+	for (unsigned y = 0; y < h; y++) {
+		for (unsigned x = 0; x < w; x++) {
+			uint32_t px = d->cursor_pixels[y / k * d->cursor.width + x / k];
+			color[y * w + x] = px != DISPLAY_CURSOR_INVERT ? px : d->cursor_invert ? DISPLAY_CURSOR_CLEAR : 0xFF000000u;
 		}
 	}
 	d->cursor_color = make_texture(d, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, w, h, filtered);
 	if (d->cursor_color) {
 		d->sdl.UpdateTexture(d->cursor_color, NULL, color, (int)w * 4);
 		d->sdl.SetTextureBlendMode(d->cursor_color, SDL_BLENDMODE_BLEND);
-	}
-	if (d->cursor_color && inverts && d->invert_mode >= 0) {
-		d->cursor_invert = make_texture(d, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, w, h, filtered);
-		if (d->cursor_invert) {
-			d->sdl.UpdateTexture(d->cursor_invert, NULL, invert, (int)w * 4);
-			d->sdl.SetTextureBlendMode(d->cursor_invert, d->invert_mode);
-		}
 	}
 	free(color);
 	d->cursor_image = d->cursor_images;
