@@ -28,6 +28,7 @@ int main(int argc, char **argv)
 		{ "gpu", test_gpu },
 		{ "display", test_display },
 		{ "jit", test_jit },
+		{ "mp", test_mp },
 	};
 
 	for (size_t s = 0; s < sizeof suites / sizeof suites[0]; s++) {

@@ -586,7 +586,7 @@ static void init_info_records(struct machine *m)
 		put_be32(nki + NKI_BLUE_PROCESS, m->mp.blue_process);
 		put_be32(nki + NKI_BLUE_TASK, m->mp.blue_task);
 		put_be32(nki + NKI_PAGE_QUEUE, m->mp.page_queue);
-		put_be32(nki + NKI_TASK_COUNT, 1);
+		put_be32(nki + NKI_TASK_COUNT, m->mp.tasks);
 	}
 
 	/* ProcessorInfo: a 266 MHz PowerPC 750 on a 66 MHz bus */
@@ -883,6 +883,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		mp_add_area(&m->mp, 0, m->ram_size, true);
 		for (int k = 0; k < n; k++)
 			mp_add_area(&m->mp, regions[k].logical, regions[k].size, regions[k].writable);
+		/* a new task's entry point returns into the kernel's data page, which can't run: that ends it (see nk_boot()) */
+		m->mp.task_return = ci->la_kernel_data;
 	}
 	init_info_records(m);
 	kdp_sync(m);
@@ -1732,6 +1734,26 @@ static uint64_t device_next_tb(const struct machine *m)
 }
 
 /*
+ * Multiprocessing Services' tasks (mp_kernel) take turns on the processor:
+ * the current one's registers are in m->cpu, the others' saved in m->mp
+ * (see switch_task()). The blue task's NanoKernel 1 state (its running
+ * context, flags and enables) stays in m while another task runs, and
+ * nothing changes it then but interrupts posted to its System context.
+ */
+static bool blue_running(const struct machine *m)
+{
+	return !m->mp_kernel || m->mp.current == m->mp.blue_task;
+}
+
+/* Where the System context's CR is while it runs (NULL: in its context block) */
+static uint32_t *system_cr(struct machine *m)
+{
+	if (!m->system)
+		return NULL;
+	return blue_running(m) ? &m->cpu.cr : &mp_regs(&m->mp, m->mp.blue_task)->cr;
+}
+
+/*
  * Delivers external interrupts the way the NanoKernel's Heathrow handler
  * does: pending = mask & levels per bank, reported in HWInfo.PendingInts,
  * where latched pulses (DMA channels) are acknowledged once posted and stay
@@ -1747,7 +1769,8 @@ static uint64_t device_next_tb(const struct machine *m)
  *
  * Posting while native code (the alternate context) runs sets `preempt`:
  * the NanoKernel then ends that context with exception 0 so the emulator can
- * take the interrupt, and the emulator resumes it afterwards.
+ * take the interrupt, and the emulator resumes it afterwards. (While a task
+ * other than the blue one runs, that waits until the blue task is back.)
  */
 static void update_interrupts(struct machine *m, bool force)
 {
@@ -1780,13 +1803,14 @@ static void update_interrupts(struct machine *m, bool force)
 		macio_take(&m->macio);
 
 	mem_w16(&m->mem, m->ci.la_emulator_data + m->ci.ipl_value_offset, (uint16_t)(0x8000u | level));
-	uint32_t cr = m->system ? m->cpu.cr : mem_r32(&m->mem, m->system_cb + CB_CR);
+	uint32_t *live = system_cr(m);
+	uint32_t cr = live ? *live : mem_r32(&m->mem, m->system_cb + CB_CR);
 	if (post)
 		cr |= ci32(m->rom, CI_POST_INT_MASK);
 	else
 		cr &= ci32(m->rom, CI_CLEAR_INT_MASK);
-	if (m->system)
-		m->cpu.cr = cr;
+	if (live)
+		*live = cr;
 	else
 		mem_w32(&m->mem, m->system_cb + CB_CR, cr);
 	if (post && !m->system)
@@ -1940,6 +1964,12 @@ static void log_trap(const struct machine *m, uint16_t trap, uint32_t pc)
 /* Logs the first few exceptions of each kind, then raises it. */
 static const char *exception(struct machine *m, unsigned code, uint32_t pc)
 {
+	if (!blue_running(m)) {
+		printf("exception %u in task 0x%08X at pc 0x%08X (insn 0x%08X, addr 0x%08X, lr 0x%08X) @%llu\n",
+		       code, m->mp.current, m->cpu.pc, m->cpu.exit_insn, m->cpu.fault_addr, m->cpu.lr,
+		       (unsigned long long)m->cpu.icount);
+		return "exception in a task other than the blue one (not handled yet)";
+	}
 	if (m->exceptions[code & 31] < 4)
 		printf("exception %u in %s context at pc 0x%08X (insn 0x%08X, addr 0x%08X, r24 0x%08X, lr 0x%08X, "
 		       "ctr 0x%08X, r12 0x%08X) @%llu\n",
@@ -2250,28 +2280,117 @@ static const char *mp_call_name(unsigned n)
 	return n < 134 && names[n] ? names[n] : "unnamed";
 }
 
-static const char *kcall_mp_dispatch(struct machine *m)
+/*
+ * Puts task `to` on the processor in place of the current one: their
+ * registers change places (the blue task's NanoKernel 1 state stays where
+ * it is: see blue_running()).
+ */
+static void switch_task(struct machine *m, uint32_t to)
+{
+	struct ppc_cpu *cpu = &m->cpu;
+	struct mp_regs *out = mp_regs(&m->mp, m->mp.current), *in = mp_regs(&m->mp, to);
+	if (m->mp.log)
+		printf("mp: task 0x%08X -> 0x%08X (pc 0x%08X -> 0x%08X) @%llu\n", m->mp.current, to, cpu->pc, in->pc,
+		       (unsigned long long)cpu->icount);
+	if (out) {
+		memcpy(out->gpr, cpu->gpr, sizeof out->gpr);
+		memcpy(out->fpr, cpu->fpr, sizeof out->fpr);
+		out->cr = cpu->cr;
+		out->xer = cpu->xer;
+		out->lr = cpu->lr;
+		out->ctr = cpu->ctr;
+		out->pc = cpu->pc;
+		out->fpscr = cpu->fpscr;
+	}
+	memcpy(cpu->gpr, in->gpr, sizeof cpu->gpr);
+	memcpy(cpu->fpr, in->fpr, sizeof cpu->fpr);
+	cpu->cr = in->cr;
+	cpu->xer = in->xer;
+	cpu->lr = in->lr;
+	cpu->ctr = in->ctr;
+	cpu->pc = in->pc;
+	ppc_fp_set_fpscr(cpu, in->fpscr);
+	cpu->resv_valid = false;
+	mp_switch(&m->mp, to);
+}
+
+/*
+ * The blue task naps or polls: tasks that are ready run first, until they
+ * block or end, and the blue task then carries on as if it had napped
+ * until then. Whether there are any.
+ */
+static bool blue_yields(struct machine *m)
+{
+	if (!m->mp_kernel || !blue_running(m) || !mp_ready(&m->mp))
+		return false;
+	m->mp.yield = true;
+	return true;
+}
+
+/* Makes call r0; the caller resumes at next_pc once it's done (a task that blocks in it makes it again). */
+static const char *kcall_mp_dispatch(struct machine *m, uint32_t next_pc)
 {
 	struct ppc_cpu *cpu = &m->cpu;
 	switch (cpu->gpr[0]) {
 	case MP_DELAY_UNTIL:
-		idle_wait(m, (uint64_t)cpu->gpr[3] << 32 | cpu->gpr[4]);
+		if (!blue_yields(m))
+			idle_wait(m, (uint64_t)cpu->gpr[3] << 32 | cpu->gpr[4]);
 		cpu->gpr[3] = 0;                /* noErr */
-		return NULL;
-	default:
-		if (m->mp_kernel && mp_call(&m->mp, cpu, &m->mem)) {
-			if (m->mp.swi_raised) {
-				printf("MPDispatch: call %u set event group 0x%08X, which raises a software interrupt\n",
-				       cpu->gpr[0], m->mp.swi_raised);
-				return "software interrupts from Multiprocessing Services aren't delivered yet";
-			}
-			return NULL;
+		break;
+	default: {
+		if (!m->mp_kernel || !mp_call(&m->mp, cpu, &m->mem)) {
+			printf("MPDispatch: call %u (%s; r3=0x%08X r4=0x%08X r5=0x%08X r6=0x%08X) at pc 0x%08X, lr 0x%08X\n",
+			       cpu->gpr[0], mp_call_name(cpu->gpr[0]), cpu->gpr[3], cpu->gpr[4], cpu->gpr[5], cpu->gpr[6],
+			       cpu->pc, cpu->lr);
+			return "unimplemented Multiprocessing Services call";
 		}
-		printf("MPDispatch: call %u (%s; r3=0x%08X r4=0x%08X r5=0x%08X r6=0x%08X) at pc 0x%08X, lr 0x%08X\n",
-		       cpu->gpr[0], mp_call_name(cpu->gpr[0]), cpu->gpr[3], cpu->gpr[4], cpu->gpr[5], cpu->gpr[6],
-		       cpu->pc, cpu->lr);
-		return "unimplemented Multiprocessing Services call";
+		if (m->mp.swi_raised) {
+			printf("MPDispatch: call %u set event group 0x%08X, which raises a software interrupt\n",
+			       cpu->gpr[0], m->mp.swi_raised);
+			return "software interrupts from Multiprocessing Services aren't delivered yet";
+		}
+		uint8_t *count = m->kdp + KDP_NK_INFO + NKI_TASK_COUNT;
+		if (be32(count) != m->mp.tasks) {
+			put_be32(count, m->mp.tasks);
+			kdp_sync(m);
+		}
+		if (mp_lookup(&m->mp, m->mp.current, MP_TASK)->task.state == MP_TASK_BLOCKED)
+			return NULL;
+		break;
 	}
+	}
+	cpu->pc = next_pc;
+	return NULL;
+}
+
+/*
+ * `sc` under NanoKernel 2: r0 -1 tests quickly whether the current task is
+ * the blue one (r0 its flag, 0x00200000, or 0; CR0 EQ if it isn't); -2
+ * too, with the task's word for Multiprocessing Services (call 12's) in r0.
+ * The rest are Multiprocessing Services calls.
+ */
+#define NK2_FLAG_BLUE 0x00200000u
+
+static const char *system_call(struct machine *m)
+{
+	struct ppc_cpu *cpu = &m->cpu;
+	int32_t n = (int32_t)cpu->gpr[0];
+	if (n != -1 && n != -2)
+		return kcall_mp_dispatch(m, cpu->pc + 4);
+	bool blue = blue_running(m);
+	if (n == -1)
+		cpu->gpr[0] = blue ? NK2_FLAG_BLUE : 0;
+	else
+		cpu->gpr[0] = mp_lookup(&m->mp, m->mp.current, MP_TASK)->task.label;
+	cpu->cr = (cpu->cr & 0x0FFFFFFFu) | (blue ? CR_GT : CR_EQ) << 28 | (cpu->xer & XER_SO ? CR_SO : 0) << 28;
+	cpu->pc += 4;
+	return NULL;
+}
+
+/* Calls made through the emulator's trap table return to LR; others to the next instruction. */
+static uint32_t kcall_return_pc(const struct machine *m)
+{
+	return m->cpu.pc - trap_table(m) < 16 * 4 ? m->cpu.lr : m->cpu.pc + 4;
 }
 
 static const char *kernel_call(struct machine *m, unsigned n)
@@ -2279,6 +2398,9 @@ static const char *kernel_call(struct machine *m, unsigned n)
 	struct ppc_cpu *cpu = &m->cpu;
 	uint32_t table = trap_table(m);
 	const char *why;
+
+	if (n != 8 && !blue_running(m))
+		return "kernel call from a task other than the blue one";
 
 	if (n == 0)
 		return kcall_return_from_exception(m);
@@ -2312,7 +2434,7 @@ static const char *kernel_call(struct machine *m, unsigned n)
 			cpu->gpr[3] = 0xFFFFFFFFu;
 			break;
 		}
-		if (cpu->gpr[3] <= 7 && !(cpu->gpr[4] & cpu->cr))
+		if (cpu->gpr[3] <= 7 && !(cpu->gpr[4] & cpu->cr) && !blue_yields(m))
 			idle_wait(m, UINT64_MAX);       /* until an interrupt: there's no processor state to lose */
 		cpu->gpr[3] = 0;
 		break;
@@ -2324,16 +2446,12 @@ static const char *kernel_call(struct machine *m, unsigned n)
 			return "guest restarted";
 		break;
 	case 8:     /* MPDispatch: Multiprocessing Services, NanoKernel 2's (call r0) */
-		why = kcall_mp_dispatch(m);
-		if (why)
-			return why;
-		break;
+		return kcall_mp_dispatch(m, kcall_return_pc(m));
 	default:
 		return "unimplemented kernel call";
 	}
 
-	/* Calls made through the emulator's trap table return to LR; others to the next instruction. */
-	cpu->pc = (cpu->pc - table < 16 * 4) ? cpu->lr : cpu->pc + 4;
+	cpu->pc = kcall_return_pc(m);
 	return NULL;
 }
 
@@ -2508,7 +2626,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	 * don't change what the guest does.
 	 */
 	while (!why) {
-		if (m.preempt) {
+		if (m.preempt && blue_running(&m)) {
 			m.preempt = false;
 			if (!m.system && (why = raise_exception(&m, EC_NO_EXCEPTION, cpu->pc)))
 				break;
@@ -2630,19 +2748,17 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			}
 			break;
 		case PPC_EXIT_SC:
-			if (m.mp_kernel) {      /* NanoKernel 2's way to Multiprocessing Services */
-				why = kcall_mp_dispatch(&m);
-				if (!why)
-					cpu->pc += 4;
-			} else {
+			if (m.mp_kernel)        /* NanoKernel 2's way to Multiprocessing Services */
+				why = system_call(&m);
+			else
 				why = exception(&m, EC_SYSTEM_CALL, cpu->pc + 4);
-			}
 			break;
 		case PPC_EXIT_HOSTCALL:
 			why = host_call(&m, cpu->exit_insn & 0x03FFFFFFu);
 			break;
 		case PPC_EXIT_HOOK:
-			idle_wait(&m, UINT64_MAX);
+			if (!blue_yields(&m))
+				idle_wait(&m, UINT64_MAX);
 			if (opt->realtime)
 				sync = true;    /* catch up with the host clock now */
 			break;
@@ -2666,6 +2782,12 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			why = exception(&m, EC_INVALID_INSTR, cpu->pc);
 			break;
 		case PPC_EXIT_ISI:
+			if (!blue_running(&m) && cpu->pc == m.mp.task_return) {
+				if (m.mp.log)
+					printf("mp: task 0x%08X returned 0x%08X\n", m.mp.current, cpu->gpr[3]);
+				mp_terminate(&m.mp, m.mp.current, cpu->gpr[3]);
+				break;
+			}
 			why = exception(&m, EC_INST_INVALID_ADDRESS, cpu->pc);
 			break;
 		case PPC_EXIT_PRIV:
@@ -2743,6 +2865,11 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			why = ppc_exit_name(e);
 			break;
 		}
+		if (m.mp.yield && !why) {       /* (Multiprocessing Services: the current task gives up the processor) */
+			m.mp.yield = false;
+			if (mp_next(&m.mp) != m.mp.current)
+				switch_task(&m, mp_next(&m.mp));
+		}
 		if (!dev_clean)
 			m.dev_dirty = true;
 		if (why && (m.rtas.reboot || m.cuda.reset)) {
@@ -2757,7 +2884,10 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		}
 	}
 
-	printf("stopped: %s (%s context)\n", why, m.system ? "system" : "native");
+	if (blue_running(&m))
+		printf("stopped: %s (%s context)\n", why, m.system ? "system" : "native");
+	else
+		printf("stopped: %s (task 0x%08X)\n", why, m.mp.current);
 	printf("insn 0x%08X at pc 0x%08X, last fault address 0x%08X; %u i/o pages touched\n",
 	       cpu->exit_insn, cpu->pc, cpu->fault_addr, io_pages);
 	printf("exceptions:");

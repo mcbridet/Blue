@@ -129,11 +129,21 @@ version 2 fields; the ROM checks that the blue process has ID 1, the first
 one a NanoKernel 2 makes), and takes their calls (`sc`, or kernel call 8,
 with the call number in r0; `src/mp.c`): queues, semaphores, critical
 regions, event groups (setting one that raises a 68k software interrupt
-stops the run, as it isn't delivered yet), notifications, and the areas
+stops the run, as it isn't delivered yet), notifications, the areas
 startup's address space is made of (Mac OS's RAM and the page map's
-regions). `SYSHM_LOG_MP=1` logs them. Startup then gets as far as creating
-a preemptive task (call 7), from the ROM's Multiprocessing Services code,
-and stops there: running tasks besides the blue one is next.
+regions), and timers (made, set and armed, but they don't fire yet).
+`SYSHM_LOG_MP=1` logs them, and the switches between tasks.
+
+Tasks besides the blue one run on the same processor, one at a time: each
+has its registers saved while another runs, and the blue task's stay as
+its NanoKernel 1 contexts left them. A task that's been started runs once
+the blue task naps or polls (waits for something that isn't there, which
+the blue task may not do), until it waits itself (it blocks, to make the
+call again later; nothing wakes it yet) or ends. Startup makes three: one
+that waits for other tasks to end, one for the debugger's queue, and the
+page ager. The first two run and wait; the third asks for the count of
+free pages (call 100), which isn't there yet, and the run stops there,
+with the grey desktop pattern on the screen.
 
 ### Networking
 

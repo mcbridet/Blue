@@ -33,24 +33,31 @@ Done:
   (ID 1, which the ROM checks), a blue task and a page queue.
 - **Multiprocessing Services calls** (`src/mp.c`, `kcall_mp_dispatch()`):
   `sc` (only when `mp_kernel`) or kernel call 8, call number in r0. Done so
-  far, all as if the blue task were the only task: queues (15-18, 39),
-  semaphores (20-23), critical regions (25-28), event groups (49-52, 54),
-  notifications (64-67, 128), task queries (11, 12, 14, 56, 63), areas (77,
-  80; one per startup region plus Mac OS's RAM). `SYSHM_LOG_MP=1` logs each.
-  Setting an event group that raises a 68k software interrupt stops the run
-  (not delivered yet).
+  far: tasks (7-10, 126; see below), queues (15-18, 39), semaphores
+  (20-23), critical regions (25-28), event groups (49-52, 54),
+  notifications (64-67, 128), task queries (11, 12, 14, 56, 59, 63), areas
+  (77, 80; one per startup region plus Mac OS's RAM), timers (40, 30, 31,
+  32: made, set and armed, but they never fire), and `sc` with r0 -1 and -2
+  (`system_call()`: is the current task the blue one). `SYSHM_LOG_MP=1`
+  logs each, and the task switches. Setting an event group that raises a
+  68k software interrupt stops the run (not delivered yet).
+- **Tasks** (Task 1): tasks other than the blue one are made, started,
+  terminated and deleted, and run on the one processor: registers saved
+  in `struct mp`, swapped by `switch_task()`. A started task runs when the
+  blue task polls or naps, until it blocks or ends; blocked tasks are never
+  woken yet (Task 2).
 
 Where it stops:
 
 ```
 build/syshm boot MOS91.rom --cdrom 91.iso --max 20000000000
-MPDispatch: call 7 (unnamed; r3=0x00000001 r4=0x001C0001 r5=0x00000000 r6=0x00064218) at pc 0xFFCE274C
+MPDispatch: call 100 (MPGetFreePageCount; r3=0x00000000 r4=0x00000000 r5=0x00000000 r6=0x00000000) at pc 0xFFCE2DDC, lr 0xFFCE24AC
+stopped: unimplemented Multiprocessing Services call (task 0x00230001)
 ```
 
-Call 7 is task creation (`MPCreateTask`), from the ROM's own
-Multiprocessing Services code: entry `0xFFCE03A0`, TOC `0x35208`,
-parameter `0x35520`, termination queue `0x001C0001`. The 9.1 CD has not yet
-shown anything on screen.
+That's the third task startup makes, the page ager ('ager'), at instruction
+116,381,235, right after it starts (`MPGetFreePageCount`, NanoKernel 2's
+`PSA.FreePageCount`). The screen shows the grey desktop pattern.
 
 ## Ground rules for every task
 
@@ -130,11 +137,16 @@ shown anything on screen.
   then is ended with exception 0 (`m->preempt`) so the emulator takes it.
 - Idle: `idle_wait(m, deadline)` (PowerDispatch naps, the `_SynchIdleTime`
   hook, MP call 55) sleeps in real time; in instruction time it returns at
-  once.
+  once. With tasks ready, they run instead (`blue_yields()`).
 - `src/mp.c` holds the Multiprocessing Services objects (`struct mp`):
   IDs as NanoKernel 2 makes them (slot << 16 | the slot's use count), the
-  blue process, task, page queue and address space, and `mp_call()`, which
-  does a call for the blue task and returns false for ones it doesn't have.
+  blue process, task, page queue and address space, the tasks' saved
+  registers and the ready queue, and `mp_call()`, which does a call for
+  the current task and returns false for ones it doesn't have.
+- Tasks: `mp.current` is on the processor (its registers in `m->cpu`);
+  `blue_running()` says whether that's the blue task. After an exit,
+  `nk_boot()`'s loop switches (`switch_task()`) to `mp_next()` when
+  `mp.yield` is set.
 
 ## Decisions
 
@@ -162,7 +174,15 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 1. Task contexts and task creation
 
-- **Status:** not started.
+- **Status:** done. Calls 7 (create), 8 (start), 9 (terminate), 10
+  (delete), 126 (`KCSetTaskType`), 59 (the debugger's queue) in `mp.c`;
+  per-task state and saved registers in `struct mp` (`mp_regs()`), a FIFO
+  ready queue, `mp_next()`/`mp_switch()`; `switch_task()`,
+  `blue_yields()`, `system_call()` in `nk.c`. A returning entry point ends
+  the task (its LR starts at the kernel data page; the ISI there
+  terminates it with r3). To get to a nap, timers are made, set and armed
+  (40, 30, 31, 32) without firing: Task 3 makes them fire. `tests/test_mp.c`
+  covers the task calls. See Findings.
 - **Owns:** `src/mp.c`, `src/mp.h`, the task-switching parts of `src/nk.c`.
 - **Goal:** tasks other than the blue one exist and can run.
 - **Steps:**
@@ -346,8 +366,72 @@ Facts later tasks need, added as they are found.
   queue), 49, 54 (level 7), 66 (notification → that event group, flags
   0x80000000), 80 (area of address 0), 77 (RAM area's backing provider =
   that notification), 15, 15, 49, 54 (level 1), 25, 12, 25, 11, 20 (1, 0),
-  20 (1, 0), 25, 15, 15, 25, 12, 12, 12, 27, 12, 28, then 7.
+  20 (1, 0), 25, 15, 15, 25, 12, 12, 12, 27, 12, 28, then 7. Then, for each
+  of three tasks: 7, 12, 15 (its queue), 39 (1), 8, 39 (queue 0x110001, 2,
+  3, 4), 126 (its name); with 59 (debugger queue 0x1D0001) after the
+  second. Then 11 ×4, 15 (0x250001), 39 (64), and 32 timers (40, 30 →
+  queue 0x250001, 30 → event group 0x160001 flags 8, 31 at "never"
+  0x7FFFFFFF_FFFFFFFF, 32), three of them then armed for real (31 at
+  absolute times about 16 ms, 1.4 s and 3 s on, at instruction 53.9
+  million). From TimeManagerLib (code at `0x0001EE00`, TOC `0x70538`). Then
+  no calls until the blue task's first nap, call 55 (stub `0xFFCE2A28`), at
+  instruction 116,381,084 (7 s of guest time, so with firing timers the
+  path will differ), when the three tasks run.
 - **Results in odd registers:** `MPCreateSemaphore` returns the ID in r5,
   `MPCreateTask` in r10; call 12 returns the current task's ID in r3 (not a
   status) and its call-63 word in r4; `MPWaitOnQueue` takes its timeout
   in r7 and returns the message in r4-r6.
+- **Task calls (`NKTasks.s`):** 7 `MPCreateTask`(process r3, termination
+  queue r4, options r5: anything but 2 and 4 is
+  `kMPInsufficientResourcesErr`, so `kMPCreateTaskSuspendedMask` too; r6 →
+  the task's call-12 word; r7 → its r12; r8 → its PC; r9 → its r2) → ID
+  in r10. 8 (start: task r3, name r4, r5 → its r3, termination message
+  words 1 and 2 r6 r7, r8 → its r1, r9 the stack's low end): only a task
+  never started. 9 `MPTerminateTask`(r3, result r4 → message word 3): the
+  message goes to the termination queue; `kMPInsufficientResourcesErr` if
+  already terminated. 10 deletes a terminated task. 126 sets the name
+  (`KCSetTaskType`). 59 sets the debugger's queue (where
+  `ThrowTaskToDebugger` sends exceptions; Task 4). NanoKernel 2's `Task.State`
+  is 0 (not queued: new, blocked, terminated), 1 ready, 2 running;
+  terminated is a flag. New tasks have weight 100, priority nominal (2),
+  like the blue task (weight 200), so starting one doesn't preempt the blue
+  task. NanoKernel 2's `CreateTask` also makes a page-fault semaphore (an ID)
+  per task; syshm doesn't, so later IDs differ from NanoKernel 2's.
+- **MPLibrary's tasks:** the ROM's internal create (`0xFFCE03EC`, behind the
+  exported `MPCreateTask` at `0xFFCE061C`) puts a 0x14C-byte record at the
+  top of the stack block (the task's r1 and r3, and its call-12 word) and
+  starts every task at a wrapper, `0xFFCE03A0`, that calls the entry point
+  (record +0x28, parameter +0x2C) and then `MPTerminateTask` (`0xFFCE0230`,
+  call 9) on itself with the result. So entry points don't return to their
+  LR; syshm still starts LR at the kernel data page (`mp.task_return`),
+  where a return faults and ends the task.
+- **Startup's tasks:** 0x001F0001 'deth' waits on queue 0x001C0001 (the
+  blue process's termination queue, every task's); 0x00210001 'dbgr' waits
+  on the debugger's queue 0x001D0001; 0x00230001 'ager' (page ager) calls
+  100 first. 'deth' and 'dbgr' block (forever, until Task 2 wakes them).
+  In an experiment where 'ager' returned at once (which checked the
+  return path: it ended, the blue task carried on), the blue task then
+  idled to the 20-billion limit (21 million naps, 68k traps AA7F and AAFE
+  in turn, nothing on screen but the grey pattern, 0 VBLs): most likely
+  waiting for timers to fire.
+- **`sc` specials (`IntSyscall` in `NKInterrupts.s`):** r0 -1: is the
+  current task blue (r0 = 0x00200000 or 0, CR0 GT or EQ); -2: the same CR0,
+  r0 = the current task's call-12 word; -3: the FDP's way back to
+  supervisor mode (not seen). Any other r0 is an MP call; out-of-range ones
+  return -4. MixedMode uses `sc` -1 (`0xFFCF8DB4`, after
+  `MPCallUniversalProc`).
+- **Task switching in syshm (`nk.c`):** while a task other than the blue
+  one runs, the blue task's NanoKernel 1 state (`m->context`, `m->system`,
+  `m->flags`, `m->enables`) stays as it was; `update_interrupts()` posts to
+  the System context's CR wherever it is (`system_cr()`: the blue task's
+  saved registers when it was in the System context), and `preempt` waits
+  until the blue task is back. Kernel calls other than 8 and exceptions in
+  other tasks stop the run (Task 4). The switch happens in `nk_boot()`'s
+  loop after an exit is handled, when `mp.yield` is set (by a poll, a
+  block, an end, or `blue_yields()` in place of a nap).
+- **Timers:** 40 makes one (ID in r4), 30 sets what firing does (as 66
+  does for notifications), 31 records an absolute time (options 2 and 4,
+  delta and duration, are left unimplemented), 32 returns the time left in
+  r4:r5 and disarms. None fire. When they do (Task 3), TimeManagerLib's
+  timers set event group 0x160001, the level-1 software interrupt group:
+  Task 5 is needed then too.
