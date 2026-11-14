@@ -528,7 +528,8 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 13. Installing the guest tools
 
-- **Status:** done (8.5, 8.6; 9.1 untested: no installed 9.1 image). In
+- **Status:** done (8.5, 8.6, 9.2.2; 9.1 by the same path, tried as far
+  as its CD allows: no installed 9.1 image). In
   window runs, syshm looks for the guest tools in the startup disk's
   System Folder before Mac OS starts (`install_check()` in
   `src/install.c`: the System Folder's folders, whatever their names, for
@@ -537,13 +538,16 @@ the kernel); 8 onwards as the boot progresses.
   Finder is up, if one is missing or differs (and the disk is writable
   and not locked), a box over the screen offers to install or update them;
   Mac OS runs on meanwhile. On yes, Mac OS writes them itself: syshm
-  diverts the next `_SynchIdleTime` to a 68k bootstrap that prepares a
+  diverts the Process Manager's next idle call (`_SynchIdleTime` before
+  Mac OS 9, trap AAAA with $82F0 in D0 on 9.x) to a 68k bootstrap that
+  prepares a
   generated installer fragment with the Code Fragment Manager and calls it
   (see Findings). Input scripts answer with `tools install` or `tools
   later` (and turn the check on without a window). `tests/test_install.c`
   covers the check on HFS volumes made with `hfs_build()`, the offer, and
-  the installer against a File Manager of its own. Open: "don't ask
-  again"; 9.1 on an installed disk.
+  the installer against a File Manager of its own. `--tools` is gone:
+  `syshm tools create FILE` makes the volume for installing them by hand
+  (`--cdrom FILE`). Open: "don't ask again"; 9.1 on an installed disk.
 
 ### 14. Clipboard
 
@@ -1324,6 +1328,33 @@ Facts later tasks need, added as they are found.
   program loaded RAVE (SimpleText opening the Teapot from the QuickDraw 3D
   folder, quit, the engine installed, opened again: 19 calls to the
   engine). Programs already running don't.
+- **Mac OS 9 doesn't call `_SynchIdleTime`** (9.1 and 9.2.2 alike): its
+  Process Manager idles natively, napping with `MPDelayUntil` (call 55),
+  and its idle routine (68k, in the system heap) calls trap AAAA with
+  $82F0 in D0.W where 8.x's `_SystemTask` patch called ABF7 (both then go
+  on to the ROM's idle code, which calls A0DD and `_PowerDispatch` A09F
+  with D0 3). ABF7's entry is a native routine nobody calls at idle, so
+  the idle hook never stopped there, and the offer never came on 9.2.2:
+  the installer only ever looked for the Finder and went in at that hook.
+  Now the Multiprocessing naps are idle calls for the installer too
+  (`tools_idle()` in `nk.c`, from `kcall_mp_dispatch()` and PowerDispatch's
+  nap), the Finder is noticed between idle calls as well (at idle calls
+  9.2.2's current application is as often a background one: "DVD
+  AutoLauncher"), and once the answer is yes on a system whose
+  `_SynchIdleTime` the hook hasn't seen, the hook watches AAAA instead
+  (`watch_trap()`; the JIT translates again for it) and the installer goes
+  in at its dispatch with $82F0 in D0, in the same idle context. The
+  bootstrap, GetMemFragment (AA5A is there too), Mixed Mode, the File
+  Manager on HFS+, LaunchApplication and the memory at `0x5E000000`
+  (free in 9.2.2's map too) needed nothing new. On 9.2.2 (MacOS9Lives),
+  Enhancements switched modes for a `resize` (1024x768), passed text both
+  ways (a paste in SimpleText of "Hello from the host – Olé", and its
+  copy back), and QuickDraw 3D 1.6's viewer drew the Teapot through the
+  engine (one context, 5,452 triangles), also in the session it was
+  installed in. 9.1's CD idles the same way (AAAA, $82F0); its system
+  won't run from a writable copy, but offered (a test build) on the CD
+  itself the installer went in, prepared, and stopped at Mac OS's own
+  check of the volume: locked.
 - **Media changes** (the floppy drive): Mac OS learns of a disk in a
   drive from the drive's flags, the 4 bytes before its drive queue
   element (byte 1: 0 none, 1 or 2 an ejectable disk in place, 8 a

@@ -227,9 +227,6 @@ static const char *error_text(int16_t err, char *buf, size_t len)
 
 /* ---- the bootstrap ---------------------------------------------------------------- */
 
-/* The Toolbox trap table's entry for _SynchIdleTime */
-#define TRAP_SYNCH_IDLE_TIME 0xABF7u
-#define TRAP_ENTRY (0x0E00u + 4u * (TRAP_SYNCH_IDLE_TIME & 0x3FFu))
 #define TRAP_CODE_FRAGMENT_DISPATCH 0xAA5Au
 #define CFRAG_GET_MEM_FRAGMENT 3u
 #define CFRAG_CLOSE_CONNECTION 4u
@@ -290,17 +287,17 @@ static uint32_t at(uint32_t offset)
 }
 
 /*
- * The 68k code _SynchIdleTime's trap table entry points at (once): it saves
- * the registers, puts the entry back, prepares the installer and calls its
- * main routine, closes the connection, and goes on to the trap's routine.
+ * The 68k code the idle trap's entry in the trap table points at (once): it
+ * saves the registers, puts the entry back, prepares the installer and calls
+ * its main routine, closes the connection, and goes on to the trap's routine.
  */
-static size_t make_bootstrap(uint8_t *p, uint32_t routine, uint32_t fragment_len)
+static size_t make_bootstrap(uint8_t *p, uint32_t entry, uint32_t routine, uint32_t fragment_len)
 {
 	uint8_t *q = p, *bne;
 #define W(v) (put_be16(q, (uint16_t)(v)), q += 2)
 #define L(v) (put_be32(q, (uint32_t)(v)), q += 4)
 	W(0x48E7); W(0xFFFE);                           /* movem.l d0-d7/a0-a6,-(sp) */
-	W(0x23FC); L(routine); L(TRAP_ENTRY);           /* move.l #routine,TRAP_ENTRY */
+	W(0x23FC); L(routine); L(entry);                /* move.l #routine,entry */
 	W(0x23FC); L(STATUS_STARTED); L(at(R_STATUS));  /* move.l #STATUS_STARTED,status */
 	W(0x4267);                                      /* clr.w -(sp): GetMemFragment( */
 	W(0x4879); L(at(R_FRAGMENT));                   /*   pea memAddr, */
@@ -356,8 +353,14 @@ static void finish_news(struct install *in)
 	printf("tools: %s\n", in->news);
 }
 
-/* Points _SynchIdleTime's entry at the bootstrap, for the trap being dispatched now. */
-static bool inject(struct install *in, struct mem *m)
+/* The trap table's entry for a trap (OS traps' table at 0x400, the Toolbox's at 0xE00) */
+static uint32_t trap_entry(uint16_t trap)
+{
+	return trap & 0x0800u ? 0x0E00u + 4u * (trap & 0x3FFu) : 0x0400u + 4u * (trap & 0xFFu);
+}
+
+/* Points the idle trap's entry at the bootstrap, for its dispatch under way. */
+static bool inject(struct install *in, struct mem *m, uint16_t trap)
 {
 	static uint8_t fragment[R_BUFFER - R_FRAGMENT], head[R_FRAGMENT];
 	const struct ndrv_spec spec = {
@@ -368,23 +371,24 @@ static bool inject(struct install *in, struct mem *m)
 		.import_count = I_COUNT,
 	};
 	size_t len = ndrv_build(&spec, fragment, sizeof fragment, &in->layout);
-	uint32_t routine = mem_r32(m, TRAP_ENTRY);
+	uint32_t entry = trap_entry(trap), routine = mem_r32(m, entry);
 	if (!len) {
 		snprintf(in->news, sizeof in->news, "couldn't make the installer");
 		finish_news(in);
 		return false;
 	}
 	memset(head, 0, sizeof head);
-	make_bootstrap(head + R_CODE, routine, (uint32_t)len);
+	make_bootstrap(head + R_CODE, entry, routine, (uint32_t)len);
 	make_routine_descriptor(head + R_RD);
 	put_be32(head + R_STATUS, STATUS_PENDING);
 	put_pstring(head + R_NAME, "syshm Installer", 64);
 	mem_map(m, INSTALL_REGION, INSTALL_REGION_SIZE, MEM_RWX);
 	mem_load(m, at(0), head, sizeof head);
 	mem_load(m, at(R_FRAGMENT), fragment, (uint32_t)len);
-	uint8_t entry[4];
-	put_be32(entry, at(R_CODE));
-	mem_load(m, TRAP_ENTRY, entry, 4);
+	uint8_t to[4];
+	put_be32(to, at(R_CODE));
+	mem_load(m, entry, to, 4);
+	in->trap_entry = entry;
 	in->trap_routine = routine;
 	in->fragment_len = (uint32_t)len;
 	in->phase = INSTALL_INJECTED;
@@ -399,10 +403,10 @@ static void injected(struct install *in, struct mem *m)
 	if (status == STATUS_STARTED || status == 0)
 		return;                 /* (still preparing it, or about to call it) */
 	if (status == STATUS_PENDING) {
-		if (mem_r32(m, TRAP_ENTRY) == at(R_CODE)) {
-			uint8_t entry[4];
-			put_be32(entry, in->trap_routine);
-			mem_load(m, TRAP_ENTRY, entry, 4);
+		if (mem_r32(m, in->trap_entry) == at(R_CODE)) {
+			uint8_t to[4];
+			put_be32(to, in->trap_routine);
+			mem_load(m, in->trap_entry, to, 4);
 		}
 		snprintf(in->news, sizeof in->news, "couldn't install the guest tools: Mac OS didn't run the installer");
 	} else {
@@ -423,6 +427,7 @@ static void injected(struct install *in, struct mem *m)
 #define FINDER_LONGEST_TB(hz) ((hz) * 15)       /* up anyway, this long after it first ran */
 #define QUIT_WAIT_TB(hz) ((hz) * 5)             /* for Enhancements to quit */
 #define QUIT_AFTER_TB(hz) ((hz) / 10)           /* ... and then for its process to go */
+#define INJECT_WAIT_TB(hz) ((hz) * 10)          /* for the idle trap's call */
 
 void install_init(struct install *in)
 {
@@ -450,14 +455,20 @@ void install_begin(struct install *in, const char *path, unsigned part, bool rea
 }
 
 /*
- * The Finder is up once it has run (been the current application at an
- * idle call), and the guest has then idled for FINDER_QUIET without disk
- * transfers (or FINDER_LONGEST has passed).
+ * The Finder is up once it has run (been the current application, at an
+ * idle call or in between), and the guest has then idled for FINDER_QUIET
+ * without disk transfers (or FINDER_LONGEST has passed).
  */
+void install_finder(struct install *in, uint64_t tb)
+{
+	if (!in->finder_tb)
+		in->finder_tb = in->quiet_tb = tb;
+}
+
 static bool finder_up(struct install *in, const struct install_idle *w)
 {
-	if (w->finder && !in->finder_tb)
-		in->finder_tb = in->quiet_tb = w->tb;
+	if (w->finder)
+		install_finder(in, w->tb);
 	if (!in->finder_tb)
 		return false;
 	if (w->disk_bytes != in->disk || w->tb - in->idle_tb > FINDER_BUSY_TB(w->tb_hz))
@@ -488,8 +499,17 @@ bool install_idle(struct install *in, const struct install_idle *w)
 			in->phase = INSTALL_INJECT;
 	}
 	if (in->phase == INSTALL_INJECT) {
-		in->drive = w->drive;
-		return inject(in, w->mem);
+		if (!in->inject_tb)
+			in->inject_tb = w->tb;
+		if (w->trap) {
+			in->drive = w->drive;
+			return inject(in, w->mem, w->trap);
+		}
+		if (w->tb - in->inject_tb >= INJECT_WAIT_TB(w->tb_hz)) {
+			snprintf(in->news, sizeof in->news, "couldn't install the guest tools: Mac OS idles without a call "
+				 "syshm knows (the Process Manager's _SynchIdleTime, or Mac OS 9's in its place)");
+			finish_news(in);
+		}
 	}
 	if (in->phase == INSTALL_INJECTED)
 		injected(in, w->mem);

@@ -5,11 +5,13 @@
  * isn't this syshm's, it asks (in the window; or an input script answers),
  * and if the answer is yes, Mac OS writes the files itself:
  *
- *   - At an idle call (the _SynchIdleTime trap, which a _SystemTask patch
- *     makes when no process needs time: in the current application's
- *     context, at the time desk accessories and drivers get theirs), syshm
- *     points that trap's entry in the Toolbox trap table at 68k code of its
- *     own, in memory it maps outside Mac OS's (INSTALL_REGION).
+ *   - At an idle call (the trap the Process Manager's idle routine calls
+ *     when no process needs time: _SynchIdleTime, from a _SystemTask patch,
+ *     before Mac OS 9; in its place, Mac OS 9's trap AAAA with $82F0 in D0:
+ *     in the current application's context, at the time desk accessories
+ *     and drivers get theirs), syshm points that trap's entry in the
+ *     Toolbox trap table at 68k code of its own, in memory it maps outside
+ *     Mac OS's (INSTALL_REGION).
  *   - That code puts the entry back and saves the registers; prepares the
  *     installer, a code fragment generated like the drivers (ndrv.h), with
  *     the Code Fragment Manager's GetMemFragment (through the
@@ -94,8 +96,9 @@ struct install {
 	/* until the Finder is up: the Finder is the current application, idling without disk transfers */
 	uint64_t finder_tb, quiet_tb, idle_tb, disk;
 	uint64_t quit_tb, stopped_tb;   /* when Enhancements was asked to quit, when it had */
+	uint64_t inject_tb;             /* when the installer first waited for the idle trap */
 	/* the bootstrap */
-	uint32_t trap_routine;          /* _SynchIdleTime's own */
+	uint32_t trap_entry, trap_routine;      /* the idle trap's entry in the trap table, its own routine */
 	uint32_t fragment_len;
 	struct ndrv_layout layout;
 	/* the installer's progress */
@@ -127,6 +130,7 @@ struct install_idle {
 	uint64_t tb, tb_hz;             /* guest time */
 	uint64_t disk_bytes;            /* what the disks have moved so far */
 	uint16_t drive;                 /* the startup disk's drive number (where its volume must be) */
+	uint16_t trap;                  /* the idle trap being dispatched now, whose entry can be diverted (or 0) */
 };
 
 /* No offer: what runs without a window or a script's answer get */
@@ -140,11 +144,15 @@ void install_init(struct install *in);
 void install_begin(struct install *in, const char *path, unsigned part, bool read_only);
 
 /*
- * At each idle call (_SynchIdleTime). Returns true if the guest has been
- * diverted to the bootstrap (then it doesn't idle). Afterwards `ask` may
- * say there's a question to show, and `news_ready` news.
+ * At each idle call. Returns true if the guest has been diverted to the
+ * bootstrap (then it doesn't idle): only at an idle trap's dispatch, once
+ * the answer was yes (phase INSTALL_INJECT). Afterwards `ask` may say
+ * there's a question to show, and `news_ready` news.
  */
 bool install_idle(struct install *in, const struct install_idle *w);
+
+/* The Finder is the current application (seen between idle calls, at guest time `tb`) */
+void install_finder(struct install *in, uint64_t tb);
 
 /* The answer (from the window or a script); a script's may come before the question. */
 void install_answer(struct install *in, bool yes, struct helper *h);

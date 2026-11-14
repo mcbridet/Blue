@@ -3,8 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <unistd.h>
-
 #include "cdimage.h"
 #include "disk.h"
 #include "hfsread.h"
@@ -88,7 +86,6 @@ static int usage(void)
 		"                               others go in, in turn, as Mac OS ejects the one in\n"
 		"      --floppy-drive           a floppy drive, empty at startup (drop images on the\n"
 		"                               window to put them in)\n"
-		"      --tools                  attach the guest tools volume (see tools create)\n"
 		"      --share <folder>         show a host folder to Mac OS as a volume; what Mac OS\n"
 		"                               changes on it is written back when it shuts down\n"
 		"      --nvram <file>           keep NVRAM (PRAM, settings) in this file\n"
@@ -101,9 +98,10 @@ static int usage(void)
 		"                               make a disk image holding an empty HFS volume\n"
 		"                               (size in bytes, or with K, M or G; 1M or more, or a\n"
 		"                               floppy's: 400K, 720K, 800K or 1440K)\n"
-		"  tools create <file>          make the guest tools volume: drag its files onto\n"
-		"                               the System Folder (\"syshm Enhancements\" lets\n"
-		"                               the screen follow the window's size)\n"
+		"  tools create <file>          make a volume of the guest tools, to install them by\n"
+		"                               hand (attach it with --cdrom; drag its files onto\n"
+		"                               the System Folder); in a window, syshm offers to\n"
+		"                               install them itself\n"
 		"  run-raw <file> <addr> [n]    load raw PowerPC code at hex <addr> in 64 MB of\n"
 		"                               RAM, run up to n instructions, dump registers\n");
 	return 2;
@@ -332,7 +330,6 @@ static int cmd_boot(int argc, char **argv)
 	};
 	bool max_given = false, instruction_time = false;
 	const char *rom_path = NULL, *share_dir = NULL;
-	char tools_path[256] = "";
 	for (int k = 0; k < argc; k++) {
 		if (strcmp(argv[k], "--rom") == 0 && k + 1 < argc) {
 			rom_path = argv[++k];
@@ -407,20 +404,6 @@ static int cmd_boot(int argc, char **argv)
 			opt.floppy[opt.floppies++] = argv[++k];
 		} else if (strcmp(argv[k], "--floppy-drive") == 0) {
 			opt.floppy_drive = true;
-		} else if (strcmp(argv[k], "--tools") == 0 && !tools_path[0]) {
-			if (opt.disks >= NK_MAX_DISKS) {
-				fprintf(stderr, "at most %d disks\n", NK_MAX_DISKS);
-				return 2;
-			}
-			const char *dir = getenv("TMPDIR");
-			snprintf(tools_path, sizeof tools_path, "%s/syshm-tools-XXXXXX", dir ? dir : "/tmp");
-			int fd = mkstemp(tools_path);
-			if (fd < 0 || close(fd) || tools_create(tools_path)) {
-				fprintf(stderr, "cannot make the tools volume in %s\n", dir ? dir : "/tmp");
-				return 1;
-			}
-			opt.cdrom[opt.disks] = true;
-			opt.disk[opt.disks++] = tools_path;
 		} else if (strcmp(argv[k], "--share") == 0 && k + 1 < argc && !share_dir) {
 			share_dir = argv[++k];
 		} else if (strcmp(argv[k], "--screenshot") == 0 && k + 1 < argc) {
@@ -450,8 +433,6 @@ static int cmd_boot(int argc, char **argv)
 		} else if (argv[k][0] != '-') {
 			fprintf(stderr, "syshm boot: \"%s\": a ROM file goes after --rom (without one, the startup "
 				"disk's is used)\n", argv[k]);
-			if (tools_path[0])
-				unlink(tools_path);
 			return 2;
 		} else {
 			return usage();
@@ -504,16 +485,11 @@ static int cmd_boot(int argc, char **argv)
 			found = 1;
 		}
 	}
-	if (found) {
-		if (tools_path[0])
-			unlink(tools_path);
+	if (found)
 		return 1;
-	}
 	opt.share = share ? share_disk(share) : NULL;
 	int rc = nk_boot(&rom, &opt);
 	rom_free(&rom);
-	if (tools_path[0])
-		unlink(tools_path);
 	if (share_close(share))
 		rc = 1;
 	return rc;

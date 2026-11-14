@@ -223,7 +223,10 @@ static void test_offer(void)
 #define TOC 0x10000u
 #define FRAME 0x20000u
 #define TVECTORS 0x40000u
-#define TRAP_ENTRY 0x1DDCu              /* _SynchIdleTime's in the Toolbox trap table */
+#define IDLE_TRAP 0xABF7u               /* _SynchIdleTime, ... */
+#define TRAP_ENTRY 0x1DDCu              /* ... its entry in the Toolbox trap table */
+#define IDLE_TRAP_9 0xAAAAu             /* Mac OS 9's idle routine's trap, ... */
+#define TRAP_ENTRY_9 0x18A8u
 #define ROUTINE 0x00123456u
 #define VREF 0xFFFFu                    /* (-1) */
 #define DRIVE 8u
@@ -403,11 +406,13 @@ static int16_t file_manager(unsigned call, const uint32_t *a)
 	}
 }
 
+static uint16_t idle_trap = IDLE_TRAP;
+
 /* Idle calls with the Finder current and nothing on the disks, until the installer is diverted to */
 static bool idle_until_diverted(struct install *in, struct helper *h, uint64_t *tb)
 {
 	for (unsigned k = 0; k < 200; k++) {
-		struct install_idle w = { &mem, h, true, *tb, HZ, 1000, DRIVE };
+		struct install_idle w = { &mem, h, true, *tb, HZ, 1000, DRIVE, idle_trap };
 		*tb += HZ / 20;
 		if (install_idle(in, &w))
 			return true;
@@ -456,13 +461,16 @@ static void test_installer(void)
 	/* asked once the Finder is up; the answer diverts the trap to the bootstrap */
 	uint64_t tb = HZ;
 	mem_w32(&mem, TRAP_ENTRY, ROUTINE);
-	struct install_idle w = { &mem, &h, false, tb, HZ, 1000, DRIVE };
+	struct install_idle w = { &mem, &h, false, tb, HZ, 1000, DRIVE, IDLE_TRAP };
 	CHECK(!install_idle(&in, &w));                  /* (not the Finder) */
 	CHECK(!in.ask);
 	CHECK(!idle_until_diverted(&in, &h, &tb));
 	CHECK_EQ(in.phase, INSTALL_ASKING);
 	CHECK(in.ask);
 	install_answer(&in, true, &h);
+	CHECK_EQ(in.phase, INSTALL_INJECT);
+	w = (struct install_idle){ &mem, &h, true, tb, HZ, 1000, DRIVE, 0 };
+	CHECK(!install_idle(&in, &w));                  /* (a nap: not at the idle trap) */
 	CHECK_EQ(in.phase, INSTALL_INJECT);
 	CHECK(idle_until_diverted(&in, &h, &tb));
 	CHECK_EQ(in.phase, INSTALL_INJECTED);
@@ -506,8 +514,12 @@ static void test_installer_errors(void)
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, true, &h);                  /* (a script's, before the question) */
 	uint64_t tb = HZ;
-	mem_w32(&mem, TRAP_ENTRY, ROUTINE);
+	mem_w32(&mem, TRAP_ENTRY_9, ROUTINE);           /* (Mac OS 9's idle trap, this time) */
+	idle_trap = IDLE_TRAP_9;
 	CHECK(idle_until_diverted(&in, &h, &tb));
+	idle_trap = IDLE_TRAP;
+	CHECK_EQ(mem_r32(&mem, TRAP_ENTRY_9), INSTALL_REGION);
+	CHECK_EQ(mem_r32(&mem, INSTALL_REGION + 10), TRAP_ENTRY_9);
 	for (unsigned k = 0; k < 12; k++)
 		mem_w32(&mem, TOC + in.layout.import[k], TVECTORS + 8 * k);
 
@@ -559,7 +571,7 @@ static void test_installer_quit(void)
 	add_file(EXTENSIONS, "syshm Helper", 62, &tools[TOOLS_ENHANCEMENTS])->locked = true;
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, true, &h);
-	struct install_idle w = { &mem, &h, true, HZ, HZ, 1000, DRIVE };
+	struct install_idle w = { &mem, &h, true, HZ, HZ, 1000, DRIVE, IDLE_TRAP };
 	for (unsigned k = 0; k < 40 && in.phase != INSTALL_QUITTING; k++, w.tb += HZ / 20)
 		CHECK(!install_idle(&in, &w));
 	CHECK_EQ(in.phase, INSTALL_QUITTING);
@@ -583,6 +595,16 @@ static void test_installer_quit(void)
 	uint64_t tb = HZ;
 	CHECK(idle_until_diverted(&in, &h, &tb));
 	CHECK(tb > 6 * (uint64_t)HZ);
+
+	/* a system that idles without the idle trap: syshm gives up, and says so */
+	h.running = false;
+	install_begin(&in, volume_path, 0, false);
+	install_answer(&in, true, &h);
+	w = (struct install_idle){ &mem, &h, true, tb, HZ, 1000, DRIVE, 0 };
+	for (unsigned k = 0; k < 400 && in.phase != INSTALL_DONE; k++, w.tb += HZ / 20)
+		CHECK(!install_idle(&in, &w));
+	CHECK_EQ(in.phase, INSTALL_DONE);
+	CHECK(strstr(in.news, "Mac OS idles without a call syshm knows") != NULL);
 
 	/* not now */
 	install_begin(&in, volume_path, 0, false);
