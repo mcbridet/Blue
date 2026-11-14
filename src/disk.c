@@ -19,6 +19,7 @@
 #define WRITE_PROTECTED_ERR (-44)
 #define PARAM_ERR (-50)
 #define NO_SUCH_DRIVE_ERR (-56)
+#define OFFLINE_ERR (-65)
 
 /* Low-memory globals */
 #define LM_UTABLE_BASE 0x011Cu          /* unit table: DCE handles */
@@ -49,6 +50,13 @@
 #define DATA_SIZE (DATA_TIMER + 4)
 #define DATA_REG_ENTRY DATA_SIZE                                /* (with boot_gestalt) the node's RegEntryID */
 #define DATA_SIZE_REG_ENTRY (DATA_REG_ENTRY + 16)
+/* The floppy drive's: its icons and name, which the driver hands out pointers to */
+#define FLOPPY_MEDIA_ICN DATA_SIZE_REG_ENTRY                    /* 'ICN#' (Control 22) */
+#define FLOPPY_DRIVE_ICN (FLOPPY_MEDIA_ICN + FLOPPY_ICN_SIZE)   /* 'ICN#' (Control 21) ... */
+#define FLOPPY_NAME (FLOPPY_DRIVE_ICN + FLOPPY_ICN_SIZE)        /* ... and where it is: Str31 */
+#define FLOPPY_MEDIA_ICNS (FLOPPY_NAME + 32)                    /* 'icns' data ('mics') */
+#define FLOPPY_DRIVE_ICNS (FLOPPY_MEDIA_ICNS + FLOPPY_ICNS_SIZE) /* ('dics') */
+#define DATA_SIZE_FLOPPY (FLOPPY_DRIVE_ICNS + FLOPPY_ICNS_SIZE)
 
 enum { IMP_IO_COMPLETE, IMP_POST_EVENT, IMP_SET_TIMER, IMP_COUNT };
 
@@ -177,11 +185,14 @@ bool disk_bootable(const struct disk *d, unsigned part)
 void disk_close(struct disk *d)
 {
 	if (d->fd >= 0) {
-		if (!d->read_only)
+		if (d->dirty)
+			disk_flush(d);
+		else if (!d->read_only)
 			fsync(d->fd);
 		close(d->fd);
 	}
 	d->fd = -1;
+	d->media = false;
 }
 
 int disk_create(const char *path, uint64_t size, const char *volume_name)
@@ -224,6 +235,19 @@ size_t disk_build_ndrv(struct disk *d, uint8_t *out, size_t size, uint32_t hostc
 		.extra = zero,
 		.extra_len = d->boot_gestalt ? DATA_SIZE_REG_ENTRY : DATA_SIZE,
 	};
+	uint8_t floppy[DATA_SIZE_FLOPPY];
+	if (d->removable) {
+		static const char where[] = "syshm floppy drive";
+		memset(floppy, 0, sizeof floppy);
+		floppy_icons(floppy + FLOPPY_MEDIA_ICN, floppy + FLOPPY_DRIVE_ICN, floppy + FLOPPY_MEDIA_ICNS,
+			     floppy + FLOPPY_DRIVE_ICNS);
+		floppy[FLOPPY_NAME] = (uint8_t)strlen(where);
+		memcpy(floppy + FLOPPY_NAME + 1, where, strlen(where));
+		spec.device_name = "syshm,floppy";
+		spec.driver_name = ".syshmFloppy";
+		spec.extra = floppy;
+		spec.extra_len = sizeof floppy;
+	}
 	return ndrv_build(&spec, out, size, &d->layout);
 }
 
@@ -326,6 +350,8 @@ static int32_t transfer(struct disk *d, uint32_t pb, bool write)
 	mem_w32(m, pb + PB_ACT_COUNT, 0);
 	if (k < 0)
 		return NO_SUCH_DRIVE_ERR;
+	if (d->removable && !(d->media && d->shown && d->shown_gen == d->media_gen))
+		return OFFLINE_ERR;     /* (no disk in the drive, as far as Mac OS knows) */
 	struct disk_partition *p = &d->part[k];
 	if (mode & POS_MODE_WIDE)
 		pos = mem_r64(m, pb + PB_POS_OFFSET);
@@ -335,8 +361,8 @@ static int32_t transfer(struct disk *d, uint32_t pb, bool write)
 		pos = mem_r32(m, dce + DCE_POSITION);
 
 	if (d->log)
-		printf("disk: %s %u bytes at %llu on drive %u (mode %04X) -> %08X\n", write ? "write" : "read",
-		       count, (unsigned long long)pos, p->drive_num, mode, buf);
+		printf("%s: %s %u bytes at %llu on drive %u (mode %04X) -> %08X\n", d->removable ? "floppy" : "disk",
+		       write ? "write" : "read", count, (unsigned long long)pos, p->drive_num, mode, buf);
 	if (pos <= MDB_OFFSET && pos + count > MDB_OFFSET)
 		d->part[k].mounted = true;      /* MountVol reads the master directory block */
 	if (write && d->read_only)
@@ -358,6 +384,8 @@ static int32_t transfer(struct disk *d, uint32_t pb, bool write)
 	if (write) {
 		d->writes++;
 		d->bytes_written += count;
+		if (d->removable)
+			d->dirty = true;
 	} else {
 		d->reads++;
 		d->bytes_read += count;
@@ -446,6 +474,10 @@ static int32_t status(struct disk *d, uint32_t pb, uint32_t toc)
 	}
 }
 
+static void show_media(struct disk *d, uint32_t data);
+static int32_t floppy_control(struct disk *d, uint32_t pb, uint32_t toc);
+static int32_t floppy_status(struct disk *d, uint32_t pb, uint32_t toc);
+
 static int32_t driver_io(struct disk *d, uint32_t toc, uint32_t contents, uint32_t code)
 {
 	switch (code) {
@@ -454,6 +486,8 @@ static int32_t driver_io(struct disk *d, uint32_t toc, uint32_t contents, uint32
 		if (d->boot_gestalt)
 			memcpy(mem_ptr(d->mem, toc + d->layout.extra + DATA_REG_ENTRY), mem_ptr(d->mem, contents + 2), 16);
 		add_drives(d, toc, mem_r16(d->mem, contents));
+		if (d->removable)
+			show_media(d, toc + d->layout.extra);
 		return NO_ERR;
 	case NDRV_FINALIZE:
 	case NDRV_SUPERSEDED:
@@ -466,9 +500,9 @@ static int32_t driver_io(struct disk *d, uint32_t toc, uint32_t contents, uint32
 	case NDRV_WRITE:
 		return transfer(d, contents, true);
 	case NDRV_CONTROL:
-		return control(d, contents);
+		return d->removable ? floppy_control(d, contents, toc) : control(d, contents);
 	case NDRV_STATUS:
-		return status(d, contents, toc);
+		return d->removable ? floppy_status(d, contents, toc) : status(d, contents, toc);
 	default:
 		return PARAM_ERR;
 	}
@@ -481,7 +515,7 @@ static int32_t driver_io_logged(struct disk *d, uint32_t toc, uint32_t contents,
 	if (d->log && code != NDRV_READ && code != NDRV_WRITE) {
 		static const char *const names[] = { "open", "close", "read", "write", "control", "status",
 						     "kill", "initialize", "finalize", "replace", "superseded" };
-		printf("disk: %s", code < 11 ? names[code] : "?");
+		printf("%s: %s", d->removable ? "floppy" : "disk", code < 11 ? names[code] : "?");
 		if (code == NDRV_CONTROL || code == NDRV_STATUS)
 			printf(" %u (drive %d)", mem_r16(d->mem, contents + PB_CS_CODE),
 			       (int16_t)mem_r16(d->mem, contents + PB_VREF_NUM));
@@ -489,7 +523,7 @@ static int32_t driver_io_logged(struct disk *d, uint32_t toc, uint32_t contents,
 			printf(" '%.4s'", (const char *)mem_ptr(d->mem, contents + PB_CS_PARAM));
 		printf(" (kind %u) -> %d\n", kind, err);
 	} else if (d->log && err) {
-		printf("disk: -> %d\n", err);
+		printf("%s: -> %d\n", d->removable ? "floppy" : "disk", err);
 	}
 	return err;
 }
@@ -513,6 +547,8 @@ static void arm_timer(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz,
 
 static bool all_mounted(const struct disk *d)
 {
+	if (d->removable)
+		return false;           /* (its timer goes on: disks come and go) */
 	for (unsigned k = 0; k < d->partitions; k++)
 		if (d->part[k].drive_num && !d->part[k].mounted)
 			return false;
@@ -523,7 +559,8 @@ static bool all_mounted(const struct disk *d)
 static bool post_next_drive(struct disk *d, struct ndrv_call *c)
 {
 	unsigned k = ndrv_state(c, 1);
-	while (k < d->partitions && (!d->part[k].drive_num || d->part[k].mounted || c->tb < d->part[k].next_post))
+	while (k < d->partitions && (!d->part[k].drive_num || d->part[k].mounted || c->tb < d->part[k].next_post ||
+				     (d->removable && !d->shown)))
 		k++;
 	if (k >= d->partitions)
 		return false;
@@ -533,12 +570,16 @@ static bool post_next_drive(struct disk *d, struct ndrv_call *c)
 	return true;
 }
 
+static void media_poll(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz);
+
 void disk_driver_call(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz)
 {
 	switch (c->entry) {
 	case 0: {                       /* DoDriverIO(spaceID, cmdID, contents, code, kind) */
 		uint32_t code = c->arg[3];
 		int32_t status = driver_io_logged(d, c->toc, c->arg[2], code, c->arg[4]);
+		if (code == NDRV_WRITE)
+			d->written_tb = c->tb;
 		if (code == NDRV_INITIALIZE && status == 0) {
 			ndrv_set_state(c, 2, c->arg[1]);
 			ndrv_set_state(c, 3, c->arg[4]);
@@ -549,6 +590,8 @@ void disk_driver_call(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz)
 		return;
 	}
 	case 1:                         /* timer (secondary interrupt handler) */
+		if (d->removable)
+			media_poll(d, c, timebase_hz);
 		ndrv_set_state(c, 1, 0);
 		if (!post_next_drive(d, c)) {
 			if (all_mounted(d))
@@ -568,8 +611,8 @@ void disk_driver_call(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz)
 		if (c->arg[0] == 0)     /* accepted: give the system time to mount it */
 			d->part[k].next_post = c->tb + (uint64_t)POST_RETRY_SECONDS * timebase_hz;
 		if (d->log)
-			printf("disk: disk-inserted event for drive %u -> %d\n", d->part[k].drive_num,
-			       (int16_t)c->arg[0]);
+			printf("%s: disk-inserted event for drive %u -> %d\n", d->removable ? "floppy" : "disk",
+			       d->part[k].drive_num, (int16_t)c->arg[0]);
 		if (!post_next_drive(d, c))
 			arm_timer(d, c, timebase_hz, STEP_REARMING);
 		return;
@@ -580,5 +623,273 @@ void disk_driver_call(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz)
 	default:                        /* IOCommandIsComplete returned */
 		ndrv_finish(c, c->arg[0]);
 		return;
+	}
+}
+
+/* ---- the floppy drive ------------------------------------------------------ */
+
+#define LM_VCB_QHDR 0x0356u             /* volume queue header: flags, head, tail */
+#define VCB_DRV_NUM 72                  /* (0 while the volume is off line) */
+#define LM_CUR_AP_NAME 0x0910u          /* the current application's name: empty until one runs */
+
+#define FORMAT_TSS 0x80u                /* format list: tracks, sides and sectors are given */
+#define FORMAT_CURRENT 0x40u            /* ... the disk in the drive has this format */
+#define FORMAT_HIGH_DENSITY 0x10u
+#define RESTART_DONT_EJECT 1u           /* DriverGestalt 'ejec' */
+#define MEDIA_OVERWRITABLE 136          /* ... 'minf' */
+#define MEDIA_NONE (-1)
+#define DRIVE_INFO_SUPERDRIVE 4u        /* Control 23: an internal 400K/800K/720K/1440K drive */
+
+void disk_open_removable(struct disk *d, struct mem *mem)
+{
+	memset(d, 0, sizeof *d);
+	d->mem = mem;
+	d->fd = -1;
+	d->path = d->media_path;
+	d->removable = true;
+	d->partitions = 1;
+}
+
+int disk_insert(struct disk *d, const char *path, char *why, size_t len)
+{
+	bool read_only = false;
+	int fd = open(path, O_RDWR);
+	if (fd < 0 && (errno == EACCES || errno == EROFS || errno == EPERM)) {
+		read_only = true;       /* (EPERM: locked in the Finder) */
+		fd = open(path, O_RDONLY);
+	}
+	if (fd < 0) {
+		snprintf(why, len, "%s", strerror(errno));
+		return -1;
+	}
+	struct floppy_image image;
+	if (floppy_probe(fd, &image, why, len)) {
+		close(fd);
+		return -1;
+	}
+	disk_eject(d);
+	d->fd = fd;
+	d->read_only = read_only;
+	d->image = image;
+	d->size = image.data_size;
+	d->part[0].offset = image.data_offset;
+	d->part[0].size = image.data_size;
+	snprintf(d->media_path, sizeof d->media_path, "%s", path);
+	d->media = true;
+	d->media_gen++;
+	return 0;
+}
+
+void disk_flush(struct disk *d)
+{
+	if (d->fd < 0)
+		return;
+	if (d->dirty && d->image.kind == FLOPPY_DC42 && floppy_dc42_update(d->fd, &d->image))
+		fprintf(stderr, "%s: cannot update its Disk Copy checksums\n", d->path);
+	d->dirty = false;
+	if (!d->read_only)
+		fsync(d->fd);
+}
+
+void disk_eject(struct disk *d)
+{
+	if (!d->media)
+		return;
+	disk_flush(d);
+	close(d->fd);
+	d->fd = -1;
+	d->media = false;
+}
+
+bool disk_in_use(const struct disk *d)
+{
+	const struct mem *m = d->mem;
+	unsigned guard = 0;
+	if (!d->part[0].drive_num || !mem_ok(m, LM_VCB_QHDR, 10, MEM_R))
+		return false;
+	for (uint32_t q = mem_r32(m, LM_VCB_QHDR + 2); q && guard < 256; q = mem_r32(m, q), guard++) {
+		if (!mem_ok(m, q, VCB_DRV_NUM + 2, MEM_R))
+			break;
+		if (mem_r16(m, q + VCB_DRV_NUM) == d->part[0].drive_num)
+			return true;
+	}
+	return false;
+}
+
+/* The drive's flags and size as Mac OS sees them: a disk in it (ejectable; locked or not), or none */
+static void show_media(struct disk *d, uint32_t data)
+{
+	struct mem *m = d->mem;
+	uint64_t blocks = d->shown ? d->part[0].size / 512 : 0;
+	mem_w8(m, data + DRIVE_FLAGS + 0, d->shown && d->read_only ? 0x80 : 0);
+	mem_w8(m, data + DRIVE_FLAGS + 1, d->shown ? 1 : 0);
+	mem_w8(m, data + DRIVE_FLAGS + 3, 0xFF);                /* two-sided */
+	mem_w16(m, data + DRIVE_QUEUE_ELEMENT + 12, (uint16_t)blocks);
+	mem_w16(m, data + DRIVE_QUEUE_ELEMENT + 14, (uint16_t)(blocks >> 16));
+}
+
+/*
+ * The timer's look at the drive: Mac OS learns that a disk went in (only
+ * once applications run: before, a floppy could become the startup disk)
+ * or came out, and the timer then posts the disk-inserted event. What was
+ * written is flushed once writes have stopped for a second.
+ */
+static void media_poll(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz)
+{
+	/* (until an application runs, the name holds whatever startup left there, 0xFF bytes with 8.5) */
+	unsigned app = mem_ok(d->mem, LM_CUR_AP_NAME, 1, MEM_R) ? mem_r8(d->mem, LM_CUR_AP_NAME) : 0;
+	bool ready = app >= 1 && app <= 31;
+	if (d->shown && (!d->media || d->shown_gen != d->media_gen)) {
+		d->shown = false;
+		show_media(d, c->toc + d->layout.extra);
+		if (d->log)
+			printf("floppy: drive %u is empty\n", d->part[0].drive_num);
+	} else if (!d->shown && d->media && ready) {
+		d->shown = true;
+		d->shown_gen = d->media_gen;
+		d->part[0].mounted = false;
+		d->part[0].next_post = 0;
+		show_media(d, c->toc + d->layout.extra);
+		if (d->log)
+			printf("floppy: drive %u has a disk in it (the current application: \"%.*s\")\n",
+			       d->part[0].drive_num, (int)app, (const char *)mem_ptr(d->mem, LM_CUR_AP_NAME + 1));
+	}
+	if (d->dirty && c->tb - d->written_tb >= timebase_hz)
+		disk_flush(d);
+}
+
+/* Whether Mac OS knows of the disk in the drive (and it's still the one it knows of) */
+static bool media_shown(const struct disk *d)
+{
+	return d->media && d->shown && d->shown_gen == d->media_gen;
+}
+
+static int32_t floppy_control(struct disk *d, uint32_t pb, uint32_t toc)
+{
+	struct mem *m = d->mem;
+	uint32_t data = toc + d->layout.extra, p = pb + PB_CS_PARAM;
+	bool in = media_shown(d);
+
+	switch (mem_r16(m, pb + PB_CS_CODE)) {
+	case 1:         /* KillIO */
+	case 8:         /* tag buffer (tags aren't kept) */
+	case 9:         /* track cache */
+		return NO_ERR;
+	case 5:         /* Verify */
+		return in ? NO_ERR : OFFLINE_ERR;
+	case 6:         /* Format: the disk is erased (Mac OS then writes a new volume on it) */
+		if (!in)
+			return OFFLINE_ERR;
+		if (d->read_only)
+			return WRITE_PROTECTED_ERR;
+		if (floppy_erase(d->fd, &d->image)) {
+			fprintf(stderr, "%s: cannot erase it\n", d->path);
+			return IO_ERR;
+		}
+		d->dirty = true;
+		d->writes++;
+		d->bytes_written += d->image.data_size;
+		printf("floppy: Mac OS formatted %s\n", d->path);
+		return NO_ERR;
+	case 7:         /* Eject */
+		if (in) {
+			printf("floppy: Mac OS ejected %s\n", d->path);
+			disk_eject(d);
+			d->ejects++;
+		}
+		d->shown = false;
+		show_media(d, data);
+		return NO_ERR;
+	case 21:        /* the drive's icon, and where it is (for Get Info) */
+		mem_w32(m, p, data + FLOPPY_DRIVE_ICN);
+		return NO_ERR;
+	case 22:        /* the disk's icon */
+		mem_w32(m, p, data + FLOPPY_MEDIA_ICN);
+		return NO_ERR;
+	case 23:        /* drive info */
+		mem_w32(m, p, DRIVE_INFO_SUPERDRIVE);
+		return NO_ERR;
+	case 43:        /* DriverConfigure */
+		if (mem_r32(m, p) != os_type("flus"))
+			return CONTROL_ERR;
+		disk_flush(d);
+		return NO_ERR;
+	default:
+		return CONTROL_ERR;
+	}
+}
+
+/* The format list's entry for a disk of this many blocks: flags, sectors per track, tracks */
+static void disk_format(uint32_t blocks, uint8_t *flags, uint8_t *sectors, uint16_t *tracks)
+{
+	static const struct { uint32_t blocks; uint8_t flags, sectors; } formats[] = {
+		{ 800, FORMAT_TSS | 1, 0 },                             /* 400K GCR (sectors vary by zone) */
+		{ 1600, FORMAT_TSS | 2, 0 },                            /* 800K GCR */
+		{ 1440, FORMAT_TSS | 2, 9 },                            /* 720K MFM */
+		{ 2880, FORMAT_TSS | FORMAT_HIGH_DENSITY | 2, 18 },     /* 1440K MFM */
+		{ 5760, FORMAT_TSS | FORMAT_HIGH_DENSITY | 2, 36 },     /* 2880K MFM */
+	};
+	*flags = FORMAT_CURRENT;
+	*sectors = 0;
+	*tracks = 0;
+	for (size_t k = 0; k < sizeof formats / sizeof formats[0]; k++)
+		if (formats[k].blocks == blocks) {
+			*flags |= formats[k].flags;
+			*sectors = formats[k].sectors;
+			*tracks = 80;
+		}
+}
+
+static int32_t floppy_status(struct disk *d, uint32_t pb, uint32_t toc)
+{
+	struct mem *m = d->mem;
+	uint32_t data = toc + d->layout.extra, p = pb + PB_CS_PARAM;
+	bool in = media_shown(d);
+	uint32_t blocks = in ? (uint32_t)(d->part[0].size / 512) : 0;
+
+	switch (mem_r16(m, pb + PB_CS_CODE)) {
+	case 6: {       /* format list: max entries, the list; just the disk's own format */
+		uint32_t list = mem_r32(m, p + 2);
+		uint8_t flags, sectors;
+		uint16_t tracks;
+		if (!in)
+			return OFFLINE_ERR;
+		if (mem_r16(m, p) < 1 || !guest_range_ok(m, list, 8, MEM_W))
+			return PARAM_ERR;
+		disk_format(blocks, &flags, &sectors, &tracks);
+		mem_w32(m, list, blocks);
+		mem_w8(m, list + 4, flags);
+		mem_w8(m, list + 5, sectors);
+		mem_w16(m, list + 6, tracks);
+		mem_w16(m, p, 1);
+		return NO_ERR;
+	}
+	case 43: {      /* DriverGestalt: as a floppy drive (other selectors as the disks) */
+		uint32_t sel = mem_r32(m, p);
+		if (sel == os_type("devt")) {
+			mem_w32(m, p + 4, os_type("flop"));
+		} else if (sel == os_type("ejec")) {
+			mem_w32(m, p + 4, RESTART_DONT_EJECT);  /* (a restart keeps the disk in, as syshm does) */
+		} else if (sel == os_type("minf")) {
+			mem_w32(m, p + 4, blocks);
+			mem_w32(m, p + 8, 512);
+			mem_w16(m, p + 12, (uint16_t)(in ? MEDIA_OVERWRITABLE : MEDIA_NONE));
+		} else if (sel == os_type("mics")) {
+			mem_w32(m, p + 4, data + FLOPPY_MEDIA_ICNS);
+		} else if (sel == os_type("dics")) {
+			mem_w32(m, p + 4, data + FLOPPY_DRIVE_ICNS);
+		} else if (sel == os_type("mnam")) {
+			mem_w32(m, p + 4, data + FLOPPY_NAME);
+		} else if (sel == os_type("flus")) {
+			mem_w8(m, p + 4, 1);                    /* can flush (DriverConfigure 'flus') */
+			mem_w8(m, p + 5, d->dirty);             /* ... and has something to */
+			mem_w16(m, p + 6, 0);
+		} else {
+			return status(d, pb, toc);
+		}
+		return NO_ERR;
+	}
+	default:
+		return status(d, pb, toc);
 	}
 }

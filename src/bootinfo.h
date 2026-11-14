@@ -57,10 +57,12 @@
 #define PCI_DEVFN_DISK 0x10u            /* devices 2..: one per disk */
 #define BOOTINFO_MAX_DISKS 4
 #define PCI_DEVFN_USB 0x30u             /* device 6 */
+#define PCI_DEVFN_FLOPPY 0x38u          /* device 7: the floppy drive, if there's one */
 #define PCI_DEVFN_MACIO 0x80u           /* device 16 */
 #define PCI_VENDOR_SYSHM 0x1234u        /* the "unassigned" ID virtual hardware commonly uses */
 #define PCI_DEVICE_DISPLAY 0x5348u
 #define PCI_DEVICE_DISK 0x5349u
+#define PCI_DEVICE_FLOPPY 0x534Au
 #define PCI_VENDOR_MOTOROLA 0x1057u     /* the host bridge: Grackle (MPC106) */
 #define PCI_DEVICE_GRACKLE 0x0002u
 #define PCI_VENDOR_APPLE 0x106Bu        /* Mac I/O: Heathrow */
@@ -82,6 +84,8 @@ struct bootinfo_machine {
 	unsigned disks;                 /* block devices, each with its own driver */
 	const uint8_t *disk_ndrv[BOOTINFO_MAX_DISKS];
 	size_t disk_ndrv_size[BOOTINFO_MAX_DISKS];
+	const uint8_t *floppy_ndrv;     /* the floppy drive's driver (none: no floppy drive) */
+	size_t floppy_ndrv_size;
 	const uint8_t *lanlib;          /* Ethernet: lanLib,AAPL,MacOS,PowerPC (none: no Ethernet) */
 	size_t lanlib_size;
 	uint8_t mac[6];

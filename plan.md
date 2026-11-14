@@ -78,6 +78,14 @@ Done:
   selectors by which StartLib finds that drive, so the Start Manager takes
   it at once instead of after 25 s. See Findings, "The Start Manager's
   wait".
+- **Floppies** (`--floppy`, `--floppy-drive`; `src/floppy.c`, the
+  removable drive in `src/disk.c`): a floppy drive of syshm's own disk
+  driver at PCI device 7, for raw and Disk Copy 4.2 images, whose disk
+  comes and goes: put in from the window's menu, by dropping an image on
+  the window, or from scripts (`floppy insert`, `floppy eject`); ejected
+  by Mac OS. Mounts, writes, Eject, Erase Disk and a restart work on the
+  8.5 and 9.1 CDs, FAT disks on an installed 8.5 (File Exchange). See
+  Findings, "Media changes".
 
 Where it stops:
 
@@ -473,6 +481,31 @@ the kernel); 8 onwards as the boot progresses.
   covers the check on HFS volumes made with `hfs_build()`, the offer, and
   the installer against a File Manager of its own. Open: "don't ask
   again"; 9.1 on an installed disk.
+
+### 14. Clipboard
+
+- **Status:** done. Text is shared by Mac OS and the host's clipboard in
+  window runs in real time: `src/clip.c` (conversions; which side's text
+  is newer), syshm Enhancements in `src/tools.c` (the guest side), and
+  SDL2's text clipboard in `src/display.c`, on the window's thread, which
+  is the emulation's. Enhancements (version 2 in its data: the installer
+  tells an older copy on disk by its bytes, the version tells syshm where
+  a running older copy's data is, which still switches modes) writes
+  routine descriptors for ZeroScrap and PutScrap into the trap table and
+  puts a GetNextEvent filter in `jGNEFilter`; when the host's text changes
+  it posts the front application a resume event with convertClipboard, and
+  keys typed in the window wait for that (at most 0.5 s). Input scripts'
+  `clipboard` and `print-clipboard` stand in for the host's clipboard.
+  `tests/test_clip.c` covers the conversions, echoes and held keys,
+  `tests/test_tools.c` the patches. Scripted both ways on the 8.5 and 9.1
+  CDs (SimpleText; `SYSHM_TOOLS_APPL=1` lets the Finder open Enhancements
+  from the tools volume) and on a copy of an 8.5 install (Note Pad,
+  Scrapbook, the Finder's names, Internet Explorer 4.01's address field);
+  there `tools install` replaced the older Enhancements (`helper.quit`
+  takes the patches out too) and the new one pasted in Note Pad. Open:
+  pictures (see Findings), styles, applications that put their copy in the
+  scrap only at a suspend, and the real host clipboard, which only a
+  window run by hand uses.
 
 ## Findings
 
@@ -1045,3 +1078,73 @@ Facts later tasks need, added as they are found.
   program loaded RAVE (SimpleText opening the Teapot from the QuickDraw 3D
   folder, quit, the engine installed, opened again: 19 calls to the
   engine). Programs already running don't.
+- **Media changes** (the floppy drive): Mac OS learns of a disk in a
+  drive from the drive's flags, the 4 bytes before its drive queue
+  element (byte 1: 0 none, 1 or 2 an ejectable disk in place, 8 a
+  non-ejectable one; byte 0 bit 7 locked), and from a disk-inserted event
+  (`PostEvent(diskEvt, drive)`), which GetNextEvent/WaitNextEvent turn
+  into a MountVol for whatever application is in front (Disk Copy, in
+  front, offered to image a floppy put in). The driver's Driver Services
+  timer, already there to post the disks' events, keeps running once a
+  second for the floppy drive: it sets the flags from the host's state and
+  posts the event, as the Sony driver's VBL task did, from secondary
+  interrupt level. Taking a disk out is Mac OS's (Control 7, Eject, after
+  UnmountVol or with the volume left off line): the driver closes the
+  image and clears the flags. Put Away, the Finder's Eject (which unmounts
+  in 8.5 and 9.1: no grey icon is left) and an Initialize dialog's Eject
+  all come there; a non-ejectable drive (flags 8) gets no call at all.
+  Whether Mac OS has a volume on the drive is in its VCB queue (`VCBQHdr`
+  at `0x356`, `vcbDrvNum` at +72, 0 off line). The startup disk could be
+  taken from any drive with a disk in it, so the drive says it's empty
+  until an application has run: `CurApName` (`0x910`) holds a name of 1-31
+  characters (8.5 leaves 0xFF bytes there during startup, so non-zero
+  isn't enough). Mac OS asks for the drive's icons (Control 21 and 22,
+  DriverGestalt 'mics', 'dics': 'icns' data), its 'devt' ('flop'), 'minf',
+  'flus' (it then sends DriverConfigure 'flus' at FlushVol: the DC42
+  checksums' moment), the format list (Status 6) and Control 23 on mount
+  and for Erase Disk (Format, then Verify, then it writes a new volume),
+  and 'ejec' at restart (kRestartDontEject keeps the disk in). Disk Copy
+  6.3.1 can't make floppies on it (the 8.5 CD's "Make Disk Tools
+  floppies" says it needs a drive that can make 720K/1440K disks, without
+  a call to the driver: it looks for other drives, the Sony driver's
+  presumably), though it offers to make an image of one put in.
+- **Each application has its own scrap:** its scrap handle is in its
+  heap, and the low-memory scrap globals (`0x960`) are switched with it;
+  the Process Manager hands the front application's scrap to the next one
+  brought to the front. A background application never sees another's
+  copy: after SimpleText's Copy on the 8.5 CD, syshm Enhancements'
+  InfoScrap count and size were as before. So Enhancements can't poll the
+  scrap: it sees copies in PutScrap, and puts the host's text into the
+  front application's scrap in that application's context.
+- **An application's patches are its own:** NSetTrapAddress from an
+  application patched the trap only while that application ran (the
+  Process Manager swapped the trap table entry at every switch, even with
+  the routine descriptor in the system heap). Written into the trap table
+  (`0x0E00` + 4 × the Toolbox trap's number), as an extension's patch is
+  at startup, it's everyone's and stays. InterfaceLib's glue for the Scrap
+  Manager reads the trap table at each call (`lwz r0,0x15F4(0)`, then
+  CallUniversalProc), so PowerPC applications go through it too.
+  `jGNEFilter` (`0x29A`) isn't switched either.
+- **Applications that don't ask:** Note Pad (68k) pastes from TextEdit's
+  private scrap, which it fills from the desk scrap on a resume event with
+  convertClipboard; at a paste it only asks `GetScrap(nil, 'TEXT')` (the
+  length). Scrapbook (68k) makes no Scrap Manager call after it starts: it
+  reads the scrap's size in low memory to enable Paste. Hence the filter
+  (the host's text is in the front application's scrap before its next
+  event) and the posted resume event (an `osEvt` with
+  suspendResumeMessage, resumeFlag and convertClipboardFlag, which
+  PostEvent puts in the queue, ahead of keys typed after it). Patching
+  WaitNextEvent and GetNextEvent instead, calling the Process Manager's
+  (which switches processes inside them) through CallUniversalProc, left
+  applications without their windows.
+- **Pictures (not done):** Mac OS to host, the scrap's `PICT` is QuickDraw
+  drawing: simplest to have Mac OS draw it (DrawPicture into a GWorld,
+  from Enhancements) and hand the host the pixels. Host to Mac OS: decode
+  PNG (needs an inflater: zlib, or stb_image in third_party) and make a
+  PICT of one DirectBitsRect (32-bit pixels), mind the 4 MB limit. The host
+  side is the bigger part: SDL2's clipboard is text only. SDL3's
+  (`SDL_SetClipboardData` and MIME types) would do X11, Wayland and macOS
+  alike; without it, NSPasteboard through the Objective-C runtime on
+  macOS, and on Linux the X11 CLIPBOARD selection (an `image/png` target,
+  answering SelectionRequest events) and a Wayland data source, each
+  separately.

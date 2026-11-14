@@ -26,6 +26,8 @@ enum display_event_type {
 	DISPLAY_EVENT_RELEASE_MOUSE,    /* the user pressed Control and Option (Ctrl and Alt) together */
 	DISPLAY_EVENT_MENU,             /* the menu's to open or close (F12; or Esc or Resume, open) */
 	DISPLAY_EVENT_MENU_ACTION,      /* something chosen in the menu: action (but Resume, Fullscreen, Status bar) */
+	DISPLAY_EVENT_DROP_FILE,        /* a file was dropped on the window: path (until the next event) */
+	DISPLAY_EVENT_CLIPBOARD,        /* the host's clipboard may have changed (or the window got the focus) */
 };
 
 struct display_event {
@@ -35,6 +37,7 @@ struct display_event {
 	bool down;
 	uint8_t adb_key;                /* ADB key code */
 	enum ui_action action;
+	const char *path;
 };
 
 /*
@@ -117,6 +120,9 @@ void display_refresh(struct display *d);
 /* What the menu shows of the machine: the mouse, and news (copied; NULL for none) */
 void display_menu_state(struct display *d, enum ui_mouse mouse, const char *status);
 
+/* ... and of the floppy drive (copied; NULL: there's none) */
+void display_floppy_state(struct display *d, const struct ui_floppy *f);
+
 /*
  * Shows a question or news over the screen, with one or two buttons (`no`
  * may be NULL; all are copied), until one is chosen (DISPLAY_EVENT_MENU_ACTION,
@@ -135,6 +141,13 @@ void display_status(struct display *d, const struct ui_status *s);
 
 /* Draws the window if the screen, the pointer or the status bar has changed since it was. */
 void display_update(struct display *d);
+
+/*
+ * The host clipboard's text (UTF-8, to free(); NULL if SDL can't say), and
+ * setting it. Only on the thread that runs the window (as SDL requires).
+ */
+char *display_clipboard(struct display *d);
+void display_set_clipboard(struct display *d, const char *text);
 
 /* Returns false when there are no more events. */
 bool display_poll(struct display *d, struct display_event *ev);

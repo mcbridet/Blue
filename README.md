@@ -299,6 +299,12 @@ creator from its extension (`.sit`, `.hqx`, `.bin`, `.zip` for StuffIt
 Expander; `.txt`; `.jpg`, `.gif`, `.png` for PictureViewer; `.pdf`; `.img`,
 `.dmg`, `.toast`, `.dsk` for Disk Copy; `.mov`, `.mp3`, `.aiff`, `.html`
 and a few more), else SimpleText's if it's plain text, else `????`.
+Archives in the StuffIt 5 format (from 1998 on; `lsar` calls them "StuffIt
+5") need StuffIt Expander 5 or later; Mac OS 8.5 and 8.6 come with 4.5,
+which quits without a word on them. Either install Expander 5.5 (as a
+`.hqx` or `.bin`, which 4.5 opens), or expand on the host with The
+Unarchiver's `unar` (Homebrew's `unar`), which keeps resource forks and
+Finder info on macOS, so they reach Mac OS through the share.
 
 What Mac OS writes goes to a temporary file (in `$TMPDIR`, gone when
 syshm exits), never to the folder during the run. At the end of the run,
@@ -337,6 +343,69 @@ appear in Mac OS the next time, and changes made in Mac OS reach the host
 at the end. Text files keep their line endings (a host's LF shows as boxes
 in SimpleText). Folders' Finder info (window positions, custom icons) and
 the Locked checkbox aren't written back.
+
+### Floppies
+
+`--floppy IMAGE` puts a floppy disk image in a floppy drive, mainly to
+install software that came on floppies; give it several times for a set of
+disks. The first is in the drive at startup; the others are listed in the
+window's menu (F12), where a click puts one in, and dragging an image file
+onto the window puts it in too. `--floppy-drive` gives a drive that's empty
+at startup (with `--floppy` images only listed). Mac OS ejects a disk as
+on any Mac: Put Away or dragging it to the Trash, Eject in the Finder's
+Special menu, an installer's own eject, an Initialize dialog's Eject. The
+drive is then empty, and syshm says so (`floppy: Mac OS ejected ...`).
+
+```
+build/syshm boot --disk hd.img --floppy "Install 1.image" --floppy "Install 2.image" --window
+```
+
+A multi-disk installer ejects disk 1 and asks for disk 2: press F12 and
+click disk 2 (the menu closes and Mac OS goes on), or drag disk 2's image
+onto the window. Mac OS learns of a disk going in as from a real drive,
+by a disk-inserted event, so whatever application is in front and waiting
+for a disk (an installer, Disk Copy) gets it. syshm won't take a disk out
+that Mac OS has mounted (it's using it; the menu says so, and how to
+eject it there); one that isn't mounted (unreadable, say) can be ejected or
+replaced from the menu. Input scripts have `floppy insert FILE` (the rest
+of the line) and `floppy eject`, which follow the same rules.
+
+Images: raw ones of 400K, 720K, 800K, 1440K and 2880K disks (`.img`,
+`.dsk`, `.ima`, `.flp`), and Disk Copy 4.2 ones (`.image`: an 84-byte
+header, the blocks, then the 400K and 800K disks' tags; also in
+MacBinary), whose checksums syshm keeps right as Mac OS writes (they're
+worked out again a second after the last write, and when the disk is
+ejected or flushed). They're told apart by their contents and size, not
+their names. Compressed images and archives (Disk Copy 6's NDIF, DART,
+UDIF `.dmg`, StuffIt, zip, gzip, BinHex) aren't taken: syshm says what
+they are, or that their size is no floppy's. Convert them to a raw or Disk
+Copy 4.2 image first (with Disk Copy in Mac OS, or a tool on the host). An
+image is read-only (Mac OS shows it locked) if its file can't be written,
+or is locked in the Finder; lock an image to keep it as it was, as Mac OS
+writes to a writable disk as soon as it mounts it (its volume information,
+the desktop database). Mac OS mounts what it can read: HFS, FAT (PC
+floppies) with File Exchange, which a full install has (the 8.5 CD's
+System doesn't: it offers to initialize them). MFS disks (System 1-6 era,
+400K) are refused: Mac OS 8.5 and later can't read them. A blank image (or
+one Mac OS can't read) brings up Mac OS's "unreadable, initialize?"
+dialog, and Erase Disk works on floppies (Format, Verify, then a new
+volume; the format offered is the image's size). `syshm disk create
+blank.img 1440K "Untitled"` makes a blank formatted floppy (400K, 720K,
+800K or 1440K).
+
+The iMac has no floppy controller, so none is emulated: the drive is a
+third kind of drive of syshm's own disk driver (`src/disk.c`, images in
+`src/floppy.c`), at PCI device 7, much as a USB floppy drive is on a real
+iMac, and needs nothing installed in Mac OS. It answers as a floppy drive
+(DriverGestalt 'devt' 'flop', a floppy disk's icon and the drive's, in
+color, the 'where' of Get Info, the format list) and says its disk is
+ejectable, and Mac OS keeps the disk in at a restart. A floppy is never the
+startup disk: the drive is empty as far as Mac OS knows until applications
+run (see plan.md, Findings), and syshm doesn't look for a ROM file on it.
+Transfers take guest time at the disks' rate. The status bar's floppy light
+(with a floppy drive only) is dimmed while it's empty. Disk Copy can't
+make floppies from images in this drive (it looks for Apple's floppy
+drives): put the image in instead, or a copy of it.
 
 ### Guest tools
 
@@ -378,7 +447,45 @@ same volume to a file):
   resizes the window instead. Without it, the window scales the
   screen. On high-density displays a screen pixel is a point, so Mac OS
   appears at the size of other programs; with `--integer-scale` it is a
-  whole number of pixels instead (2 at 1.7x), for the crispest pixels.
+  whole number of pixels instead (2 at 1.7x), for the crispest pixels. It
+  also shares the clipboard (below). One installed by a syshm from before
+  the clipboard isn't this syshm's (so in a window syshm offers to update
+  it), and it still switches modes until then: its data carries its
+  version, as the 3D engine's does, so that syshm finds the older copy's
+  data where it is, and says so. An `appe` only starts from Extensions, so
+  a CD's system can't run it; to try it there, `SYSHM_TOOLS_APPL=1` makes
+  the tools volume's copy an application the Finder opens with a
+  double-click.
+- **Clipboard** (with syshm Enhancements, in a window in real time): text
+  copied in Mac OS is on the host's clipboard, and text copied on the host
+  is what Command-V pastes in Mac OS, in the front application, without
+  switching applications (tested: SimpleText, Note Pad, Scrapbook, the
+  Finder's names and Internet Explorer 4's fields on 8.5, SimpleText on
+  9.1). Mac OS keeps text in Mac OS Roman with CR line ends (`TEXT`), and
+  applications that know Unicode (Mac OS 9's MLTE) in UTF-16 too (`utxt`);
+  the host has UTF-8 with LF. Accents come out precomposed (macOS often
+  decomposes them), and characters Mac OS Roman lacks become something
+  close where there is one (½ "1/2", → "->", other spaces a space) or
+  else "?"; `utxt`, which syshm puts in the scrap too, has them all, for
+  applications that read it, and is what the host gets when an
+  application puts both. Styles (`styl`) and pictures aren't passed, nor
+  texts over 4 MB (syshm says so). How: each application has a scrap of
+  its own (the Process Manager hands it to the next one brought to the
+  front), and many keep a private one besides, such as TextEdit's, which
+  they take from the scrap only when resumed with "the clipboard has
+  changed". Enhancements patches ZeroScrap and PutScrap to see what
+  applications copy; puts the host's new text in the front application's
+  scrap just before it gets its next event (a GetNextEvent filter: some
+  read the scrap's size in low memory rather than asking); and posts it a
+  resume event saying the clipboard has changed, as the Process Manager
+  does when one switches applications. Keys typed in the window meanwhile
+  wait for that (at most half a second), so that a quick Command-V pastes
+  the new text. An application that puts its copy in the scrap only when
+  switched out (from a private scrap, at a suspend) reaches the host once
+  another Mac application comes to the front. Scripted runs have a
+  stand-in for the host's clipboard (`clipboard` and `print-clipboard`,
+  see Debugging boot); other runs without a window, or in instruction
+  time, leave the clipboard alone.
 - **syshm 3D Engine**: a QuickDraw 3D RAVE drawing engine (put it in
   Extensions). QuickDraw 3D's interactive renderer and RAVE games then find
   an accelerator: it reports itself as an ATI engine (vendor 1, engine 5),
@@ -658,7 +765,8 @@ lacks: syshm says to install it again (and a window offers to update it).
   - Disk: host files as drives (`--disk`, writable; `--cdrom`, read-only;
     the 8.5 CD's System refuses to start from a writable drive, as from a
     copy of the CD), and a host folder (`--share`; see Shared folder),
-    whose blocks come from `src/share.c` rather than a file.
+    whose blocks come from `src/share.c` rather than a file; and a floppy
+    drive (`--floppy`; see Floppies), whose disk comes and goes.
     An Apple partition map gives one drive per HFS partition; otherwise the
     file is one volume. (When there's a map entry at offset 512, entries are
     512 bytes apart and count 512-byte blocks even if the driver descriptor
@@ -755,13 +863,15 @@ lacks: syshm says to install it again (and a window offers to update it).
   away; it keeps NVRAM, as closing the window does); a screenshot of the Mac's screen
   (a PNG on the Desktop, or in the current directory without one, named
   for when it was taken); fullscreen (at the desktop's resolution); the
-  status bar; and whether the pointer is captured while the Mac hides its
-  cursor. In real time guest time doesn't count the pause, so the Mac's
-  clock is that much behind afterwards.
+  status bar; whether the pointer is captured while the Mac hides its
+  cursor; and with a floppy drive, what's in it, Eject, and the floppy
+  images to put in (see Floppies). In real time guest time doesn't count
+  the pause, so the Mac's clock is that much behind afterwards.
   The status bar (shown unless `--no-status-bar`; the menu toggles it) sits
   below the screen, so the window grows by its height rather than covering
   anything (fullscreen, or maximized, the screen fitted to the window
-  shrinks instead). It has lights for the disks, CD-ROMs and network, lit
+  shrinks instead). It has lights for the disks, CD-ROMs, the floppy drive
+  (if there's one) and network, lit
   for a tenth of a second whenever they move data (green, amber while a
   disk is written; a light is dimmed if there's no such device), each with
   what it read and wrote over the last second (the network's what it
@@ -804,7 +914,8 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 - Model `iMac,1`, a 266 MHz PowerPC 750 on a 66 MHz bus, timebase 16.6 MHz.
 - Grackle PCI host bridge; on it the display (device 1, framebuffer at
   `0x82000000`), up to four disks (devices 2-5; a shared folder is one),
-  the USB controller (device 6, registers at `0x81000000`) and Mac I/O
+  the USB controller (device 6, registers at `0x81000000`), the floppy
+  drive if there's one (device 7, `syshm,floppy`) and Mac I/O
   (device 16) at `0x81080000`:
   Heathrow-style interrupt controller (`+0x10`), DMA channels (`+0x8000`,
   0x100 bytes each), SCC (`+0x12000`), VIA1 with Cuda (`+0x16000`).
@@ -853,7 +964,9 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 
 ## Next steps
 
-1. 3D: Glide, and OpenGL with Mac OS 9. (The RAVE engine draws with the
+1. 3D: Glide, then OpenGL with Mac OS 9: docs/glide-plan.md and
+   docs/opengl-plan.md (what Mac OS 9.1's OpenGL is and what games link
+   to, the design, and why Glide first). (The RAVE engine draws with the
    host's GPU; what's left there, such as reading back less of each frame,
    is in docs/gpu-plan.md.)
 2. Networking: host ports forwarded to the guest (so it can serve).
@@ -902,6 +1015,8 @@ build/syshm rom trampoline MOS.rom build/trampoline.elf
 build/syshm boot --rom MOS.rom --cdrom 85.iso --window   # interactive
 build/syshm boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
 build/syshm boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
+build/syshm boot --rom MOS.rom --cdrom 85.iso --floppy disk1.img --floppy disk2.img --window   # a floppy drive
+build/syshm disk create blank.img 1440K "Untitled"          # a blank floppy
 build/syshm run-raw code.bin 1000                # SYSHM_TRACE=1 logs every instruction
 ```
 
@@ -920,7 +1035,18 @@ counts, for example:
 3700000000 clock 800             # guest time at 800 million instructions a second from here
 3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
 0 tools install                  # the answer to the offer to install the guest tools (or "later")
+3900000000 floppy insert Disk 2.img
+4000000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)
+4100000000 print-clipboard       # prints the host's clipboard, with what Mac OS copied since
 ```
+
+(`floppy insert` takes the rest of its line as the image's path, comments
+included; `floppy eject` takes it out: see Floppies.)
+
+`clipboard` and `print-clipboard` stand in for the host's clipboard (a
+scripted run leaves the window's alone), for syshm Enhancements to share
+(see Guest tools): the text is as if copied on the host with the window
+then brought to the front.
 
 `clock N` keeps a run reproducible while making guest time pass as on a
 guest processor of N MIPS, so that work paced by guest time (sound, timer
@@ -1017,11 +1143,13 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
           dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
           (configuration space), nvram.c (devices), ndrv.c (PEF driver generator),
-          video.c, disk.c (native drivers), net.c (Ethernet's lanLib,
+          video.c, disk.c (native drivers), floppy.c (floppy images),
+          net.c (Ethernet's lanLib,
           libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
           reader: the startup disk's ROM file), share.c (shared folder),
           rsrc.c (resource forks), tools.c (guest tools), install.c
-          (installing them from inside Mac OS), rave.c + raster.c
+          (installing them from inside Mac OS), clip.c (the clipboard they
+          share with the host), rave.c + raster.c
           + gpu.c + gl.c (3D engine: software and OpenGL), display.c (SDL2
           window), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), main.c
@@ -1029,7 +1157,9 @@ tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
           devtree.py (device-tree copy dumper), disasm.py (disassembler)
-docs/     gpu-plan.md (the 3D engine's OpenGL backend), nk2-reference.md
-          (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2 does)
+docs/     gpu-plan.md (the 3D engine's OpenGL backend), glide-plan.md and
+          opengl-plan.md (3dfx Glide and Mac OS 9's OpenGL, planned),
+          nk2-reference.md (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2
+          does)
 third_party/imgui/  Dear ImGui 1.93.0 (MIT; its core files only, as released)
 ```

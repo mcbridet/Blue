@@ -197,6 +197,15 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 		dt_prop_cells(disk, "reg", reg, 5);
 		dt_prop(disk, "driver,AAPL,MacOS,PowerPC", hw->disk_ndrv[k], (uint32_t)hw->disk_ndrv_size[k]);
 	}
+	if (hw->floppy_ndrv_size) {
+		struct dt_node *floppy = dt_add_node(pci, "syshm,floppy");
+		const uint32_t reg[5] = { PCI_SPACE_CONFIG | PCI_DEVFN_FLOPPY << 8, 0, 0, 0, 0 };
+		pci_ids(floppy, PCI_VENDOR_SYSHM, PCI_DEVICE_FLOPPY, PCI_CLASS_DISK, 1);
+		dt_prop_str(floppy, "device_type", "block");
+		dt_prop_str(floppy, "compatible", "syshm,floppy");
+		dt_prop_cells(floppy, "reg", reg, 5);
+		dt_prop(floppy, "driver,AAPL,MacOS,PowerPC", hw->floppy_ndrv, (uint32_t)hw->floppy_ndrv_size);
+	}
 
 	/* USB: an OHCI controller with nothing plugged in, which the ROM drives itself (see ohci.h) */
 	static const char usb_compatible[] = "pci1045,c861\0pciclass,0c0310";
