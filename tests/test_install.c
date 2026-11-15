@@ -4,7 +4,8 @@
  * a localized Extensions folder, a locked volume; Apple's OpenGL libraries
  * enabled or disabled), when they're offered, and the installer driven as
  * Mac OS would drive it, against a small File Manager of the test's own
- * (Apple's OpenGL libraries moved to Extensions (Disabled) and back).
+ * (Apple's OpenGL libraries moved to Extensions (Disabled) and back), and
+ * the restart it asks the Process Manager for once all is in place (or not).
  */
 #include <fcntl.h>
 #include <stdlib.h>
@@ -253,7 +254,7 @@ static void test_offer(void)
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
 	CHECK(strstr(in.question, "aren't installed on \"Test\"") != NULL);
-	CHECK(strcmp(in.yes, "Install") == 0);
+	CHECK(strcmp(in.yes, "Install and Restart") == 0);
 	write_volume(folders, 1, 0x0080);
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_OFF);
@@ -268,7 +269,7 @@ static void test_offer(void)
 	write_volume(both, n, 0);
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
-	CHECK(strcmp(in.yes, "Update") == 0);
+	CHECK(strcmp(in.yes, "Update and Restart") == 0);
 	CHECK(strstr(in.question, "need updating: syshm 3D Engine is from another version of syshm.") != NULL);
 
 	/* Mac OS 9: Apple's OpenGL goes when syshm's comes; syshm's beside Apple's; Apple's back */
@@ -284,12 +285,12 @@ static void test_offer(void)
 	write_volume(nine, with_apple(nine, with_gl(nine, 4, EXTENSIONS, 70), EXTENSIONS, 80), 0);
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
-	CHECK(strcmp(in.yes, "Move") == 0);
+	CHECK(strcmp(in.yes, "Move and Restart") == 0);
 	CHECK(strstr(in.question, "move Apple's to \"Extensions (Disabled)\"?") != NULL);
 	write_volume(nine, with_apple(nine, 4, DISABLED, 80), 0);
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
-	CHECK(strcmp(in.yes, "Put Back") == 0);
+	CHECK(strcmp(in.yes, "Put Back and Restart") == 0);
 	CHECK(strstr(in.question, "syshm's OpenGL libraries aren't on \"Test\", and Apple's are in") != NULL);
 }
 
@@ -308,8 +309,8 @@ static void test_offer(void)
 #define DRIVE 8u
 
 /* Its imports, in order */
-enum { FIND_FOLDER, HGET_VINFO, GET_CAT_INFO, DELETE, CREATE, OPEN_DF, OPEN_RF, WRITE, CLOSE, SET_FINFO, RENAME, LAUNCH,
-       CAT_MOVE, IMPORTS };
+enum { FIND_FOLDER, HGET_VINFO, GET_CAT_INFO, DELETE, CREATE, OPEN_DF, OPEN_RF, WRITE, CLOSE, SET_FINFO, RENAME, CAT_MOVE,
+       FLUSH_VOL, AE_CREATE_DESC, AE_CREATE_APPLE_EVENT, AE_SEND, AE_DISPOSE_DESC, IMPORTS };
 #define FILES 16
 #define FORK_MAX 0x20000u
 
@@ -330,10 +331,10 @@ static struct fs {
 	struct file f[FILES];
 	uint32_t next_id;
 	bool volume_locked, full;
-	unsigned launches;
-	char launched[64];
-	uint32_t launched_dir;
 	unsigned opened;                /* forks open */
+	/* ... and the Apple Event Manager: what's flushed, the restarts asked for, descriptors not disposed of */
+	unsigned flushes, restarts, descs;
+	int16_t send_error;
 } fs;
 
 static void pname(uint32_t p, char *out)
@@ -475,13 +476,6 @@ static int16_t file_manager(unsigned call, const uint32_t *a)
 			return -48;
 		snprintf(f->name, sizeof f->name, "%s", name);
 		return 0;
-	case LAUNCH:
-		CHECK_EQ(mem_r16(&mem, pb + 6), 0x4C43);
-		CHECK_EQ(mem_r16(&mem, pb + 14) & 0x4000, 0x4000);     /* launchContinue */
-		fs.launches++;
-		pname(mem_r32(&mem, pb + 16) + 6, fs.launched);
-		fs.launched_dir = mem_r32(&mem, mem_r32(&mem, pb + 16) + 2);
-		return 0;
 	case CAT_MOVE:                          /* (a CMovePBRec: the name, ioDirID, ioNewDirID) */
 		pname(mem_r32(&mem, pb + 18), name);
 		CHECK_EQ(mem_r32(&mem, pb + 28), 0);
@@ -490,6 +484,39 @@ static int16_t file_manager(unsigned call, const uint32_t *a)
 		if (find(mem_r32(&mem, pb + 36), name))
 			return -48;
 		f->dir = mem_r32(&mem, pb + 36);
+		return 0;
+	case FLUSH_VOL:                         /* FlushVol(NULL, vRefNum) */
+		CHECK(a[0] == 0 && (int16_t)a[1] == (int16_t)VREF);
+		fs.flushes++;
+		return 0;
+	case AE_CREATE_DESC:                    /* the Process Manager's address: {0, kSystemProcess} */
+		CHECK(a[0] == FOURCC('p', 's', 'n', ' ') && a[2] == 8);
+		CHECK(mem_r32(&mem, a[1]) == 0 && mem_r32(&mem, a[1] + 4) == 1);
+		mem_w32(&mem, a[3], a[0]);
+		mem_w32(&mem, a[3] + 4, 0x100 + fs.descs++);
+		return 0;
+	case AE_CREATE_APPLE_EVENT:             /* kCoreEventClass, kAERestart, its address, a new ID, any transaction */
+		CHECK(a[0] == FOURCC('a', 'e', 'v', 't') && a[1] == FOURCC('r', 'e', 's', 't'));
+		CHECK_EQ(mem_r32(&mem, a[2]), FOURCC('p', 's', 'n', ' '));
+		CHECK(a[3] == 0xFFFFFFFFu && a[4] == 0);
+		mem_w32(&mem, a[5], FOURCC('a', 'e', 'v', 't'));
+		mem_w32(&mem, a[5] + 4, 0x100 + fs.descs++);
+		return 0;
+	case AE_SEND:                           /* no reply, the default timeout; the tools all in place by then */
+		CHECK_EQ(mem_r32(&mem, a[0]), FOURCC('a', 'e', 'v', 't'));
+		CHECK(a[1] != 0 && (a[2] & 3) == 1 && a[4] == 0xFFFFFFFFu && a[5] == 0 && a[6] == 0);
+		CHECK(fs.opened == 0 && fs.flushes > fs.restarts);
+		if (fs.send_error)
+			return fs.send_error;
+		fs.restarts++;
+		return 0;
+	case AE_DISPOSE_DESC:
+		if (mem_r32(&mem, a[0] + 4)) {
+			CHECK(fs.descs > 0);
+			fs.descs--;
+		}
+		mem_w32(&mem, a[0], 0);
+		mem_w32(&mem, a[0] + 4, 0);
 		return 0;
 	default:
 		CHECK(!"an import");
@@ -512,20 +539,21 @@ static bool idle_until_diverted(struct install *in, struct helper *h, uint64_t *
 }
 
 /* The bootstrap's work, then the installer's main routine and its callouts until it returns */
-static void run_installer(struct install *in, struct helper *h)
+static void run_installer(struct install *in)
 {
 	for (unsigned k = 0; k < IMPORTS; k++)
 		mem_w32(&mem, TOC + in->layout.import[k], TVECTORS + 8 * k);
 	struct ndrv_call c = { .mem = &mem, .entry = 0, .toc = TOC, .frame = FRAME };
-	install_call(in, &c, h);
+	install_call(in, &c);
 	for (unsigned steps = 0; !c.done && steps < 1000; steps++) {
 		CHECK(c.tvector >= TVECTORS && c.tvector < TVECTORS + 8 * IMPORTS && c.tvector % 8 == 0);
 		int16_t err = file_manager((c.tvector - TVECTORS) / 8, c.out);
 		c = (struct ndrv_call){ .mem = &mem, .entry = NDRV_ENTRY_RESUME, .toc = TOC, .frame = FRAME };
 		c.arg[0] = (uint32_t)(int32_t)err;
-		install_call(in, &c, h);
+		install_call(in, &c);
 	}
 	CHECK(c.done);
+	CHECK_EQ(fs.descs, 0);
 }
 
 static bool same_as(const struct file *f, unsigned t)
@@ -535,7 +563,7 @@ static bool same_as(const struct file *f, unsigned t)
 	       !memcmp(f->fork[1], tools[t].rsrc, tools[t].rsrc_len);
 }
 
-/* Enhancements missing, an older engine in Extensions (Disabled): installed, updated where it is, launched */
+/* Enhancements missing, an older engine in Extensions (Disabled): installed, updated where it is, then a restart */
 static void test_installer(void)
 {
 	static struct install in;
@@ -576,21 +604,24 @@ static void test_installer(void)
 	CHECK(jumps);
 	CHECK_EQ(mem_r16(&mem, INSTALL_REGION + 0x100), 0xAAFE);       /* main's routine descriptor */
 
-	run_installer(&in, &h);
+	run_installer(&in);
 	CHECK_EQ(in.phase, INSTALL_DONE);
 	CHECK(in.news_ready);
 	CHECK(same_as(find(EXTENSIONS, "syshm Enhancements"), TOOLS_ENHANCEMENTS));
 	CHECK(same_as(find(DISABLED, "Old 3D"), TOOLS_3D_ENGINE));     /* (still disabled, still its name) */
 	CHECK(!find(DISABLED, "syshm installing") && !find(EXTENSIONS, "syshm installing"));
 	CHECK_EQ(fs.opened, 0);
-	CHECK_EQ(fs.launches, 1);
-	CHECK(strcmp(fs.launched, "syshm Enhancements") == 0 && fs.launched_dir == EXTENSIONS);
-	CHECK(strstr(in.news, "installed syshm Enhancements in \"Test:System Folder:Extensions\" and updated "
-			      "syshm 3D Engine (\"Old 3D\") in \"Test:System Folder:Extensions (Disabled)\".") == in.news);
-	CHECK(strstr(in.news, "syshm Enhancements is running.") != NULL);
+	CHECK(fs.flushes == 1 && fs.restarts == 1 && in.restarting);
+	CHECK(strcmp(in.news, "installed syshm Enhancements in \"Test:System Folder:Extensions\" and updated "
+			      "syshm 3D Engine (\"Old 3D\") in \"Test:System Folder:Extensions (Disabled)\". Mac OS is "
+			      "restarting.") == 0);
 }
 
-/* The disk fills up while the engine is written: what was done stays, the temporary file goes */
+/*
+ * The disk fills up while the engine is written: what was done stays, the
+ * temporary file goes, and Mac OS doesn't restart. A locked volume, and a
+ * restart Mac OS can't be asked for, likewise.
+ */
 static void test_installer_errors(void)
 {
 	static struct install in;
@@ -617,22 +648,24 @@ static void test_installer_errors(void)
 
 	/* (run it by hand to fill the disk after Enhancements) */
 	struct ndrv_call c = { .mem = &mem, .entry = 0, .toc = TOC, .frame = FRAME };
-	install_call(&in, &c, &h);
+	install_call(&in, &c);
 	for (unsigned steps = 0; !c.done && steps < 1000; steps++) {
 		unsigned call = (c.tvector - TVECTORS) / 8;
 		fs.full = find(EXTENSIONS, "syshm Enhancements") != NULL;
 		int16_t err = file_manager(call, c.out);
 		c = (struct ndrv_call){ .mem = &mem, .entry = NDRV_ENTRY_RESUME, .toc = TOC, .frame = FRAME };
 		c.arg[0] = (uint32_t)(int32_t)err;
-		install_call(&in, &c, &h);
+		install_call(&in, &c);
 	}
 	CHECK(c.done);
 	CHECK(same_as(find(EXTENSIONS, "syshm Enhancements"), TOOLS_ENHANCEMENTS));
 	CHECK(old->used && old->fork[0][0] != tools[TOOLS_3D_ENGINE].data[0]);  /* the old engine, as it was */
 	CHECK(!find(EXTENSIONS, "syshm installing"));
 	CHECK_EQ(fs.opened, 0);
-	CHECK(strstr(in.news, "installed syshm Enhancements in \"Test:System Folder:Extensions\"; couldn't update "
-			      "syshm 3D Engine (writing it): the disk is full.") == in.news);
+	CHECK(fs.flushes == 0 && fs.restarts == 0 && !in.restarting);
+	CHECK(strcmp(in.news, "installed syshm Enhancements in \"Test:System Folder:Extensions\"; couldn't update "
+			      "syshm 3D Engine (writing it): the disk is full. syshm Enhancements starts with Mac OS next "
+			      "time.") == 0);
 
 	/* a locked volume: nothing done */
 	fs.full = false;
@@ -642,14 +675,26 @@ static void test_installer_errors(void)
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, true, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
-	run_installer(&in, &h);
+	run_installer(&in);
 	CHECK(!find(EXTENSIONS, "syshm Enhancements") && !find(EXTENSIONS, "syshm installing"));
-	CHECK(strstr(in.news, "couldn't install the guest tools (looking at the startup disk): the disk is locked.") ==
-	      in.news);
-	CHECK_EQ(fs.launches, 0);
+	CHECK(strcmp(in.news, "couldn't install the guest tools (looking at the startup disk): the disk is locked.") == 0);
+	CHECK_EQ(fs.restarts, 0);
+
+	/* all written, but the restart can't be asked for: said, the event disposed of */
+	memset(&fs, 0, sizeof fs);
+	fs.next_id = 100;
+	fs.send_error = -108;
+	install_begin(&in, volume_path, 0, false);
+	install_answer(&in, true, &h);
+	CHECK(idle_until_diverted(&in, &h, &tb));
+	run_installer(&in);
+	CHECK(same_as(find(EXTENSIONS, "syshm 3D Engine"), TOOLS_3D_ENGINE));
+	CHECK(fs.flushes == 1 && fs.restarts == 0 && !in.restarting);
+	CHECK(strcmp(in.news, "installed syshm Enhancements and syshm 3D Engine in \"Test:System Folder:Extensions\"; "
+			      "couldn't restart Mac OS: there isn't enough memory. Restart Mac OS to use them.") == 0);
 }
 
-/* A running Enhancements that's to be replaced quits first; if it can't be replaced after all, it starts again */
+/* A running Enhancements that's to be replaced quits first; if it can't be replaced after all, it starts with Mac OS */
 static void test_installer_quit(void)
 {
 	static struct install in;
@@ -674,11 +719,44 @@ static void test_installer_quit(void)
 	CHECK(!install_idle(&in, &w));
 	w.tb += HZ / 5;
 	CHECK(install_idle(&in, &w));                   /* soon after, the installer */
-	run_installer(&in, &h);
-	CHECK(strstr(in.news, "couldn't update syshm Enhancements (replacing the old copy): the file is locked. "
-			      "The old syshm Enhancements is running again.") == in.news);
-	CHECK(strcmp(fs.launched, "syshm Helper") == 0);
+	run_installer(&in);
+	CHECK(strcmp(in.news, "couldn't update syshm Enhancements (replacing the old copy): the file is locked. "
+			      "syshm Enhancements starts with Mac OS next time.") == 0);
+	CHECK_EQ(fs.restarts, 0);
 	CHECK(!find(EXTENSIONS, "syshm installing"));
+
+	/* ... or is replaced, and Mac OS restarts */
+	find(EXTENSIONS, "syshm Helper")->locked = false;
+	h.running = true;
+	install_begin(&in, volume_path, 0, false);
+	install_answer(&in, true, &h);
+	w.tb = HZ;
+	for (unsigned k = 0; k < 40 && in.phase != INSTALL_QUITTING; k++, w.tb += HZ / 20)
+		CHECK(!install_idle(&in, &w));
+	h.quit = h.running = false;
+	w.tb += HZ / 5;
+	CHECK(!install_idle(&in, &w));
+	w.tb += HZ / 5;
+	CHECK(install_idle(&in, &w));
+	run_installer(&in);
+	CHECK(same_as(find(EXTENSIONS, "syshm Helper"), TOOLS_ENHANCEMENTS));
+	CHECK(strcmp(in.news, "updated syshm Enhancements (\"syshm Helper\") in \"Test:System Folder:Extensions\". "
+			      "Mac OS is restarting.") == 0);
+	CHECK_EQ(fs.restarts, 1);
+
+	/* ... or starts after the answer: it's asked to quit before the installer goes in */
+	h.running = false;
+	install_begin(&in, volume_path, 0, false);
+	install_answer(&in, true, &h);
+	w = (struct install_idle){ &mem, &h, true, HZ, HZ, 1000, DRIVE, 0 };
+	for (unsigned k = 0; k < 40 && in.phase != INSTALL_INJECT; k++, w.tb += HZ / 20)
+		CHECK(!install_idle(&in, &w));
+	CHECK_EQ(in.phase, INSTALL_INJECT);
+	h.running = true;
+	w.trap = IDLE_TRAP;
+	CHECK(!install_idle(&in, &w));
+	CHECK(in.phase == INSTALL_QUITTING && h.quit);
+	h.quit = false;
 
 	/* one that doesn't quit: syshm goes ahead after a while */
 	h.running = true;
@@ -721,12 +799,11 @@ static void test_installer_apple(void)
 	install_answer(&in, true, &h);
 	uint64_t tb = HZ;
 	CHECK(idle_until_diverted(&in, &h, &tb));
-	run_installer(&in, &h);
+	run_installer(&in);
 	for (unsigned t = 0; t < TOOLS_FILES; t++)
 		CHECK(same_as(find(EXTENSIONS, tools[t].name), t));
 	CHECK(strcmp(in.news, "installed syshm Enhancements, syshm 3D Engine, syshm OpenGL Library, syshm OpenGL Memory "
-			      "and syshm OpenGL Utility in \"Test:System Folder:Extensions\". syshm Enhancements is "
-			      "running. Programs opened from now on find the 3D engine and syshm's OpenGL.") == 0);
+			      "and syshm OpenGL Utility in \"Test:System Folder:Extensions\". Mac OS is restarting.") == 0);
 	h.running = true;
 
 	struct item items[12] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
@@ -740,16 +817,15 @@ static void test_installer_apple(void)
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, true, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
-	run_installer(&in, &h);
+	run_installer(&in);
 	for (unsigned t = TOOLS_GL_FIRST; t < TOOLS_GL_FIRST + TOOLS_GL_FILES; t++)
 		CHECK(same_as(find(EXTENSIONS, tools[t].name), t));
 	for (unsigned k = 0; k < 3; k++)
 		CHECK(find(DISABLED, names[k]) && !find(EXTENSIONS, names[k]));
-	CHECK(strstr(in.news, "installed syshm OpenGL Library, syshm OpenGL Memory and syshm OpenGL Utility in "
+	CHECK(strcmp(in.news, "installed syshm OpenGL Library, syshm OpenGL Memory and syshm OpenGL Utility in "
 			      "\"Test:System Folder:Extensions\"; moved Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility "
-			      "to \"Test:System Folder:Extensions (Disabled)\". Programs opened from now on find syshm's "
-			      "OpenGL.") == in.news);
-	CHECK_EQ(fs.launches, 0);
+			      "to \"Test:System Folder:Extensions (Disabled)\". Mac OS is restarting.") == 0);
+	CHECK_EQ(fs.restarts, 1);
 
 	/* syshm's deleted (the user's doing): Apple's back, syshm's not installed */
 	for (unsigned t = TOOLS_GL_FIRST; t < TOOLS_GL_FIRST + TOOLS_GL_FILES; t++)
@@ -763,15 +839,23 @@ static void test_installer_apple(void)
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, true, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
-	run_installer(&in, &h);
+	run_installer(&in);
 	for (unsigned k = 0; k < 3; k++)
 		CHECK(find(EXTENSIONS, names[k]) && !find(DISABLED, names[k]));
 	CHECK(!find(EXTENSIONS, tools[TOOLS_GL_LIBRARY].name));
-	CHECK(strstr(in.news, "put Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility back in "
-			      "\"Test:System Folder:Extensions\". Programs opened from now on find Apple's OpenGL.") ==
-	      in.news);
+	CHECK(strcmp(in.news, "put Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility back in "
+			      "\"Test:System Folder:Extensions\". Mac OS is restarting.") == 0);
+	CHECK_EQ(fs.restarts, 2);
+	/* ... after which syshm's aren't offered again, in this run */
+	CHECK(in.check.apple_kept);
+	write_volume(items, with_apple(items, 4, EXTENSIONS, 80), 0);
+	install_begin(&in, volume_path, 0, false);
+	CHECK_EQ(in.phase, INSTALL_OFF);
+	in.check.apple_kept = false;            /* (another run) */
+	install_begin(&in, volume_path, 0, false);
+	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
 
-	/* one that can't move (one of that name in the way): said, the rest moved */
+	/* one that can't move (one of that name in the way): said, the rest moved, and no restart */
 	memset(&fs, 0, sizeof fs);
 	fs.next_id = 100;
 	for (unsigned k = 0; k < 3; k++)
@@ -781,11 +865,12 @@ static void test_installer_apple(void)
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, true, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
-	run_installer(&in, &h);
+	run_installer(&in);
 	CHECK(find(DISABLED, names[0]) && find(EXTENSIONS, names[1]) && find(DISABLED, names[2]));
 	CHECK(strstr(in.news, "; moved Apple's OpenGLLibrary and OpenGLUtility to \"Test:System Folder:Extensions "
 			      "(Disabled)\"; couldn't move Apple's OpenGLMemory: something of that name is in the way.") !=
 	      NULL);
+	CHECK(fs.flushes == 0 && fs.restarts == 0);
 }
 
 void test_install(void)

@@ -36,6 +36,7 @@ static int usage(void)
 		"                               the guest); runs in real time until closed. Once the\n"
 		"                               Finder is up, offers to install the guest tools on the\n"
 		"                               startup disk if they're missing or another syshm's\n"
+		"                               (then Mac OS restarts, as Special > Restart does)\n"
 		"      --realtime               guest time follows the host clock\n"
 		"      --instruction-time       with --window: guest time counts instructions, as\n"
 		"                               without a window (scripted runs are reproducible)\n"

@@ -276,14 +276,20 @@ static enum ui_action prompt(const struct ui_state *s)
 	ImGui::TextUnformatted(s->prompt);
 	ImGui::PopTextWrapPos();
 	ImGui::Dummy(ImVec2(PROMPT_WIDTH, 4));
-	float buttons = s->prompt_no ? 2 * PROMPT_BUTTON + ImGui::GetStyle().ItemSpacing.x : PROMPT_BUTTON;
+	/* (as wide as the wider label needs: "Put Back and Restart") */
+	const char *const labels[] = { s->prompt_no, s->prompt_yes };
+	float wide = PROMPT_BUTTON, pad = 2 * ImGui::GetStyle().FramePadding.x;
+	for (const char *label : labels)
+		if (label && ImGui::CalcTextSize(label).x + pad > wide)
+			wide = ImGui::CalcTextSize(label).x + pad;
+	float buttons = s->prompt_no ? 2 * wide + ImGui::GetStyle().ItemSpacing.x : wide;
 	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + PROMPT_WIDTH - buttons);
 	if (s->prompt_no) {
-		if (ImGui::Button(s->prompt_no, ImVec2(PROMPT_BUTTON, 0)))
+		if (ImGui::Button(s->prompt_no, ImVec2(wide, 0)))
 			action = UI_PROMPT_NO;
 		ImGui::SameLine();
 	}
-	if (ImGui::Button(s->prompt_yes, ImVec2(PROMPT_BUTTON, 0)))
+	if (ImGui::Button(s->prompt_yes, ImVec2(wide, 0)))
 		action = UI_PROMPT_YES;
 	if (!s->menu)
 		ImGui::SetItemDefaultFocus();

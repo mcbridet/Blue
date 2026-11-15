@@ -22,9 +22,13 @@
  *   - The installer's logic runs in syshm (install_call()): through
  *     InterfaceLib, the File Manager writes each tool to a temporary file in
  *     the folder it goes in, which then takes the old copy's place (so that
- *     no file is ever left half written), and LaunchApplication starts
- *     syshm Enhancements. A copy of Enhancements that's running (an older
- *     one) is asked to quit first (helper.quit).
+ *     no file is ever left half written). A copy of Enhancements that's
+ *     running (an older one) is asked to quit first (helper.quit): its file
+ *     is in use while it runs, and can't be replaced.
+ *   - Once everything is in place (and only then), FlushVol, and the Process
+ *     Manager is sent a Restart Apple event: Mac OS restarts as from Special
+ *     > Restart (programs can ask to save their work first, or stop it), and
+ *     the tools load as any extension does.
  *
  * syshm's OpenGL libraries have the fragment names of Apple's (Mac OS 9's
  * OpenGLLibrary, OpenGLMemory and OpenGLUtility), so only one of each can be
@@ -74,6 +78,7 @@ struct install_check {
 	} apple[INSTALL_APPLE_GL];
 	bool apple_disable;             /* syshm's are all in the Extensions folder, and some of Apple's too */
 	bool apple_restore;             /* syshm's aren't anywhere, Apple's only in Extensions (Disabled) */
+	bool apple_kept;                /* Apple's were put back earlier in this run: syshm's aren't offered */
 };
 
 /*
@@ -108,7 +113,7 @@ struct install {
 	int answer;                     /* a script's, before the question: 1 yes, -1 no */
 	bool ask;                       /* the question is to be shown */
 	char question[640];
-	const char *yes;                /* "Install" or "Update" */
+	const char *yes;                /* "Install and Restart", "Update and Restart", ... */
 	char news[1024];                /* the outcome, to be shown once (news_ready) */
 	bool news_ready;
 	/* until the Finder is up: the Finder is the current application, idling without disk transfers */
@@ -125,8 +130,7 @@ struct install {
 	int16_t vref, refnum;
 	uint32_t ext_dir, dir, scan_dir, scan_index;
 	bool scanned_ext, replacing, temp_made, temp_open, old_deleted;
-	bool quit_asked, old_found;     /* the running Enhancements was asked to quit; its copy was found ... */
-	uint32_t old_dir;               /* ... here */
+	bool quit_asked;                /* the running Enhancements was asked to quit */
 	char ext_name[HFSREAD_NAME_MAX];        /* the Extensions folder's */
 	struct install_result {
 		bool done, replaced;
@@ -145,8 +149,9 @@ struct install {
 	int16_t error;
 	const char *error_doing;
 	unsigned error_tool;
-	bool launch_tried, relaunch;    /* (relaunch: the old Enhancements, not replaced after all) */
-	int16_t launch_error;
+	/* the restart: asked for (once all went well), or not (why) */
+	bool restarting;
+	int16_t restart_error;
 };
 
 /* What the installer sees at an idle call */
@@ -167,6 +172,9 @@ void install_init(struct install *in);
  * Looks at the startup disk (partition `part` of the image at `path`;
  * `read_only` if it's attached so) before Mac OS starts, and says what it
  * found. From then on, the tools are offered if anything's to be done.
+ * `check.apple_kept` is kept as it was (once Apple's OpenGL libraries have
+ * been put back, syshm's aren't offered again after the restart that
+ * follows, nor later in the run: see nk.c).
  */
 void install_begin(struct install *in, const char *path, unsigned part, bool read_only);
 
@@ -185,6 +193,6 @@ void install_finder(struct install *in, uint64_t tb);
 void install_answer(struct install *in, bool yes, struct helper *h);
 
 /* The installer's host call: its main routine, or a resumption after a callout. */
-void install_call(struct install *in, struct ndrv_call *c, struct helper *h);
+void install_call(struct install *in, struct ndrv_call *c);
 
 #endif

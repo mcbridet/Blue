@@ -658,19 +658,26 @@ starts it looks in the startup disk's System Folder (its folders,
 Extensions whatever its name and Extensions (Disabled) among them) for
 them, and once the Finder is up, if one is missing or isn't this syshm's
 (both forks compared with what it makes), a box over the screen says so,
-with Install (or Update) and Not Now; Mac OS runs on meanwhile. On
-Install, Mac OS writes the files itself (see Findings in plan.md): each
-goes to a temporary file in the folder it belongs in, which then takes the
-old copy's place, so an error (a full or locked disk) leaves nothing half
-written; a disabled copy is updated where it is and stays disabled.
-syshm Enhancements starts at once (an older one running is asked to quit
-first), and programs opened from then on find the 3D engine, without a
-restart. This works on Mac OS 8.5, 8.6 and 9.2.2 installed on disk images
-(9.1 by the same path; there was no installed 9.1 to try). The outcome is
-shown and printed:
+with Install and Restart (or Update and Restart) and Not Now; Mac OS runs
+on meanwhile. On Install, Mac OS writes the files itself (see Findings in
+plan.md): each goes to a temporary file in the folder it belongs in, which
+then takes the old copy's place, so an error (a full or locked disk) leaves
+nothing half written; a disabled copy is updated where it is and stays
+disabled. An older syshm Enhancements that's running is asked to quit
+first (its file is in use while it runs). Once everything is in place,
+Mac OS restarts as Special > Restart does (syshm's installer sends the
+Process Manager the Restart Apple event): programs are asked to quit, and
+can ask to save their work first, or stop the restart (the tools are in
+place then, and load at the next restart). Afterwards the tools load as
+any extension does: syshm Enhancements runs, programs find the 3D engine
+and syshm's OpenGL, and nothing is offered. If anything goes wrong, Mac
+OS doesn't restart, and the box says what. This works on Mac OS 8.5, 8.6
+and 9.2.2 installed on disk images (9.1 by the same path; there was no
+installed 9.1 to try). The outcome is shown (the box stays through the
+restart, until OK) and printed:
 
 ```
-tools: installed syshm Enhancements, syshm 3D Engine, syshm OpenGL Library, syshm OpenGL Memory and syshm OpenGL Utility in "Macintosh HD:System Folder:Extensions". syshm Enhancements is running. Programs opened from now on find the 3D engine and syshm's OpenGL.
+tools: installed syshm Enhancements, syshm 3D Engine, syshm OpenGL Library, syshm OpenGL Memory and syshm OpenGL Utility in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
 ```
 
 Mac OS 9 has OpenGL libraries of Apple's with the names syshm's have
@@ -678,25 +685,26 @@ Mac OS 9 has OpenGL libraries of Apple's with the names syshm's have
 enabled. Once syshm's are in Extensions, the installer moves Apple's to
 Extensions (Disabled) and says so (the offer says it will). If syshm's
 are gone (deleted by hand) while Apple's are disabled, the offer is to put
-Apple's back (Put Back) instead of installing syshm's. Checked on 9.2.2:
+Apple's back (Put Back and Restart) instead of installing syshm's, and
+syshm's aren't offered again for the rest of the run. Checked on 9.2.2:
 
 ```
-tools: installed syshm OpenGL Library, syshm OpenGL Memory and syshm OpenGL Utility in "MacOS9Lives:System Folder:Extensions"; moved Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility to "MacOS9Lives:System Folder:Extensions (Disabled)". Programs opened from now on find syshm's OpenGL.
+tools: installed syshm OpenGL Library, syshm OpenGL Memory and syshm OpenGL Utility in "MacOS9Lives:System Folder:Extensions"; moved Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility to "MacOS9Lives:System Folder:Extensions (Disabled)". Mac OS is restarting.
 ```
 
 Nothing is offered when the startup disk is a CD, an image attached
 read-only, or a locked volume, nor without a window: an input script can
 answer instead (`tools install`, `tools later`), and that turns the check
-on. The startup disk is the partition the ROM file came from (with
+on; `tools install` restarts Mac OS too, and instruction-time runs stay
+reproducible. The startup disk is the partition the ROM file came from (with
 `--rom`, the first with boot blocks).
 
 They can still be installed by hand: `syshm tools create FILE` writes a
 small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
-(read-only):
+(read-only); drag them onto the System Folder (the Finder puts them in
+Extensions) and restart, as syshm's installer does:
 
-- **syshm Enhancements**: drag it onto the System Folder (the Finder puts it in
-  Extensions) and restart (or let syshm install it). From then on, resizing
-  the window changes the
+- **syshm Enhancements**: from then on, resizing the window changes the
   screen's resolution to match once the window has stopped changing (while
   it's being dragged, the window scales the screen), and the Finder lays out
   the desktop again. A
@@ -1536,7 +1544,7 @@ counts, for example:
 3600000000 screenshot after.png
 3700000000 clock 800             # guest time at 800 million instructions a second from here
 3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
-0 tools install                  # the answer to the offer to install the guest tools (or "later")
+0 tools install                  # the answer to the offer to install the guest tools (or "later"): Mac OS then restarts
 3900000000 floppy insert Disk 2.img
 3950000000 cdrom insert Game CD 2.iso
 4000000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)

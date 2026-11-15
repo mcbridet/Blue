@@ -518,8 +518,9 @@ struct machine {
 	bool mouse_captured;            /* host motion goes to the ADB mouse (see follow_cursor()) */
 	bool mouse_released;            /* ... but the user let the pointer go (Control-Option) */
 	bool paused;                    /* the menu is open (F12): the guest doesn't run */
-	bool prompting;                 /* a question or news is shown over the screen (the guest runs) */
 	bool restart, shut_down;        /* ... and this was chosen in it */
+	bool prompting;                 /* a question or news is shown over the screen (the guest runs) */
+	bool prompt_news;               /* ... news, only to be read (it stays through a restart) */
 	char menu_status[480];          /* news it shows (where a screenshot went) */
 	/* the status bar (see status_lights()) */
 	uint64_t led_count[UI_LEDS], led_written[UI_LEDS];      /* devices' counts at the last frame */
@@ -1715,7 +1716,8 @@ static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
 	case UI_PROMPT_YES:
 	case UI_PROMPT_NO:
 		m->prompting = false;
-		install_answer(&m->install, action == UI_PROMPT_YES, &m->helper);
+		if (!m->prompt_news)
+			install_answer(&m->install, action == UI_PROMPT_YES, &m->helper);
 		follow_cursor(m, now);
 		break;
 	default:
@@ -2928,7 +2930,9 @@ static const char *kcall_vm_dispatch(struct machine *m)
  */
 static void tools_startup(struct machine *m, const struct nk_boot_options *opt)
 {
+	bool apple_kept = m->install.check.apple_kept;  /* (across a restart: see restart_machine()) */
 	install_init(&m->install);
+	m->install.check.apple_kept = apple_kept;
 	if (!m->tools_offer)
 		return;
 	bool found = opt->rom_from_disk && opt->rom_disk < opt->disks;
@@ -2951,7 +2955,7 @@ static void tools_startup(struct machine *m, const struct nk_boot_options *opt)
 static void tools_show(struct machine *m)
 {
 	struct install *in = &m->install;
-	bool shown = false;
+	bool shown = false, news = false;
 	if (in->ask) {
 		in->ask = false;
 		shown = m->display && display_prompt(m->display, in->question, in->yes, "Not Now");
@@ -2961,10 +2965,11 @@ static void tools_show(struct machine *m)
 		char text[sizeof in->news];
 		snprintf(text, sizeof text, "%c%s", in->news[0] >= 'a' && in->news[0] <= 'z' ? in->news[0] - 'a' + 'A' :
 			 in->news[0], in->news[0] ? in->news + 1 : "");
-		shown = m->display && display_prompt(m->display, text, "OK", NULL);
+		shown = news = m->display && display_prompt(m->display, text, "OK", NULL);
 	}
 	if (shown) {
 		m->prompting = true;
+		m->prompt_news = news;
 		follow_cursor(m, host_ns());    /* (the pointer is the prompt's) */
 	}
 }
@@ -3184,7 +3189,7 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		gltest_call(&m->gltest, &c);
 		break;
 	case HOSTCALL_TOOLS_INSTALL:
-		install_call(&m->install, &c, &m->helper);
+		install_call(&m->install, &c);
 		tools_show(m);
 		break;
 	case HOSTCALL_LANLIB:
@@ -3835,7 +3840,9 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->redraw = true;
 	m->scripted = old.scripted;
 	m->tools_offer = old.tools_offer;
-	if (old.prompting)
+	if (old.prompting && old.prompt_news)   /* (the installer's news stays: Mac OS restarting is in it) */
+		m->prompting = m->prompt_news = true;
+	else if (old.prompting)
 		display_prompt(m->display, NULL, NULL, NULL);
 	m->realtime = old.realtime;
 	m->idle_sleep = old.idle_sleep;
@@ -3859,6 +3866,7 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 	memcpy(m->exceptions, old.exceptions, sizeof m->exceptions);
 	if (start_machine(m, opt))
 		return -1;
+	m->install.check.apple_kept = old.install.check.apple_kept;
 	tools_startup(m, opt);
 	memcpy(m->rtas.nvram, old.rtas.nvram, sizeof m->rtas.nvram);
 	m->cpu.icount = old.cpu.icount;
