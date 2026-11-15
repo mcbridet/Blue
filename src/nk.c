@@ -943,6 +943,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->rave.fps = getenv("SYSHM_RAVE_FPS") != NULL;
 	opengl_init(&m->opengl, &m->mem);
 	m->opengl.gpu = m->gpu;
+	m->opengl.video = &m->video;
 	m->opengl.log = getenv("SYSHM_LOG_GL") != NULL;
 	m->opengl.fps = getenv("SYSHM_GL_FPS") != NULL;
 	gltest_init(&m->gltest);

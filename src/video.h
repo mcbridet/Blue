@@ -143,6 +143,16 @@ bool video_request_size(struct video *v, unsigned width, unsigned height);
  */
 bool video_take_request(struct video *v, uint32_t *mode_id, uint32_t *depth_mode);
 void video_request_done(struct video *v);
+
+/*
+ * The display mode ID and depth mode (as the Display Manager takes them)
+ * the screen is in now, and those of a mode `width` x `height` at `bits` a
+ * pixel that the framebuffer holds (a fixed mode, or the custom one the
+ * screen is in), if there's one
+ */
+void video_mode_now(const struct video *v, uint32_t *mode_id, uint32_t *depth_mode);
+bool video_mode_for(const struct video *v, unsigned width, unsigned height, unsigned bits, uint32_t *mode_id,
+		    uint32_t *depth_mode);
 unsigned video_bpp(const struct video *v);
 unsigned video_row_bytes(const struct video *v);
 

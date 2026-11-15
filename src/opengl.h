@@ -7,8 +7,8 @@
  * host call (see opengl.c). The host keeps each context's state, its front
  * end (glfront.h) draws with the 3D backend (surface.h: the GPU or
  * raster.c), and a frame goes into the context's drawable in guest memory
- * (a window's or the screen's port, or an offscreen buffer) when it's
- * swapped. See docs/opengl-plan.md.
+ * (a window's or the screen's port, an offscreen buffer, or the whole
+ * screen) when it's swapped. See docs/opengl-plan.md.
  *
  * A context (AGLContext) is a structure in the library's data laid out as
  * Apple's: its handle, then the dispatch table of its gl functions, which
@@ -27,6 +27,7 @@
 #include "mem.h"
 #include "ndrv.h"
 #include "surface.h"
+#include "video.h"
 
 #define OPENGL_CONTEXTS 8               /* per process */
 #define OPENGL_INSTANCES 16             /* processes using the library at once */
@@ -39,6 +40,7 @@ struct opengl_context {
 	uint32_t guest;                 /* its AGLContext */
 	uint32_t format;                /* its pixel format's flags (PF_ in opengl.c) */
 	unsigned depth_bits, stencil_bits, pixel_size;
+	uint32_t device;                /* its pixel format's GDevice (a full screen's) */
 	/* the drawable */
 	int kind;                       /* (DRAWABLE_ in opengl.c) */
 	uint32_t port;                  /* CGrafPtr */
@@ -66,16 +68,42 @@ struct opengl_context {
 	size_t given_len;
 };
 
+/*
+ * A call that's calling the Toolbox (see opengl.c's "callouts"): what it
+ * is, how far it's got, the context, what it returns at the end; for
+ * aglUseFont, its arguments, the font's measures, the glyph being drawn,
+ * the port to go back to and the offscreen world drawn in
+ */
+struct opengl_job {
+	unsigned kind, step;
+	uint32_t context;
+	uint32_t result;
+	bool terminating;               /* (the process is going: the instance after) */
+	uint32_t mode, depth;           /* (the screen's before a switch to a full screen) */
+	int32_t width, height;
+	int32_t font, face, size, first, count, base;
+	int32_t ascent, descent, extra, glyph, char_width;
+	uint32_t port, device, gworld, pixmap, pixels, row_bytes;
+};
+
 struct opengl_instance {
 	uint32_t toc;                   /* its data (0: none) */
+	bool stale;                     /* its library is an older syshm's: left alone */
 	uint32_t agl_error;
 	struct opengl_context ctx[OPENGL_CONTEXTS];
+	struct opengl_job job;
 };
 
 struct opengl {
 	struct mem *mem;
 	struct ndrv_layout library, memory, utility;    /* of each fragment */
 	struct gpu *gpu;                /* (the caller's, as rave.h's) */
+	struct video *video;            /* (the caller's: the screen, whose modes a full screen switches between) */
+	bool calling_out;               /* (the call goes on after a callout) */
+	/* the screen's mode before a full screen context switched it, to go back to; that context's */
+	bool fs_saved;
+	uint32_t fs_mode, fs_depth, fs_device, fs_toc, fs_context;
+	bool told_stale;
 	bool gpu_asked;
 	struct opengl_instance inst[OPENGL_INSTANCES];
 	bool log;                       /* SYSHM_LOG_GL: every call */
@@ -98,6 +126,9 @@ void opengl_free(struct opengl *o);
 void opengl_library_call(struct opengl *o, struct ndrv_call *c);
 void opengl_memory_call(struct opengl *o, struct ndrv_call *c);
 void opengl_utility_call(struct opengl *o, struct ndrv_call *c);
+
+/* OpenGLLibrary's import k's name (all InterfaceLib's), NULL past the last */
+const char *opengl_library_import(unsigned k);
 
 /* The fragments; each returns its size (0 if `size` is too small: OPENGL_LIBRARY_MAX is enough for any) */
 #define OPENGL_LIBRARY_MAX (256u << 10)

@@ -20,7 +20,7 @@
 	X(glMaterialfv) X(glMaterialf) X(glFogi) X(glFogf) X(glFogfv) X(glEnableClientState) \
 	X(glDisableClientState) X(glVertexPointer) X(glNormalPointer) X(glDrawElements) X(glStencilFunc) \
 	X(glStencilOp) X(glColorMask) X(glNewList) X(glEndList) X(glCallList) X(glRasterPos2f) X(glDrawPixels) \
-	X(glBitmap) X(glCopyPixels) X(glPixelZoom)
+	X(glBitmap) X(glCopyPixels) X(glPixelZoom) X(aglSetFullScreen) X(aglUseFont) X(glListBase) X(glCallLists)
 #define GLU_IMPORTS(X) X(gluNewQuadric) X(gluDeleteQuadric) X(gluQuadricDrawStyle) X(gluQuadricNormals) \
 	X(gluSphere) X(gluDisk) X(gluPerspective) X(gluLookAt) X(gluOrtho2D)
 
@@ -56,7 +56,8 @@ static const char *const import_names[I_COUNT] = {
  * pixel format, the context, a quadric), then "lit"'s vectors (a light's
  * position and color, a material's colors, the fog's color) and a mesh's
  * arrays (positions, normals, indices), "lists"' colors, "pixels"' image
- * (16 x 16 RGBA) and glyph (16 x 16 bits, in rows of 4 bytes)
+ * (16 x 16 RGBA) and glyph (16 x 16 bits, in rows of 4 bytes),
+ * "fullscreen"'s pixel format's attributes, "font"'s lines of text
  */
 #define MESH_X 7
 #define MESH_Z 5
@@ -67,7 +68,12 @@ enum { D_QD = 0, D_THE_PORT = 202, D_EVENT = 208, D_RECT = 224, D_TITLE = 232, D
        D_DIFFUSE = D_LIGHT_COLOR + 16, D_SPECULAR = D_DIFFUSE + 16, D_FOG_COLOR = D_SPECULAR + 16,
        D_POSITIONS = D_FOG_COLOR + 16, D_NORMALS = D_POSITIONS + 12 * MESH_X * MESH_Z,
        D_INDICES = D_NORMALS + 12 * MESH_X * MESH_Z, D_RED = D_INDICES + 2 * MESH_INDICES, D_GREEN = D_RED + 16,
-       D_IMAGE = D_GREEN + 16, D_GLYPH = D_IMAGE + 16 * 16 * 4, D_SIZE = D_GLYPH + 16 * 4 };
+       D_IMAGE = D_GREEN + 16, D_GLYPH = D_IMAGE + 16 * 16 * 4, D_FULL_ATTRIBS = D_GLYPH + 16 * 4,
+       D_TEXT = D_FULL_ATTRIBS + 32, D_TEXT2 = D_TEXT + 32, D_SIZE = D_TEXT2 + 32 };
+#define TEXT "syshm's aglUseFont"
+#define TEXT2 "Geneva 18, bold: (aj)"
+#define FULL_WIDTH 640
+#define FULL_HEIGHT 480
 #define WINDOW_LEFT 40
 #define WINDOW_TOP 60
 #define WINDOW_WIDTH 320
@@ -78,6 +84,7 @@ enum { D_QD = 0, D_THE_PORT = 202, D_EVENT = 208, D_RECT = 224, D_TITLE = 232, D
 #define AGL_DOUBLEBUFFER 5
 #define AGL_DEPTH_SIZE 12
 #define AGL_STENCIL_SIZE 13
+#define AGL_FULLSCREEN 54
 #define AGL_ACCELERATED 73
 #define GL_DEPTH_BUFFER_BIT 0x0100u
 #define GL_COLOR_BUFFER_BIT 0x4000u
@@ -123,6 +130,9 @@ enum { D_QD = 0, D_THE_PORT = 202, D_EVENT = 208, D_RECT = 224, D_TITLE = 232, D
 #define GL_RGBA 0x1908u
 #define GL_UNSIGNED_BYTE 0x1401u
 #define GL_COLOR 0x1800u
+#define FONT_TIMES 20
+#define FONT_GENEVA 3
+#define BOLD 1
 #define GLU_FLAT 100001u
 #define GLU_LINE 100011u
 #define GLU_FILL 100012u
@@ -151,6 +161,13 @@ size_t gltest_build(uint8_t *out, size_t size, struct ndrv_layout *layout)
 	_Static_assert(D_ATTRIBS + sizeof attribs <= D_VERTEX, "room for the attributes");
 	for (unsigned k = 0; k < sizeof attribs / sizeof attribs[0]; k++)
 		put_be32(data + D_ATTRIBS + 4 * k, attribs[k]);
+	static const uint32_t full[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_DEPTH_SIZE, 16, AGL_FULLSCREEN, 0 };
+	_Static_assert(sizeof full <= D_TEXT - D_FULL_ATTRIBS, "room for the full screen's attributes");
+	for (unsigned k = 0; k < sizeof full / sizeof full[0]; k++)
+		put_be32(data + D_FULL_ATTRIBS + 4 * k, full[k]);
+	_Static_assert(sizeof TEXT <= D_TEXT2 - D_TEXT && sizeof TEXT2 <= D_SIZE - D_TEXT2, "room for the text");
+	memcpy(data + D_TEXT, TEXT, sizeof TEXT);
+	memcpy(data + D_TEXT2, TEXT2, sizeof TEXT2);
 	static const uint32_t vertex[3] = { 0x3FB33333u, 0x3F99999Au, 0 };     /* (1.4, 1.2, 0) */
 	for (unsigned k = 0; k < 3; k++)
 		put_be32(data + D_VERTEX + 4 * k, vertex[k]);
@@ -504,16 +521,64 @@ static const struct gltest_step scene_pixels[] = {
 	CALL(aglSwapBuffers, VAR(V_CONTEXT)),
 };
 
+/*
+ * "fullscreen": first, a context of a full screen pixel format (the main
+ * device's), attached to the screen at 640 x 480 (a switch of mode, and of
+ * depth too if the screen's isn't 32 bits); then "triangle" drawn there,
+ * again after each event (over what the Finder and the window draw)
+ */
+static const struct gltest_step setup_fullscreen[] = {
+	CALL_INTO(V_FORMAT, aglChoosePixelFormat, DATA(D_VARS + 4 * V_DEVICE), 1, DATA(D_FULL_ATTRIBS)),
+	CALL_INTO(V_CONTEXT, aglCreateContext, VAR(V_FORMAT), 0),
+	CALL(aglSetCurrentContext, VAR(V_CONTEXT)),
+	CALL(aglSetFullScreen, VAR(V_CONTEXT), FULL_WIDTH, FULL_HEIGHT, 0, 0),
+};
+
+/*
+ * "font": first, display lists of Times 24's glyphs (aglUseFont, from the
+ * space on) and Geneva 18 bold's; then a line of each in window
+ * coordinates, by glCallLists
+ */
+static const struct gltest_step setup_font[] = {
+	CALL(aglUseFont, VAR(V_CONTEXT), FONT_TIMES, 0, 24, 32, 96, 1000),
+	CALL(aglUseFont, VAR(V_CONTEXT), FONT_GENEVA, BOLD, 18, 32, 96, 2000),
+};
+
+static const struct gltest_step scene_font[] = {
+	CALL_F(glClearColor, 0.95, 0.95, 0.85, 1.0),
+	CALL(glClear, GL_COLOR_BUFFER_BIT),
+	CALL(glMatrixMode, GL_PROJECTION),
+	CALL0(glLoadIdentity),
+	CALL_D(gluOrtho2D, 0.0, 320.0, 0.0, 240.0),
+	CALL(glMatrixMode, GL_MODELVIEW),
+	CALL0(glLoadIdentity),
+	CALL_F(glColor3f, 0.1, 0.2, 0.6),
+	CALL_F(glRasterPos2f, 16.0, 160.0),
+	CALL(glListBase, 1000 - 32),
+	CALL(glCallLists, sizeof TEXT - 1, GL_UNSIGNED_BYTE, DATA(D_TEXT)),
+	CALL_F(glColor3f, 0.7, 0.1, 0.1),
+	CALL_F(glRasterPos2f, 16.0, 100.0),
+	CALL(glListBase, 2000 - 32),
+	CALL(glCallLists, sizeof TEXT2 - 1, GL_UNSIGNED_BYTE, DATA(D_TEXT2)),
+	CALL(aglSwapBuffers, VAR(V_CONTEXT)),
+};
+
+#define STEPS(s) s, sizeof s / sizeof s[0]
 static const struct {
 	const char *name;
 	const struct gltest_step *steps;
 	unsigned n;
+	const struct gltest_step *setup;        /* (once, after starting) */
+	unsigned nsetup;
+	bool every_event;                       /* (drawn again after each event, not just updates) */
 } scenes[] = {
-	{ "clear", scene_clear, sizeof scene_clear / sizeof scene_clear[0] },
-	{ "triangle", scene_triangle, sizeof scene_triangle / sizeof scene_triangle[0] },
-	{ "lit", scene_lit, sizeof scene_lit / sizeof scene_lit[0] },
-	{ "lists", scene_lists, sizeof scene_lists / sizeof scene_lists[0] },
-	{ "pixels", scene_pixels, sizeof scene_pixels / sizeof scene_pixels[0] },
+	{ "clear", STEPS(scene_clear), NULL, 0, false },
+	{ "triangle", STEPS(scene_triangle), NULL, 0, false },
+	{ "lit", STEPS(scene_lit), NULL, 0, false },
+	{ "lists", STEPS(scene_lists), NULL, 0, false },
+	{ "pixels", STEPS(scene_pixels), NULL, 0, false },
+	{ "fullscreen", STEPS(scene_triangle), STEPS(setup_fullscreen), true },
+	{ "font", STEPS(scene_font), STEPS(setup_font), false },
 };
 
 void gltest_init(struct gltest *t)
@@ -523,20 +588,22 @@ void gltest_init(struct gltest *t)
 	gltest_build(scratch, sizeof scratch, &t->layout);
 	const char *want = getenv("SYSHM_GL_TEST_SCENE"), *depth = getenv("SYSHM_GL_TEST_DEPTH");
 	t->depth = depth && atoi(depth) == 16 ? 16 : 32;
-	t->steps = scenes[0].steps;
-	t->nsteps = scenes[0].n;
+	unsigned scene = 0;
 	for (unsigned k = 0; want && k < sizeof scenes / sizeof scenes[0]; k++)
-		if (!strcmp(scenes[k].name, want)) {
-			t->steps = scenes[k].steps;
-			t->nsteps = scenes[k].n;
-		}
+		if (!strcmp(scenes[k].name, want))
+			scene = k;
+	t->steps = scenes[scene].steps;
+	t->nsteps = scenes[scene].n;
+	t->setup = scenes[scene].setup;
+	t->nsetup = scenes[scene].nsetup;
+	t->every_event = scenes[scene].every_event;
 }
 
 /* ---- running ---------------------------------------------------------------------- */
 
 /* State words: what it's doing, the step, and what comes after drawing */
 enum { S_PHASE, S_STEP, S_AFTER };
-enum { P_START, P_DRAW, P_WAIT, P_BEGIN, P_END };
+enum { P_START, P_SETUP, P_DRAW, P_WAIT, P_BEGIN, P_END };
 
 static uint32_t word(const struct gltest *t, const struct ndrv_call *c, uint32_t w)
 {
@@ -569,6 +636,9 @@ static void step(struct gltest *t, struct ndrv_call *c, unsigned phase, unsigned
 	case P_START:
 		call(t, c, &start[k]);
 		return;
+	case P_SETUP:
+		call(t, c, &t->setup[k]);
+		return;
 	case P_DRAW:
 		call(t, c, &t->steps[k]);
 		return;
@@ -597,6 +667,7 @@ void gltest_call(struct gltest *t, struct ndrv_call *c)
 	uint32_t r = c->arg[0], phase = ndrv_state(c, S_PHASE), k = ndrv_state(c, S_STEP);
 	uint32_t after = ndrv_state(c, S_AFTER);
 	const struct gltest_step *done = phase == P_START && k < sizeof start / sizeof start[0] ? &start[k] :
+					 phase == P_SETUP && k < t->nsetup ? &t->setup[k] :
 					 phase == P_DRAW && k < t->nsteps ? &t->steps[k] : NULL;
 	if (done && done->result)
 		mem_w32(m, data + D_VARS + 4 * done->result, r);
@@ -611,6 +682,18 @@ void gltest_call(struct gltest *t, struct ndrv_call *c)
 	case P_START:
 		if (k + 1 < sizeof start / sizeof start[0])
 			step(t, c, P_START, k + 1, 0);
+		else if (t->nsetup)
+			step(t, c, P_SETUP, 0, 0);
+		else
+			step(t, c, P_DRAW, 0, P_WAIT);
+		return;
+	case P_SETUP:
+		if (done->import == I_aglSetFullScreen || done->import == I_aglUseFont) {
+			printf("gltest: %s = %u\n", import_names[done->import], r & 0xFF);
+			fflush(stdout);
+		}
+		if (k + 1 < t->nsetup)
+			step(t, c, P_SETUP, k + 1, 0);
 		else
 			step(t, c, P_DRAW, 0, P_WAIT);
 		return;
@@ -626,6 +709,8 @@ void gltest_call(struct gltest *t, struct ndrv_call *c)
 		if (mem_r16(m, data + D_EVENT) == UPDATE_EVENT &&
 		    mem_r32(m, data + D_EVENT + 2) == word(t, c, VAR(V_WINDOW)))
 			step(t, c, P_BEGIN, 0, 0);
+		else if (t->every_event)
+			step(t, c, P_DRAW, 0, P_WAIT);
 		else
 			step(t, c, P_WAIT, 0, 0);
 		return;

@@ -2677,6 +2677,322 @@ static void test_mesa(void)
 }
 #endif
 
+/* ---- aglSetFullScreen and aglUseFont: the Toolbox's calls answered by fakes ----------------------- */
+
+#define TOOLBOX_TV 0x7100u      /* (import k's fake TVector: TOOLBOX_TV + 16 k) */
+#define FS_DEVICE_H 0x50600u    /* a device for full screens, its pixmap; its screen at FS_PIXELS */
+#define FS_DEVICE 0x50610u
+#define FS_PIXMAP_H 0x50700u
+#define FS_PIXMAP 0x50710u
+#define FS_PIXELS 0x400000u     /* (the fake screen's framebuffer: 1280 x 1024 x 32 bits at most) */
+#define FS_SIZE 0x500000u
+#define FONT_PORT 0x51000u      /* the port aglUseFont's caller has; the offscreen worlds, their pixmap, pixels */
+#define FONT_DEVICE 0x51100u
+#define FONT_WORLD 0x51200u
+#define FONT_PIXMAP_H 0x51300u
+#define FONT_PIXMAP 0x51310u
+#define FONT_PIXELS 0x52000u
+
+static struct video vid;
+static struct {
+	unsigned calls[32];                     /* (each import's) */
+	unsigned switches;                      /* DMSetDisplayMode's: the last's mode and depth mode */
+	uint32_t mode, depth;
+	bool fail_switch, fail_world;           /* (the next DMSetDisplayMode fails; NewGWorld does) */
+	uint32_t port, device;                  /* SetGWorld's */
+	unsigned worlds, disposed;
+	int size, pen_h, pen_v, width, height, row_bytes;
+} tb;
+
+/* The fake screen's device in the fake display's mode (as the Display Manager leaves it) */
+static void fs_device(void)
+{
+	unsigned w = video_width(&vid), h = video_height(&vid), bits = video_bpp(&vid);
+	mem_w32(&mem, FS_DEVICE_H, FS_DEVICE);
+	mem_w32(&mem, FS_DEVICE + 22, FS_PIXMAP_H);
+	mem_w32(&mem, FS_PIXMAP_H, FS_PIXMAP);
+	mem_w32(&mem, FS_PIXMAP, FS_PIXELS);
+	mem_w16(&mem, FS_PIXMAP + 4, (uint16_t)(0x8000 | w * bits / 8));
+	const uint16_t bounds[4] = { 0, 0, (uint16_t)h, (uint16_t)w };
+	for (int k = 0; k < 4; k++)
+		mem_w16(&mem, FS_PIXMAP + 6 + 2 * k, bounds[k]);
+	mem_w16(&mem, FS_PIXMAP + 32, (uint16_t)bits);
+}
+
+/* The fake glyph of character c drawn with the pen at (h, v): a stem, the baseline's row, a dot by c */
+static bool fake_glyph(int c, int h, int v, int x, int y)
+{
+	int ascent = tb.size * 3 / 4, descent = tb.size / 4, width = 4 + c % 3;
+	return (x == h && y >= v - ascent && y < v + descent) || (y == v - 1 && x >= h && x < h + width) ||
+	       (x == h + 1 + c % 3 && y == v - ascent);
+}
+
+/* Import k's fake: its result */
+static uint32_t toolbox(unsigned k, const uint32_t *a)
+{
+	const char *name = opengl_library_import(k);
+	tb.calls[k]++;
+	if (!strcmp(name, "DMSetDisplayMode")) {
+		CHECK_EQ(a[0], FS_DEVICE_H);
+		if (tb.fail_switch) {
+			tb.fail_switch = false;
+			return 0xFFFFFFFFu;
+		}
+		tb.switches++;
+		tb.mode = a[1];
+		tb.depth = mem_r32(&mem, a[2]);
+		vid.mode = tb.mode - 1;
+		vid.depth = tb.depth - 0x80;
+		fs_device();
+	} else if (!strcmp(name, "RealFont")) {
+		return a[0] == 3;
+	} else if (!strcmp(name, "GetGWorld")) {
+		mem_w32(&mem, a[0], FONT_PORT);
+		mem_w32(&mem, a[1], FONT_DEVICE);
+	} else if (!strcmp(name, "SetGWorld")) {
+		tb.port = a[0];
+		tb.device = a[1];
+	} else if (!strcmp(name, "NewGWorld")) {
+		CHECK_EQ(a[1], 1);
+		if (tb.fail_world)
+			return 0xFFFFFF94u;     /* (memFullErr) */
+		tb.worlds++;
+		tb.width = (int16_t)mem_r16(&mem, a[2] + 6) - (int16_t)mem_r16(&mem, a[2] + 2);
+		tb.height = (int16_t)mem_r16(&mem, a[2] + 4) - (int16_t)mem_r16(&mem, a[2]);
+		tb.row_bytes = (tb.width + 31) / 32 * 4;
+		mem_w32(&mem, FONT_PIXMAP_H, FONT_PIXMAP);
+		mem_w16(&mem, FONT_PIXMAP + 4, (uint16_t)(0x8000 | tb.row_bytes));
+		mem_w32(&mem, a[0], FONT_WORLD);
+	} else if (!strcmp(name, "DisposeGWorld")) {
+		CHECK_EQ(a[0], FONT_WORLD);
+		CHECK(tb.port != FONT_WORLD);
+		tb.disposed++;
+	} else if (!strcmp(name, "GetGWorldPixMap")) {
+		return FONT_PIXMAP_H;
+	} else if (!strcmp(name, "LockPixels")) {
+		return 1;
+	} else if (!strcmp(name, "GetPixBaseAddr")) {
+		return FONT_PIXELS;
+	} else if (!strcmp(name, "TextSize")) {
+		tb.size = (int16_t)a[0];
+	} else if (!strcmp(name, "GetFontInfo")) {
+		mem_w16(&mem, a[0], (uint16_t)(tb.size * 3 / 4));      /* ascent, descent, widest, leading */
+		mem_w16(&mem, a[0] + 2, (uint16_t)(tb.size / 4));
+		mem_w16(&mem, a[0] + 4, (uint16_t)(tb.size * 3 / 5));
+		mem_w16(&mem, a[0] + 6, 1);
+	} else if (!strcmp(name, "CharWidth")) {
+		return 4 + a[0] % 3;
+	} else if (!strcmp(name, "EraseRect")) {
+		CHECK_EQ(tb.port, FONT_WORLD);
+		memset(mem_ptr(&mem, FONT_PIXELS), 0, (size_t)(tb.row_bytes * tb.height));
+	} else if (!strcmp(name, "MoveTo")) {
+		tb.pen_h = (int16_t)a[0];
+		tb.pen_v = (int16_t)a[1];
+	} else if (!strcmp(name, "DrawChar")) {
+		for (int y = 0; y < tb.height; y++)
+			for (int x = 0; x < tb.width; x++)
+				if (fake_glyph((int)a[0], tb.pen_h, tb.pen_v, x, y)) {
+					uint32_t at = FONT_PIXELS + (uint32_t)(y * tb.row_bytes + x / 8);
+					mem_w8(&mem, at, (uint8_t)(mem_r8(&mem, at) | 0x80 >> (x % 8)));
+				}
+	}
+	return 0;
+}
+
+/* The library's imports resolved to the fakes */
+static void toolbox_load(void)
+{
+	for (unsigned k = 0; opengl_library_import(k); k++)
+		mem_w32(&mem, TOC + gl.library.import[k], TOOLBOX_TV + 16 * k);
+}
+
+/* A call whose callouts the fakes answer */
+static uint32_t call_toolbox(unsigned entry, const uint32_t *w, unsigned nw)
+{
+	struct ndrv_call c;
+	memset(&c, 0, sizeof c);
+	c.mem = &mem;
+	c.entry = entry;
+	c.toc = TOC;
+	c.frame = FRAME;
+	for (unsigned j = 0; j < nw && j < 8; j++)
+		c.arg[j] = w[j];
+	opengl_library_call(&gl, &c);
+	for (unsigned n = 0; !c.done && n < 10000; n++) {
+		unsigned k = (c.tvector - TOOLBOX_TV) / 16;
+		CHECK(c.tvector >= TOOLBOX_TV && k < 32 && opengl_library_import(k));
+		if (!(c.tvector >= TOOLBOX_TV && k < 32 && opengl_library_import(k)))
+			break;
+		uint32_t r = toolbox(k, c.out);
+		c.entry = NDRV_ENTRY_RESUME;
+		c.arg[0] = r;
+		opengl_library_call(&gl, &c);
+	}
+	CHECK(c.done);
+	return c.result;
+}
+
+#define TOOLBOX(name, ...) call_toolbox((unsigned)opengl_entry(#name), (const uint32_t[]){ __VA_ARGS__ }, \
+					sizeof (uint32_t[]){ __VA_ARGS__ } / 4)
+enum { AGL_FULLSCREEN = 54, AGL_BAD_STATE = 10007, AGL_BAD_VALUE = 10008, AGL_BAD_FULLSCREEN = 10012,
+       AGL_BAD_ALLOC = 10016 };
+
+/*
+ * aglSetFullScreen: the screen as it is; a size that's no mode's; a switch
+ * that fails; one to a size (and the pixel format's depth), the frame then
+ * on the whole screen; the mode back when the drawable goes, and when the
+ * process does
+ */
+static void test_full_screen(void)
+{
+	mem_map(&mem, FS_PIXELS, FS_SIZE, MEM_RW);
+	call_entry(OPENGL_ENTRY_INIT, NULL, 0, NULL, 0);
+	toolbox_load();
+	make_port(32);
+	video_init(&vid, &mem, FS_PIXELS, FS_SIZE, 1000000);
+	vid.depth = 5;                                          /* (32 bits a pixel) */
+	gl.video = &vid;
+	fs_device();
+	memset(&tb, 0, sizeof tb);
+	uint32_t was_mode, was_depth, w = video_width(&vid), h = video_height(&vid);
+	video_mode_now(&vid, &was_mode, &was_depth);
+	const uint32_t window[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_NONE };
+	put_attribs(window, 3);
+	uint32_t windowed = CALL(aglCreateContext, CALL(aglChoosePixelFormat, 0, 0, ATTRIBS), 0);
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, windowed, 0, 0, 0, 0), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_FULLSCREEN);
+	mem_w32(&mem, OUT + 16, FS_DEVICE_H);
+	const uint32_t full[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_FULLSCREEN, AGL_NONE };
+	put_attribs(full, 4);
+	uint32_t pf = CALL(aglChoosePixelFormat, OUT + 16, 1, ATTRIBS), ctx = CALL(aglCreateContext, pf, 0);
+	CHECK(pf && ctx);
+	CHECK_EQ(CALL(aglSetCurrentContext, ctx), 1);
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, ctx, 0, 0, 0, 0), 1);
+	CHECK_EQ(tb.switches, 0);
+	CALL(glGetIntegerv, GL_VIEWPORT, OUT);
+	CHECK(mem_r32(&mem, OUT + 8) == w && mem_r32(&mem, OUT + 12) == h);
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, ctx, 700, 500, 0, 0), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_FULLSCREEN);
+	tb.fail_switch = true;
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, ctx, 640, 480, 0, 0), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_FULLSCREEN);
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, ctx, 640, 480, 75, 0), 1);
+	CHECK(tb.switches == 1 && tb.mode == 1 && tb.depth == 0x85);
+	CHECK(video_width(&vid) == 640 && video_height(&vid) == 480);
+	CALL(glGetIntegerv, GL_VIEWPORT, OUT);
+	CHECK(mem_r32(&mem, OUT + 8) == 640 && mem_r32(&mem, OUT + 12) == 480);
+	CALL_F(glClearColor, 1.0, 0.5, 0.0, 1.0);
+	CALL(glClear, 0x4000);
+	CALL(aglSwapBuffers, ctx);
+	CHECK_EQ(mem_r32(&mem, FS_PIXELS) & 0xFFFFFF, 0xFF8000);
+	CHECK_EQ(mem_r32(&mem, FS_PIXELS + 4 * (640 * 480 - 1)) & 0xFFFFFF, 0xFF8000);
+	CHECK_EQ(CALL(aglGetDrawable, ctx), 0);
+	CHECK_EQ(TOOLBOX(aglSetDrawable, ctx, 0), 1);           /* (the mode back) */
+	CHECK(tb.switches == 2 && tb.mode == was_mode && tb.depth == was_depth);
+	CHECK_EQ(TOOLBOX(aglSetDrawable, ctx, 0), 1);           /* (nothing to go back to) */
+	CHECK_EQ(tb.switches, 2);
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, ctx, 1024, 768, 0, 0), 1);
+	CHECK(tb.switches == 3 && video_width(&vid) == 1024);
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, ctx, 640, 480, 0, 0), 1);   /* (from one full screen to another) */
+	call_toolbox(OPENGL_ENTRY_TERM, NULL, 0);               /* (the process goes: the first mode back) */
+	CHECK(tb.switches == 5 && tb.mode == was_mode && tb.depth == was_depth);
+	gl.video = NULL;
+}
+
+/*
+ * aglUseFont: no such font, a list being made, no memory; a plain font's
+ * glyphs and a styled one's (each taller and wider by half its size), as
+ * QuickDraw (here, the fakes) draws them, drawn by glCallLists from a
+ * raster position
+ */
+static void test_use_font(void)
+{
+	call_entry(OPENGL_ENTRY_INIT, NULL, 0, NULL, 0);
+	toolbox_load();
+	make_port(32);
+	memset(&tb, 0, sizeof tb);
+	enum { W = 64, H = 32 };
+	const uint32_t attribs[] = { AGL_RGBA, AGL_NONE };
+	put_attribs(attribs, 2);
+	uint32_t ctx = CALL(aglCreateContext, CALL(aglChoosePixelFormat, 0, 0, ATTRIBS), 0);
+	CHECK_EQ(CALL(aglSetOffScreen, ctx, W, H, W * 4, OFFSCREEN), 1);
+	CHECK_EQ(CALL(aglSetCurrentContext, ctx), 1);
+	CHECK_EQ(TOOLBOX(aglUseFont, ctx, 99, 0, 12, 'A', 3, 100), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_VALUE);
+	CALL(glNewList, 7, 0x1300);
+	CHECK_EQ(TOOLBOX(aglUseFont, ctx, 3, 0, 12, 'A', 3, 100), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_STATE);
+	CALL0(glEndList);
+	tb.fail_world = true;
+	CHECK_EQ(TOOLBOX(aglUseFont, ctx, 3, 0, 12, 'A', 3, 100), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_ALLOC);
+	CHECK_EQ(tb.port, 0);                                   /* (no world: the port as it was) */
+	tb.fail_world = false;
+	CHECK_EQ(TOOLBOX(aglUseFont, ctx, 3, 0, 12, 'A', 3, 100), 1);
+	CHECK(tb.worlds == 2 && tb.disposed == 2 && tb.port == FONT_PORT && tb.device == FONT_DEVICE);
+	CHECK(tb.width == 7 && tb.height == 12);                /* (the widest by ascent + descent) */
+	CHECK_EQ(TOOLBOX(aglUseFont, ctx, 3, 1, 12, 'a', 2, 200), 1);
+	CHECK(tb.width == 7 + 12 && tb.height == 12 + 12);
+	CHECK(CALL(glIsList, 100) && CALL(glIsList, 102) && CALL(glIsList, 201) && !CALL(glIsList, 103));
+	CHECK_EQ(CALL0(glGetError), 0);
+
+	/* drawn: the plain ones from (4.5, 20.5), the styled ones from (30.5, 9.5) */
+	CALL(glMatrixMode, 0x1701);
+	CALL0(glLoadIdentity);
+	CALL_F(glOrtho, 0.0, W, 0.0, H, -1.0, 1.0);
+	CALL(glMatrixMode, 0x1700);
+	CALL0(glLoadIdentity);
+	CALL_F(glClearColor, 0.0, 0.0, 0.0, 1.0);
+	CALL(glClear, 0x4000);
+	CALL_F(glColor3f, 1.0, 1.0, 1.0);
+	static const uint8_t names[3] = { 0, 1, 2 };
+	memcpy(mem_ptr(&mem, ARRAY), names, 3);
+	CALL_F(glRasterPos2f, 4.5, 20.5);
+	CALL(glListBase, 100);
+	CALL(glCallLists, 3, 0x1401, ARRAY);
+	CALL_F(glRasterPos2f, 30.5, 9.5);
+	CALL(glListBase, 200);
+	CALL(glCallLists, 2, 0x1401, ARRAY);
+	CALL(aglSwapBuffers, ctx);
+	static bool want[H][W];
+	memset(want, 0, sizeof want);
+	for (int s = 0; s < 2; s++) {
+		int e = s ? 6 : 0, ascent = 9, descent = 3, height = ascent + descent + 2 * e, x = s ? 30 : 4;
+		int y = s ? 9 : 20;
+		for (int g = 0; g < (s ? 2 : 3); g++) {
+			int c = (s ? 'a' : 'A') + g, cw = 4 + c % 3;
+			int x0 = x - e, y0 = y - (descent + e - 1);     /* (the bitmap's bottom left: the origin's) */
+			for (int j = 0; j < height; j++)
+				for (int i = 0; i < cw + 2 * e; i++)
+					if (fake_glyph(c, e, ascent + e, i, height - 1 - j) && y0 + j >= 0 && y0 + j < H &&
+					    x0 + i >= 0 && x0 + i < W)
+						want[y0 + j][x0 + i] = true;
+			x += cw;
+		}
+	}
+	unsigned wrong = 0, lit = 0;
+	for (int y = 0; y < H; y++)
+		for (int x = 0; x < W; x++) {
+			bool on = (mem_r32(&mem, OFFSCREEN + 4 * (uint32_t)((H - 1 - y) * W + x)) & 0xFFFFFF) == 0xFFFFFF;
+			wrong += on != want[y][x];
+			lit += on;
+		}
+	CHECK_EQ(wrong, 0);
+	CHECK(lit > 60);
+	CHECK_EQ(TOOLBOX(aglUseFont, 0x1234, 3, 0, 12, 'A', 1, 300), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_CONTEXT);
+	CALL(aglDestroyContext, ctx);
+
+	/* a library an older syshm made (its data's version another one's): left alone */
+	uint32_t version = TOC + gl.library.extra + 4;
+	mem_w32(&mem, version, mem_r32(&mem, version) - 1);
+	call_entry(OPENGL_ENTRY_INIT, NULL, 0, NULL, 0);
+	CHECK_EQ(CALL(aglChoosePixelFormat, 0, 0, ATTRIBS), 0);
+	CHECK_EQ(CALL0(aglGetError), 0);
+	call_entry(OPENGL_ENTRY_TERM, NULL, 0, NULL, 0);
+	mem_w32(&mem, version, mem_r32(&mem, version) + 1);
+}
+
 /* ---- selection and feedback, against Mesa's ---------------------------------------------- */
 
 enum { GL_2D_T = 0x0600, GL_3D_T, GL_3D_COLOR_T, GL_3D_COLOR_TEXTURE_T, GL_4D_COLOR_TEXTURE_T };
@@ -2931,6 +3247,8 @@ static void run(struct gpu *gpu)
 	test_recording(true);
 	test_lists();
 	test_glu();
+	test_full_screen();
+	test_use_font();
 	if (!gpu)
 		test_feedback();
 	test_scenes(gpu != NULL);
