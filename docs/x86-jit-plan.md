@@ -10,9 +10,59 @@ sharing everything that isn't about the host's instructions.
 
 ## Status
 
-Phase 0: this plan, for review. Nothing is built yet.
+Milestone 2 done (memory):
 
-Checked on the development machine (Apple M5, macOS 27.2, with Rosetta 2
+- **Loads and stores** of bytes, halfwords and words, D-form and indexed,
+  with update, the byte-reversed ones (`lwbrx`, `lhbrx`, `stwbrx`,
+  `sthbrx`, which AArch64 leaves to the interpreter), `lmw`/`stmw` and
+  `dcbz`: fastmem through the view with MOVBE, the faulting access's side
+  exit found by the shared fault handler (SIGSEGV on Linux, SIGBUS on
+  macOS, RIP moved to the stub), the instruction checked from then on;
+  without fastmem, or once checked, page flags first. Stores to pages
+  with translated code take the slow path AArch64's do (a plain store
+  unless the word is translated code, else `code_store()`): planned for
+  milestone 4, but the 68k emulator stores next to its code all the time.
+  Device registers still leave for the interpreter (milestone 4), and
+  string instructions call it, as on AArch64.
+- **Checks**: the fuzzer (now requiring fastmem faults on x86-64 too)
+  passes 100,000 programs under Rosetta and 30,000 more under QEMU; all of
+  `make test` on both; the three CD boots end exactly as on AArch64,
+  under Rosetta, with `SYSHM_JIT_FASTMEM=0` too, and the 8.5 CD under
+  QEMU (1,273 fastmem faults, fewer than AArch64's 1,893: 4 KB host
+  pages). AArch64's generated code is still byte for byte what it was
+  before the split (the hashes over the fuzzer and the boots).
+- **Speed** under Rosetta on the M5, before and after: the 8.5 CD 13.4 →
+  6.3 s, 9.1's 12.2 → 4.7 s, 9.2.2's 11.2 → 4.6 s; the benchmark's
+  dispatch loop 382 → 830 million instructions a second, the copy loop
+  566 → 10,450 million (AArch64's JIT natively: 1,180 and 10,600).
+
+Milestone 1 done (the split, then the integer core):
+
+- **The split**: `jit.c` holds the runtime, `jit_a64.c` the AArch64
+  translator, `jit_int.h` what they share. AArch64's generated code is
+  byte for byte the same: a hash of every block over the fuzzer's programs
+  (with `SYSHM_JIT_FAR` and `SYSHM_JIT_FASTMEM=0` too) and over the 8.5,
+  9.1 and 9.2.2 CD boots came out equal, and so did timings. The fuzzer's
+  programs went into guest memory with stack garbage after them, which
+  blocks translated past the final `sc` read, so a seed didn't always make
+  the same run; they're zeros now.
+- **`x86.h`**: checked in `test_jit.c` against LLVM's assembler, 174
+  encodings (two of them another form as good, noted).
+- **`jit_x86.c`**: everything in milestone 1 below. The fuzzer passes
+  100,000 programs under Rosetta and 3,000 under QEMU (Linux), and all of
+  `make test` passes on both. The 8.5, 9.1 and 9.2.2 CD boots in
+  instruction time end exactly as on AArch64 (output and screenshots).
+  Under Rosetta on the M5: 13.2, 14.0 and 12.9 s (interpreted: 24 s for
+  the 8.5 CD); the synthetic benchmark, guest instructions a second, JIT
+  against interpreter: integer 7,200 million against 281 (AArch64's JIT on
+  the M5: 6,250), the dispatch loop 382 against 231, the copy loop 566
+  against 374, FP 63 against 98 (memory and FP still call the
+  interpreter).
+- **Elsewhere**: `jit_unavailable()` gives the reason there's no JIT, and
+  syshm says it; CI fuzzes and benchmarks the JIT on all four targets
+  (`SYSHM_TEST_JIT=1`); `tools/jit-timing.sh` (below) times a machine.
+
+Checked on the development machine before starting (Apple M5, macOS 27.2, with Rosetta 2
 and podman):
 
 - **Rosetta** advertises only x86-64-v2 by default (SSE4.2, POPCNT; no
@@ -482,6 +532,41 @@ candidate if profiles ask for it.
 - **Real hardware**: if the user has an x86 machine (an Intel Mac or a
   Linux PC), `SYSHM_PERF=1` on Linux gives the real instructions and
   cycles per guest instruction.
+
+## Findings
+
+- **AArch64's link counts vary between identical runs** (by about 3% of
+  links; the guest's results don't): `arch_link()` turns a B into another
+  B without the barriers that would make the core fetch it anew (the
+  architecture allows a core to go on executing the old one for a while,
+  and both are right), so the old one sometimes goes to the link stub
+  again, which links it again and counts another link. With the barriers
+  after each link, four 9.1 CD runs made exactly 23,057 links each (without
+  them 23,901 to 23,930). x86 sees its own stores to code at once: its
+  counts are the same every run.
+- **Comparing runs across hosts** needs the same time zone: the guest's
+  clock is the host's local time, so a container in UTC ran the 8.5 CD
+  differently from macOS in Sydney until `TZ` matched.
+
+## Timing on real hardware
+
+`tools/jit-timing.sh [runs]`, from the top of a checkout on the machine
+to time (Linux or macOS, x86_64 or AArch64, with a C compiler and make),
+does everything and writes it to `jit-timing-<host>-<date>.txt` to send
+back:
+
+- the processor and the commit;
+- the synthetic benchmark (`SYSHM_JIT_BENCH=1`);
+- each CD boot whose files it finds, in instruction time (the same guest
+  work on every host): `runs` times with the JIT (3 by default) and once
+  interpreted, with the JIT's statistics; on Linux also the processor's
+  counters (`SYSHM_PERF=1`: host instructions and cycles per guest
+  instruction), where `perf_event_paranoid` allows.
+
+The ROM and CD images are looked for at the top of the tree (`MOS.rom`,
+`85.iso`, `91.iso`, `922.iso`) or where `SYSHM_ROM`, `SYSHM_85_ISO`,
+`SYSHM_91_ISO` and `SYSHM_922_ISO` point; without them only the benchmark
+runs. A full run takes a few minutes, most of it the interpreted boots.
 
 ## Milestones
 

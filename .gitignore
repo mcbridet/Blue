@@ -7,3 +7,4 @@ build/
 *.nvram
 __pycache__/
 .DS_Store
+jit-timing-*.txt

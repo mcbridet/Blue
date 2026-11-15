@@ -1192,7 +1192,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 
 	ppc_init(&m->cpu, &m->mem);
 	if (!opt->interp && !(m->cpu.jit = jit_create(&m->mem)))
-		fprintf(stderr, "no JIT on this host: interpreting\n");
+		fprintf(stderr, "%s: interpreting\n", jit_unavailable());
 	m->cpu.pc = entry;
 	m->cpu.gpr[3] = edp;
 	m->cpu.gpr[4] = ci->la_dispatch_table;

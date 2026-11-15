@@ -639,6 +639,17 @@ and 16,616 after (in a later session, 6,250 and 14,700: the host's speed
 varies), while the Processor test's code runs as fast as before; see
 Findings in plan.md.
 
+Its CD-ROM tests run with the MacBench 5.0 CD (`MacBench5.toast`) in a
+CD-ROM drive, on an installed 8.5 and 9.2.2: the CD-ROM test (148 MB of
+File Manager reads replayed from five CD titles; 1,442 on 8.5 in
+instruction time, 4,261 on 9.2.2 with `clock 400`, 5,366-5,383 in real
+time, a window or not) and the CD-ROM inspection tests (sequential and
+random reads of 512 bytes and 1 MB). They read through the File Manager
+only; below it MacBench just takes an inventory of the drives (see
+Findings in plan.md, "MacBench's CD-ROM test"). A report of the test
+freezing MacBench on 9.2.2 in a window (the Memory Manager faulting on a
+broken system heap, then the Toolbox) didn't reproduce here.
+
 ### Guest tools
 
 Some things only code inside Mac OS can do: syshm Enhancements, syshm
@@ -858,8 +869,11 @@ software (on 8.6, an M5 Mac).
 - User-mode PowerPC interpreter (integer, FP, string/multiple, reservations)
   with kernel exits for `sc`, traps, privileged instructions, faults and a
   host-call opcode (primary opcode 6). AltiVec is not implemented.
-- A JIT to AArch64, on Linux and macOS (`src/jit.c`, `src/a64.h`;
-  `--interp` turns it off, and x86_64 hosts interpret). Blocks of up to 128
+- A JIT to AArch64 and x86-64, on Linux and macOS (`src/jit.c`, the
+  runtime both share; `src/jit_a64.c` and `src/a64.h`, `src/jit_x86.c` and
+  `src/x86.h`, the translators; `--interp` turns it off). What follows is
+  the AArch64 JIT; the x86-64 one is under way (below, and
+  docs/x86-jit-plan.md). Blocks of up to 128
   instructions are translated
   natively once they have run 16 times (`SYSHM_JIT_HOT`). A block ends at
   an unconditional or computed branch; past a conditional one it goes on
@@ -969,6 +983,21 @@ software (on 8.6, an M5 Mac).
     code (`pthread_jit_write_protect_np()`, about 25 ns a switch). What's
     left that only macOS pays (those switches, its slower fault signals) is
     under 1% of a boot.
+  - x86-64 (docs/x86-jit-plan.md, milestone 2 of 5): the same blocks,
+    links, budget, exits, hooks and time base, with integer, compare,
+    condition-register and branch instructions translated, and loads and
+    stores (fastmem, as above, with MOVBE; checked once one faults; stores
+    to pages with translated code in place); floating point and the rest
+    call the interpreter from inside the block, and system calls, traps,
+    host calls and device registers leave for it (which makes kernel calls
+    and device accesses in place itself). It needs x86-64-v3 (AVX2, FMA3,
+    BMI1/2, LZCNT, MOVBE; other processors interpret, and syshm says
+    what's missing). Five guest registers live in host registers (CR, LR,
+    r3, r4, r24) and four more are cached within a block. Under Rosetta 2,
+    `ROSETTA_ADVERTISE_AVX=1` in the environment has it offer x86-64-v3.
+    The 8.5, 9.1 and 9.2.2 CD boots in instruction time end exactly as on
+    AArch64; under Rosetta on an M5 the 8.5 CD's 4 billion instructions
+    take 6.3 s (interpreted: 24 s).
   - `SYSHM_JIT_PROFILE=1` samples where host time goes (translated blocks
     by guest address, stubs, C functions) and prints it at the end;
     `SYSHM_JIT_PROFILE=FROM:TO` samples only from instruction FROM to TO.
@@ -1408,6 +1437,7 @@ make            # build/syshm (C11, and C++17 for the menu: Dear ImGui is in thi
 make test       # unit tests; the ROM test uses ./MOS.rom or $SYSHM_TEST_ROM if present,
                 # the GPU test any OpenGL 3.3 there is (else it's skipped)
 SYSHM_JIT_PROGRAMS=200000 build/syshm-tests jit    # longer JIT-vs-interpreter fuzzing
+tools/jit-timing.sh     # times the JIT here (its benchmark, the CD boots there are) into a log
 ```
 
 The guest's OpenGL is checked in the guest too, by a test application of
@@ -1430,8 +1460,11 @@ own OpenGL (its compatibility profile, which still has `glBegin`):
 from Apple's (Mac OS 9.2.2's) and the macOS SDK's OpenGL headers.
 
 CI (`.github/workflows/ci.yml`) builds and tests on Linux and macOS, each on
-x86_64 and AArch64, with warnings as errors; on AArch64 (Linux and macOS)
-it also fuzzes the JIT with 100,000 programs, and on Linux the GPU backend
+x86_64 and AArch64, with warnings as errors; it also fuzzes the JIT with
+100,000 programs (`SYSHM_TEST_JIT=1` makes a missing JIT a failure) and
+prints its synthetic benchmark (`SYSHM_JIT_BENCH=1 build/syshm-tests jit`:
+guest instructions a second for a few kernels, interpreted and
+translated), and on Linux the GPU backend
 is tested on Mesa's
 software OpenGL (llvmpipe; `SYSHM_TEST_GPU=1` makes the test fail rather than
 skip without a context). Each run uploads a `syshm-<os>-<arch>.tar.gz`, and
@@ -1537,6 +1570,11 @@ and their copies in RAM, with their exports, entry points and imports.
 `tools/disasm.py MOS91.rom 0xFFCE2700`, `tools/disasm.py ram.bin MOS91.rom
 0x28D70`; `--list` shows what is where.
 
+`tools/heap.py ram.bin` walks the system heap and the current application's
+heap in a `--dump-ram` file block by block (reading headers, not the whole
+file) and reports blocks whose back link or size is broken, where a zone was
+written over; `--find ADDR` names the system heap block an address is in.
+
 ## QEMU reference
 
 Stock QEMU can't boot a 1.x ROM: its machines aren't models the ROM supports.
@@ -1578,8 +1616,9 @@ the one in the startup disk's System Folder.
 
 ```
 src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
-          ppc.c + ppc_exec.inc + ppc_fp.c (interpreter), jit.c + a64.h
-          (AArch64 JIT), nk.c (native kernel), mp.c (its Multiprocessing
+          ppc.c + ppc_exec.inc + ppc_fp.c (interpreter), jit.c (the JIT's
+          runtime), jit_a64.c + a64.h and jit_x86.c + x86.h (its AArch64
+          and x86-64 translators), nk.c (native kernel), mp.c (its Multiprocessing
           Services, NanoKernel 2's), priv.c (supervisor mode: the skeleton key),
           bootinfo.c + devtree.c (Trampoline replacement, device tree),
           rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
@@ -1607,8 +1646,10 @@ tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
           devtree.py (device-tree copy dumper), disasm.py (disassembler),
+          heap.py (heap zones in a RAM dump, checked),
           gltable.py (the OpenGL libraries' functions, from Apple's)
-docs/     gpu-plan.md (the 3D engine's OpenGL backend), opengl-plan.md and
+docs/     x86-jit-plan.md (the x86-64 JIT, under way), gpu-plan.md (the
+          3D engine's OpenGL backend), opengl-plan.md and
           glide-plan.md (Mac OS 9's OpenGL, under way, and 3dfx Glide),
           nk2-reference.md (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2
           does)
