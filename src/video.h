@@ -26,6 +26,7 @@
 #define VIDEO_CUSTOM_MODES 2            /* sized to the host window on request (see below) */
 #define VIDEO_FIRST_DEPTH_MODE 0x80u
 #define VIDEO_VBL_HZ 60u
+#define VIDEO_FRAME_SOURCES 16          /* 3D drawing contexts paced by its refresh (see video_frame_shown()) */
 
 struct video_mode {
 	uint16_t width, height;
@@ -76,6 +77,9 @@ struct video {
 	bool vbl_enabled;               /* ... which interrupts (the driver's to set) */
 	bool vbl_queued;                /* the handler queued the secondary handler, which hasn't run yet */
 	unsigned long vbls;             /* VBL interrupts the driver took */
+	/* frames drawn for the screen by 3D drawing contexts (see video_frame_shown()) */
+	uint32_t frame_id[VIDEO_FRAME_SOURCES];
+	uint64_t frame_tb[VIDEO_FRAME_SOURCES];
 	bool hw_cursor;                 /* offer Mac OS a hardware cursor (set before building the driver) */
 	struct video_cursor cursor;
 };
@@ -105,6 +109,15 @@ void video_driver_call(struct video *v, struct ndrv_call *c);
  */
 void video_set_time(struct video *v, uint64_t tb);
 uint64_t video_next_vbl(const struct video *v);
+
+/*
+ * A frame for the screen from a 3D drawing context (`id`, in slot `source`
+ * of VIDEO_FRAME_SOURCES), finished at timebase `tb`: the timebase at which
+ * the display shows it, at most one a vertical blank. That's a vertical
+ * blank interval after the context's previous one, or `tb` if that's later
+ * (or it's the context's first; the guest waits for the rest: see nk.c).
+ */
+uint64_t video_frame_shown(struct video *v, unsigned source, uint32_t id, uint64_t tb);
 
 /* Whether the display's interrupt line is raised */
 static inline bool video_irq(const struct video *v)

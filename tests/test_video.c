@@ -3,7 +3,8 @@
  * at every depth (the same colours as the RGB screenshots take), finding
  * the rows that changed, and the hardware cursor the driver takes from
  * Mac OS. The display's VBL interrupt: its timing on the timebase, and the
- * driver's handler for it in the node's interrupt set.
+ * driver's handler for it in the node's interrupt set. The 3D engine's
+ * frames for the screen, at most one a vertical blank.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -339,6 +340,29 @@ static void test_vbl_timing(void)
 	CHECK(!video_irq(v));
 }
 
+/* 3D frames for the screen: at most one a vertical blank from each context, the late ones when they come */
+static void test_frame_pacing(void)
+{
+	struct video *v = &video;
+	const uint64_t gap = TIMEBASE / VIDEO_VBL_HZ;   /* (276,666 ticks) */
+	video_init(v, &mem, FB, FB_SIZE, TIMEBASE);
+	uint64_t t = 5ull * TIMEBASE;
+	CHECK_EQ(video_frame_shown(v, 0, 0x1000, t), t);                        /* a context's first */
+	CHECK_EQ(video_frame_shown(v, 0, 0x1000, t + 16600), t + gap);          /* 1 ms later: a frame later */
+	CHECK_EQ(video_frame_shown(v, 0, 0x1000, t + gap + 1), t + 2 * gap);    /* (from when the last was shown) */
+	CHECK_EQ(video_frame_shown(v, 0, 0x1000, t + 3 * gap + 99), t + 3 * gap + 99);  /* late: at once */
+	CHECK_EQ(video_frame_shown(v, 0, 0x1000, t + 3 * gap + 100), t + 4 * gap + 99);
+	/* 400 frames finished in a guest second: shown over 400 vertical blanks */
+	uint64_t shown = 0;
+	for (unsigned k = 0; k < 400; k++)
+		shown = video_frame_shown(v, 1, 0x2000, 10ull * TIMEBASE + k * (TIMEBASE / 400));
+	CHECK_EQ(shown, 10ull * TIMEBASE + 399 * gap);
+	/* contexts are paced apart; another context in a slot starts afresh */
+	CHECK_EQ(video_frame_shown(v, 2, 0x3000, t + 4 * gap + 100), t + 4 * gap + 100);
+	CHECK_EQ(video_frame_shown(v, 0, 0x4000, t + 4 * gap + 100), t + 4 * gap + 100);
+	CHECK_EQ(video_frame_shown(v, VIDEO_FRAME_SOURCES, 0x5000, t), t);      /* (no slot: not paced) */
+}
+
 /*
  * The driver: at Open, its handler in the display node's interrupt set
  * (the set's own refCon, enabler and disabler kept), the VBL service, the
@@ -461,6 +485,7 @@ void test_video(void)
 	test_changed_rows();
 	test_cursor();
 	test_vbl_timing();
+	test_frame_pacing();
 	test_vbl_driver();
 	mem_free(&mem);
 }

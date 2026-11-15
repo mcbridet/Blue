@@ -97,6 +97,16 @@ uint64_t video_next_vbl(const struct video *v)
 	return n / VIDEO_VBL_HZ * hz + (n % VIDEO_VBL_HZ * hz + VIDEO_VBL_HZ - 1) / VIDEO_VBL_HZ;
 }
 
+uint64_t video_frame_shown(struct video *v, unsigned source, uint32_t id, uint64_t tb)
+{
+	if (source >= VIDEO_FRAME_SOURCES)
+		return tb;
+	uint64_t due = v->frame_id[source] == id ? v->frame_tb[source] + v->timebase_hz / VIDEO_VBL_HZ : 0;
+	v->frame_id[source] = id;
+	v->frame_tb[source] = due > tb ? due : tb;
+	return v->frame_tb[source];
+}
+
 /* The chip's VBL interrupt on or off; turned on, a vertical blank from before is acknowledged first */
 static void enable_vbl(struct video *v, bool on)
 {
