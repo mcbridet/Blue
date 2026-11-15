@@ -62,7 +62,7 @@ void jit_flush(struct jit *j)
 	for (uint32_t k = 0; k < j->ncode_pages; k++) {
 		uint32_t pg = j->code_pages[k];
 		j->pages[pg] = NULL;
-		j->l1[pg] = j->l2_empty;
+		j->l1[pg] = l1_entry(j->l2_empty, pg);
 		mem_set_code(j->mem, pg, false);
 	}
 	j->ncode_pages = 0;
@@ -85,7 +85,7 @@ struct jit_page *jit_get_page(struct jit *j, uint32_t page)
 		pg->l2[w] = j->miss_exit;
 	j->code_pages[j->ncode_pages++] = page;
 	j->pages[page] = pg;
-	j->l1[page] = pg->l2;
+	j->l1[page] = l1_entry(pg->l2, page);
 	return pg;
 }
 
@@ -316,7 +316,7 @@ bool jit_rom_like(struct jit *j, uint32_t pc)
  */
 static struct jit_block *find(struct jit *j, uint32_t pc)
 {
-	const void *code = j->l1[pc >> MEM_PAGE_SHIFT][(pc >> 2) & (PAGE_WORDS - 1)];
+	const void *code = *table_entry(j, pc);
 	if (code != j->miss_exit && code != j->hook_exit) {
 		struct jit_block *b;
 		memcpy(&b, (const uint8_t *)code - sizeof b, sizeof b);
@@ -586,7 +586,7 @@ struct jit *jit_create(struct mem *mem)
 	for (unsigned w = 0; w < PAGE_WORDS; w++)
 		j->l2_empty[w] = j->miss_exit;
 	for (uint32_t pg = 0; pg < GUEST_PAGES; pg++)
-		j->l1[pg] = j->l2_empty;
+		j->l1[pg] = l1_entry(j->l2_empty, pg);
 	j->linked_hook = PPC_NO_HOOK;
 	j->match_pc = PPC_NO_HOOK;
 	if (getenv("SYSHM_JIT_FAR"))            /* tests: blocks out of short branch range of the stubs */

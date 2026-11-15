@@ -129,6 +129,17 @@ struct slow_store {
 };
 
 #define MAX_SLOW_IOS 160u
+#define MAX_OOL (2 * MAX_BLOCK_INSNS)
+
+/* Out-of-line code for an instruction's rare outcome, rejoining right after the jump to it (see ools()) */
+struct ool {
+	uint8_t *at, *rejoin;
+	uint8_t kind;                   /* OOL_SO, OOL_OV */
+	uint8_t xer, ca;                /* OOL_OV: XER's host register; CA from the carry (1), from its inverse (2), or not (0) */
+	uint32_t bits;                  /* OOL_SO: SO's bit in eax; OOL_OV: the XER bits to replace */
+};
+
+enum { OOL_SO, OOL_OV };
 
 /*
  * Out-of-line path of a load or store to a page that isn't readable or
@@ -196,6 +207,8 @@ struct tx {
 	unsigned nslow;
 	struct slow_io io[MAX_SLOW_IOS];
 	unsigned nio;
+	struct ool ool[MAX_OOL];
+	unsigned nool;
 	struct slow_fp fps[MAX_SLOW_FP];
 	unsigned nfps;
 	struct cache_state rc;
@@ -532,24 +545,39 @@ static void land(struct tx *t, uint8_t *at)
 
 /* ---- condition register and XER ----------------------------------------- */
 
-/* CR field `f` from the host flags of a compare, with SO from XER */
+/* A jump on cc to out-of-line code (see ools()), or NULL if there's no room for it */
+static struct ool *ool_add(struct tx *t, enum x86_cond cc, unsigned kind)
+{
+	if (t->nool >= MAX_OOL)
+		return NULL;
+	struct ool *o = &t->ool[t->nool++];
+	*o = (struct ool){ .at = x86_jcc(B, cc, NULL), .kind = (uint8_t)kind };
+	o->rejoin = t->x.p;
+	return o;
+}
+
+/* CR field `f` from the host flags of a compare, with SO from XER (rarely set: out of line) */
 static void cr_from_flags(struct tx *t, unsigned f, bool is_signed)
 {
-	x86_mov_ri(B, T0, CR_EQ);
-	x86_mov_ri(B, T1, CR_GT);
-	x86_mov_ri(B, T2, CR_LT);
-	x86_cmov(B, is_signed ? X86_G : X86_A, 0, T0, T1);
-	x86_cmov(B, is_signed ? X86_L : X86_B, 0, T0, T2);
+	unsigned sh = 28 - 4 * f, cr;
+	x86_mov_ri(B, T0, CR_EQ << sh);
+	x86_cmov_m(B, is_signed ? X86_G : X86_A, 0, T0, x86_rip(t->j->k_cr + 8 * f));
+	x86_cmov_m(B, is_signed ? X86_L : X86_B, 0, T0, x86_rip(t->j->k_cr + 8 * f + 4));
 	struct x86_mem m;
 	unsigned xer = rd_where(t, G_XER, &m);
 	if (xer != NO_REG)
-		x86_bt_ri(B, X86_BT, 0, xer, 31);
+		x86_test_rr(B, 0, xer, xer);
 	else
-		x86_bt_mi(B, X86_BT, m, 31);
-	x86_alu_ri(B, X86_ADC, 0, T0, 0);
-	unsigned sh = 28 - 4 * f, cr = rw(t, G_CR);
-	if (sh)
-		x86_shift_ri(B, X86_SHL, 0, T0, sh);
+		x86_alu_mi(B, X86_CMP, 4, m, 0);
+	struct ool *o = ool_add(t, X86_S, OOL_SO);
+	if (o) {
+		o->bits = 1u << sh;
+	} else {
+		uint8_t *clear = fwd(t, X86_NS);
+		x86_alu_ri(B, X86_OR, 0, T0, (int32_t)(1u << sh));
+		land(t, clear);
+	}
+	cr = rw(t, G_CR);
 	x86_alu_ri(B, X86_AND, 0, cr, (int32_t)~(0xFu << sh));
 	x86_alu_rr(B, X86_OR, 0, cr, T0);
 }
@@ -595,6 +623,40 @@ static void xer_flags(struct tx *t, bool ca, enum x86_cond ca_cc, bool ov)
 		x86_setcc(B, X86_O, T2);
 }
 
+/*
+ * XER from the host flags of the operation just done (only MOVs since): CA
+ * from the carry (`ca` 1) or its inverse (2), OV and SO from the overflow
+ * if `ov`, which is rare and goes out of line. Uses ecx.
+ */
+static void xer_update(struct tx *t, unsigned ca, bool ov)
+{
+	if (ov && t->nool >= MAX_OOL) {
+		xer_flags(t, ca, ca == 2 ? X86_AE : X86_B, true);
+		xer_insert(t, ca, true);
+		return;
+	}
+	unsigned xer = rw(t, G_XER);
+	uint32_t bits = (ca ? XER_CA : 0) | (ov ? XER_OV : 0);
+	struct ool *o = NULL;
+	if (ov) {
+		o = ool_add(t, X86_O, OOL_OV);
+		o->xer = (uint8_t)xer;
+		o->ca = (uint8_t)ca;
+		o->bits = bits;
+	}
+	if (ca) {
+		x86_alu_rr(B, X86_SBB, 0, T1, T1);
+		x86_alu_ri(B, X86_AND, 0, T1, (int32_t)XER_CA);
+		if (ca == 2)
+			x86_alu_ri(B, X86_XOR, 0, T1, (int32_t)XER_CA);
+	}
+	x86_alu_ri(B, X86_AND, 0, xer, (int32_t)~bits);
+	if (ca)
+		x86_alu_rr(B, X86_OR, 0, xer, T1);
+	if (o)
+		o->rejoin = t->x.p;
+}
+
 /* Host carry = XER[CA] */
 static void carry_from_xer(struct tx *t)
 {
@@ -604,6 +666,31 @@ static void carry_from_xer(struct tx *t)
 		x86_bt_ri(B, X86_BT, 0, xer, 29);
 	else
 		x86_bt_mi(B, X86_BT, m, 29);
+}
+
+/* The out-of-line code of ool_add(): eax |= SO's bit; or XER from the overflow as xer_update() would */
+static void ools(struct tx *t)
+{
+	for (unsigned k = 0; k < t->nool && !t->x.overflow; k++) {
+		const struct ool *o = &t->ool[k];
+		land(t, o->at);
+		if (o->kind == OOL_SO) {
+			x86_alu_ri(B, X86_OR, 0, T0, (int32_t)o->bits);
+		} else {
+			if (o->ca) {
+				x86_alu_rr(B, X86_SBB, 0, T1, T1);
+				x86_alu_ri(B, X86_AND, 0, T1, (int32_t)XER_CA);
+				if (o->ca == 2)
+					x86_alu_ri(B, X86_XOR, 0, T1, (int32_t)XER_CA);
+				x86_alu_ri(B, X86_OR, 0, T1, (int32_t)(XER_OV | XER_SO));
+			} else {
+				x86_mov_ri(B, T1, XER_OV | XER_SO);
+			}
+			x86_alu_ri(B, X86_AND, 0, o->xer, (int32_t)~o->bits);
+			x86_alu_rr(B, X86_OR, 0, o->xer, T1);
+		}
+		x86_jmp(B, o->rejoin);
+	}
 }
 
 /* ---- instructions --------------------------------------------------------- */
@@ -675,6 +762,17 @@ static void rotate_mask(struct tx *t, bool insert, unsigned d, unsigned s, unsig
 			x86_rorx(B, 0, d, s, r);
 			return;
 		}
+		if (!r && (mask == 0xFF || mask == 0xFFFF)) {         /* (a byte or halfword into place) */
+			x86_mov_low(B, mask == 0xFF ? 1 : 2, d, s);
+			return;
+		}
+		if (sh >= 1 && sh <= 3 && (mask == 0xFFu << sh || mask == 0xFFFFu << sh) && d != s) {
+			/* a byte or halfword times 2, 4 or 8: added into the cleared field */
+			x86_alu_ri(B, X86_AND, 0, d, (int32_t)~mask);
+			x86_extend(B, mask >> sh == 0xFF ? 1 : 2, false, 0, T0, s);
+			x86_lea(B, 0, d, x86_mx(d, T0, sh, 0));
+			return;
+		}
 		x86_rorx(B, 0, T0, s, r);
 		x86_alu_rr(B, X86_XOR, 0, T0, d);
 		x86_alu_ri(B, X86_AND, 0, T0, (int32_t)mask);
@@ -713,9 +811,7 @@ static void lookup_jump(struct tx *t)
 	x86_shift_ri(B, X86_SHR, 0, T1, MEM_PAGE_SHIFT);
 	x86_load(B, 8, false, T2, ST(l1));
 	x86_load(B, 8, false, T2, x86_mx(T2, T1, 3, 0));
-	x86_mov_rr(B, 0, T1, T0);
-	x86_alu_ri(B, X86_AND, 0, T1, (MEM_PAGE_SIZE - 1) & ~3u);
-	x86_jmp_m(B, x86_mx(T2, T1, 1, 0));
+	x86_jmp_m(B, x86_mx(T2, T0, 1, 0));                     /* (see l1_entry(): eax is a word's address) */
 }
 
 static void budget_sub(struct tx *t, unsigned n)
@@ -952,11 +1048,8 @@ static bool arith(struct tx *t, uint32_t i)
 			x86_lea(B, 0, d, x86_mx(a, b, 0, 0));
 			break;
 		}
-		x86_mov_rr(B, 0, T0, a);
-		x86_alu_rr(B, X86_ADD, 0, T0, b);
-		xer_flags(t, false, X86_B, true);
-		x86_mov_rr(B, 0, d, T0);
-		xer_insert(t, false, true);
+		alu3(t, X86_ADD, true, d, a, b);
+		xer_update(t, 0, true);
 		break;
 	case 10:                                                        /* addc */
 	case 40:                                                        /* subf: b - a */
@@ -964,25 +1057,18 @@ static bool arith(struct tx *t, uint32_t i)
 		a = rd(t, ra);
 		b = rd(t, rb);
 		d = wr(t, rd_);
-		if (xo == 10) {
-			x86_mov_rr(B, 0, T0, a);
-			x86_alu_rr(B, X86_ADD, 0, T0, b);
-		} else {
-			x86_mov_rr(B, 0, T0, b);
-			x86_alu_rr(B, X86_SUB, 0, T0, a);
-		}
-		xer_flags(t, xo != 40, xo == 10 ? X86_B : X86_AE, oe);
-		x86_mov_rr(B, 0, d, T0);
-		xer_insert(t, xo != 40, oe);
+		if (xo == 10)
+			alu3(t, X86_ADD, true, d, a, b);
+		else
+			alu3(t, X86_SUB, false, d, b, a);
+		xer_update(t, xo == 10 ? 1 : xo == 8 ? 2 : 0, oe);
 		break;
 	case 104:                                                       /* neg */
 		a = rd(t, ra);
 		d = wr(t, rd_);
-		x86_mov_rr(B, 0, T0, a);
-		x86_unary(B, X86_NEG, 0, T0);
-		xer_flags(t, false, X86_B, oe);
-		x86_mov_rr(B, 0, d, T0);
-		xer_insert(t, false, oe);
+		mov_rr(t, d, a);
+		x86_unary(B, X86_NEG, 0, d);
+		xer_update(t, 0, oe);
 		break;
 	case 138: case 136: case 202: case 234: case 200: case 232: {
 		/* a (or ~a for subf*) + b (or 0, or -1) + CA */
@@ -998,9 +1084,8 @@ static bool arith(struct tx *t, uint32_t i)
 			x86_alu_rr(B, X86_ADC, 0, T0, b);
 		else
 			x86_alu_ri(B, X86_ADC, 0, T0, xo == 234 || xo == 232 ? -1 : 0);
-		xer_flags(t, true, X86_B, oe);
 		x86_mov_rr(B, 0, d, T0);
-		xer_insert(t, true, oe);
+		xer_update(t, 1, oe);
 		break;
 	}
 	case 235:                                                       /* mullw */
@@ -1009,9 +1094,8 @@ static bool arith(struct tx *t, uint32_t i)
 		d = wr(t, rd_);
 		x86_mov_rr(B, 0, T0, a);
 		x86_imul_rr(B, 0, T0, b);
-		xer_flags(t, false, X86_B, oe);
 		x86_mov_rr(B, 0, d, T0);
-		xer_insert(t, false, oe);
+		xer_update(t, 0, oe);
 		break;
 	case 491: case 459:                                             /* divw, divwu */
 		if (oe)
@@ -1222,11 +1306,21 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 		store_single(t, rd_);                   /* (before the EA: it needs the scratch registers) */
 		s = X5;
 	}
-	effective_address(t, update, indexed, ra, rb, d);
 	bool fast = fast_access(t);
-	if (!fast)
-		page_flags(t);
-	struct x86_mem m = x86_mx(fast ? R_MEM : T2, T0, 0, 0);
+	struct x86_mem m;
+	if (fast && !update && (indexed ? !ra : ra && d >= 0)) {
+		/*
+		 * Straight from the guest register (whose upper half is zero), with
+		 * no EA to compute: what runs past 4 GB, instead of wrapping, faults
+		 * in the view's slack (MEM_SLACK), and the interpreter takes it
+		 */
+		m = x86_mx(R_MEM, rd(t, indexed ? rb : ra), 0, indexed ? 0 : d);
+	} else {
+		effective_address(t, update, indexed, ra, rb, d);
+		if (!fast)
+			page_flags(t);
+		m = x86_mx(fast ? R_MEM : T2, T0, 0, 0);
+	}
 	struct slow_io *io = NULL;
 	if (load) {
 		struct cache_state before = t->rc;              /* a fault leaves the registers as they are here */
@@ -2647,6 +2741,8 @@ static int kernel_call(struct tx *t, uint32_t insn)
 	rc_reset(t);
 	ld32(t, T0, OFF(pc));
 	budget_sub(t, t->k);
+	x86_test_ri(B, 0, T0, 3);                               /* (lookup_jump() needs a word's address) */
+	x86_jcc(B, X86_NE, t->j->miss_exit);
 	x86_alu_rm(B, X86_CMP, 0, T0, ST(hook));
 	uint8_t *other = fwd(t, X86_NE);
 	x86_jmp(B, t->j->miss_exit);
@@ -2683,9 +2779,8 @@ static int insn(struct tx *t, uint32_t i)
 		unsigned a = rd(t, ra);
 		x86_mov_ri(B, T0, (uint32_t)simm);
 		x86_alu_rr(B, X86_SUB, 0, T0, a);
-		xer_flags(t, true, X86_AE, false);
 		x86_mov_rr(B, 0, wr(t, rd_), T0);
-		xer_insert(t, true, false);
+		xer_update(t, 2, false);
 		return EMITTED;
 	}
 	case 10: case 11: {                                             /* cmpli, cmpi */
@@ -2696,13 +2791,9 @@ static int insn(struct tx *t, uint32_t i)
 		return EMITTED;
 	}
 	case 12: case 13: {                                             /* addic, addic. */
-		unsigned a = rd(t, ra);
-		x86_mov_rr(B, 0, T0, a);
-		x86_alu_ri(B, X86_ADD, 0, T0, simm);
-		xer_flags(t, true, X86_B, false);
-		unsigned d = wr(t, rd_);
-		x86_mov_rr(B, 0, d, T0);
-		xer_insert(t, true, false);
+		unsigned a = rd(t, ra), d = wr(t, rd_);
+		alu_imm(t, X86_ADD, d, a, (uint32_t)simm);
+		xer_update(t, 1, false);
 		if (op == 13)
 			record(t, d);
 		return EMITTED;
@@ -2873,6 +2964,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	t.nbexits = 0;
 	t.nslow = 0;
 	t.nio = 0;
+	t.nool = 0;
 	t.nfps = 0;
 	t.fp_mode_ok = false;
 	t.nstored = 0;
@@ -2939,6 +3031,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	slow_ios(&t);
 	slow_fps(&t);
 	branch_exits(&t);
+	ools(&t);
 	rc_reset(&t);
 
 	/*
@@ -3126,6 +3219,11 @@ static void build_stubs(struct jit *j)
 	j->k_one = t->x.p;
 	x86_imm(B, 0x3FF0000000000000ull, 8);
 	x86_imm(B, 0, 8);
+	j->k_cr = t->x.p;
+	for (unsigned f = 0; f < 8; f++) {
+		x86_imm(B, (uint32_t)CR_GT << (28 - 4 * f), 4);
+		x86_imm(B, (uint32_t)CR_LT << (28 - 4 * f), 4);
+	}
 
 	/* enter(cpu rdi, code rsi, budget rdx, state rcx) */
 	memcpy(&j->enter, &(void *){ t->x.p }, sizeof j->enter);         /* object to function pointer */

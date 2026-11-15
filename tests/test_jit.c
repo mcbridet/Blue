@@ -922,6 +922,15 @@ static void test_x86_encoding(void)
 	X86_CASE(x86_vmovsd(b, false, 13, x86_rip(start + 0x1000)),
 		 "vmovsd xmm13, qword ptr [rip + L + 0x1000]", "\xc5\x7b\x10\x2d\xf8\x0f\x00\x00");
 	X86_CASE(x86_vmovsd(b, true, 0, x86_m(X86_RSP, 0)), "vmovsd qword ptr [rsp], xmm0", "\xc5\xfb\x11\x04\x24");
+	X86_CASE(x86_cmov_m(b, X86_G, 0, X86_RAX, x86_rip(start + 0x1000)),
+		 "cmovg eax, dword ptr [rip + L + 0x1000]", "\x0f\x4f\x05\xf9\x0f\x00\x00");
+	X86_CASE(x86_cmov_m(b, X86_B, 0, X86_R9, x86_m(X86_RBX, 0x40)),
+		 "cmovb r9d, dword ptr [rbx + 0x40]", "\x44\x0f\x42\x4b\x40");
+	X86_CASE(x86_mov_low(b, 1, X86_RSI, X86_RDI), "mov sil, dil", "\x40\x88\xfe");
+	X86_CASE(x86_mov_low(b, 1, X86_R12, X86_RBP), "mov r12b, bpl", "\x41\x88\xec");
+	X86_CASE(x86_mov_low(b, 1, X86_RAX, X86_R13), "mov al, r13b", "\x44\x88\xe8");
+	X86_CASE(x86_mov_low(b, 2, X86_R8, X86_RSI), "mov r8w, si", "\x66\x41\x89\xf0");
+	X86_CASE(x86_mov_low(b, 2, X86_RBP, X86_R11), "mov bp, r11w", "\x66\x44\x89\xdd");
 	CHECK(!b->overflow);
 }
 
@@ -1196,6 +1205,37 @@ static void test_device_in_place(void)
 	mem_free(&s[1].mem);
 }
 
+/* Effective addresses that wrap past 4 GB (rA + d), by both engines, in a loop: the same memory */
+static void test_wrapping_ea(void)
+{
+	const uint32_t prog[] = {
+		LIS(3, 0xFFFF), ORI(3, 3, 0xFFF0), LI(0, 20), MTCTR(0),
+		ADDI(5, 5, 7), STW(5, 0x30, 3), LWZ(4, 0x30, 3), LHZ(6, 0x32, 3), STH(6, 0x36, 3), LBZ(7, 0x3F, 3),
+		ADD(8, 8, 4), BDNZ(-28),
+		SC,
+	};
+	static struct side s[2];
+	enum ppc_exit e[2];
+	for (int jit = 0; jit < 2; jit++) {
+		setup(&s[jit], jit);
+		for (unsigned k = 0; k < sizeof prog / sizeof prog[0]; k++)
+			mem_w32(&s[jit].mem, CODE + 4 * k, prog[k]);
+		mem_w32(&s[jit].mem, 0x2C, 0x11223344);
+		s[jit].cpu.pc = CODE;
+		e[jit] = ppc_run(&s[jit].cpu, 10000);
+	}
+	if (s[1].cpu.jit) {
+		CHECK_EQ(e[0], PPC_EXIT_SC);
+		CHECK(same(&s[0], &s[1], e[0], e[1]));
+		CHECK_EQ(s[0].cpu.gpr[8], 7u * 20 * 21 / 2);
+		CHECK(!memcmp(mem_ptr(&s[0].mem, 0x20), mem_ptr(&s[1].mem, 0x20), 0x20));
+		CHECK_EQ(mem_r32(&s[1].mem, 0x20), 140u);
+		jit_free(s[1].cpu.jit);
+	}
+	mem_free(&s[0].mem);
+	mem_free(&s[1].mem);
+}
+
 /* ---- SYSHM_JIT_BENCH=1: speed, not a test ---- */
 
 #define X_FORM(rt, ra, rb, xo) enc_x(31, rt, ra, rb, xo, 0)
@@ -1334,6 +1374,7 @@ void test_jit(void)
 	test_quick_sc();
 	test_kcalls();
 	test_device_in_place();
+	test_wrapping_ea();
 	test_hostcall_fprs();
 	test_random_programs(programs, false);
 	test_random_programs(programs / 2 + 1, true);

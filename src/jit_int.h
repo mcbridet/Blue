@@ -160,8 +160,35 @@ struct jit {
 #else
 	const uint8_t *exit, *side_exit, *link, *link_branch, *lookup, *mmio_call, *settle;
 	const uint8_t *k_sign, *k_abs, *k_one;  /* (16-byte constants: a double's sign, all but it, 1.0) */
+	const uint8_t *k_cr;                    /* CR_GT and CR_LT in each CR field's place, field 0 first */
 #endif
 };
+
+/*
+ * What l1[page] holds for a page's table l2: on x86-64, l2 less twice the
+ * page's first address, so that generated code finds the entry for pc at
+ * l1[pc >> MEM_PAGE_SHIFT] + 2 * pc bytes, without masking pc (see
+ * lookup_jump() in jit_x86.c)
+ */
+static inline const void **l1_entry(const void **l2, uint32_t page)
+{
+#ifdef JIT_X86
+	return (const void **)((uintptr_t)l2 - ((uintptr_t)page << (MEM_PAGE_SHIFT + 1)));
+#else
+	(void)page;
+	return l2;
+#endif
+}
+
+/* The block table's entry for pc */
+static inline const void **table_entry(const struct jit *j, uint32_t pc)
+{
+#ifdef JIT_X86
+	return (const void **)((uintptr_t)j->l1[pc >> MEM_PAGE_SHIFT] + 2 * (uintptr_t)(pc & ~3u));
+#else
+	return &j->l1[pc >> MEM_PAGE_SHIFT][(pc >> 2) & (PAGE_WORDS - 1)];
+#endif
+}
 
 /* ---- the runtime, for translators (jit.c) ---- */
 

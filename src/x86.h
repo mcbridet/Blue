@@ -419,6 +419,20 @@ static inline void x86_cmov(struct x86_buf *b, enum x86_cond cc, unsigned w, uns
 	x86_op_rr(b, 0, w, 0x0F40 | cc, d, s, 0);
 }
 
+static inline void x86_cmov_m(struct x86_buf *b, enum x86_cond cc, unsigned w, unsigned d, struct x86_mem m)
+{
+	x86_op_rm(b, 0, w, 0x0F40 | cc, d, m, 0, 0);
+}
+
+/* MOV of s's low byte (size 1) or halfword (2) into d's, the rest of d as it was */
+static inline void x86_mov_low(struct x86_buf *b, unsigned size, unsigned d, unsigned s)
+{
+	if (size == 1)
+		x86_op_rr(b, 0, 0, 0x88, s, d, X86_BREG | X86_BRM);
+	else
+		x86_op_rr(b, 0x66, 0, 0x89, s, d, 0);
+}
+
 enum x86_bt { X86_BT = 4, X86_BTS, X86_BTR, X86_BTC };
 
 static inline void x86_bt_ri(struct x86_buf *b, enum x86_bt op, unsigned w, unsigned r, unsigned bit)
