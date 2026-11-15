@@ -3,8 +3,8 @@
  * dependency; if the library or a display isn't available, the emulator
  * runs headless).
  */
-#ifndef SYSHM_DISPLAY_H
-#define SYSHM_DISPLAY_H
+#ifndef BLUE_DISPLAY_H
+#define BLUE_DISPLAY_H
 
 #include <stdbool.h>
 #include <stddef.h>

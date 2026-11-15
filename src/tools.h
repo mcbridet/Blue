@@ -16,8 +16,8 @@
  *                       (opengl.h), Mac OS 9's OpenGL; on Mac OS 9 they
  *                       take Apple's place (see install.h).
  */
-#ifndef SYSHM_TOOLS_H
-#define SYSHM_TOOLS_H
+#ifndef BLUE_TOOLS_H
+#define BLUE_TOOLS_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -50,9 +50,9 @@ int tools_files(struct hfs_file files[TOOLS_FILES]);
 
 /*
  * Writes the tools volume (a disk image) to `path`. Returns 0 on success.
- * SYSHM_TOOLS_APPL=1 makes syshm Enhancements there an application the
+ * BLUE_TOOLS_APPL=1 makes syshm Enhancements there an application the
  * Finder opens (an 'appe' only runs from Extensions), to try it from a CD's
- * system; SYSHM_TOOLS_GL_TEST=1 adds the OpenGL test application (gltest.h).
+ * system; BLUE_TOOLS_GL_TEST=1 adds the OpenGL test application (gltest.h).
  */
 int tools_create(const char *path);
 

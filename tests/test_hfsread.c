@@ -28,7 +28,7 @@
 static int temp_file(char *path, size_t len)
 {
 	const char *dir = getenv("TMPDIR");
-	snprintf(path, len, "%s/syshm-test-XXXXXX", dir ? dir : "/tmp");
+	snprintf(path, len, "%s/blue-test-XXXXXX", dir ? dir : "/tmp");
 	return mkstemp(path);
 }
 
@@ -511,7 +511,7 @@ static void test_startup_disk(void)
 
 	struct hfsread_found found;
 	char err[256];
-	const char *paths[] = { empty, disk, "/nonexistent/syshm-test" };
+	const char *paths[] = { empty, disk, "/nonexistent/blue-test" };
 	static uint8_t rom[ROM_BYTES];
 	rom_data(rom);
 	CHECK_EQ(hfsread_system_file(paths, 1, TBXI, &found, err, sizeof err), 0);
@@ -529,7 +529,7 @@ static void test_startup_disk(void)
 	unlink(disk);
 }
 
-/* A volume as syshm makes them, its root folder blessed */
+/* A volume as Blue makes them, its root folder blessed */
 static void test_formatted(void)
 {
 	char path[256];

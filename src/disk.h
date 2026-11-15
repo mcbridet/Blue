@@ -18,8 +18,8 @@
  * (2048-byte sectors) or cue sheets (cdimage.h), whose data track Mac OS
  * mounts; a disc of audio alone has a drive whose reads fail.
  */
-#ifndef SYSHM_DISK_H
-#define SYSHM_DISK_H
+#ifndef BLUE_DISK_H
+#define BLUE_DISK_H
 
 #include <stdbool.h>
 #include <stddef.h>

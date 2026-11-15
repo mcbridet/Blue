@@ -6,8 +6,8 @@
  * can't drift apart into growing delay: frames are resampled to play a
  * little faster or slower as it's fuller or emptier (see audio.c).
  */
-#ifndef SYSHM_AUDIO_H
-#define SYSHM_AUDIO_H
+#ifndef BLUE_AUDIO_H
+#define BLUE_AUDIO_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -25,7 +25,7 @@ void audio_play(struct audio *a, const uint8_t *frames, unsigned count, unsigned
 unsigned long audio_dropped(const struct audio *a);
 unsigned long audio_padded(const struct audio *a);
 
-/* What the queue did since the last call (SYSHM_LOG_AUDIO) */
+/* What the queue did since the last call (BLUE_LOG_AUDIO) */
 struct audio_stats {
 	unsigned rate;
 	unsigned long flushes;          /* chunks given to the device */

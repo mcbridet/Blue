@@ -63,7 +63,7 @@ static void test_rsrc(void)
 static int temp_file(char *path, size_t len)
 {
 	const char *dir = getenv("TMPDIR");
-	snprintf(path, len, "%s/syshm-test-XXXXXX", dir ? dir : "/tmp");
+	snprintf(path, len, "%s/blue-test-XXXXXX", dir ? dir : "/tmp");
 	return mkstemp(path);
 }
 
@@ -434,7 +434,7 @@ static void patch_step(struct helper *h, struct clip *clip, struct ndrv_call *c,
 	helper_call(h, c, &video, clip);
 }
 
-/* Its imports' TVectors (TVECTORS + 8 * k), and its data: this syshm's copy, or an older one */
+/* Its imports' TVectors (TVECTORS + 8 * k), and its data: this version's copy, or an older one */
 enum { IMP_WNE, IMP_GET_MAIN_DEVICE, IMP_DM_SET_DISPLAY_MODE, IMP_CALL_UNIVERSAL_PROC, IMP_TEMP_NEW_HANDLE, IMP_HLOCK,
        IMP_DISPOSE_HANDLE, IMP_GET_CURRENT_PROCESS, IMP_GET_FRONT_PROCESS, IMP_SAME_PROCESS, IMP_POST_EVENT };
 #define IMPORT(k) (TVECTORS + 8u * (k))
@@ -498,7 +498,7 @@ static void test_helper(void)
 	quit(&h, &clip, event);
 }
 
-/* One installed by an older syshm: it switches modes as it did, at its data's addresses */
+/* One installed by an older version: it switches modes as it did, at its data's addresses */
 static void test_helper_v1(void)
 {
 	struct helper h;
@@ -638,7 +638,7 @@ static void test_helper_clipboard(void)
 	patch_step(&h, &clip, &c, 3, event);                   /* (nothing more to put there) */
 	CHECK(c.done);
 
-	/* quitting (asked by syshm, to be replaced): the patches go */
+	/* quitting (asked by Blue, to be replaced): the patches go */
 	memset(mem_ptr(&mem, event), 0, 16);
 	h.quit = true;
 	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);

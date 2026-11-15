@@ -745,7 +745,7 @@ static int cd_image(const char *path, struct disk *img, char *why, size_t len)
 	const char *other = floppy_other_image(img->fd);
 	if (fstat(img->fd, &st) || !S_ISREG(st.st_mode) || st.st_size < 2048 || other) {
 		if (other && strstr(other, "2352"))
-			snprintf(why, len, "%s: give syshm its .cue sheet, which says where its tracks are", other);
+			snprintf(why, len, "%s: give Blue its .cue sheet, which says where its tracks are", other);
 		else if (other)
 			snprintf(why, len, "%s: CD-ROM drives take raw images (.iso, .toast, .cdr, .img; a UDIF .dmg "
 				 "converts to one with hdiutil convert -format UDTO) and .cue sheets", other);
@@ -1051,7 +1051,7 @@ static int32_t cdrom_status(struct disk *d, uint32_t pb, uint32_t toc, uint64_t 
 		} else if (sel == os_type("dvrf")) {
 			mem_w32(m, p + 4, d->unit << 8);
 		} else if (sel == os_type("ejec") && d->removable) {
-			mem_w32(m, p + 4, RESTART_DONT_EJECT);  /* (a restart keeps the disc in, as syshm does) */
+			mem_w32(m, p + 4, RESTART_DONT_EJECT);  /* (a restart keeps the disc in, as Blue does) */
 		} else if (sel == os_type("mics")) {
 			mem_w32(m, p + 4, data + MEDIA_ICNS);
 		} else if (sel == os_type("dics")) {
@@ -1179,7 +1179,7 @@ static int32_t floppy_status(struct disk *d, uint32_t pb, uint32_t toc)
 		if (sel == os_type("devt")) {
 			mem_w32(m, p + 4, os_type("flop"));
 		} else if (sel == os_type("ejec")) {
-			mem_w32(m, p + 4, RESTART_DONT_EJECT);  /* (a restart keeps the disk in, as syshm does) */
+			mem_w32(m, p + 4, RESTART_DONT_EJECT);  /* (a restart keeps the disk in, as Blue does) */
 		} else if (sel == os_type("minf")) {
 			mem_w32(m, p + 4, blocks);
 			mem_w32(m, p + 8, 512);

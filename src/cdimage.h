@@ -13,8 +13,8 @@
  * Addresses are logical blocks (LBA, sectors from the first track's start,
  * 75 a second); MSF (minutes, seconds, frames) counts from 2 s earlier.
  */
-#ifndef SYSHM_CDIMAGE_H
-#define SYSHM_CDIMAGE_H
+#ifndef BLUE_CDIMAGE_H
+#define BLUE_CDIMAGE_H
 
 #include <stdbool.h>
 #include <stddef.h>

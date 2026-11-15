@@ -16,8 +16,8 @@
  * starts the ROM; parcels_apply() does the same with ours. Layout and flags
  * after tbxi (github.com/elliotnunn/tbxi).
  */
-#ifndef SYSHM_PARCELS_H
-#define SYSHM_PARCELS_H
+#ifndef BLUE_PARCELS_H
+#define BLUE_PARCELS_H
 
 #include <stddef.h>
 #include <stdint.h>

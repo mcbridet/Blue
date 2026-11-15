@@ -36,7 +36,7 @@ struct disk *drives_pick(const struct drives *dr, const char *path, enum drives_
 	if (kind == DRIVES_FLOPPY) {
 		struct disk *d = dr->floppy;
 		if (!d) {
-			snprintf(why, len, "There's no floppy drive for %.100s: start syshm with --floppy IMAGE, or "
+			snprintf(why, len, "There's no floppy drive for %.100s: start Blue with --floppy IMAGE, or "
 				 "--floppy-drive for an empty one", file_name(path));
 			return NULL;
 		}
@@ -53,7 +53,7 @@ struct disk *drives_pick(const struct drives *dr, const char *path, enum drives_
 		return d;
 	}
 	if (!dr->cds) {
-		snprintf(why, len, "There's no CD-ROM drive for %.100s: start syshm with --cdrom IMAGE, or "
+		snprintf(why, len, "There's no CD-ROM drive for %.100s: start Blue with --cdrom IMAGE, or "
 			 "--cdrom-drive for an empty one", file_name(path));
 		return NULL;
 	}

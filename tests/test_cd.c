@@ -24,7 +24,7 @@
 #define FOURCC(a, b, c, d) ((uint32_t)(a) << 24 | (uint32_t)(b) << 16 | (uint32_t)(c) << 8 | (uint32_t)(d))
 
 #define DATA_SECTORS 400u               /* the HFS volume: 800K */
-#define GUEST_HZ 16600000u              /* syshm's timebase */
+#define GUEST_HZ 16600000u              /* Blue's timebase */
 
 static char dir[1024];
 static char made[16][1100];
@@ -519,7 +519,7 @@ static void test_plain_and_errors(const uint8_t *vol)
 static bool begin(void)
 {
 	const char *tmp = getenv("TMPDIR");
-	snprintf(dir, sizeof dir, "%s/syshm-cd-XXXXXX", tmp && tmp[0] ? tmp : "/tmp");
+	snprintf(dir, sizeof dir, "%s/blue-cd-XXXXXX", tmp && tmp[0] ? tmp : "/tmp");
 	if (!mkdtemp(dir)) {
 		CHECK(!"a temporary folder");
 		return false;

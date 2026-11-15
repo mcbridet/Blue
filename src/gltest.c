@@ -255,7 +255,7 @@ struct gltest_step {
 #define CALL_D(name, ...) { I_##name, 0, sizeof (double[]){ __VA_ARGS__ } / sizeof(double), V_NONE, false, \
 			    { 0 }, { __VA_ARGS__ }, false }
 
-/* Starting: the Toolbox, the screen's depth (SYSHM_GL_TEST_DEPTH, 32 if not), a window, a context drawing in it */
+/* Starting: the Toolbox, the screen's depth (BLUE_GL_TEST_DEPTH, 32 if not), a window, a context drawing in it */
 #define DEPTH 0xD0000000u               /* (the depth, in a word) */
 static const struct gltest_step start[] = {
 	CALL(InitGraf, DATA(D_THE_PORT)),
@@ -586,7 +586,7 @@ void gltest_init(struct gltest *t)
 	static uint8_t scratch[32768];
 	memset(t, 0, sizeof *t);
 	gltest_build(scratch, sizeof scratch, &t->layout);
-	const char *want = getenv("SYSHM_GL_TEST_SCENE"), *depth = getenv("SYSHM_GL_TEST_DEPTH");
+	const char *want = getenv("BLUE_GL_TEST_SCENE"), *depth = getenv("BLUE_GL_TEST_DEPTH");
 	t->depth = depth && atoi(depth) == 16 ? 16 : 32;
 	unsigned scene = 0;
 	for (unsigned k = 0; want && k < sizeof scenes / sizeof scenes[0]; k++)

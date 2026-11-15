@@ -690,7 +690,7 @@ void display_capture_mouse(struct display *d, bool on)
 {
 	d->captured = on;
 	d->sdl.SetRelativeMouseMode(on);
-	d->sdl.SetWindowTitle(d->window, on ? "syshm (Control-Option releases the mouse)" : "syshm");
+	d->sdl.SetWindowTitle(d->window, on ? "Blue (Control-Option releases the mouse)" : "Blue");
 }
 
 /* A position in the window, in its units, to a screen pixel */
@@ -931,7 +931,7 @@ void display_menu(struct display *d, bool open)
 	/* (the guest's cursor doesn't move meanwhile: the host's is shown for the menu) */
 	d->sdl.ShowCursor((open || d->prompt) && d->ui ? 1 : 0);
 	if (!d->ui)
-		d->sdl.SetWindowTitle(d->window, open ? "syshm (paused: F12 resumes)" : "syshm");
+		d->sdl.SetWindowTitle(d->window, open ? "Blue (paused: F12 resumes)" : "Blue");
 	if (open) {
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);

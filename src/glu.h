@@ -11,8 +11,8 @@
  * draw nothing yet. Drawing is gl calls to the process's current context,
  * so a display list being made keeps them.
  */
-#ifndef SYSHM_GLU_H
-#define SYSHM_GLU_H
+#ifndef BLUE_GLU_H
+#define BLUE_GLU_H
 
 #include <stddef.h>
 #include <stdint.h>

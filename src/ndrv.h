@@ -24,8 +24,8 @@
  * (after the common code; see ndrv_code_offset()), which can branch to any
  * entry's stub, as above, to make the host call.
  */
-#ifndef SYSHM_NDRV_H
-#define SYSHM_NDRV_H
+#ifndef BLUE_NDRV_H
+#define BLUE_NDRV_H
 
 #include <stdbool.h>
 #include <stddef.h>

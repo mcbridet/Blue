@@ -165,7 +165,7 @@ static void run(struct gpu *gpu)
 
 	/*
 	 * ATI's extensions (as Unreal Tournament uses them): only for an engine
-	 * whose data says it's this syshm's, then a Rage 128 and a table of
+	 * whose data says it's this version's, then a Rage 128 and a table of
 	 * methods, among them replacing a texture's pixels for the frames after.
 	 */
 	enum { DM_GET_INT = 4, DM_GET_PTR = 5, DM_CLEAR_DRAW_BUFFER = 29, DM_CLEAR_Z_BUFFER = 30 };

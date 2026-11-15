@@ -5,8 +5,8 @@
  * then presented into guest memory: a QuickDraw pixmap (the screen's, a
  * GWorld's) or a buffer, clipped to QuickDraw regions.
  */
-#ifndef SYSHM_SURFACE_H
-#define SYSHM_SURFACE_H
+#ifndef BLUE_SURFACE_H
+#define BLUE_SURFACE_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -71,7 +71,7 @@ void surface_wait(struct surface *s);
 /*
  * The host time (ns) every surface's caller has spent waiting for its
  * backend (to take a batch, or to finish), and reading frames back from the
- * GPU, so far: for profiling (see opengl.h's SYSHM_GL_PROFILE)
+ * GPU, so far: for profiling (see opengl.h's BLUE_GL_PROFILE)
  */
 void surface_times(uint64_t *wait_ns, uint64_t *read_ns);
 

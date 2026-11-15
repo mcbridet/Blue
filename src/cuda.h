@@ -3,8 +3,8 @@
  * carries ADB, the real-time clock, PRAM and power control over a byte
  * protocol on the VIA shift register and port B (TIP/TACK/TREQ).
  */
-#ifndef SYSHM_CUDA_H
-#define SYSHM_CUDA_H
+#ifndef BLUE_CUDA_H
+#define BLUE_CUDA_H
 
 #include <stdbool.h>
 #include <stdint.h>

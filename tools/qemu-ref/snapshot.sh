@@ -1,6 +1,6 @@
 #!/bin/bash
 # Snapshot the QEMU reference at the moment Apple's NanoKernel first enters the
-# 68k emulator: registers plus physical memory dumps, for comparing with syshm.
+# 68k emulator: registers plus physical memory dumps, for comparing with Blue.
 #
 # usage: tools/qemu-ref/snapshot.sh [rom-file] [break-address]
 # Needs gdb with PowerPC support. Output goes to build/qemu-ref/snap/.

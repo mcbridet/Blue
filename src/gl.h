@@ -5,8 +5,8 @@
  * engine's GPU backend uses. Only the parts of the ABIs we use are
  * declared here.
  */
-#ifndef SYSHM_GL_H
-#define SYSHM_GL_H
+#ifndef BLUE_GL_H
+#define BLUE_GL_H
 
 #include <stdbool.h>
 #include <stddef.h>

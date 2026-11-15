@@ -93,9 +93,9 @@ static void test_hook_run(bool jit)
 		mem_w32(&mem, 0x1000 + 4 * (uint32_t)k, prog[k]);
 	ppc_init(&cpu, &mem);
 	if (jit) {
-		setenv("SYSHM_JIT_HOT", "0", 1);
+		setenv("BLUE_JIT_HOT", "0", 1);
 		cpu.jit = jit_create(&mem);
-		unsetenv("SYSHM_JIT_HOT");
+		unsetenv("BLUE_JIT_HOT");
 		if (!cpu.jit) {
 			mem_free(&mem);
 			return;         /* no JIT on this host */

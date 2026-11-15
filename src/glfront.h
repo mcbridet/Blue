@@ -32,8 +32,8 @@
  * (sharing their texels), and retired when they change again, to be freed
  * once nothing recorded can use it (glf_free_retired()).
  */
-#ifndef SYSHM_GLFRONT_H
-#define SYSHM_GLFRONT_H
+#ifndef BLUE_GLFRONT_H
+#define BLUE_GLFRONT_H
 
 #include <stdbool.h>
 #include <stdint.h>

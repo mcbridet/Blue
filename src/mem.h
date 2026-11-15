@@ -1,5 +1,5 @@
-#ifndef SYSHM_MEM_H
-#define SYSHM_MEM_H
+#ifndef BLUE_MEM_H
+#define BLUE_MEM_H
 
 #include <stdbool.h>
 #include <stdint.h>

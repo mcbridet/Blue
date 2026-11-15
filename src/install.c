@@ -42,7 +42,7 @@ static bool is_gl(unsigned t)
 	return t >= TOOLS_GL_FIRST && t < TOOLS_GL_FIRST + TOOLS_GL_FILES;
 }
 
-/* Whether a tool is to be installed or updated, if it isn't current: not syshm's OpenGL when Apple's go back */
+/* Whether a tool is to be installed or updated, if it isn't current: not Blue's OpenGL when Apple's go back */
 static bool wanted(const struct install_check *ck, unsigned t)
 {
 	return !((ck->apple_restore || ck->apple_kept) && is_gl(t));
@@ -75,7 +75,7 @@ static int add_folder(void *ctx, const struct hfsread_file *f)
 	return 0;
 }
 
-/* Whether a file is this tool: 0 not, 1 another syshm's, 2 this syshm's (both forks the same) */
+/* Whether a file is this tool: 0 not, 1 another version's, 2 this version's (both forks the same) */
 static int which_copy(struct look *l, const struct hfsread_file *e, unsigned t)
 {
 	const struct hfs_file *f = &l->files[t];
@@ -216,7 +216,7 @@ static const char *joint(unsigned k, unsigned n)
 }
 
 #define ABOUT "They make the screen follow the window, share the clipboard and accelerate 3D."
-#define APPLE_GOES " Apple's OpenGL libraries go to \"" DISABLED_NAME "\": syshm's take their place."
+#define APPLE_GOES " Apple's OpenGL libraries go to \"" DISABLED_NAME "\": Blue's take their place."
 
 static void say_found(struct install *in)
 {
@@ -226,7 +226,7 @@ static void say_found(struct install *in)
 		const struct install_copy *c = &ck->tool[t];
 		add(line, sizeof line, "%s%s %s", joint(t, TOOLS_FILES), tool_name(t),
 		    c->state == INSTALL_MISSING ? "isn't installed" :
-		    c->state == INSTALL_DIFFERS ? "differs from this syshm's" : "is current");
+		    c->state == INSTALL_DIFFERS ? "differs from this version's" : "is current");
 		if (c->state != INSTALL_MISSING)
 			add(line, sizeof line, " (in \"%s\")", c->folder);
 	}
@@ -239,7 +239,7 @@ static void say_found(struct install *in)
 		add(line, sizeof line, "; Apple's OpenGL libraries are in %s%s%s", on ? "\"" EXTENSIONS_NAME "\"" : "",
 		    on && off ? " and " : "", off ? "\"" DISABLED_NAME "\"" : "");
 	if (ck->apple_kept)
-		add(line, sizeof line, " (put back in this run: syshm's aren't offered)");
+		add(line, sizeof line, " (put back in this run: Blue's aren't offered)");
 	printf("tools: on \"%s\", %s\n", ck->volume, line);
 
 	unsigned installed = 0, todo = 0;
@@ -252,19 +252,19 @@ static void say_found(struct install *in)
 	const char *apple = on && gl_todo ? APPLE_GOES : "";
 	if (!installed) {
 		snprintf(in->question, sizeof in->question,
-			 "syshm's guest tools aren't installed on \"%s\". " ABOUT "%s", ck->volume, apple);
+			 "Blue's guest tools aren't installed on \"%s\". " ABOUT "%s", ck->volume, apple);
 		in->yes = "Install and Restart";
 		return;
 	}
 	if (!todo && ck->apple_restore) {
-		snprintf(in->question, sizeof in->question, "syshm's OpenGL libraries aren't on \"%s\", and Apple's are in "
+		snprintf(in->question, sizeof in->question, "Blue's OpenGL libraries aren't on \"%s\", and Apple's are in "
 			 "\"" DISABLED_NAME "\": put Apple's back in \"" EXTENSIONS_NAME "\"?", ck->volume);
 		in->yes = "Put Back and Restart";
 		return;
 	}
 	if (!todo) {
 		snprintf(in->question, sizeof in->question, "Apple's OpenGL libraries are in \"" EXTENSIONS_NAME "\" on "
-			 "\"%s\" with syshm's: move Apple's to \"" DISABLED_NAME "\"?", ck->volume);
+			 "\"%s\" with Blue's: move Apple's to \"" DISABLED_NAME "\"?", ck->volume);
 		in->yes = "Move and Restart";
 		return;
 	}
@@ -272,8 +272,8 @@ static void say_found(struct install *in)
 	for (unsigned t = 0, k = 0; t < TOOLS_FILES; t++)
 		if (ck->tool[t].state != INSTALL_CURRENT && wanted(ck, t))
 			add(what, sizeof what, "%s%s %s", joint(k++, todo), tool_name(t),
-			    ck->tool[t].state == INSTALL_MISSING ? "isn't installed" : "is from another version of syshm");
-	snprintf(in->question, sizeof in->question, "syshm's guest tools on \"%s\" need updating: %s.%s%s", ck->volume,
+			    ck->tool[t].state == INSTALL_MISSING ? "isn't installed" : "is from another version of Blue");
+	snprintf(in->question, sizeof in->question, "Blue's guest tools on \"%s\" need updating: %s.%s%s", ck->volume,
 		 what, ck->apple_restore ? " Apple's OpenGL libraries go back to \"" EXTENSIONS_NAME "\"." : "",
 		 ck->apple_disable ? " Apple's OpenGL libraries go to \"" DISABLED_NAME "\"." : apple);
 	in->yes = "Update and Restart";
@@ -605,7 +605,7 @@ bool install_idle(struct install *in, const struct install_idle *w)
 		}
 		if (w->tb - in->inject_tb >= INJECT_WAIT_TB(w->tb_hz)) {
 			snprintf(in->news, sizeof in->news, "couldn't install the guest tools: Mac OS idles without a call "
-				 "syshm knows (the Process Manager's _SynchIdleTime, or Mac OS 9's in its place)");
+				 "Blue knows (the Process Manager's _SynchIdleTime, or Mac OS 9's in its place)");
 			finish_news(in);
 		}
 	}
@@ -740,7 +740,7 @@ static void start_temp(struct install *in, struct ndrv_call *c)
 static void report(struct install *in, struct ndrv_call *c);
 static void next_tool(struct install *in, struct ndrv_call *c);
 
-/* The folder of one of syshm's tools once it's been written (or not): 0 if it isn't there */
+/* The folder of one of Blue's tools once it's been written (or not): 0 if it isn't there */
 static uint32_t tool_dir(const struct install *in, unsigned t)
 {
 	return in->result[t].done ? in->result[t].dir : in->check.tool[t].state != INSTALL_MISSING ? in->check.tool[t].dir : 0;
@@ -772,7 +772,7 @@ static void apple_next(struct install *in, struct ndrv_call *c)
 	next_tool(in, c);
 }
 
-/* syshm's tools written: Apple's OpenGL libraries to Extensions (Disabled) if syshm's are in Extensions, or back */
+/* Blue's tools written: Apple's OpenGL libraries to Extensions (Disabled) if Blue's are in Extensions, or back */
 static void apple_begin(struct install *in, struct ndrv_call *c)
 {
 	bool enabled = true, ours = false;

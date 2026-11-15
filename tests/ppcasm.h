@@ -1,6 +1,6 @@
 /* Minimal PowerPC instruction encoders for tests. */
-#ifndef SYSHM_PPCASM_H
-#define SYSHM_PPCASM_H
+#ifndef BLUE_PPCASM_H
+#define BLUE_PPCASM_H
 
 #include <stdint.h>
 

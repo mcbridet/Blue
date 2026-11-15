@@ -7,8 +7,8 @@
  * CR line ends) and 'utxt' (UTF-16, big-endian, CR line ends), and which
  * side's text is newer, so that neither side gets its own text back.
  */
-#ifndef SYSHM_CLIP_H
-#define SYSHM_CLIP_H
+#ifndef BLUE_CLIP_H
+#define BLUE_CLIP_H
 
 #include <stdbool.h>
 #include <stddef.h>

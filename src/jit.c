@@ -42,7 +42,7 @@ static struct {
 	unsigned long total, blocks, stubs, host, other;
 	struct prof_sample *s;
 	unsigned n;
-	uintptr_t text_lo, text_hi;     /* syshm's own code */
+	uintptr_t text_lo, text_hi;     /* Blue's own code */
 	const uint64_t *icount;         /* samples only from instruction `from` to `to` */
 	uint64_t from, to;
 } prof;
@@ -456,7 +456,7 @@ static void flags_changed(void *ctx, uint32_t page, uint32_t count)
 
 static void fastmem_init(struct jit *j)
 {
-	const char *mode = getenv("SYSHM_JIT_FASTMEM");
+	const char *mode = getenv("BLUE_JIT_FASTMEM");
 	long host_page = sysconf(_SC_PAGESIZE);
 	if ((mode && !strcmp(mode, "0")) || host_page < (long)MEM_PAGE_SIZE ||
 	    host_page > (long)MEM_SLACK || (host_page & (host_page - 1)))
@@ -589,11 +589,11 @@ struct jit *jit_create(struct mem *mem)
 		j->l1[pg] = l1_entry(j->l2_empty, pg);
 	j->linked_hook = PPC_NO_HOOK;
 	j->match_pc = PPC_NO_HOOK;
-	if (getenv("SYSHM_JIT_FAR"))            /* tests: blocks out of short branch range of the stubs */
+	if (getenv("BLUE_JIT_FAR"))             /* tests: blocks out of short branch range of the stubs */
 		j->blocks_start += CODE_SIZE - (8u << 20);
 	jit_flush(j);
 	j->flushes = 0;
-	const char *hot = getenv("SYSHM_JIT_HOT");
+	const char *hot = getenv("BLUE_JIT_HOT");
 	j->hot = hot ? (unsigned)strtoul(hot, NULL, 0) : 16;
 	if (j->hot > 255)
 		j->hot = 255;
@@ -601,7 +601,7 @@ struct jit *jit_create(struct mem *mem)
 	mem->flags_changed = flags_changed;
 	mem->code_ctx = j;
 	fastmem_init(j);
-	const char *window = getenv("SYSHM_JIT_PROFILE");
+	const char *window = getenv("BLUE_JIT_PROFILE");
 	if (window)
 		prof_start(j, window);
 	return j;
@@ -711,7 +711,7 @@ enum ppc_exit jit_run(struct jit *j, struct ppc_cpu *c, uint64_t budget)
 	return PPC_EXIT_BUDGET;
 }
 
-/* ---- sampling profiler (SYSHM_JIT_PROFILE=1) ------------------------------- */
+/* ---- sampling profiler (BLUE_JIT_PROFILE=1) ------------------------------- */
 
 
 static void prof_signal(int sig, siginfo_t *si, void *ctx)
@@ -803,7 +803,7 @@ static void prof_report(FILE *f)
 	setitimer(ITIMER_PROF, &off, NULL);
 	if (!prof.total)
 		return;
-	fprintf(f, "profile: %lu samples: %.1f%% translated blocks, %.1f%% stubs, %.1f%% syshm, %.1f%% elsewhere\n",
+	fprintf(f, "profile: %lu samples: %.1f%% translated blocks, %.1f%% stubs, %.1f%% Blue, %.1f%% elsewhere\n",
 		prof.total, 100.0 * prof.blocks / prof.total, 100.0 * prof.stubs / prof.total,
 		100.0 * prof.host / prof.total, 100.0 * prof.other / prof.total);
 	qsort(prof.s, prof.n, sizeof *prof.s, cmp_sample);
@@ -828,7 +828,7 @@ static void prof_report(FILE *f)
 
 	/*
 	 * host code outside the blocks: addresses relative to the executable
-	 * (addr2line -f -e build/syshm; on macOS, atos -o build/syshm with 0x100000000 added)
+	 * (addr2line -f -e build/blue; on macOS, atos -o build/blue with 0x100000000 added)
 	 */
 	nc = 0;
 	for (unsigned k = 0; k < prof.n; k++) {

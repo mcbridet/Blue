@@ -143,7 +143,7 @@ static int describe_volume(int fd, struct floppy_image *img, char *why, size_t l
 	return 0;
 }
 
-/* What an image syshm doesn't take is (compressed, an archive, another kind of image), from its first bytes */
+/* What an image Blue doesn't take is (compressed, an archive, another kind of image), from its first bytes */
 static const char *other_image(int fd, uint64_t size, const uint8_t *h)
 {
 	static const uint8_t sync[12] = { 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0 };
@@ -192,7 +192,7 @@ int floppy_probe(int fd, struct floppy_image *img, char *why, size_t len)
 
 	const char *other = other_image(fd, size, h);
 	if (other) {
-		snprintf(why, len, "%s: syshm takes raw floppy images (400K, 720K, 800K, 1440K) and Disk Copy 4.2 "
+		snprintf(why, len, "%s: Blue takes raw floppy images (400K, 720K, 800K, 1440K) and Disk Copy 4.2 "
 			 "images; convert it to one of those first", other);
 		return -1;
 	}
@@ -213,7 +213,7 @@ int floppy_probe(int fd, struct floppy_image *img, char *why, size_t len)
 			return -1;
 		}
 		if (!floppy_raw_size(size)) {
-			snprintf(why, len, "%llu bytes is no floppy's size: syshm takes raw images of 400K, 720K, "
+			snprintf(why, len, "%llu bytes is no floppy's size: Blue takes raw images of 400K, 720K, "
 				 "800K, 1440K or 2880K disks, and Disk Copy 4.2 images", (unsigned long long)size);
 			return -1;
 		}

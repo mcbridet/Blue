@@ -188,7 +188,7 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	 * it); the other devices' only for those whose Trampoline makes it.
 	 */
 	struct dt_node *disp = dt_add_node(pci, "display");
-	pci_ids(disp, PCI_VENDOR_SYSHM, PCI_DEVICE_DISPLAY, PCI_CLASS_DISPLAY, 1);
+	pci_ids(disp, PCI_VENDOR_BLUE, PCI_DEVICE_DISPLAY, PCI_CLASS_DISPLAY, 1);
 	dt_prop_str(disp, "device_type", "display");
 	dt_prop_str(disp, "model", "syshm framebuffer");
 	dt_prop_str(disp, "compatible", "syshm,display");
@@ -208,7 +208,7 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	for (unsigned k = 0; k < hw->disks && k < BOOTINFO_MAX_DISKS; k++) {
 		struct dt_node *disk = dt_add_node(pci, "syshm,disk");
 		const uint32_t reg[5] = { PCI_SPACE_CONFIG | (PCI_DEVFN_DISK + 8 * k) << 8, 0, 0, 0, 0 };
-		pci_ids(disk, PCI_VENDOR_SYSHM, PCI_DEVICE_DISK, PCI_CLASS_DISK, 1);
+		pci_ids(disk, PCI_VENDOR_BLUE, PCI_DEVICE_DISK, PCI_CLASS_DISK, 1);
 		dt_prop_str(disk, "device_type", "block");
 		dt_prop_str(disk, "compatible", "syshm,disk");
 		dt_prop_cells(disk, "reg", reg, 5);
@@ -217,7 +217,7 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	if (hw->floppy_ndrv_size) {
 		struct dt_node *floppy = dt_add_node(pci, "syshm,floppy");
 		const uint32_t reg[5] = { PCI_SPACE_CONFIG | PCI_DEVFN_FLOPPY << 8, 0, 0, 0, 0 };
-		pci_ids(floppy, PCI_VENDOR_SYSHM, PCI_DEVICE_FLOPPY, PCI_CLASS_DISK, 1);
+		pci_ids(floppy, PCI_VENDOR_BLUE, PCI_DEVICE_FLOPPY, PCI_CLASS_DISK, 1);
 		dt_prop_str(floppy, "device_type", "block");
 		dt_prop_str(floppy, "compatible", "syshm,floppy");
 		dt_prop_cells(floppy, "reg", reg, 5);

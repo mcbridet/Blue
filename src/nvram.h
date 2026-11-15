@@ -7,8 +7,8 @@
  * AAPL,address. Its bytes are RTAS's (rtas.h): one NVRAM, and one file,
  * whichever way Mac OS reaches it.
  */
-#ifndef SYSHM_NVRAM_H
-#define SYSHM_NVRAM_H
+#ifndef BLUE_NVRAM_H
+#define BLUE_NVRAM_H
 
 #include <stdint.h>
 

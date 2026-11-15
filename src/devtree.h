@@ -8,8 +8,8 @@
  *   to the entry itself (0 = none), followed by property records
  *   {next (relative, 0 = last), name[32], length, value padded to 4 bytes}.
  */
-#ifndef SYSHM_DEVTREE_H
-#define SYSHM_DEVTREE_H
+#ifndef BLUE_DEVTREE_H
+#define BLUE_DEVTREE_H
 
 #include <stddef.h>
 #include <stdint.h>

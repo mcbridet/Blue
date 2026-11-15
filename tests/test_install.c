@@ -89,7 +89,7 @@ static void write_volume(const struct item *items, unsigned n, uint16_t attribut
 static int temp_file(char *path, size_t len)
 {
 	const char *dir = getenv("TMPDIR");
-	snprintf(path, len, "%s/syshm-test-XXXXXX", dir ? dir : "/tmp");
+	snprintf(path, len, "%s/blue-test-XXXXXX", dir ? dir : "/tmp");
 	return mkstemp(path);
 }
 
@@ -97,7 +97,7 @@ static struct hfs_file tools[TOOLS_FILES];
 static uint8_t older[4096];                     /* an older Enhancements: the same, but for a byte */
 static const uint8_t apple_pef[24] = "Joy!peffpwpc\0\0\0\1";
 
-/* syshm's OpenGL libraries, current, in a folder: appended to items (returns how many there are then) */
+/* Blue's OpenGL libraries, current, in a folder: appended to items (returns how many there are then) */
 static unsigned with_gl(struct item *items, unsigned n, uint32_t folder, uint32_t first_id)
 {
 	for (unsigned t = TOOLS_GL_FIRST; t < TOOLS_GL_FIRST + TOOLS_GL_FILES; t++) {
@@ -176,27 +176,27 @@ static void test_check(void)
 	CHECK(!install_needed(&ck));
 	CHECK(!ck.apple_disable && !ck.apple_restore);
 
-	/* Apple's OpenGL in Extensions beside syshm's: to be disabled */
+	/* Apple's OpenGL in Extensions beside Blue's: to be disabled */
 	CHECK_EQ(check(both, with_apple(both, with_gl(both, 4, EXTENSIONS, 70), EXTENSIONS, 80), &ck), 0);
 	CHECK(ck.apple[0].found[0] && ck.apple[2].found[0] && !ck.apple[0].found[1]);
 	CHECK_EQ(ck.apple[1].dir[0], EXTENSIONS);
 	CHECK(ck.apple_disable && !ck.apple_restore);
 	CHECK(install_needed(&ck));
-	/* ... without syshm's (on 9.x before they're installed): they are, and Apple's go then */
+	/* ... without Blue's (on 9.x before they're installed): they are, and Apple's go then */
 	CHECK_EQ(check(both, with_apple(both, 4, EXTENSIONS, 80), &ck), 0);
 	CHECK(!ck.apple_disable && !ck.apple_restore);
 	CHECK_EQ(ck.tool[TOOLS_GL_MEMORY].state, INSTALL_MISSING);
 	CHECK(install_needed(&ck));
-	/* Apple's disabled, syshm's gone: Apple's to be put back, syshm's not wanted */
+	/* Apple's disabled, Blue's gone: Apple's to be put back, Blue's not wanted */
 	CHECK_EQ(check(both, with_apple(both, 4, DISABLED, 80), &ck), 0);
 	CHECK(!ck.apple_disable && ck.apple_restore);
 	CHECK(ck.apple[0].found[1] && ck.apple[0].dir[1] == DISABLED);
 	CHECK(install_needed(&ck));
-	/* ... unless some of syshm's are there: then they're installed, and Apple's stay */
+	/* ... unless some of Blue's are there: then they're installed, and Apple's stay */
 	both[4] = tool_item(TOOLS_GL_MEMORY, DISABLED, 79, NULL, false);
 	CHECK_EQ(check(both, with_apple(both, 5, DISABLED, 80), &ck), 0);
 	CHECK(!ck.apple_disable && !ck.apple_restore);
-	/* (a file of one of those names but of syshm's creator isn't Apple's) */
+	/* (a file of one of those names but of Blue's creator isn't Apple's) */
 	struct item mine[] = { folders[0], tool_item(TOOLS_GL_LIBRARY, EXTENSIONS, 90, "OpenGLLibrary", false) };
 	CHECK_EQ(check(mine, 2, &ck), 0);
 	CHECK(!ck.apple[0].found[0] && ck.tool[TOOLS_GL_LIBRARY].state == INSTALL_CURRENT);
@@ -270,15 +270,15 @@ static void test_offer(void)
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
 	CHECK(strcmp(in.yes, "Update and Restart") == 0);
-	CHECK(strstr(in.question, "need updating: syshm 3D Engine is from another version of syshm.") != NULL);
+	CHECK(strstr(in.question, "need updating: syshm 3D Engine is from another version of Blue.") != NULL);
 
-	/* Mac OS 9: Apple's OpenGL goes when syshm's comes; syshm's beside Apple's; Apple's back */
+	/* Mac OS 9: Apple's OpenGL goes when Blue's comes; Blue's beside Apple's; Apple's back */
 	struct item folders9[] = { folder(SYSTEM, EXTENSIONS, "Extensions"), folder(SYSTEM, DISABLED, "Extensions (Disabled)") };
 	struct item nine[12] = { folders9[0], folders9[1] };
 	write_volume(nine, with_apple(nine, 2, EXTENSIONS, 80), 0);
 	install_begin(&in, volume_path, 0, false);
 	CHECK(strstr(in.question, "aren't installed on \"Test\"") != NULL);
-	CHECK(strstr(in.question, "Apple's OpenGL libraries go to \"Extensions (Disabled)\": syshm's take their place.") !=
+	CHECK(strstr(in.question, "Apple's OpenGL libraries go to \"Extensions (Disabled)\": Blue's take their place.") !=
 	      NULL);
 	nine[2] = tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, NULL, false);
 	nine[3] = tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, false);
@@ -291,7 +291,7 @@ static void test_offer(void)
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
 	CHECK(strcmp(in.yes, "Put Back and Restart") == 0);
-	CHECK(strstr(in.question, "syshm's OpenGL libraries aren't on \"Test\", and Apple's are in") != NULL);
+	CHECK(strstr(in.question, "Blue's OpenGL libraries aren't on \"Test\", and Apple's are in") != NULL);
 }
 
 /* ---- the installer, as Mac OS runs it ----------------------------------------------- */
@@ -758,7 +758,7 @@ static void test_installer_quit(void)
 	CHECK(in.phase == INSTALL_QUITTING && h.quit);
 	h.quit = false;
 
-	/* one that doesn't quit: syshm goes ahead after a while */
+	/* one that doesn't quit: Blue goes ahead after a while */
 	h.running = true;
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, true, &h);
@@ -766,7 +766,7 @@ static void test_installer_quit(void)
 	CHECK(idle_until_diverted(&in, &h, &tb));
 	CHECK(tb > 6 * (uint64_t)HZ);
 
-	/* a system that idles without the idle trap: syshm gives up, and says so */
+	/* a system that idles without the idle trap: Blue gives up, and says so */
 	h.running = false;
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, true, &h);
@@ -774,7 +774,7 @@ static void test_installer_quit(void)
 	for (unsigned k = 0; k < 400 && in.phase != INSTALL_DONE; k++, w.tb += HZ / 20)
 		CHECK(!install_idle(&in, &w));
 	CHECK_EQ(in.phase, INSTALL_DONE);
-	CHECK(strstr(in.news, "Mac OS idles without a call syshm knows") != NULL);
+	CHECK(strstr(in.news, "Mac OS idles without a call Blue knows") != NULL);
 
 	/* not now */
 	install_begin(&in, volume_path, 0, false);
@@ -783,7 +783,7 @@ static void test_installer_quit(void)
 	CHECK_EQ(in.phase, INSTALL_DONE);
 }
 
-/* Mac OS 9: syshm's OpenGL in, Apple's out to Extensions (Disabled); then, syshm's gone, Apple's back */
+/* Mac OS 9: Blue's OpenGL in, Apple's out to Extensions (Disabled); then, Blue's gone, Apple's back */
 static void test_installer_apple(void)
 {
 	static struct install in;
@@ -827,7 +827,7 @@ static void test_installer_apple(void)
 			      "to \"Test:System Folder:Extensions (Disabled)\". Mac OS is restarting.") == 0);
 	CHECK_EQ(fs.restarts, 1);
 
-	/* syshm's deleted (the user's doing): Apple's back, syshm's not installed */
+	/* Blue's deleted (the user's doing): Apple's back, Blue's not installed */
 	for (unsigned t = TOOLS_GL_FIRST; t < TOOLS_GL_FIRST + TOOLS_GL_FILES; t++)
 		find(EXTENSIONS, tools[t].name)->used = false;
 	struct item folders[2] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
@@ -846,7 +846,7 @@ static void test_installer_apple(void)
 	CHECK(strcmp(in.news, "put Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility back in "
 			      "\"Test:System Folder:Extensions\". Mac OS is restarting.") == 0);
 	CHECK_EQ(fs.restarts, 2);
-	/* ... after which syshm's aren't offered again, in this run */
+	/* ... after which Blue's aren't offered again, in this run */
 	CHECK(in.check.apple_kept);
 	write_volume(items, with_apple(items, 4, EXTENSIONS, 80), 0);
 	install_begin(&in, volume_path, 0, false);

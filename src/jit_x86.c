@@ -3394,7 +3394,7 @@ static bool cpu_ok(char *why, size_t size)
 		{ "SSE4.2", 1, 20 }, { "MOVBE", 1, 22 }, { "POPCNT", 1, 23 }, { "AVX", 1, 28 }, { "F16C", 1, 29 },
 		{ "BMI1", 7, 3 }, { "AVX2", 7, 5 }, { "BMI2", 7, 8 }, { "LAHF", 0x81, 0 }, { "LZCNT", 0x81, 5 },
 	};
-	const char *hide = getenv("SYSHM_JIT_HIDE");    /* (tests: features to take as missing, comma-separated) */
+	const char *hide = getenv("BLUE_JIT_HIDE");     /* (tests: features to take as missing, comma-separated) */
 	size_t len = 0;
 	why[0] = 0;
 	for (unsigned k = 0; k < sizeof need / sizeof need[0]; k++) {

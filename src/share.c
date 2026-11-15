@@ -729,7 +729,7 @@ struct share *share_open(const char *dir, int64_t start)
 
 	const char *tmp = getenv("TMPDIR");
 	char overlay[PATH_MAX];
-	snprintf(overlay, sizeof overlay, "%s/syshm-share-XXXXXX", tmp && tmp[0] ? tmp : "/tmp");
+	snprintf(overlay, sizeof overlay, "%s/blue-share-XXXXXX", tmp && tmp[0] ? tmp : "/tmp");
 	s->overlay = mkstemp(overlay);
 	uint64_t sectors = s->layout.size / SECTOR;
 	if (s->overlay < 0 || unlink(overlay) || !(s->written = calloc((sectors + 63) / 64, 8))) {
@@ -737,7 +737,7 @@ struct share *share_open(const char *dir, int64_t start)
 		goto fail;
 	}
 	s->disk = (struct disk_backend){ s->dir, s, s->layout.size, share_read, share_write };
-	s->log = getenv("SYSHM_LOG_SHARE") != NULL;
+	s->log = getenv("BLUE_LOG_SHARE") != NULL;
 	unsigned files = 0;
 	for (unsigned k = 1; k < s->n; k++)
 		files += !s->entries[k].folder;
@@ -1282,7 +1282,7 @@ static void apply(struct sync *y)
 	char a[PATH_MAX], b[PATH_MAX], c[PATH_MAX], d[PATH_MAX], name[HFSREAD_NAME_MAX];
 
 	/* first everything that's read from the volume (which reads host files where they are) */
-	if (!pathf(a, sizeof a, "%s/.syshm-writeback-XXXXXX", s->dir) || !mkdtemp(a)) {
+	if (!pathf(a, sizeof a, "%s/.blue-writeback-XXXXXX", s->dir) || !mkdtemp(a)) {
 		writeback_failed(y, "making a folder in", s->dir);
 		return;
 	}

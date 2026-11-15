@@ -1,6 +1,6 @@
 /* Minimal PNG writer (8-bit RGB, stored deflate blocks; no external libraries). */
-#ifndef SYSHM_PNG_H
-#define SYSHM_PNG_H
+#ifndef BLUE_PNG_H
+#define BLUE_PNG_H
 
 #include <stdint.h>
 

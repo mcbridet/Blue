@@ -2,8 +2,8 @@
  * MOS 6522 VIA as found in Mac I/O (registers every 0x200 bytes). Timers run
  * from a clock supplied by the caller in VIA ticks (783.36 kHz on Macs).
  */
-#ifndef SYSHM_VIA_H
-#define SYSHM_VIA_H
+#ifndef BLUE_VIA_H
+#define BLUE_VIA_H
 
 #include <stdbool.h>
 #include <stdint.h>

@@ -6,7 +6,7 @@
   disasm.py --list FILE...                          what the files hold, where
 
 FILE is a "Mac OS ROM" file or a 4 MB Toolbox image (mapped at 0xFFC00000),
-and/or a RAM dump from `syshm boot ... --dump-ram FILE` (at address 0).
+and/or a RAM dump from `blue boot ... --dump-ram FILE` (at address 0).
 
 ADDR is hex, or the name of a code fragment or of a symbol one exports, with
 an optional +hex offset: MPCreateTask, StartLib+0x40. The fragments are the

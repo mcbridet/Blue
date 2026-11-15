@@ -5,8 +5,8 @@
  * overflow and catalog B-trees, and the alternate MDB near the end. A
  * volume may start out with files and folders, each fork in one extent.
  */
-#ifndef SYSHM_HFS_H
-#define SYSHM_HFS_H
+#ifndef BLUE_HFS_H
+#define BLUE_HFS_H
 
 #include <stdbool.h>
 #include <stddef.h>

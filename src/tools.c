@@ -89,7 +89,7 @@ static const struct {
 /*
  * Its data (after the entry TVectors): what it is and its version (which
  * goes up when the fragment changes, so that one installed by an older
- * syshm is told apart: see current()), then the rest.
+ * version is told apart: see current()), then the rest.
  */
 #define HELPER_MAGIC 0x73794870u        /* 'syHp' */
 #define HELPER_VERSION 2u
@@ -152,7 +152,7 @@ enum {
 /* The patches' other state words: which one, and its parameters */
 enum { S_ENTRY = 1, S_PARAM };
 
-/* Whether the copy making this call is this syshm's: one without the version where this one has it is older */
+/* Whether the copy making this call is this version's: one without the version where this one has it is older */
 static bool current(const struct helper *h, const struct ndrv_call *c)
 {
 	uint32_t data = c->toc + h->layout.extra;
@@ -254,8 +254,8 @@ static void helper_main(struct helper *h, struct ndrv_call *c, struct clip *clip
 	h->launches++;
 	if (!current(h, c)) {
 		h->old = true;
-		printf("enhancements: the guest's syshm Enhancements is older than this syshm (no clipboard): update it "
-		       "(syshm offers to, in a window), or by hand from a volume made with \"syshm tools create\"\n");
+		printf("enhancements: the guest's syshm Enhancements is older than this version of Blue (no clipboard): "
+		       "update it (Blue offers to, in a window), or by hand from a volume made with \"blue tools create\"\n");
 		fflush(stdout);
 	} else if (clip->enabled && !h->patched && patch(h, c, true)) {
 		h->patched = true;
@@ -417,7 +417,7 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct 
 		uint32_t ev = data + (old ? V1_DATA_EVENT : DATA_EVENT), mode, depth;
 		if (h->quit || (mem_r16(m, ev) == HIGH_LEVEL_EVENT && mem_r32(m, ev + 2) == FOURCC('a', 'e', 'v', 't') &&
 				mem_r32(m, ev + 10) == FOURCC('q', 'u', 'i', 't'))) {
-			/* the Process Manager asks us to quit (shutting down), or syshm does (to replace us):
+			/* the Process Manager asks us to quit (shutting down), or Blue does (to replace us):
 			 * the patches go first */
 			h->quit = false;
 			if (h->patched && c->toc == h->patched_toc) {
@@ -581,10 +581,10 @@ int tools_create(const char *path)
 	unsigned n = TOOLS_FILES;
 	if (tools_files(files))
 		return -1;
-	const char *test = getenv("SYSHM_TOOLS_GL_TEST");
+	const char *test = getenv("BLUE_TOOLS_GL_TEST");
 	if (test && strcmp(test, "0") && gl_test_file(&files[n++]))
 		return -1;
-	const char *appl = getenv("SYSHM_TOOLS_APPL");          /* (see tools.h) */
+	const char *appl = getenv("BLUE_TOOLS_APPL");           /* (see tools.h) */
 	if (appl && strcmp(appl, "0"))
 		files[TOOLS_ENHANCEMENTS].type = FOURCC('A', 'P', 'P', 'L');
 	int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);

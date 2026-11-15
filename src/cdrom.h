@@ -12,8 +12,8 @@
  * MSF (0x00MMSSFF, BCD), 2 a track number (BCD), 3 an index into the play
  * list (BCD).
  */
-#ifndef SYSHM_CDROM_H
-#define SYSHM_CDROM_H
+#ifndef BLUE_CDROM_H
+#define BLUE_CDROM_H
 
 #include <stdbool.h>
 #include <stdint.h>

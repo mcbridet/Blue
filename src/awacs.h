@@ -24,10 +24,10 @@
  * the codec plays it through to its outputs, mixed with the DMA's frames
  * (or alone), when its input selector has the CD and loop-through is on,
  * or when no input was ever selected (Mac OS 9 sets up the input side
- * only with an input component, which syshm's sound node doesn't load).
+ * only with an input component, which Blue's sound node doesn't load).
  */
-#ifndef SYSHM_AWACS_H
-#define SYSHM_AWACS_H
+#ifndef BLUE_AWACS_H
+#define BLUE_AWACS_H
 
 #include <stdbool.h>
 #include <stdint.h>

@@ -61,36 +61,36 @@ jobs:
           sudo apt-get install -y --no-install-recommends libegl1 libegl-mesa0 libgl1-mesa-dri
 
       - name: Build
-        run: make -j"$(getconf _NPROCESSORS_ONLN)" all build/syshm-tests
+        run: make -j"$(getconf _NPROCESSORS_ONLN)" all build/blue-tests
 
-      # With SYSHM_TEST_GPU, the GPU tests fail rather than skip if there's no OpenGL context
+      # With BLUE_TEST_GPU, the GPU tests fail rather than skip if there's no OpenGL context
       - name: Test
         run: |
-          if [ '${{ matrix.gpu }}' = true ]; then export SYSHM_TEST_GPU=1; fi
+          if [ '${{ matrix.gpu }}' = true ]; then export BLUE_TEST_GPU=1; fi
           make test
 
-      # SYSHM_TEST_JIT=1: no JIT here is a failure, not a skip
+      # BLUE_TEST_JIT=1: no JIT here is a failure, not a skip
       - name: JIT fuzzing
         if: matrix.jit
-        run: SYSHM_TEST_JIT=1 SYSHM_JIT_PROGRAMS=100000 build/syshm-tests jit
+        run: BLUE_TEST_JIT=1 BLUE_JIT_PROGRAMS=100000 build/blue-tests jit
 
       # Guest instructions a second, interpreted and translated (for the log; not a test)
       - name: JIT speed
         if: matrix.jit
         continue-on-error: true
-        run: SYSHM_JIT_BENCH=1 build/syshm-tests jit
+        run: BLUE_JIT_BENCH=1 build/blue-tests jit
 
       # A tarball keeps the executable bit, which artifact zips drop
       - name: Package
         run: |
-          dir=syshm-${{ matrix.target }}
+          dir=blue-${{ matrix.target }}
           mkdir "$dir"
-          cp build/syshm README.md "$dir/"
+          cp build/blue README.md "$dir/"
           tar -czf "$dir.tar.gz" "$dir"
 
       - uses: actions/upload-artifact@v7
         with:
-          path: syshm-${{ matrix.target }}.tar.gz
+          path: blue-${{ matrix.target }}.tar.gz
           archive: false
           if-no-files-found: error
 
@@ -103,7 +103,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: syshm-*
+          pattern: blue-*
           path: dist
           merge-multiple: true
 
@@ -114,9 +114,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          sha256sum syshm-*.tar.gz > SHA256SUMS
+          sha256sum blue-*.tar.gz > SHA256SUMS
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" syshm-*.tar.gz SHA256SUMS --clobber
+            gh release upload "$TAG" blue-*.tar.gz SHA256SUMS --clobber
           else
-            gh release create "$TAG" syshm-*.tar.gz SHA256SUMS --title "$TAG" --generate-notes --verify-tag
+            gh release create "$TAG" blue-*.tar.gz SHA256SUMS --title "$TAG" --generate-notes --verify-tag
           fi

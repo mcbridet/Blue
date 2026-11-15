@@ -469,7 +469,7 @@ struct machine {
 	struct dbdma dbdma;
 	struct awacs awacs;
 	struct audio *audio;            /* host sound output, if open */
-	FILE *wav;                      /* sound capture (SYSHM_SOUND_WAV), if any */
+	FILE *wav;                      /* sound capture (BLUE_SOUND_WAV), if any */
 	uint32_t wav_frames, wav_rate;
 	struct via via;
 	struct cuda cuda;
@@ -497,7 +497,7 @@ struct machine {
 	unsigned long transfer_waits;   /* ... which it has done this often */
 	uint64_t transfer_wait_tb;      /* ... for this long */
 	struct gpu *gpu;                /* ... which draws with this, if the host can (see nk_boot()) */
-	/* SYSHM_PERF: the host's counters for this thread, printed every second */
+	/* BLUE_PERF: the host's counters for this thread, printed every second */
 	bool perf_on;
 	struct perf perf;
 	/* instruction time at another rate (the script's "clock"): this many million per guest second */
@@ -543,7 +543,7 @@ struct machine {
 	uint64_t next_frame_ns;         /* when the window is next updated */
 	unsigned long idle_calls;       /* _SynchIdleTime and PowerDispatch naps */
 	uint64_t idle_ns;               /* host time spent sleeping for them */
-	/* SYSHM_LOG_AUDIO (see audio_report()) */
+	/* BLUE_LOG_AUDIO (see audio_report()) */
 	bool audio_log;
 	uint64_t audio_log_ns;          /* host time of the last report */
 	uint64_t disk_charged_tb;       /* guest time disk transfers took, all along */
@@ -940,18 +940,18 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	clip_guest_reset(&m->clip);
 	rave_init(&m->rave, &m->mem);
 	m->rave.gpu = m->gpu;
-	m->rave.log = getenv("SYSHM_LOG_RAVE") != NULL;
-	m->rave.fps = getenv("SYSHM_RAVE_FPS") != NULL;
+	m->rave.log = getenv("BLUE_LOG_RAVE") != NULL;
+	m->rave.fps = getenv("BLUE_RAVE_FPS") != NULL;
 	opengl_init(&m->opengl, &m->mem);
 	m->opengl.gpu = m->gpu;
 	m->opengl.video = &m->video;
-	m->opengl.log = getenv("SYSHM_LOG_GL") != NULL;
-	m->opengl.fps = getenv("SYSHM_GL_FPS") != NULL;
+	m->opengl.log = getenv("BLUE_LOG_GL") != NULL;
+	m->opengl.fps = getenv("BLUE_GL_FPS") != NULL;
 	gltest_init(&m->gltest);
-	if (getenv("SYSHM_PERF") && !m->perf_on) {
+	if (getenv("BLUE_PERF") && !m->perf_on) {
 		m->perf_on = perf_open(&m->perf);
 		if (!m->perf_on)
-			fprintf(stderr, "SYSHM_PERF: no processor counters here\n");
+			fprintf(stderr, "BLUE_PERF: no processor counters here\n");
 	}
 	m->video.log = opt->log_hostcalls;
 	m->video.hw_cursor = m->hw_cursor;
@@ -1028,9 +1028,9 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 
 	static const uint8_t mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };   /* (locally administered) */
 	net_init(&m->net, &m->mem, mac, TIMEBASE_HZ);
-	m->net.log = getenv("SYSHM_LOG_NET") != NULL;
+	m->net.log = getenv("BLUE_LOG_NET") != NULL;
 	size_t lanlib_size = net_build_lanlib(&m->net, m->lanlib, sizeof m->lanlib);
-	if (((opt->realtime && !opt->no_net) || getenv("SYSHM_NET")) && net_start(&m->net))
+	if (((opt->realtime && !opt->no_net) || getenv("BLUE_NET")) && net_start(&m->net))
 		printf("net: Ethernet behind NAT (DHCP 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3)\n");
 
 	struct bootinfo_machine hw = {
@@ -1092,8 +1092,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->dbdma.interrupt_ctx = &m->macio;
 	mmio_add(&m->bus, MACIO_DBDMA, DBDMA_SIZE, &dbdma_mmio_ops, &m->dbdma, "dbdma");
 	awacs_init(&m->awacs, &m->dbdma, TIMEBASE_HZ);
-	m->awacs.log = getenv("SYSHM_LOG_SOUND") != NULL;
-	m->audio_log = getenv("SYSHM_LOG_AUDIO") != NULL;
+	m->awacs.log = getenv("BLUE_LOG_SOUND") != NULL;
+	m->audio_log = getenv("BLUE_LOG_AUDIO") != NULL;
 	/*
 	 * The codec's status says it's valid, as a running codec's does. Mac
 	 * OS's sound plug-in polls for it after setting the codec up, and
@@ -1105,25 +1105,25 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->awacs.sink = play_sound;
 	m->awacs.sink_ctx = m;
 	m->awacs.input = (struct awacs_input){ cd_input_run, cd_input_pull, cd_input_active, m };
-	if (!m->wav && getenv("SYSHM_SOUND_WAV") && (m->wav = fopen(getenv("SYSHM_SOUND_WAV"), "wb"))) {
+	if (!m->wav && getenv("BLUE_SOUND_WAV") && (m->wav = fopen(getenv("BLUE_SOUND_WAV"), "wb"))) {
 		uint8_t h[44];
 		wav_header(h, 0, 44100);
 		fwrite(h, 1, sizeof h, m->wav);
 	}
 	mmio_add(&m->bus, MACIO_SOUND, AWACS_SIZE, &awacs_mmio_ops, &m->awacs, "sound");
 	ohci_init(&m->ohci, &m->mem);
-	m->ohci.log = getenv("SYSHM_LOG_USB") != NULL;
+	m->ohci.log = getenv("BLUE_LOG_USB") != NULL;
 	mmio_add(&m->bus, USB_BASE, OHCI_SIZE, &ohci_mmio_ops, &m->ohci, "usb");
 
 	/* PCI configuration space: the functions the device tree lists */
 	pci_init(&m->pci);
-	m->pci.log = getenv("SYSHM_LOG_PCI") != NULL;
+	m->pci.log = getenv("BLUE_LOG_PCI") != NULL;
 	pci_add(&m->pci, 0x00, PCI_VENDOR_MOTOROLA, PCI_DEVICE_GRACKLE, PCI_CLASS_HOST_BRIDGE, 0x40, 0, 0);
-	pci_add(&m->pci, PCI_DEVFN_DISPLAY, PCI_VENDOR_SYSHM, PCI_DEVICE_DISPLAY, PCI_CLASS_DISPLAY, 1, FB_BASE, FB_SIZE);
+	pci_add(&m->pci, PCI_DEVFN_DISPLAY, PCI_VENDOR_BLUE, PCI_DEVICE_DISPLAY, PCI_CLASS_DISPLAY, 1, FB_BASE, FB_SIZE);
 	for (unsigned k = 0; k < m->disks; k++)
-		pci_add(&m->pci, (uint8_t)(PCI_DEVFN_DISK + 8 * k), PCI_VENDOR_SYSHM, PCI_DEVICE_DISK, PCI_CLASS_DISK, 1, 0, 0);
+		pci_add(&m->pci, (uint8_t)(PCI_DEVFN_DISK + 8 * k), PCI_VENDOR_BLUE, PCI_DEVICE_DISK, PCI_CLASS_DISK, 1, 0, 0);
 	if (m->has_floppy)
-		pci_add(&m->pci, PCI_DEVFN_FLOPPY, PCI_VENDOR_SYSHM, PCI_DEVICE_FLOPPY, PCI_CLASS_DISK, 1, 0, 0);
+		pci_add(&m->pci, PCI_DEVFN_FLOPPY, PCI_VENDOR_BLUE, PCI_DEVICE_FLOPPY, PCI_CLASS_DISK, 1, 0, 0);
 	pci_add(&m->pci, PCI_DEVFN_USB, OHCI_PCI_VENDOR, OHCI_PCI_DEVICE, OHCI_PCI_CLASS, OHCI_PCI_REVISION, USB_BASE, OHCI_SIZE);
 	pci_add(&m->pci, PCI_DEVFN_MACIO, PCI_VENDOR_APPLE, PCI_DEVICE_HEATHROW, PCI_CLASS_MACIO, 0, MACIO_BASE, MACIO_SIZE);
 	mmio_add(&m->bus, PCI_CONFIG_ADDR, PCI_CONFIG_SIZE, &pci_addr_mmio_ops, &m->pci, "pci config address");
@@ -1140,7 +1140,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		 * zeros it finds the counter stopped and corrects nothing.
 		 */
 		mmio_add(&m->bus, MACIO_SWIM3, MACIO_SWIM3_SIZE, &empty_cell_ops, NULL, "swim3");
-		m->mp.log = getenv("SYSHM_LOG_MP") != NULL;
+		m->mp.log = getenv("BLUE_LOG_MP") != NULL;
 		mp_init(&m->mp, TIMEBASE_HZ);
 		/* the areas a NanoKernel 2 makes from the page map: Mac OS's RAM, then the rest */
 		struct nk_region regions[NK_MAX_REGIONS];
@@ -1157,7 +1157,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		/*
 		 * NanoKernel 2 starts its free page list with 18 pages and one per 8 MB
 		 * of RAM, from outside Mac OS's (for its own pool, and the page
-		 * ager's reserve). syshm's kernel needs none of them.
+		 * ager's reserve). Blue's kernel needs none of them.
 		 */
 		m->mp.free_pages = 18 + (m->ram_size >> MEM_PAGE_SHIFT) / 2048;
 	}
@@ -1671,9 +1671,9 @@ static void screenshot(struct machine *m)
 	struct tm tm;
 	localtime_r(&t, &tm);
 	strftime(stamp, sizeof stamp, "%Y-%m-%d at %H.%M.%S", &tm);
-	snprintf(path, sizeof path, "%s/syshm %s.png", dir, stamp);
+	snprintf(path, sizeof path, "%s/blue %s.png", dir, stamp);
 	for (int n = 2; stat(path, &st) == 0 && n < 100; n++)
-		snprintf(path, sizeof path, "%s/syshm %s (%d).png", dir, stamp, n);
+		snprintf(path, sizeof path, "%s/blue %s (%d).png", dir, stamp, n);
 	bool home_dir = home && strncmp(path, home, strlen(home)) == 0;
 	if (video_screenshot(&m->video, path)) {
 		snprintf(m->menu_status, sizeof m->menu_status, "Couldn't save %s%s", home_dir ? "~" : "",
@@ -2927,8 +2927,8 @@ static const char *kcall_vm_dispatch(struct machine *m)
 /*
  * The guest tools, in window runs (and runs whose input script answers for
  * the window): looked for on the startup disk before Mac OS starts, and
- * offered once the Finder is up if they're missing or another syshm's (see
- * install.h). The startup disk is the partition the ROM file came from, or
+ * offered once the Finder is up if they're missing or another version's
+ * (see install.h). The startup disk is the partition the ROM file came from, or
  * (with --rom) the first with boot blocks.
  */
 static void tools_startup(struct machine *m, const struct nk_boot_options *opt)
@@ -3250,7 +3250,7 @@ static const char *host_call(struct machine *m, uint32_t selector)
 }
 
 /* Returns NULL to keep running, or a reason to stop. */
-/* SYSHM_PERF: every second of host time, how fast the guest ran and how the host spent this thread's time */
+/* BLUE_PERF: every second of host time, how fast the guest ran and how the host spent this thread's time */
 static void perf_report(struct machine *m)
 {
 	uint64_t now = host_ns(), cycles, insns;
@@ -3285,7 +3285,7 @@ static void perf_report(struct machine *m)
 }
 
 /*
- * SYSHM_LOG_AUDIO: every second of host time while sound plays (or played
+ * BLUE_LOG_AUDIO: every second of host time while sound plays (or played
  * since the last report), how the host's sound queue fared (its depth
  * before each chunk was queued, chunks dropped when it was full, silence
  * added when it ran dry), and what paces it: the frames the guest's sound
@@ -3330,9 +3330,9 @@ static void audio_report(struct machine *m)
 
 /*
  * MPDispatch: the calls Multiprocessing Services make to NanoKernel 2 (call
- * number in r0), through `sc` or kernel call 8. As syshm's kernel reports
+ * number in r0), through `sc` or kernel call 8. As Blue's kernel reports
  * itself as 2.28 (see NK_INFO_VERSION), Mac OS 8.6 and later make some;
- * ROM files from Mac OS 9.1 on, for which syshm reports a blue task too
+ * ROM files from Mac OS 9.1 on, for which Blue's kernel reports a blue task too
  * (mp_kernel), make more (see mp.h). Call 55 is the one 8.6's Process
  * Manager (its ProcessMgrSupport fragment) makes when nothing needs to
  * run, to sleep until the next process wake time (r3:r4, an AbsoluteTime;
@@ -3782,7 +3782,7 @@ static int start_machine(struct machine *m, const struct nk_boot_options *opt)
 	if (m->realtime || m->clock_mips)
 		m->cpu.tb_step = 0;     /* the host clock or the instruction count sets the timebase between chunks */
 	/* the emulator dispatches 68k opcode X through dispatch_table + 8 * X; see also recompiled_trap_entry() */
-	m->cpu.mmio = getenv("SYSHM_DEVICE_EXITS") ? NULL : device_hook;      /* (for comparisons: each access exits) */
+	m->cpu.mmio = getenv("BLUE_DEVICE_EXITS") ? NULL : device_hook;       /* (for comparisons: each access exits) */
 	m->cpu.mmio_ctx = m;
 	uint32_t entry = recompiled_trap_entry(m);
 	m->recompiled_traps = entry;
@@ -3890,12 +3890,12 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 /*
  * The 3D engine draws with the GPU in real time, if the host has hardware
  * OpenGL; runs in instruction time draw in software, so that they are the
- * same on every host. SYSHM_GPU=1 has the GPU draw in any run (and takes
- * software OpenGL too); SYSHM_GPU=0 or --no-gpu, never.
+ * same on every host. BLUE_GPU=1 has the GPU draw in any run (and takes
+ * software OpenGL too); BLUE_GPU=0 or --no-gpu, never.
  */
 static struct gpu *open_gpu(const struct nk_boot_options *opt)
 {
-	const char *env = getenv("SYSHM_GPU");
+	const char *env = getenv("BLUE_GPU");
 	bool forced = env && strcmp(env, "1") == 0;
 	if (opt->no_gpu || (env && strcmp(env, "0") == 0) || (!forced && !opt->realtime))
 		return NULL;
@@ -3961,7 +3961,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	if (opt->window) {
 		m.shown = malloc(FB_SIZE);
 		if (m.shown)
-			m.display = display_open("syshm", video_width(&m.video), video_height(&m.video),
+			m.display = display_open("Blue", video_width(&m.video), video_height(&m.video),
 						 opt->integer_scale);
 		if (!m.display)         /* (the driver has the hardware cursor, but says it hasn't) */
 			m.hw_cursor = m.video.hw_cursor = false;

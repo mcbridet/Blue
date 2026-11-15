@@ -15,8 +15,8 @@
  * Addresses are physical: data and descriptors must be in RAM; quadlet
  * loads and stores (KEY_SYSTEM) may also reach device registers.
  */
-#ifndef SYSHM_DBDMA_H
-#define SYSHM_DBDMA_H
+#ifndef BLUE_DBDMA_H
+#define BLUE_DBDMA_H
 
 #include <stdbool.h>
 #include <stdint.h>

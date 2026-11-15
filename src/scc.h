@@ -9,8 +9,8 @@
  *   legacy: B control +0, A control +2, B data +4, A data +6
  *   escc:   +0x1000 + (channel A ? 0x20 : 0) + (data ? 0x10 : 0)
  */
-#ifndef SYSHM_SCC_H
-#define SYSHM_SCC_H
+#ifndef BLUE_SCC_H
+#define BLUE_SCC_H
 
 #include <stdint.h>
 

@@ -3,8 +3,8 @@
  * Encoding"). Register 31 is the zero register in data processing and SP
  * as a load/store base. `sf` selects 64-bit (1) or 32-bit (0) operation.
  */
-#ifndef SYSHM_A64_H
-#define SYSHM_A64_H
+#ifndef BLUE_A64_H
+#define BLUE_A64_H
 
 #include <stdbool.h>
 #include <stdint.h>

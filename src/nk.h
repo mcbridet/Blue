@@ -4,8 +4,8 @@
  * Offsets follow Apple's PPCInfoRecordsPriv.h (Darwin, APSL) and the
  * reverse-engineered NanoKernel sources (github.com/elliotnunn/NanoKernel).
  */
-#ifndef SYSHM_NK_H
-#define SYSHM_NK_H
+#ifndef BLUE_NK_H
+#define BLUE_NK_H
 
 #include <stdbool.h>
 #include <stdint.h>

@@ -4,8 +4,8 @@
  * FPSCR rounding mode, sticky exception bits and FPRF are maintained.
  * Enabled FP exceptions (FPSCR VE/OE/UE/ZE/XE) are not raised.
  */
-#ifndef SYSHM_PPC_FP_H
-#define SYSHM_PPC_FP_H
+#ifndef BLUE_PPC_FP_H
+#define BLUE_PPC_FP_H
 
 #include <stdint.h>
 

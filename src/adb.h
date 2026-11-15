@@ -3,8 +3,8 @@
  * the Cuda sees them. Input comes from the host; the Cuda turns pending data
  * into autopoll packets.
  */
-#ifndef SYSHM_ADB_H
-#define SYSHM_ADB_H
+#ifndef BLUE_ADB_H
+#define BLUE_ADB_H
 
 #include <stdbool.h>
 #include <stdint.h>

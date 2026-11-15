@@ -11,8 +11,8 @@
  * It reports ATI's vendor ID: games of the time (Bugdom, for one) take a
  * RAVE engine for hardware acceleration only if it is ATI's.
  */
-#ifndef SYSHM_RAVE_H
-#define SYSHM_RAVE_H
+#ifndef BLUE_RAVE_H
+#define BLUE_RAVE_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -96,7 +96,7 @@ struct rave {
 	struct raster_texture **doomed; /* deleted while drawing still recorded may use them */
 	unsigned ndoomed, doomed_cap;
 	bool log;
-	bool fps;                       /* print the frame rate every second (SYSHM_RAVE_FPS) */
+	bool fps;                       /* print the frame rate every second (BLUE_RAVE_FPS) */
 	double fps_since, fps_raster;
 	unsigned fps_frames;
 	bool registered;

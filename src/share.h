@@ -9,16 +9,16 @@
  * renamed, moved and deleted files and folders, with resource forks and
  * Finder info as the host keeps them (macOS: the file's own resource fork
  * and com.apple.FinderInfo; elsewhere AppleDouble "._" files). Host files
- * that Mac OS deleted or replaced are moved to DIR/.syshm-recovery/<date>
+ * that Mac OS deleted or replaced are moved to DIR/.blue-recovery/<date>
  * rather than destroyed; if Mac OS didn't put the volume away, nothing is
  * written back and the volume is saved there as a disk image instead.
  */
-#ifndef SYSHM_SHARE_H
-#define SYSHM_SHARE_H
+#ifndef BLUE_SHARE_H
+#define BLUE_SHARE_H
 
 #include "disk.h"
 
-#define SHARE_RECOVERY ".syshm-recovery"
+#define SHARE_RECOVERY ".blue-recovery"
 
 struct share;
 

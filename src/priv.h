@@ -6,7 +6,7 @@
  * MSR = (MSR & ~r5) | r7 (NanoKernel 1's KCallResetSystem, NanoKernel 2's
  * kcResetSystem). Utilities use it to read the processor's registers.
  *
- * syshm's processor always runs guest code in user mode, so the kernel
+ * Blue's processor always runs guest code in user mode, so the kernel
  * keeps that MSR here (the blue task's) and, while its PR bit is clear, does
  * the privileged instructions that come to it: mfmsr and mtmsr (setting PR
  * again ends supervisor mode), rfi, mfspr and mtspr of an iMac's PowerPC
@@ -18,8 +18,8 @@
  * the thermal assist unit's comparisons). In user mode, mfmsr reads the MSR
  * and the rest is a privileged instruction exception.
  */
-#ifndef SYSHM_PRIV_H
-#define SYSHM_PRIV_H
+#ifndef BLUE_PRIV_H
+#define BLUE_PRIV_H
 
 #include <stdbool.h>
 #include <stdint.h>

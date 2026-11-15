@@ -18,8 +18,8 @@
  * a queue; each pulses the receive DMA channel's interrupt, whose handler in
  * lanLib (or else a timer) hands them to the driver's receive routine.
  */
-#ifndef SYSHM_NET_H
-#define SYSHM_NET_H
+#ifndef BLUE_NET_H
+#define BLUE_NET_H
 
 #include <stdbool.h>
 #include <stddef.h>

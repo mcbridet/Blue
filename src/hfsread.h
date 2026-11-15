@@ -6,8 +6,8 @@
  * type 'tbxi' in the startup disk's blessed System Folder. Only the blocks
  * needed are read (pread()).
  */
-#ifndef SYSHM_HFSREAD_H
-#define SYSHM_HFSREAD_H
+#ifndef BLUE_HFSREAD_H
+#define BLUE_HFSREAD_H
 
 #include <stdbool.h>
 #include <stddef.h>

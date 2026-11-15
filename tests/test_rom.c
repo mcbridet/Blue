@@ -6,7 +6,7 @@
 #include "../src/rom.h"
 #include "test.h"
 
-/* Uses a real ROM if one is available: $SYSHM_TEST_ROM, or ./MOS.rom. */
+/* Uses a real ROM if one is available: $BLUE_TEST_ROM, or ./MOS.rom. */
 void test_rom(void)
 {
 	/* the Trampoline makes AAPL,interrupt-index when it names it (Mac OS 9.2's on) */
@@ -18,7 +18,7 @@ void test_rom(void)
 	fake.elf_size = 0;
 	CHECK(!rom_interrupt_index(&fake));
 
-	const char *path = getenv("SYSHM_TEST_ROM");
+	const char *path = getenv("BLUE_TEST_ROM");
 	if (!path)
 		path = "MOS.rom";
 	if (access(path, R_OK) != 0) {

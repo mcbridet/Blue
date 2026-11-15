@@ -20,7 +20,7 @@ int mem_init(struct mem *m)
 
 	void *p = MAP_FAILED;
 #ifdef __linux__
-	int fd = memfd_create("syshm-guest", MFD_CLOEXEC);
+	int fd = memfd_create("blue-guest", MFD_CLOEXEC);
 	if (fd >= 0 && ftruncate(fd, (off_t)MEM_SPAN) == 0)
 		p = mmap(NULL, MEM_SPAN, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_NORESERVE, fd, 0);
 	if (p != MAP_FAILED)

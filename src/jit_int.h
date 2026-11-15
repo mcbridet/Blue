@@ -5,8 +5,8 @@
  * fastmem and its fault sites, the C functions generated code calls, the
  * run loop, statistics and the profiler; a translator makes the code.
  */
-#ifndef SYSHM_JIT_INT_H
-#define SYSHM_JIT_INT_H
+#ifndef BLUE_JIT_INT_H
+#define BLUE_JIT_INT_H
 
 #include <stdbool.h>
 #include <stddef.h>

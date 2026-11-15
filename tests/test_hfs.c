@@ -12,7 +12,7 @@
 static int temp_file(char *path, size_t len)
 {
 	const char *dir = getenv("TMPDIR");
-	snprintf(path, len, "%s/syshm-test-XXXXXX", dir ? dir : "/tmp");
+	snprintf(path, len, "%s/blue-test-XXXXXX", dir ? dir : "/tmp");
 	return mkstemp(path);
 }
 

@@ -1,10 +1,10 @@
 /*
  * The host processor's cycle and instruction counters for the calling
  * thread (Linux perf events; nothing elsewhere), for measuring how well
- * the emulation runs (SYSHM_PERF).
+ * the emulation runs (BLUE_PERF).
  */
-#ifndef SYSHM_PERF_H
-#define SYSHM_PERF_H
+#ifndef BLUE_PERF_H
+#define BLUE_PERF_H
 
 #include <stdbool.h>
 #include <stdint.h>

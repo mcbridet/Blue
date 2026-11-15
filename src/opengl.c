@@ -120,7 +120,7 @@ enum { OPTION_SWAP_RECT, OPTION_BUFFER_RECT, OPTION_SWAP_LIMIT, OPTION_COLORMAP_
 static const char vendor[] = "ATI Technologies Inc.";
 static const char renderer[] = "Rage 128 OpenGL Engine";
 static const char version[] = "1.2 syshm";
-/* (Mac OS 9.2.2's engine's, in its order, but only those syshm does) */
+/* (Mac OS 9.2.2's engine's, in its order, but only those Blue does) */
 static const char extensions[] = "GL_APPLE_transform_hint GL_APPLE_packed_pixel GL_ARB_transpose_matrix "
 				 "GL_EXT_clip_volume_hint GL_EXT_rescale_normal GL_NV_texgen_reflection "
 				 "GL_ARB_multitexture GL_ARB_texture_env_add GL_EXT_blend_color GL_EXT_blend_minmax "
@@ -139,7 +139,7 @@ static const char *const agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE] = {
 
 /*
  * After the entries' TVectors: what it is and its version (which goes up
- * when the fragment changes, so that one installed by an older syshm is
+ * when the fragment changes, so that one installed by an older version is
  * told apart), the current context (glc_cc), where the next record goes
  * and where the buffer ends (see "recording"), the strings glGetString()
  * and aglErrorString() give; then, zero-filled, the contexts, pixel
@@ -648,7 +648,7 @@ void opengl_init(struct opengl *o, struct mem *mem)
 	opengl_build_library(scratch, sizeof scratch, &o->library);
 	opengl_build_memory(scratch, sizeof scratch, &o->memory);
 	opengl_build_utility(scratch, sizeof scratch, &o->utility);
-	const char *prof = getenv("SYSHM_GL_PROFILE");
+	const char *prof = getenv("BLUE_GL_PROFILE");
 	if (prof && (o->prof = fopen(prof, "w")) != NULL)
 		fprintf(o->prof, "# start %llu\n# host ns at the frame; then since the one before: ns in all, in the "
 			"libraries' calls, waiting for the backend, reading back, presenting, napping paced, napping; "
@@ -917,7 +917,7 @@ static bool fit_drawable(struct opengl *o, struct opengl_context *x)
 	return true;
 }
 
-/* ---- profile (SYSHM_GL_PROFILE) --------------------------------------------------------- */
+/* ---- profile (BLUE_GL_PROFILE) --------------------------------------------------------- */
 
 /* The time in a call so far, and the surfaces' waiting and reading back since last counted */
 static void profile_count(struct opengl *o, uint64_t now)
@@ -971,7 +971,7 @@ static void show(struct opengl *o, struct opengl_context *x)
 	else if (x->surface.gpu)
 		o->gpu_frames++;
 	free_retired(o);
-	if (o->fps) {                   /* (SYSHM_GL_FPS: the frame rate, every second of host time) */
+	if (o->fps) {                   /* (BLUE_GL_FPS: the frame rate, every second of host time) */
 		clock_gettime(CLOCK_MONOTONIC, &t1);
 		double now = (double)t1.tv_sec + 1e-9 * (double)t1.tv_nsec;
 		o->fps_drawing += now - ((double)t0.tv_sec + 1e-9 * (double)t0.tv_nsec);
@@ -3364,7 +3364,7 @@ static void finish_call(struct ndrv_call *c, const char *result, uint32_t v)
 	ndrv_finish(c, result[0] == 'v' ? 0 : result[0] == 'B' ? (v ? 1 : 0) : v);
 }
 
-/* Whether the instance's library is this syshm's: its data's magic and version where this one's are */
+/* Whether the instance's library is this version's: its data's magic and version where this one's are */
 static bool library_current(struct opengl *o, const struct opengl_instance *in)
 {
 	uint32_t data = data_of(o, in);
@@ -3405,7 +3405,7 @@ static void library_call(struct opengl *o, struct ndrv_call *c)
 	if (c->entry == E_INIT || c->entry == E_TERM) {
 		/*
 		 * CFM's initialization (a new process: its instance from scratch,
-		 * unless its library's an older syshm's) and termination (the
+		 * unless its library's an older version's) and termination (the
 		 * screen's mode back, if it switched it)
 		 */
 		struct opengl_instance *in = instance_of(o, c->toc, c->entry == E_INIT);
@@ -3422,9 +3422,9 @@ static void library_call(struct opengl *o, struct ndrv_call *c)
 			} else if (!library_current(o, in)) {
 				in->stale = true;
 				if (!o->told_stale)
-					printf("opengl: the guest's syshm OpenGL is older than this syshm: update it (syshm "
-					       "offers to, in a window), or by hand from a volume made with \"syshm tools "
-					       "create\" into Extensions\n");
+					printf("opengl: the guest's syshm OpenGL is older than this version of Blue: update "
+					       "it (Blue offers to, in a window), or by hand from a volume made with \"blue "
+					       "tools create\" into Extensions\n");
 				o->told_stale = true;
 				fflush(stdout);
 			} else {

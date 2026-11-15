@@ -1,5 +1,5 @@
-#ifndef SYSHM_TEST_H
-#define SYSHM_TEST_H
+#ifndef BLUE_TEST_H
+#define BLUE_TEST_H
 
 #include <stdio.h>
 

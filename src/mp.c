@@ -55,7 +55,7 @@ void mp_init(struct mp *mp, uint32_t tb_hz)
 	blue->task.resume = BLOCKED;
 	blue->task.deadline = UINT64_MAX;
 	mp->task[0].id = mp->blue_task;
-	mp->tasks = 2;          /* (and NanoKernel 2's idle task, which syshm doesn't need; MPLibrary counts on it) */
+	mp->tasks = 2;          /* (and NanoKernel 2's idle task, which Blue doesn't need; MPLibrary counts on it) */
 	mp->current = mp->blue_task;
 }
 
@@ -1087,7 +1087,7 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 			r[5] = *age & AGE_HELD ? 0 : *age;
 		break;
 	}
-	case 94: {      /* MPSetPageAge(area r3, address r4, age r5) (NanoKernel 2 then takes it out of the hash table, for its next use to halve its age; syshm has none) */
+	case 94: {      /* MPSetPageAge(area r3, address r4, age r5) (NanoKernel 2 then takes it out of the hash table, for its next use to halve its age; Blue has none) */
 		uint16_t *age = page_age(mp, r[3], r[4], &status);
 		if (age && r[5] > AGE_MAX)
 			status = MP_PARAM_ERR;
@@ -1100,7 +1100,7 @@ static bool call(struct mp *mp, struct ppc_cpu *cpu, int32_t *result)
 	case 100:       /* MPGetFreePageCount -> r3 (not a status) */
 		status = (int32_t)mp->free_pages;
 		break;
-	case 132:       /* NKSetClockDriftCorrection(parts per billion r3, 0: none): NanoKernel 2 then steps the timebase now and then; syshm's keeps time */
+	case 132:       /* NKSetClockDriftCorrection(parts per billion r3, 0: none): NanoKernel 2 then steps the timebase now and then; Blue's keeps time */
 		break;
 	case 82:        /* MPRegisterAger(notification r3): once */
 		if (mp->ager)

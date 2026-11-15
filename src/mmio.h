@@ -4,8 +4,8 @@
  * faulting load/store and forwards it to the device that owns the address
  * (or does so from the processor's mmio hook, without the exit: see ppc.h).
  */
-#ifndef SYSHM_MMIO_H
-#define SYSHM_MMIO_H
+#ifndef BLUE_MMIO_H
+#define BLUE_MMIO_H
 
 #include <stdbool.h>
 #include <stdint.h>

@@ -1,15 +1,15 @@
 /*
  * Installing the guest tools (tools.h) on the startup disk, from inside Mac
- * OS. Before Mac OS starts, syshm looks in the startup disk's System Folder
+ * OS. Before Mac OS starts, Blue looks in the startup disk's System Folder
  * for them (install_check()); once the Finder is up, if one is missing or
- * isn't this syshm's, it asks (in the window; or an input script answers),
+ * isn't this version's, it asks (in the window; or an input script answers),
  * and if the answer is yes, Mac OS writes the files itself:
  *
  *   - At an idle call (the trap the Process Manager's idle routine calls
  *     when no process needs time: _SynchIdleTime, from a _SystemTask patch,
  *     before Mac OS 9; in its place, Mac OS 9's trap AAAA with $82F0 in D0:
  *     in the current application's context, at the time desk accessories
- *     and drivers get theirs), syshm points that trap's entry in the
+ *     and drivers get theirs), Blue points that trap's entry in the
  *     Toolbox trap table at 68k code of its own, in memory it maps outside
  *     Mac OS's (INSTALL_REGION).
  *   - That code puts the entry back and saves the registers; prepares the
@@ -19,7 +19,7 @@
  *     main routine through a routine descriptor (Mixed Mode switches to
  *     native code as for any 68k caller); closes the connection, restores
  *     the registers and goes on to the trap's own routine.
- *   - The installer's logic runs in syshm (install_call()): through
+ *   - The installer's logic runs in Blue (install_call()): through
  *     InterfaceLib, the File Manager writes each tool to a temporary file in
  *     the folder it goes in, which then takes the old copy's place (so that
  *     no file is ever left half written). A copy of Enhancements that's
@@ -30,18 +30,18 @@
  *     > Restart (programs can ask to save their work first, or stop it), and
  *     the tools load as any extension does.
  *
- * syshm's OpenGL libraries have the fragment names of Apple's (Mac OS 9's
+ * Blue's OpenGL libraries have the fragment names of Apple's (Mac OS 9's
  * OpenGLLibrary, OpenGLMemory and OpenGLUtility), so only one of each can be
- * enabled: Apple's are in Extensions (Disabled) while syshm's are in the
- * Extensions folder. Once syshm's are there, the installer moves Apple's
- * (files of those names) to Extensions (Disabled); and if syshm's are gone
+ * enabled: Apple's are in Extensions (Disabled) while Blue's are in the
+ * Extensions folder. Once Blue's are there, the installer moves Apple's
+ * (files of those names) to Extensions (Disabled); and if Blue's are gone
  * (none of them is anywhere) while Apple's are only in Extensions
  * (Disabled), the offer is to put Apple's back, instead of installing
- * syshm's. (The check knows the folders by their English names; the
+ * Blue's. (The check knows the folders by their English names; the
  * installer by FindFolder's.)
  */
-#ifndef SYSHM_INSTALL_H
-#define SYSHM_INSTALL_H
+#ifndef BLUE_INSTALL_H
+#define BLUE_INSTALL_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -55,7 +55,7 @@
 #define HOSTCALL_TOOLS_INSTALL 0x103u   /* the installer's (never installed itself) */
 #define INSTALL_REGION 0x5E000000u      /* where its memory is mapped: nothing of Mac OS's is near */
 #define INSTALL_REGION_SIZE 0x50000u    /* (room for a fork of up to 300 KB) */
-#define INSTALL_APPLE_GL TOOLS_GL_FILES /* Apple's OpenGL libraries of the names syshm's have */
+#define INSTALL_APPLE_GL TOOLS_GL_FILES /* Apple's OpenGL libraries of the names Blue's have */
 
 /* ---- the check, before Mac OS starts ------------------------------------------ */
 
@@ -76,9 +76,9 @@ struct install_check {
 		bool found[2];
 		uint32_t dir[2];
 	} apple[INSTALL_APPLE_GL];
-	bool apple_disable;             /* syshm's are all in the Extensions folder, and some of Apple's too */
-	bool apple_restore;             /* syshm's aren't anywhere, Apple's only in Extensions (Disabled) */
-	bool apple_kept;                /* Apple's were put back earlier in this run: syshm's aren't offered */
+	bool apple_disable;             /* Blue's are all in the Extensions folder, and some of Apple's too */
+	bool apple_restore;             /* Blue's aren't anywhere, Apple's only in Extensions (Disabled) */
+	bool apple_kept;                /* Apple's were put back earlier in this run: Blue's aren't offered */
 };
 
 /*
@@ -86,7 +86,7 @@ struct install_check {
  * the image at `path`, in its folders (Extensions, whatever its name, and
  * Extensions (Disabled)): files of the tool's type and creator whose code
  * makes the tool's host call. A copy is current if both its forks are the
- * same as this syshm's. Returns 0, or -1 (`err` says why).
+ * same as this version's. Returns 0, or -1 (`err` says why).
  */
 int install_check(const char *path, unsigned part, struct install_check *ck, char *err, size_t errlen);
 
@@ -173,7 +173,7 @@ void install_init(struct install *in);
  * `read_only` if it's attached so) before Mac OS starts, and says what it
  * found. From then on, the tools are offered if anything's to be done.
  * `check.apple_kept` is kept as it was (once Apple's OpenGL libraries have
- * been put back, syshm's aren't offered again after the restart that
+ * been put back, Blue's aren't offered again after the restart that
  * follows, nor later in the run: see nk.c).
  */
 void install_begin(struct install *in, const char *path, unsigned part, bool read_only);

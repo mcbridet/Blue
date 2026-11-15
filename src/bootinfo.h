@@ -5,8 +5,8 @@
  * Layouts and values were taken from the real Trampoline's output in the QEMU
  * reference run (tools/qemu-ref) for a Heathrow/Paddington-class Mac I/O.
  */
-#ifndef SYSHM_BOOTINFO_H
-#define SYSHM_BOOTINFO_H
+#ifndef BLUE_BOOTINFO_H
+#define BLUE_BOOTINFO_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -62,7 +62,7 @@
 #define PCI_DEVFN_USB 0x30u             /* device 6 */
 #define PCI_DEVFN_FLOPPY 0x38u          /* device 7: the floppy drive, if there's one */
 #define PCI_DEVFN_MACIO 0x80u           /* device 16 */
-#define PCI_VENDOR_SYSHM 0x1234u        /* the "unassigned" ID virtual hardware commonly uses */
+#define PCI_VENDOR_BLUE 0x1234u         /* the "unassigned" ID virtual hardware commonly uses */
 #define PCI_DEVICE_DISPLAY 0x5348u
 #define PCI_DEVICE_DISK 0x5349u
 #define PCI_DEVICE_FLOPPY 0x534Au

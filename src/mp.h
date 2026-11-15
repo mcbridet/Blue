@@ -34,8 +34,8 @@
  * of the slot's uses), and its classes. After the reverse-engineered
  * NanoKernel 2 (github.com/elliotnunn/powermac-rom).
  */
-#ifndef SYSHM_MP_H
-#define SYSHM_MP_H
+#ifndef BLUE_MP_H
+#define BLUE_MP_H
 
 #include <stdbool.h>
 #include <stdint.h>

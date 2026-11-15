@@ -1,5 +1,5 @@
-#ifndef SYSHM_LZSS_H
-#define SYSHM_LZSS_H
+#ifndef BLUE_LZSS_H
+#define BLUE_LZSS_H
 
 #include <stddef.h>
 #include <stdint.h>

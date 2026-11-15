@@ -21,7 +21,7 @@
 static void temp_path(char *path, size_t len)
 {
 	const char *dir = getenv("TMPDIR");
-	snprintf(path, len, "%s/syshm-test-XXXXXX", dir ? dir : "/tmp");
+	snprintf(path, len, "%s/blue-test-XXXXXX", dir ? dir : "/tmp");
 	int fd = mkstemp(path);
 	if (fd >= 0)
 		close(fd);

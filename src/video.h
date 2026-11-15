@@ -12,8 +12,8 @@
  * that and queues a secondary interrupt handler, which runs Mac OS's VBL
  * tasks for the screen (the Video Services Library's VBL service).
  */
-#ifndef SYSHM_VIDEO_H
-#define SYSHM_VIDEO_H
+#ifndef BLUE_VIDEO_H
+#define BLUE_VIDEO_H
 
 #include <stdbool.h>
 #include <stddef.h>

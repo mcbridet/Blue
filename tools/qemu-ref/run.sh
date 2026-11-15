@@ -1,7 +1,7 @@
 #!/bin/bash
 # Reference run: boot a 1.x NewWorld "Mac OS ROM" file on stock qemu-system-ppc
 # (g3beige) with the device tree patched to pass for a Blue & White G3. This runs
-# Apple's real Trampoline and NanoKernel, so it shows what syshm has to reproduce.
+# Apple's real Trampoline and NanoKernel, so it shows what Blue has to reproduce.
 #
 # usage: tools/qemu-ref/run.sh [rom-file] [extra qemu args...]
 #   QEMU_DISPLAY=gtk|sdl|none (default: gtk when a desktop session is present)
@@ -20,7 +20,7 @@ mkdir -p "$out"
 if [ ! -e "$disk" ] || [ "$rom" -nt "$disk" ]; then
 	hfs=$out/boot.hfs
 	dd if=/dev/zero of="$hfs" bs=1M count=8 status=none
-	hformat -l "syshm boot" "$hfs" >/dev/null
+	hformat -l "Blue boot" "$hfs" >/dev/null
 	hmkdir "System Folder"
 	hcopy -r "$rom" ":System Folder:Mac OS ROM"
 	hattrib -t tbxi -c chrp ":System Folder:Mac OS ROM"

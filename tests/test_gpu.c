@@ -3,7 +3,7 @@
  * (coverage of whole-pixel geometry, depth, texture orientation, clears,
  * points, lines and bitmaps, copies, reading back), and within a tolerance
  * on a random scene (edges and filtering may round differently). Skipped
- * without OpenGL, unless SYSHM_TEST_GPU=1.
+ * without OpenGL, unless BLUE_TEST_GPU=1.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -351,7 +351,7 @@ static void test_random(struct gpu *g)
 	CHECK(gpu_read(g, t, gpu_color));
 	gpu_target_free(g, t);
 	unsigned off3 = differing(3), off32 = differing(32);
-	if (getenv("SYSHM_GPU_DEBUG"))
+	if (getenv("BLUE_GPU_DEBUG"))
 		printf("gpu: random scene: %u of %u pixels off by more than 3, %u by more than 32\n", off3, W * H,
 		       off32);
 	CHECK(off3 <= W * H * 4 / 100);
@@ -395,7 +395,7 @@ static void test_multitexture(struct gpu *g)
 			CHECK(differing(3) <= 40);          /* (edges, bilinear rounding) */
 		} else {
 			CHECK_EQ(differing(1), 0);
-			for (int k = 0; k < W * H && getenv("SYSHM_GPU_DEBUG"); k++)
+			for (int k = 0; k < W * H && getenv("BLUE_GPU_DEBUG"); k++)
 				if (channel_diff(cpu_color[k], gpu_color[k]) > 1)
 					printf("gpu: multitexture (%d,%d): %08x against %08x\n", k % W, k / W, gpu_color[k],
 					       cpu_color[k]);
@@ -524,7 +524,7 @@ static void test_pipeline(struct gpu *g)
 	draw_cpu(s, cmds, 2 + 2 * N);
 	draw_gpu(g, s, cmds, 2 + 2 * N);
 	CHECK(!gpu_failed(g));
-	for (int k = 0; k < W * H && getenv("SYSHM_GPU_DEBUG"); k++)
+	for (int k = 0; k < W * H && getenv("BLUE_GPU_DEBUG"); k++)
 		if (channel_diff(cpu_color[k], gpu_color[k]) > 1)
 			printf("gpu: pipeline (%d,%d): %08x against %08x\n", k % W, k / W, gpu_color[k], cpu_color[k]);
 	CHECK_EQ(differing(1), 0);
@@ -562,10 +562,10 @@ static void test_pipeline(struct gpu *g)
 				      tri_cmd(0, v[0], v[2], v[3], true), tri_cmd(1, m[0], m[1], m[2], true),
 				      tri_cmd(1, z[0], z[1], z[2], true) };
 	both(g, p, more, 5);
-	if (getenv("SYSHM_GPU_DEBUG"))
+	if (getenv("BLUE_GPU_DEBUG"))
 		printf("gpu: projective and filtered: %u pixels off by more than 1, %u by more than 20\n", differing(1),
 		       differing(20));
-	for (int k = 0; k < W * H && getenv("SYSHM_GPU_DEBUG"); k++)
+	for (int k = 0; k < W * H && getenv("BLUE_GPU_DEBUG"); k++)
 		if (channel_diff(cpu_color[k], gpu_color[k]) > 1)
 			printf("gpu: (%d,%d): %08x against %08x\n", k % W, k / W, gpu_color[k], cpu_color[k]);
 	CHECK(differing(3) <= 8);               /* (texel edges under perspective, filtering's rounding) */
@@ -577,9 +577,9 @@ static void test_pipeline(struct gpu *g)
 /* A failed job: everything after it is refused, and freeing still works */
 static void test_failure(void)
 {
-	setenv("SYSHM_GPU_FAIL", "3", 1);
+	setenv("BLUE_GPU_FAIL", "3", 1);
 	struct gpu *g = gpu_open(true);
-	unsetenv("SYSHM_GPU_FAIL");
+	unsetenv("BLUE_GPU_FAIL");
 	if (!g || !gpu_ready(g, NULL)) {
 		gpu_close(g);
 		return;
@@ -601,7 +601,7 @@ void test_gpu(void)
 	struct gpu *g = gpu_open(true);
 	const char *why = NULL;
 	if (!g || !gpu_ready(g, &why)) {
-		const char *need = getenv("SYSHM_TEST_GPU");
+		const char *need = getenv("BLUE_TEST_GPU");
 		printf("gpu    skipped (%s)\n", why ? why : "no thread");
 		CHECK(!(need && strcmp(need, "1") == 0));
 		gpu_close(g);

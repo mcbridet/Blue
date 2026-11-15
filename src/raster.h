@@ -12,8 +12,8 @@
  * [i, i+1) x [j, j+1) and sampled at its center; edges follow the top-left
  * rule. Colors are 0xAARRGGBB, and colors in states a, r, g, b.
  */
-#ifndef SYSHM_RASTER_H
-#define SYSHM_RASTER_H
+#ifndef BLUE_RASTER_H
+#define BLUE_RASTER_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -223,7 +223,7 @@ struct raster_cmd {
 };
 
 /*
- * Does the commands in order. Threads (SYSHM_RASTER_THREADS in all, the
+ * Does the commands in order. Threads (BLUE_RASTER_THREADS in all, the
  * caller's included: by default 3, at most 8) each take bands of rows and
  * do every command there, so each pixel sees the commands in order and the
  * result is the same as doing them one at a time.

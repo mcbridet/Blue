@@ -5,6 +5,7 @@
 
 #include "cdimage.h"
 #include "disk.h"
+#include "env.h"
 #include "hfsread.h"
 #include "mem.h"
 #include "nk.h"
@@ -18,7 +19,7 @@
 static int usage(void)
 {
 	fprintf(stderr,
-		"usage: syshm <command> [args]\n"
+		"usage: blue <command> [args]\n"
 		"\n"
 		"  rom info <file>              describe a Mac OS ROM file or 4 MB ROM image\n"
 		"  rom config <file>            show the NanoKernel ConfigInfo and memory map\n"
@@ -35,7 +36,8 @@ static int usage(void)
 		"      --window                 show the screen in a window (keyboard and mouse go to\n"
 		"                               the guest); runs in real time until closed. Once the\n"
 		"                               Finder is up, offers to install the guest tools on the\n"
-		"                               startup disk if they're missing or another syshm's\n"
+		"                               startup disk if they're missing or from another\n"
+		"                               version of Blue\n"
 		"                               (then Mac OS restarts, as Special > Restart does)\n"
 		"      --realtime               guest time follows the host clock\n"
 		"      --instruction-time       with --window: guest time counts instructions, as\n"
@@ -101,7 +103,7 @@ static int usage(void)
 		"                               floppy's: 400K, 720K, 800K or 1440K)\n"
 		"  tools create <file>          make a volume of the guest tools, to install them by\n"
 		"                               hand (attach it with --cdrom; drag its files onto\n"
-		"                               the System Folder); in a window, syshm offers to\n"
+		"                               the System Folder); in a window, Blue offers to\n"
 		"                               install them itself\n"
 		"  run-raw <file> <addr> [n]    load raw PowerPC code at hex <addr> in 64 MB of\n"
 		"                               RAM, run up to n instructions, dump registers\n");
@@ -305,7 +307,7 @@ static int cmd_run_raw(int argc, char **argv)
 	ppc_init(&cpu, &mem);
 	cpu.pc = addr;
 	cpu.gpr[1] = ram_size - 0x100;
-	if (getenv("SYSHM_TRACE"))
+	if (getenv("BLUE_TRACE"))
 		cpu.trace = stderr;
 
 	enum ppc_exit e = ppc_run(&cpu, budget);
@@ -432,7 +434,7 @@ static int cmd_boot(int argc, char **argv)
 			const char *r = argv[++k];
 			opt.trace_reg = (int)strtol(r[0] == 'r' ? r + 1 : r, NULL, 10) & 31;
 		} else if (argv[k][0] != '-') {
-			fprintf(stderr, "syshm boot: \"%s\": a ROM file goes after --rom (without one, the startup "
+			fprintf(stderr, "blue boot: \"%s\": a ROM file goes after --rom (without one, the startup "
 				"disk's is used)\n", argv[k]);
 			return 2;
 		} else {
@@ -566,6 +568,7 @@ static int cmd_disk(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);       /* progress shows up even when redirected */
+	env_renamed("blue");
 	if (argc < 2)
 		return usage();
 	if (strcmp(argv[1], "rom") == 0 && argc >= 3)

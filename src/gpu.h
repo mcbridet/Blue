@@ -11,8 +11,8 @@
  * One thread (the emulator's) calls these. Every call but gpu_open() and
  * gpu_ready() first waits for the job the previous one started.
  */
-#ifndef SYSHM_GPU_H
-#define SYSHM_GPU_H
+#ifndef BLUE_GPU_H
+#define BLUE_GPU_H
 
 #include <stdbool.h>
 #include <stdint.h>

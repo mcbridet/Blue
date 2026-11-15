@@ -16,7 +16,7 @@
 static int temp_file(char *path, size_t len)
 {
 	const char *dir = getenv("TMPDIR");
-	snprintf(path, len, "%s/syshm-test-XXXXXX", dir ? dir : "/tmp");
+	snprintf(path, len, "%s/blue-test-XXXXXX", dir ? dir : "/tmp");
 	return mkstemp(path);
 }
 
@@ -478,7 +478,7 @@ static void test_driver(void)
 	close(fd);
 
 	/* not a floppy image: refused, the drive left as it was */
-	CHECK_EQ(disk_insert(&d, "/nonexistent/syshm-test", why, sizeof why), -1);
+	CHECK_EQ(disk_insert(&d, "/nonexistent/blue-test", why, sizeof why), -1);
 	CHECK(d.media && strcmp(d.media_path, path2) == 0);
 	disk_close(&d);
 	CHECK(!d.media);

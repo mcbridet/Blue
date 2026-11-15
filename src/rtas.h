@@ -3,8 +3,8 @@
  * configuration services Mac OS reaches through NanoKernel call 6. This is part of the HAL: each
  * service is answered from the host.
  */
-#ifndef SYSHM_RTAS_H
-#define SYSHM_RTAS_H
+#ifndef BLUE_RTAS_H
+#define BLUE_RTAS_H
 
 #include <stdbool.h>
 #include <stdint.h>

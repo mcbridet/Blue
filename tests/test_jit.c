@@ -2,8 +2,8 @@
  * Differential test of the JIT: random programs run once by the interpreter
  * and once by the JIT must end in exactly the same state (registers, exit
  * reason, instruction count, memory), whatever the budget, and with hooks. Environment:
- * SYSHM_JIT_PROGRAMS (default 3000), SYSHM_JIT_SEED (first program);
- * SYSHM_TEST_JIT=1 fails, rather than skips, without a JIT.
+ * BLUE_JIT_PROGRAMS (default 3000), BLUE_JIT_SEED (first program);
+ * BLUE_TEST_JIT=1 fails, rather than skips, without a JIT.
  *
  * Memory: code and data in RAM, and a read-only page whose neighbours in
  * the same 16 KB are unmapped, so that fastmem faults (genuinely, or just
@@ -354,9 +354,9 @@ static void setup(struct side *s, bool jit)
 	s->dev.mem = &s->mem;
 	mmio_add(&s->dev.bus, IO_PAGE, MEM_PAGE_SIZE, &device_ops, &s->dev, "device");
 	if (jit) {
-		setenv("SYSHM_JIT_HOT", "0", 1);        /* translate at once: blocks here run a few times */
+		setenv("BLUE_JIT_HOT", "0", 1);         /* translate at once: blocks here run a few times */
 		s->cpu.jit = jit_create(&s->mem);
-		unsetenv("SYSHM_JIT_HOT");
+		unsetenv("BLUE_JIT_HOT");
 	}
 }
 
@@ -412,7 +412,7 @@ static void report(const struct side *a, const struct side *b, enum ppc_exit ea,
 /* Unless turned off, fastmem must have been on, and faulted */
 static void check_fastmem(const struct jit *j)
 {
-	const char *mode = getenv("SYSHM_JIT_FASTMEM");
+	const char *mode = getenv("BLUE_JIT_FASTMEM");
 	char *text = NULL;
 	size_t size = 0;
 	FILE *f = open_memstream(&text, &size);
@@ -467,7 +467,7 @@ static void test_random_programs(unsigned programs, bool rom_code)
 	uint8_t *data = malloc(DATA_SIZE);
 	unsigned failures = 0;
 	unsigned long device_accesses = 0;
-	const char *first = getenv("SYSHM_JIT_SEED");
+	const char *first = getenv("BLUE_JIT_SEED");
 	uint64_t base = first ? strtoull(first, NULL, 0) : 0;
 
 	for (unsigned p = 0; p < programs && failures < 3; p++) {
@@ -1238,7 +1238,7 @@ static void test_wrapping_ea(void)
 	mem_free(&s[1].mem);
 }
 
-/* ---- SYSHM_JIT_BENCH=1: speed, not a test ---- */
+/* ---- BLUE_JIT_BENCH=1: speed, not a test ---- */
 
 #define X_FORM(rt, ra, rb, xo) enc_x(31, rt, ra, rb, xo, 0)
 
@@ -1355,9 +1355,9 @@ static void bench(uint64_t insns)
 
 void test_jit(void)
 {
-	const char *n = getenv("SYSHM_JIT_PROGRAMS"), *need = getenv("SYSHM_TEST_JIT");
+	const char *n = getenv("BLUE_JIT_PROGRAMS"), *need = getenv("BLUE_TEST_JIT");
 	unsigned programs = n ? (unsigned)strtoul(n, NULL, 0) : 3000;
-	const char *speed = getenv("SYSHM_JIT_BENCH");
+	const char *speed = getenv("BLUE_JIT_BENCH");
 	if (speed) {
 		bench(strtoull(speed, NULL, 0) * 500000000ull);
 		return;
@@ -1367,7 +1367,7 @@ void test_jit(void)
 		CHECK_EQ(mem_init(&m), 0);
 		struct jit *j = jit_create(&m);
 		if (!j) {
-			fprintf(stderr, "jit: SYSHM_TEST_JIT=1, but %s\n", jit_unavailable());
+			fprintf(stderr, "jit: BLUE_TEST_JIT=1, but %s\n", jit_unavailable());
 			test_failures++;
 		}
 		jit_free(j);
@@ -1380,12 +1380,12 @@ void test_jit(void)
 	test_hostcall_fprs();
 	test_random_programs(programs, false);
 	test_random_programs(programs / 2 + 1, true);
-	setenv("SYSHM_JIT_FAR", "1", 1);        /* again, with the code far from the JIT's stubs */
+	setenv("BLUE_JIT_FAR", "1", 1);         /* again, with the code far from the JIT's stubs */
 	test_random_programs(programs / 4 + 1, false);
-	unsetenv("SYSHM_JIT_FAR");
-	setenv("SYSHM_JIT_FASTMEM", "0", 1);    /* and with every access checked */
+	unsetenv("BLUE_JIT_FAR");
+	setenv("BLUE_JIT_FASTMEM", "0", 1);     /* and with every access checked */
 	test_random_programs(programs / 4 + 1, false);
-	unsetenv("SYSHM_JIT_FASTMEM");
+	unsetenv("BLUE_JIT_FASTMEM");
 	test_logic_imm();
 	test_x86_encoding();
 }

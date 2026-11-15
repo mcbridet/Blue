@@ -9,8 +9,8 @@
  * memory BAR that sizes like real hardware but stays where the device tree
  * put it. Absent functions read all ones.
  */
-#ifndef SYSHM_PCI_H
-#define SYSHM_PCI_H
+#ifndef BLUE_PCI_H
+#define BLUE_PCI_H
 
 #include <stdbool.h>
 #include <stdint.h>

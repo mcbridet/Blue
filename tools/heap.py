@@ -5,7 +5,7 @@
                                  application's (ApplZone, 0x2AA) and these zones
   heap.py RAM --find ADDR...     the system heap's block holding each address
 
-RAM is a dump from `syshm boot ... --dump-ram FILE` (at address 0); it is read
+RAM is a dump from `blue boot ... --dump-ram FILE` (at address 0); it is read
 a block header at a time, never loaded whole. ZONE and ADDR are hex.
 
 The Modern Memory Manager's zones, as found in Mac OS 9.2.2's: blocks run from

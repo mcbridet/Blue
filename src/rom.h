@@ -1,5 +1,5 @@
-#ifndef SYSHM_ROM_H
-#define SYSHM_ROM_H
+#ifndef BLUE_ROM_H
+#define BLUE_ROM_H
 
 #include <stdbool.h>
 #include <stddef.h>

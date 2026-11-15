@@ -6,8 +6,8 @@
  * lines, or pulses (DMA channels), which the events register latches until
  * the clear register clears them.
  */
-#ifndef SYSHM_MACIO_H
-#define SYSHM_MACIO_H
+#ifndef BLUE_MACIO_H
+#define BLUE_MACIO_H
 
 #include <stdbool.h>
 #include <stdint.h>

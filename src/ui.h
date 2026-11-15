@@ -4,8 +4,8 @@
  * run time: this takes the SDL functions it draws with from there, so it
  * needs none at build time either.
  */
-#ifndef SYSHM_UI_H
-#define SYSHM_UI_H
+#ifndef BLUE_UI_H
+#define BLUE_UI_H
 
 #include <stdbool.h>
 #include <stdint.h>

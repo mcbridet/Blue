@@ -5,8 +5,8 @@
  * selects 64-bit (1) or 32-bit (0) operation; 32-bit operations clear the
  * upper half of their destination.
  */
-#ifndef SYSHM_X86_H
-#define SYSHM_X86_H
+#ifndef BLUE_X86_H
+#define BLUE_X86_H
 
 #include <stdbool.h>
 #include <stdint.h>

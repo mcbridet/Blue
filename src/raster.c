@@ -271,7 +271,7 @@ static inline vec4 unpack(uint32_t p)
 /*
  * Each of a, r, g, b clamped to 0..1 (NaN stays), times 255, plus 0.5, made
  * a whole number toward 0 (NaN: 0, as a conversion one at a time gives it on
- * the hosts syshm runs on), as a pixel
+ * the hosts Blue runs on), as a pixel
  */
 static inline uint32_t pack(const float c[4])
 {
@@ -1220,7 +1220,7 @@ static void pool_start(void)
 	 * speed drawing up.
 	 */
 	long cpus = sysconf(_SC_NPROCESSORS_ONLN);
-	const char *env = getenv("SYSHM_RASTER_THREADS");
+	const char *env = getenv("BLUE_RASTER_THREADS");
 	long want = env ? strtol(env, NULL, 10) : cpus < DEFAULT_THREADS ? cpus : DEFAULT_THREADS;
 	want = want < 1 ? 1 : want > MAX_THREADS ? MAX_THREADS : want;
 	for (long k = 1; k < want; k++) {

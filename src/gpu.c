@@ -1316,7 +1316,7 @@ static void run_job(struct gpu *g)
 	if (g->failed)
 		return;
 	if (g->fail_at && g->jobs == g->fail_at) {
-		fprintf(stderr, "gpu: failing job %lu (SYSHM_GPU_FAIL)\n", g->jobs);
+		fprintf(stderr, "gpu: failing job %lu (BLUE_GPU_FAIL)\n", g->jobs);
 		g->failed = true;
 		return;
 	}
@@ -1417,8 +1417,8 @@ struct gpu *gpu_open(bool allow_software)
 	if (!g)
 		return NULL;
 	g->allow_software = allow_software;
-	g->debug = getenv("SYSHM_GPU_DEBUG") != NULL;
-	const char *fail = getenv("SYSHM_GPU_FAIL");
+	g->debug = getenv("BLUE_GPU_DEBUG") != NULL;
+	const char *fail = getenv("BLUE_GPU_FAIL");
 	g->fail_at = fail ? strtoul(fail, NULL, 10) : 0;
 	pthread_mutex_init(&g->mu, NULL);
 	pthread_cond_init(&g->posted, NULL);

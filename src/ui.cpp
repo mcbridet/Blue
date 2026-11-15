@@ -36,8 +36,8 @@ struct ui *ui_open(const struct ui_renderer *r)
 	ImGuiIO &io = ImGui::GetIO();
 	io.IniFilename = nullptr;       /* (no imgui.ini wherever we were started) */
 	io.LogFilename = nullptr;
-	io.BackendPlatformName = "syshm";
-	io.BackendRendererName = "syshm (SDL2 renderer)";
+	io.BackendPlatformName = "Blue";
+	io.BackendRendererName = "Blue (SDL2 renderer)";
 	io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures | ImGuiBackendFlags_RendererHasVtxOffset;
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 	io.Fonts->AddFontDefaultVector();
@@ -206,7 +206,7 @@ static enum ui_action menu(const struct ui_state *s)
 	ImGui::GetBackgroundDrawList()->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y),
 						      IM_COL32(0, 0, 0, 110));
 	ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-	ImGui::Begin("syshm: paused", nullptr,
+	ImGui::Begin("Blue: paused", nullptr,
 		     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
 			     ImGuiWindowFlags_NoSavedSettings);
 	const ImVec2 wide(260, 0);
@@ -268,7 +268,7 @@ static enum ui_action prompt(const struct ui_state *s)
 	enum ui_action action = UI_NONE;
 	const ImGuiViewport *vp = ImGui::GetMainViewport();
 	ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-	ImGui::Begin("syshm##prompt", nullptr,
+	ImGui::Begin("Blue##prompt", nullptr,
 		     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
 			     ImGuiWindowFlags_NoSavedSettings);
 	ImGui::BeginDisabled(s->menu);

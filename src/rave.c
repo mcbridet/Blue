@@ -107,7 +107,7 @@ static const struct ndrv_import engine_imports[IMP_COUNT] = {
 
 /*
  * In the fragment's data: what it is and its version (which goes up when
- * the fragment changes, so that one installed by an older syshm is told
+ * the fragment changes, so that one installed by an older version is told
  * apart: the guest keeps the engine in its Extensions folder), then ATI's
  * extensions (see TAG_ATI_EXTENSIONS): TVector pointers, filled in when
  * they're asked for.
@@ -484,7 +484,7 @@ static uint32_t ati_texture_update(struct rave *r, uint32_t type, uint32_t image
 }
 
 /*
- * Whether the guest's engine is this syshm's (see ENGINE_DATA_MAGIC): what
+ * Whether the guest's engine is this version's (see ENGINE_DATA_MAGIC): what
  * it lacks, an older one doesn't get asked for, nor its data written past.
  */
 static bool engine_current(struct rave *r, const struct ndrv_call *c)
@@ -1450,8 +1450,8 @@ void rave_call(struct rave *r, struct ndrv_call *c)
 	if (c->entry == E_INIT) {
 		/* the fragment's initialization: QARegisterEngine(our getMethod) */
 		if (!engine_current(r, c)) {
-			printf("3d: the guest's syshm 3D Engine is older than this syshm: update it (syshm offers to, in a "
-			       "window), or by hand from a volume made with \"syshm tools create\" into Extensions\n");
+			printf("3d: the guest's syshm 3D Engine is older than this version of Blue: update it (Blue offers "
+			       "to, in a window), or by hand from a volume made with \"blue tools create\" into Extensions\n");
 			fflush(stdout);
 		}
 		ndrv_set_state(c, 0, 0);

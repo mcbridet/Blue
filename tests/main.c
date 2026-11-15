@@ -1,5 +1,6 @@
 #include <string.h>
 
+#include "../src/env.h"
 #include "test.h"
 
 int test_failures;
@@ -45,6 +46,7 @@ int main(int argc, char **argv)
 		{ "priv", test_priv },
 	};
 
+	env_renamed("blue-tests");
 	for (size_t s = 0; s < sizeof suites / sizeof suites[0]; s++) {
 		if (argc > 1 && strcmp(argv[1], suites[s].name) != 0)
 			continue;

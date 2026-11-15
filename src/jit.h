@@ -16,13 +16,13 @@
  * protection reflects the guest's page flags, so that loads and stores need
  * no checks; the few that fault are sent to the interpreter (and checked
  * from then on). This installs a SIGSEGV and SIGBUS handler (macOS reports
- * these faults as SIGBUS); SYSHM_JIT_FASTMEM=0 turns it off.
+ * these faults as SIGBUS); BLUE_JIT_FASTMEM=0 turns it off.
  *
  * Stores to a page that code was translated from (MEM_CODE) invalidate the
  * blocks translated from those words, whoever makes them.
  */
-#ifndef SYSHM_JIT_H
-#define SYSHM_JIT_H
+#ifndef BLUE_JIT_H
+#define BLUE_JIT_H
 
 #include <stdint.h>
 #include <stdio.h>

@@ -1,5 +1,5 @@
-#ifndef SYSHM_PPC_H
-#define SYSHM_PPC_H
+#ifndef BLUE_PPC_H
+#define BLUE_PPC_H
 
 #include <stdbool.h>
 #include <stdint.h>

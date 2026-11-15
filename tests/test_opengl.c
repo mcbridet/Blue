@@ -8,7 +8,7 @@
  * JIT), recording calls. OpenGLUtility's. Scenes drawn through it all in
  * software and on the GPU, and (on Linux) by Mesa's OpenGL in its
  * compatibility profile, the reference (and SGI's GLU, Mesa's libGLU, if
- * SYSHM_TEST_GLU is where it is); selection's and feedback's records,
+ * BLUE_TEST_GLU is where it is); selection's and feedback's records,
  * against Mesa's too.
  */
 #include <math.h>
@@ -568,9 +568,9 @@ static void test_recording(bool jit)
 {
 	ppc_init(&cpu, &mem);
 	if (jit) {
-		setenv("SYSHM_JIT_HOT", "0", 1);        /* (translated at once) */
+		setenv("BLUE_JIT_HOT", "0", 1);         /* (translated at once) */
 		cpu.jit = jit_create(&mem);
-		unsetenv("SYSHM_JIT_HOT");
+		unsetenv("BLUE_JIT_HOT");
 		if (!cpu.jit)
 			return;
 	}
@@ -1892,10 +1892,10 @@ static void our_scene(const struct op *ops, uint32_t *out)
 	call_entry(OPENGL_ENTRY_TERM, NULL, 0, NULL, 0);
 }
 
-/* SYSHM_TEST_SAVE=DIR: each scene's pixels saved there, as SCENE-soft.png, SCENE-gpu.png and SCENE-mesa.png */
+/* BLUE_TEST_SAVE=DIR: each scene's pixels saved there, as SCENE-soft.png, SCENE-gpu.png and SCENE-mesa.png */
 static void save(const char *what, unsigned k, const uint32_t *img)
 {
-	const char *dir = getenv("SYSHM_TEST_SAVE");
+	const char *dir = getenv("BLUE_TEST_SAVE");
 	if (!dir)
 		return;
 	static uint8_t rgb[SW * SH * 3];
@@ -2298,10 +2298,10 @@ static unsigned differing(const uint32_t *a, const uint32_t *b, unsigned toleran
 	return n;
 }
 
-/* SYSHM_TEST_VERBOSE=1: how far apart the scenes are */
+/* BLUE_TEST_VERBOSE=1: how far apart the scenes are */
 static bool verbose(void)
 {
-	const char *v = getenv("SYSHM_TEST_VERBOSE");
+	const char *v = getenv("BLUE_TEST_VERBOSE");
 	return v && strcmp(v, "0");
 }
 
@@ -2326,7 +2326,7 @@ static struct {
 	unsigned (*MakeCurrent)(void *, void *, void *, void *);
 } egl;
 
-static void *glu_lib, *mesa_quadric;   /* (SGI's GLU: SYSHM_TEST_GLU's) */
+static void *glu_lib, *mesa_quadric;   /* (SGI's GLU: BLUE_TEST_GLU's) */
 static char mesa_renderer[128];         /* (its GL_RENDERER) */
 
 /*
@@ -2369,7 +2369,7 @@ static bool mesa_open(void)
 	    !egl.CreateContext || !egl.DestroyContext || !egl.MakeCurrent)
 		return false;
 	egl.gl_lib = dlopen("libGL.so.1", RTLD_NOW | RTLD_LOCAL);
-	const char *glu = getenv("SYSHM_TEST_GLU");
+	const char *glu = getenv("BLUE_TEST_GLU");
 	if (glu && *glu) {
 		glu_lib = dlopen(glu, RTLD_NOW | RTLD_LOCAL);
 		CHECK(glu_lib != NULL);
@@ -2668,7 +2668,7 @@ static bool uses_glu(const struct op *ops)
 static void test_mesa(void)
 {
 	if (!mesa_open()) {
-		const char *need = getenv("SYSHM_TEST_GPU");
+		const char *need = getenv("BLUE_TEST_GPU");
 		printf("opengl: no Mesa to compare with\n");
 		CHECK(!(need && !strcmp(need, "1")));
 		return;
@@ -2676,7 +2676,7 @@ static void test_mesa(void)
 	static uint32_t ref[SW * SH];
 	for (unsigned k = 0; k < SCENES; k++) {
 		if (uses_glu(scenes[k].ops) && !glu_lib) {
-			printf("opengl: %s: no GLU to compare with (SYSHM_TEST_GLU: Mesa's libGLU)\n", scenes[k].name);
+			printf("opengl: %s: no GLU to compare with (BLUE_TEST_GLU: Mesa's libGLU)\n", scenes[k].name);
 			continue;
 		}
 		CHECK(mesa_scene(scenes[k].ops, ref));
@@ -3016,7 +3016,7 @@ static void test_use_font(void)
 	CHECK_EQ(CALL0(aglGetError), AGL_BAD_CONTEXT);
 	CALL(aglDestroyContext, ctx);
 
-	/* a library an older syshm made (its data's version another one's): left alone */
+	/* a library an older version made (its data's version another one's): left alone */
 	uint32_t version = TOC + gl.library.extra + 4;
 	mem_w32(&mem, version, mem_r32(&mem, version) - 1);
 	call_entry(OPENGL_ENTRY_INIT, NULL, 0, NULL, 0);
@@ -3210,7 +3210,7 @@ static void fb_compare(const char *name)
 			for (unsigned i = first; i < first + 8 && i < FB_WORDS; i++)
 				printf(" %08X/%08X", a->words[i], b->words[i]);
 			printf("\n");
-			if (getenv("SYSHM_TEST_FB_DUMP"))
+			if (getenv("BLUE_TEST_FB_DUMP"))
 				for (unsigned i = 0; i < FB_WORDS; i++) {
 					if (a->words[i] == FB_UNSET && b->words[i] == FB_UNSET)
 						break;

@@ -1,5 +1,5 @@
 /*
- * The guest's OpenGL: syshm's own OpenGLLibrary (gl and agl), OpenGLMemory
+ * The guest's OpenGL: Blue's own OpenGLLibrary (gl and agl), OpenGLMemory
  * (glm) and OpenGLUtility (glu), generated code fragments under Apple's
  * fragment names and with Apple's exports (opengl_table.h), whose calls are
  * host calls (see ndrv.h), or for most of gl's, records the library's own
@@ -15,8 +15,8 @@
  * take the handle first; glc_cc (exported) points at the current one.
  * Each process has its own copy of the library's data (an instance).
  */
-#ifndef SYSHM_OPENGL_H
-#define SYSHM_OPENGL_H
+#ifndef BLUE_OPENGL_H
+#define BLUE_OPENGL_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -90,7 +90,7 @@ struct opengl_job {
 
 struct opengl_instance {
 	uint32_t toc;                   /* its data (0: none) */
-	bool stale;                     /* its library is an older syshm's: left alone */
+	bool stale;                     /* its library is an older version's: left alone */
 	uint32_t agl_error;
 	struct opengl_context ctx[OPENGL_CONTEXTS];
 	struct opengl_job job;
@@ -107,7 +107,7 @@ struct opengl {
 	uint32_t fs_mode, fs_depth, fs_device, fs_toc, fs_context;
 	bool told_stale;
 	/*
-	 * SYSHM_GL_PROFILE=FILE: a line for each frame shown on the screen,
+	 * BLUE_GL_PROFILE=FILE: a line for each frame shown on the screen,
 	 * with the host time since the one before and where it went (see
 	 * opengl.c's "profile"): in the libraries' host calls (but for what
 	 * follows), waiting for the 3D backend, reading back, writing the frame
@@ -123,8 +123,8 @@ struct opengl {
 	uint64_t prof_gpu_mark[4];      /* (gpu_times()'s at the last frame) */
 	bool gpu_asked;
 	struct opengl_instance inst[OPENGL_INSTANCES];
-	bool log;                       /* SYSHM_LOG_GL: every call */
-	bool fps;                       /* SYSHM_GL_FPS: the frame rate every second */
+	bool log;                       /* BLUE_LOG_GL: every call */
+	bool fps;                       /* BLUE_GL_FPS: the frame rate every second */
 	double fps_since, fps_drawing;
 	unsigned fps_frames;
 	unsigned char unimplemented[1024];      /* (said once each: OpenGLLibrary's functions) */

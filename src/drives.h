@@ -4,8 +4,8 @@
  * their names, and what the window's menu shows of them. nk.c puts images
  * in and says what came of it.
  */
-#ifndef SYSHM_DRIVES_H
-#define SYSHM_DRIVES_H
+#ifndef BLUE_DRIVES_H
+#define BLUE_DRIVES_H
 
 #include <stdbool.h>
 #include <stddef.h>

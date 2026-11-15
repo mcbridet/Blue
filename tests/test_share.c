@@ -31,11 +31,11 @@
 
 static int saved_stdout = -1;
 
-/* The share says what it does on stdout; the tests needn't (unless SYSHM_TEST_VERBOSE is set) */
+/* The share says what it does on stdout; the tests needn't (unless BLUE_TEST_VERBOSE is set) */
 static void quiet(bool on)
 {
 	fflush(stdout);
-	if (getenv("SYSHM_TEST_VERBOSE"))
+	if (getenv("BLUE_TEST_VERBOSE"))
 		return;
 	if (on) {
 		int null = open("/dev/null", O_WRONLY);
@@ -135,7 +135,7 @@ static void remove_tree(const char *path)
 static int temp_dir(char *path, size_t len)
 {
 	const char *dir = getenv("TMPDIR");
-	snprintf(path, len, "%s/syshm-test-XXXXXX", dir && dir[0] ? dir : "/tmp");
+	snprintf(path, len, "%s/blue-test-XXXXXX", dir && dir[0] ? dir : "/tmp");
 	return mkdtemp(path) ? 0 : -1;
 }
 
@@ -258,7 +258,7 @@ static void check_hfsutils(const char *image, const char *home)
 		snprintf(cmd, sizeof cmd, "hfsck -v '%s' < /dev/null > '%s/hfsck.txt' 2>&1", image, home);
 		int rc = system(cmd);
 		CHECK(rc == 0);
-		if (rc || getenv("SYSHM_TEST_VERBOSE")) {
+		if (rc || getenv("BLUE_TEST_VERBOSE")) {
 			char *out = get(home, "hfsck.txt", NULL);
 			fprintf(stderr, "%s", out ? out : "");
 			free(out);
@@ -269,7 +269,7 @@ static void check_hfsutils(const char *image, const char *home)
 		int rc = system(cmd);
 		char *out = get(home, "fsck.txt", NULL);
 		CHECK(rc == 0 && out && strstr(out, "appears to be OK"));
-		if (rc || getenv("SYSHM_TEST_VERBOSE"))
+		if (rc || getenv("BLUE_TEST_VERBOSE"))
 			fprintf(stderr, "%s", out ? out : "");
 		free(out);
 	}

@@ -11,8 +11,8 @@
  * start-of-frame. Transfers on the lists would be for devices that aren't
  * there, so the lists aren't walked.
  */
-#ifndef SYSHM_OHCI_H
-#define SYSHM_OHCI_H
+#ifndef BLUE_OHCI_H
+#define BLUE_OHCI_H
 
 #include <stdbool.h>
 #include <stdint.h>

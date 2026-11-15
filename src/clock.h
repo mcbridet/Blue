@@ -3,8 +3,8 @@
  * host's; with a fixed start it counts from that start in guest time, so
  * runs are reproducible.
  */
-#ifndef SYSHM_CLOCK_H
-#define SYSHM_CLOCK_H
+#ifndef BLUE_CLOCK_H
+#define BLUE_CLOCK_H
 
 #include <stdint.h>
 #include <time.h>

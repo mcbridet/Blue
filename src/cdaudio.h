@@ -8,8 +8,8 @@
  * the sound chip's analog input (awacs.h), which takes them at its own
  * rate (cdaudio_pull()).
  */
-#ifndef SYSHM_CDAUDIO_H
-#define SYSHM_CDAUDIO_H
+#ifndef BLUE_CDAUDIO_H
+#define BLUE_CDAUDIO_H
 
 #include <stdbool.h>
 #include <stdint.h>
