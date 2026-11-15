@@ -639,6 +639,17 @@ and 16,616 after (in a later session, 6,250 and 14,700: the host's speed
 varies), while the Processor test's code runs as fast as before; see
 Findings in plan.md.
 
+Its CD-ROM tests run with the MacBench 5.0 CD (`MacBench5.toast`) in a
+CD-ROM drive, on an installed 8.5 and 9.2.2: the CD-ROM test (148 MB of
+File Manager reads replayed from five CD titles; 1,442 on 8.5 in
+instruction time, 4,261 on 9.2.2 with `clock 400`, 5,366-5,383 in real
+time, a window or not) and the CD-ROM inspection tests (sequential and
+random reads of 512 bytes and 1 MB). They read through the File Manager
+only; below it MacBench just takes an inventory of the drives (see
+Findings in plan.md, "MacBench's CD-ROM test"). A report of the test
+freezing MacBench on 9.2.2 in a window (the Memory Manager faulting on a
+broken system heap, then the Toolbox) didn't reproduce here.
+
 ### Guest tools
 
 Some things only code inside Mac OS can do: syshm Enhancements, syshm
@@ -1527,6 +1538,11 @@ and their copies in RAM, with their exports, entry points and imports.
 `tools/disasm.py MOS91.rom 0xFFCE2700`, `tools/disasm.py ram.bin MOS91.rom
 0x28D70`; `--list` shows what is where.
 
+`tools/heap.py ram.bin` walks the system heap and the current application's
+heap in a `--dump-ram` file block by block (reading headers, not the whole
+file) and reports blocks whose back link or size is broken, where a zone was
+written over; `--find ADDR` names the system heap block an address is in.
+
 ## QEMU reference
 
 Stock QEMU can't boot a 1.x ROM: its machines aren't models the ROM supports.
@@ -1595,6 +1611,7 @@ tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
           devtree.py (device-tree copy dumper), disasm.py (disassembler),
+          heap.py (heap zones in a RAM dump, checked),
           gltable.py (the OpenGL libraries' functions, from Apple's)
 docs/     gpu-plan.md (the 3D engine's OpenGL backend), opengl-plan.md and
           glide-plan.md (Mac OS 9's OpenGL, under way, and 3dfx Glide),

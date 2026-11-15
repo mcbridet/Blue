@@ -229,7 +229,9 @@ scheduling around a sleep that doesn't happen; the system carries on.
   code from a ROM file's image and/or a `--dump-ram` file (`disasm.py
   ram.bin MOS91.rom 0x28D70`), naming the fragment an address is in (the
   image's PEF containers, the parcels' libraries, their copies in RAM) with
-  exports, imports and MP call numbers; `--list` shows what is where. It
+  exports, imports and MP call numbers; `--list` shows what is where.
+  `tools/heap.py ram.bin` checks the system and application heaps' blocks
+  in a dump (`--find ADDR`: the block an address is in). disasm.py
   needs capstone: a Python virtual environment with `pip install capstone
   machfs` in a temporary directory (machfs reads the CDs' HFS volumes).
   `build/syshm rom extract MOS91.rom img91.bin` writes the 4 MB image
@@ -1852,6 +1854,47 @@ Facts later tasks need, added as they are found.
   in place). Main froze the same way: the user's freeze was this, not
   the skeleton key (which without it quit MacBench with "an error of type
   1", in instruction time).
+- **MacBench's CD-ROM test** (macbench-cd; 8.5 and 9.2.2 installed, the
+  MacBench 5.0 CD in a drive, MacBench in the shared folder): the test
+  reads its CD only through the File Manager: 14,673 synchronous PBReads
+  (`_Read`, none async), 148 MB, 512 bytes to 64 KB each, replaying five
+  CD titles; the inspection tests read one big file (Random Read 1024K:
+  554 reads of 1 MB). Below the File Manager MacBench only takes an
+  inventory of the volumes, at each test's start and for System
+  Information's Storage Devices (68k code in its heap): PBHGetVInfo for
+  each, DriverGestalt `devt` and `intf` of its driver, Control 23,
+  OpenDriver(".AppleCD") and Status 97 (WhoIsThere: statusErr). By
+  `devt`/`intf` it picks how to identify the drive: `disk`/`ata ` and
+  `cdrm`/`atpi` through the ATA Manager, `scsi` through SCSIAction 0x86
+  (GetVirtualIDInfo) and then the old SCSI Manager, bus 0 ID 0 when that
+  fails: SCSIGet and SCSISelect (5 tries) for an INQUIRY, a MODE SENSE of
+  pages 3 and 4 (geometry), the capacity from PBXGetVolInfo. Every select
+  fails at once on syshm (no bus), so the drives show as SCSI 0.0.0 with
+  no vendor or model; a real iMac's CD answers `atpi` (StartLib needs
+  `scsi`, see "The Start Manager's wait"). It finds its CD by a file on
+  it. The test completes: 8.5 1,442 (16.6 MIPS), 9.2.2 1,185 (16.6 MIPS),
+  4,261 (`clock 400`), 5,366-5,383 in real time; also with `clock`
+  100-3000 and other `--fixed-time`s, fixed and ejectable drives, in a
+  window with sound, six times in a row, after the Disk and Video tests,
+  after QuickTime Player played a movie and while it kept playing (main
+  before the transfer waits), cancelled, across a mode switch, with the
+  host's clipboard coming in, with the process stopped for seconds
+  (SIGSTOP), the user's own shared folder, MacBench run from the CD; the
+  heaps intact after each (`tools/heap.py`), and a debugging build
+  checking every disk and CD read and DBDMA store against the heap's
+  blocks found none outside an allocated block. The user's freeze (9.2.2,
+  a window) didn't reproduce. Its faults decode, matched by call sites
+  (`lwz r9,4(r31)` with calls 0xD00, 0x1090 and -0x4B00 away), to the
+  Memory Manager's block walk (the Modern Memory Manager's zone: blocks
+  from + 0x30 to the last one at + 0x40, the walk from the rover at
+  + 0x2C, a block's size at + 8), from `__NewPtr` (r24 0xA71E,
+  NewPtrSysClear: the system heap), `__MoveHLow` and `__ReserveMem`, then
+  `IterateHashTable` in the Toolbox's HLTB library: the system heap had a
+  block header (or the rover) written over. That boot laid memory out
+  otherwise: the Memory Manager 0xB70 lower than here (0x307E38 or
+  0x3070B8 here, moving with the drives, the NVRAM, the shared folder) and
+  MacBench's code at 0x00FFC51C (here 0x00F6xxxx-0x0119xxxx), so the
+  session had a history not identified. Open.
 - **9.2.2's interrupt sets** (`src/bootinfo.c`, `src/rom.c`): 10.2f1's
   Trampoline names `AAPL,interrupt-index` (`rom trampoline 922.iso`);
   9.1's (6.1f9) and `MOS.rom`'s don't. Under QEMU (`mac99`, 922.iso at
