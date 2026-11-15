@@ -10,6 +10,105 @@ sharing everything that isn't about the host's instructions.
 
 ## Status
 
+Milestone 4 done (the rest):
+
+- **Kernel calls and `sc`** as on AArch64: `twi 31,r31,n` made in place
+  through the kernel's `kcall()`, going on through the block table;
+  NanoKernel 2's quick `sc` answered in place; other system calls, host
+  calls and unconditional traps leave straight for the kernel instead of
+  through the interpreter.
+- **Device registers in place**: GPR loads and stores that page flags turn
+  away (after a fastmem fault on a device's page, or all without
+  fastmem) offer the access to the mmio hook through `mmio()`, by way of
+  an mmio stub that saves and reloads the fixed registers; then the
+  block goes on, or leaves for the kernel or the interpreter as the hook
+  says. Byte-reversed ones too, which AArch64 leaves to the interpreter
+  (Findings).
+- Done before: stores to code pages (`code_store()`, milestone 2), the
+  hook and the match hook (milestone 1), string instructions through the
+  interpreter (as on AArch64), the profiler (now with marks for the mmio
+  and settle stubs). The shared runtime didn't change; `jit_int.h` gains
+  x86's `mmio_call`. AArch64's generated code is byte for byte as before.
+- **Exits** in the CD boots, x86 under Rosetta before and after, and
+  AArch64 (interpreter, kernel, device):
+
+  | | 8.5 | 9.1 | 9.2.2 |
+  |---|---|---|---|
+  | milestone 3 | 4,109,526, 0, 0 | 13,319,456, 0, 0 | 4,026,514, 0, 0 |
+  | milestone 4 | 48,489, 1,131,150, 21,340 | 31,866, 1,664,358, 3,013 | 24,555, 619,476, 3,105 |
+  | AArch64 | 49,299, 1,131,150, 21,340 | 33,171, 1,664,358, 3,013 | 31,645, 619,468, 3,105 |
+
+  Milestone 3's interpreter exits were kernel calls (2.7, 8.4 and 2.6
+  million), `sc` (none, 4.8 and 1.4 million), device registers (1.3
+  million, 41,000 and 34,000) and host calls (about 60,000 each). What's
+  left is of AArch64's kinds and about its size: loads and stores the
+  hook doesn't take (44,000 in 8.5's), `dcb*` and FP-mode exits, fastmem
+  faults.
+- **Checks**: the quick-`sc` and kernel-call tests now also require the
+  JIT to have made them itself (no interpreter exits), and a new test runs
+  device registers in a loop by both engines, the JIT going to the
+  interpreter at most once per access instruction (its first fastmem
+  fault); all three fail with milestone 3's translator. The fuzzer passes
+  400,000 programs under Rosetta (100,000 with `SYSHM_JIT_FASTMEM=0`) and
+  30,000 under QEMU; all of `make test` on macOS and Linux, both
+  architectures. The three CD boots end exactly as on AArch64 (under
+  Rosetta with `SYSHM_JIT_FASTMEM=0` too; the 8.5 CD under QEMU), and so
+  do (by hand, under Rosetta, from APFS clones of the user's disks) an
+  installed 9.2.2's start to the Finder (6 billion instructions) and
+  Unreal Tournament launched from the 8.6 disk through its intro (30
+  billion: four screenshots, the output and the disk image afterwards
+  all the same).
+- **Speed** under Rosetta on the M5, milestone 3's build against this
+  one, alternating (medians of 5): the 8.5 CD 6.0 → 6.0 s, 9.1's 4.7 →
+  4.5 s, 9.2.2's 4.7 → 4.4 s; Unreal Tournament's 30 billion instructions
+  36.7 → 34.9 s (interpreter exits 17.1 million → 570,000). Little: the
+  kernel calls and device accesses themselves cost what they did, and
+  what went is the round trip through the interpreter around each; the
+  kernel's own exits (1.1 million in 8.5's boot, 8 million in Unreal
+  Tournament's run) remain, as on AArch64. Under Rosetta about 30% of a
+  boot goes on its handling of syshm's writes to code that has run
+  (Findings).
+
+Milestone 3 done (floating point):
+
+- **The interpreter's NaNs** first, in a commit of their own: NaN results
+  are a 750's on every host (the first NaN of frA, frB and frC, quieted,
+  else 0x7FF8000000000000; never negated by `fnmadd`/`fnmsub`; cut to
+  single precision by single-precision operations and `frsp`), and
+  ∞ × 0 + a quiet NaN is VXIMZ everywhere. The new tests fail with the
+  old code on both hosts (different cases on each) and pass on macOS and
+  Linux, AArch64 and x86_64. AArch64's boots (output and screenshots),
+  its fuzzing (100,000 programs: the JIT sends NaNs to the interpreter,
+  so both sides changed alike) and its generated code (the hashes) are as
+  before.
+- **FP natively**, the AArch64 design: FPRs cached in xmm6-xmm15;
+  A-form arithmetic with FMA3 where the interpreter's fast path would
+  take it, inexactness by error-free transformations, XX and FX at once,
+  FR, FI and FPRF left pending for the settle stub (a routine for each
+  operation, `fp_settle()` for the rest); `fnmadd`/`fnmsub` negate the
+  rounded fma, as the interpreter does; `fsel` (VCMPSD and VBLENDVPD),
+  the moves, `fcmpu`/`fcmpo`, `frsp`, `fctiw[z]`, the FPSCR instructions;
+  `lfs`/`lfd`/`stfs`/`stfd` in every form; `lfd` of two words just stored
+  with `stw` put together from the registers. Anything else goes out of
+  line to the interpreter.
+- **Checks**: the fuzzer passes 400,000 programs under Rosetta (100,000
+  with `SYSHM_JIT_FASTMEM=0`) and 30,000 under QEMU; all of `make test` on
+  macOS and Linux, both architectures. The three CD boots end exactly as
+  on AArch64 under Rosetta (with `SYSHM_JIT_FASTMEM=0` too), and the 8.5
+  CD under QEMU. AArch64's generated code is byte for byte as before.
+- **Speed** under Rosetta on the M5, milestone 2's build against this
+  one, alternating (medians of 5): the 8.5 CD 5.8 → 5.9 s, 9.1's 4.6 →
+  4.25 s, 9.2.2's 4.5 → 4.5 s. The boots change little: FP is a small part
+  of them, and they still leave the JIT for the interpreter 4 to 13
+  million times (kernel calls and device registers, which AArch64 makes in
+  place: milestone 4). The benchmark's FP loop: 95 → 895 million
+  instructions a second (AArch64's JIT natively: 1,680; the code follows
+  AArch64's instruction for instruction, so the gap is most likely
+  Rosetta's cost for scalar AVX, while x86's integer loop runs as fast as
+  AArch64's); the dispatch, integer and copy loops are as before (830,
+  7,000-8,000 and 10,500), once the blocks area starts at a 4 KB boundary
+  (Findings).
+
 Milestone 2 done (memory):
 
 - **Loads and stores** of bytes, halfwords and words, D-form and indexed,
@@ -429,25 +528,23 @@ Notes on the table:
 - **`fctiw[z]`**: VROUNDSD (nearest-even or toward zero), VCVTTSD2SI and
   a compare after converting back, like AArch64's FRINTN/FCVTZS/SCVTF.
   Out of range or NaN goes out of line.
-- **`fsel`, `fcmpu`**: UCOMISD, whose parity flag means unordered.
+- **`fsel`**: VCMPSD (0 ≤ a, false for a NaN) and VBLENDVPD.
+- **`fcmpu`/`fcmpo`**: UCOMISD, whose parity flag means unordered (out of
+  line then, for VXSNAN and VXVC).
 - **The FPSCR's mode and XX** are tested in memory (`test byte
   [rbx+fpscr+k]`), not kept in a register as w5 is on AArch64.
 - **MXCSR**: generated code assumes round to nearest, all exceptions
-  masked, no FTZ or DAZ, as the interpreter's fast path already does.
-  Debug builds check it at entry.
+  masked, no FTZ or DAZ, as the interpreter's fast path already does; the
+  interpreter puts round to nearest back after each operation in another
+  mode (`nearest_rounding()`), which the fuzzer's programs exercise.
 - **NaNs, infinities, denormals, directed rounding** never come out of
   the native paths; they go to the interpreter, as on AArch64. So the JIT
   equals the interpreter on any host, whatever the interpreter does.
-- **The interpreter's NaNs**: what it does depends on the host (Status).
-  The x86 interpreter, as shipped today, gives negative default NaNs that
-  no 750 would. Tininess for UX may also differ: x86 detects it after
-  rounding, AArch64 before (PowerPC's rule to be checked). Proposed, as a
-  separate change in milestone 3 if the supervisor agrees:
-  `ppc_fp.c`'s general path picks NaN results by PowerPC's rule (frA,
-  frB, frC, quieted, or 0x7FF8000000000000) and does the same for the
-  invalid-operation bits. Then both hosts give a 750's results. It doesn't
-  touch either JIT; it changes AArch64 hosts' results only for operations
-  that produce NaNs.
+- **The interpreter's NaNs** were the host's; since milestone 3 they're
+  a 750's on every host (Status). Tininess for UX may still differ: x86
+  detects it after rounding, AArch64 before (PowerPC's rule to be
+  checked); only the interpreter sees it, as underflows never take the
+  native paths.
 
 ### Kernel calls, hooks, device registers, time base, profiler
 
@@ -547,6 +644,43 @@ candidate if profiles ask for it.
 - **Comparing runs across hosts** needs the same time zone: the guest's
   clock is the host's local time, so a container in UTC ran the 8.5 CD
   differently from macOS in Sydney until `TZ` matched.
+- **Under Rosetta, a hot loop that crosses a 4 KB boundary runs at 60-80%
+  speed** (the x86 page size it emulates): with milestone 3's larger stubs
+  the benchmark's blocks moved, and its integer loop fell from 7,200 to
+  5,900 million instructions a second, the copy loop from 10,450 to
+  5,400, with byte-identical code. Padded to cross the boundary or not,
+  the same blocks gave 6,100 against 7,500 and 6,300 against 10,550.
+  The blocks area now starts at a 4 KB boundary after the stubs (one
+  alignment, not one per block), which keeps the benchmark's blocks clear
+  of a boundary. Real x86 processors don't care; a boot's blocks cross
+  boundaries as they fall, as they always have
+  (milestone 5 may keep small blocks from crossing, if Rosetta timings
+  matter enough).
+- **Under Rosetta, writing to code that has run costs about 13 µs a
+  write**, as the plan's first checks found (14 µs): the profiler
+  (`SYSHM_JIT_PROFILE=1`) on the 8.5 CD boot put 30% of its samples on
+  three stores, each the first write to a page of code: a new block's
+  first instruction (2,740 samples, 14%; 53,000 blocks, 13 µs each), a
+  link's patch (2,642; 49,000 links) and a retired block's entry (375).
+  x86 processors make no such charge. If Rosetta timings matter, milestone
+  5 could write fewer pages that have run: links through slots in data,
+  say, or new blocks into pages that haven't run yet.
+- **AArch64 leaves byte-reversed device accesses to the interpreter**:
+  it runs `lwbrx`/`stwbrx` through `call_step()`, and `ppc_step()` gives
+  up at a fault rather than offer the access to the hook, so each such
+  access leaves the block (80 interpreter exits in 40 turns of a loop
+  with one of each). x86
+  translates them, so they take the mmio hook's path in place. AArch64
+  stays as it is.
+- **Without fastmem, loads from a readable page below an unreadable one
+  go to the interpreter**, on both hosts: the check is MEM_FAST_R, which
+  asks for the next page too (for an access that might cross), and
+  `mmio()` then declines an access that is fine. With
+  `SYSHM_JIT_FASTMEM=0`, 9.1's and 9.2.2's CD boots leave 147 and 48
+  million times for the interpreter (47 million of 9.2.2's: D-form loads
+  with the next page unreadable); fastmem, the default, checks nothing.
+  A test of whether the access stays in its page would fix both
+  translators, which would change AArch64's code.
 
 ## Timing on real hardware
 
@@ -631,7 +765,12 @@ statistics (the JIT's own line aside).
    - block alignment;
    - memory operands for read-once guest registers;
    - native `lswx`/`stswx` if profiles say so;
-   - the 68k emulator's dispatch jump.
+   - the 68k emulator's dispatch jump;
+   - under Rosetta, fewer writes to code that has run (Findings);
+   - FP records that the next arithmetic would replace unread, which are
+     stored at once when the result overwrites an operand (`fmadd f2,
+     f2, f3, f1`): kept elsewhere, or not made, where nothing between can
+     leave the block or read them.
 
    The aim is host instructions per guest instruction within about 1.3
    times AArch64's, and timings on real hardware where it can be had.

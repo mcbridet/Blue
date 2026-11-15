@@ -451,6 +451,69 @@ static void test_fp_fast_path(void)
 	CHECK(ppc_fp_fast_ops - fast_before > 100000);  /* (most ordinary operands take it) */
 }
 
+/*
+ * NaN results as a 750's, the same on every host: the first NaN of frA,
+ * frB and frC (of those the operation uses), quieted, else the default NaN
+ * 0x7FF8000000000000; never negated by fnmadd and fnmsub; cut to single
+ * precision's fraction by single-precision operations and frsp
+ */
+static void test_fp_nans(void)
+{
+	enum { ADD = 21, SUB = 20, MUL = 25, DIV = 18, SQRT = 22, RES = 24, RSQRTE = 26, MSUB = 28, MADD = 29,
+	       NMSUB = 30, NMADD = 31, RSP = 0x100 };
+	const uint64_t qa = 0x7FF8123456789ABCull, qb = 0xFFF800000000B0B0ull, qc = 0x7FF8000000C0C000ull;
+	const uint64_t sa = 0x7FF000000000A0A1ull, sb = 0xFFF400000000B0B1ull, sn = 0x7FF4123456789ABCull;
+	const uint64_t one = 0x3FF0000000000000ull, zero = 0, inf = 0x7FF0000000000000ull, ninf = 0xFFF0000000000000ull;
+	const uint64_t dnan = 0x7FF8000000000000ull, q = 0x0008000000000000ull, single = 0xFFFFFFFFE0000000ull;
+	const uint32_t vxsnan = 0x01000000u, vxisi = 0x00800000u, vximz = 0x00100000u, vxsqrt = 0x00000200u;
+	const struct { unsigned op, xo5; uint64_t a, b, c, want; uint32_t vx; } t[] = {
+		{ 63, ADD, qa, sb, 0, qa, vxsnan },             /* frA first, quiet or not */
+		{ 63, ADD, sa, qb, 0, sa | q, vxsnan },
+		{ 63, ADD, one, qb, 0, qb, 0 },
+		{ 63, SUB, qb, qa, 0, qb, 0 },
+		{ 63, MUL, one, sn, qc, qc, 0 },                /* (fmul doesn't use frB) */
+		{ 63, MUL, qa, one, qc, qa, 0 },
+		{ 63, DIV, one, sb, 0, sb | q, vxsnan },
+		{ 63, MADD, one, qb, qc, qb, 0 },               /* frA, frB, frC */
+		{ 63, MADD, qa, qb, qc, qa, 0 },
+		{ 63, MADD, one, one, sn, sn | q, vxsnan },
+		{ 63, MADD, inf, qb, zero, qb, vximz },         /* ∞ × 0 + a quiet NaN: invalid */
+		{ 63, NMADD, one, qb, one, qb, 0 },             /* not negated */
+		{ 63, NMSUB, qa, one, one, qa, 0 },
+		{ 63, SUB, inf, inf, 0, dnan, vxisi },          /* the default NaN */
+		{ 63, MUL, inf, 0, zero, dnan, vximz },
+		{ 63, DIV, zero, zero, 0, dnan, 0x00200000u },
+		{ 63, DIV, ninf, inf, 0, dnan, 0x00400000u },
+		{ 63, SQRT, 0, 0xBFF0000000000000ull, 0, dnan, vxsqrt },
+		{ 63, RSQRTE, 0, 0xBFF0000000000000ull, 0, dnan, vxsqrt },
+		{ 63, NMADD, inf, ninf, one, dnan, vxisi },     /* (not negated either) */
+		{ 63, SQRT, qa, sb, qc, sb | q, vxsnan },       /* (fsqrt uses only frB) */
+		{ 59, ADD, qa, one, 0, qa & single, 0 },        /* single precision */
+		{ 59, MADD, one, sn, one, (sn | q) & single, vxsnan },
+		{ 59, RES, 0, qb, 0, qb & single, 0 },
+		{ 63, RSP, 0, sn, 0, (sn | q) & single, vxsnan },
+		{ 63, RSP, 0, qa, 0, qa & single, 0 },
+	};
+	for (int fast = 0; fast < 2; fast++) {
+		ppc_fp_fast_path = fast;
+		for (unsigned k = 0; k < sizeof t / sizeof t[0]; k++) {
+			memset(&cpu, 0, sizeof cpu);
+			cpu.fpr[2] = t[k].a;
+			cpu.fpr[3] = t[k].b;
+			cpu.fpr[4] = t[k].c;
+			uint32_t insn = t[k].xo5 == RSP ? 63u << 26 | 1u << 21 | 3u << 11 | 12u << 1 :
+					t[k].op << 26 | 1u << 21 | 2u << 16 | 3u << 11 | 4u << 6 | t[k].xo5 << 1;
+			ppc_fp_exec(&cpu, insn);
+			if (cpu.fpr[1] != t[k].want || (cpu.fpscr & 0x01F80700u) != t[k].vx) {
+				fprintf(stderr, "fp nans: case %u: %016llx, fpscr %08x\n", k, (unsigned long long)cpu.fpr[1],
+					cpu.fpscr);
+				test_failures++;
+			}
+		}
+	}
+	ppc_fp_fast_path = true;
+}
+
 void test_ppc(void)
 {
 	if (mem_init(&mem)) {
@@ -467,6 +530,7 @@ void test_ppc(void)
 	test_exits();
 	test_fp();
 	test_fp_fast_path();
+	test_fp_nans();
 
 	mem_free(&mem);
 }

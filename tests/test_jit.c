@@ -426,6 +426,28 @@ static void check_fastmem(const struct jit *j)
 	free(text);
 }
 
+/* The JIT's exits of one kind ("interpreter", "kernel", "device", ...), from its statistics */
+static unsigned long jit_exits(const struct jit *j, const char *kind)
+{
+	char *text = NULL;
+	size_t size = 0, len = strlen(kind);
+	FILE *f = open_memstream(&text, &size);
+	jit_print_stats(j, f);
+	fclose(f);
+	unsigned long n = 0;
+	char *p = strstr(text, "exits: "), *end;
+	while (p && *p != '\n' && (p = strpbrk(p, "0123456789\n")) && *p != '\n') {
+		unsigned long v = strtoul(p, &end, 10);
+		if (*end == ' ' && !strncmp(end + 1, kind, len) && strchr(",\n", end[1 + len])) {
+			n = v;
+			break;
+		}
+		p = end;
+	}
+	free(text);
+	return n;
+}
+
 /* With rom_code, the code can't be written (as in ROM, where the JIT follows branches) */
 static void test_random_programs(unsigned programs, bool rom_code)
 {
@@ -845,6 +867,7 @@ static void test_x86_encoding(void)
 	X86_CASE(x86_call_m(b, x86_rip(start + 0x1000)),
 		 "call qword ptr [rip + L + 0x1000]", "\xff\x15\xfa\x0f\x00\x00");
 	X86_CASE(x86_ret(b), "ret", "\xc3");
+	X86_CASE(x86_call(b, start + 0x1000), "L: call L + 0x1000", "\xe8\xfb\x0f\x00\x00");
 	X86_CASE(x86_push(b, X86_RBP), "push rbp", "\x55");
 	X86_CASE(x86_push(b, X86_R15), "push r15", "\x41\x57");
 	X86_CASE(x86_pop(b, X86_R12), "pop r12", "\x41\x5c");
@@ -886,6 +909,19 @@ static void test_x86_encoding(void)
 	X86_CASE(x86_vcvttsd2si(b, 0, X86_RAX, 1), "vcvttsd2si eax, xmm1", "\xc5\xfb\x2c\xc1");
 	X86_CASE(x86_vcvttsd2si(b, 1, X86_R10, 9), "vcvttsd2si r10, xmm9", "\xc4\x41\xfb\x2c\xd1");
 	X86_CASE(x86_vcvtsi2sd(b, 0, 0, 0, X86_RAX), "vcvtsi2sd xmm0, xmm0, eax", "\xc5\xfb\x2a\xc0");
+	X86_CASE(x86_vmovd_from(b, 5, X86_RCX), "vmovd xmm5, ecx", "\xc5\xf9\x6e\xe9");
+	X86_CASE(x86_vmovd_from(b, 13, X86_R9), "vmovd xmm13, r9d", "\xc4\x41\x79\x6e\xe9");
+	X86_CASE(x86_vmovd_to(b, X86_RAX, 14), "vmovd eax, xmm14", "\xc5\x79\x7e\xf0");
+	X86_CASE(x86_vpd_m(b, X86_VXORPD, 0, 9, x86_rip(start + 0x1000)),
+		 "vxorpd xmm0, xmm9, xmmword ptr [rip + L + 0x1000]", "\xc5\xb1\x57\x05\xf8\x0f\x00\x00");
+	X86_CASE(x86_vpd_m(b, X86_VANDPD, 12, 3, x86_m(X86_RBX, 0x10)),
+		 "vandpd xmm12, xmm3, xmmword ptr [rbx + 0x10]", "\xc5\x61\x54\x63\x10");
+	X86_CASE(x86_vcmpsd(b, 4, 5, 9, 2), "vcmplesd xmm4, xmm5, xmm9", "\xc4\xc1\x53\xc2\xe1\x02");
+	X86_CASE(x86_vblendvpd(b, 7, 3, 14, 4), "vblendvpd xmm7, xmm3, xmm14, xmm4", "\xc4\xc3\x61\x4b\xfe\x40");
+	X86_CASE(x86_vblendvpd(b, 12, 12, 0, 13), "vblendvpd xmm12, xmm12, xmm0, xmm13", "\xc4\x63\x19\x4b\xe0\xd0");
+	X86_CASE(x86_vmovsd(b, false, 13, x86_rip(start + 0x1000)),
+		 "vmovsd xmm13, qword ptr [rip + L + 0x1000]", "\xc5\x7b\x10\x2d\xf8\x0f\x00\x00");
+	X86_CASE(x86_vmovsd(b, true, 0, x86_m(X86_RSP, 0)), "vmovsd qword ptr [rsp], xmm0", "\xc5\xfb\x11\x04\x24");
 	CHECK(!b->overflow);
 }
 
@@ -952,6 +988,8 @@ static void test_quick_sc(void)
 				}
 			}
 		}
+		if (jit)
+			CHECK_EQ(jit_exits(s.cpu.jit, "interpreter"), 0);       /* (the JIT answered them itself) */
 		jit_free(s.cpu.jit);
 		mem_free(&s.mem);
 	}
@@ -1102,9 +1140,60 @@ static void test_kcalls(void)
 				}
 			}
 		}
+		if (jit)
+			CHECK_EQ(jit_exits(s.cpu.jit, "interpreter"), 0);       /* (the JIT made them itself) */
 		jit_free(s.cpu.jit);
 		mem_free(&s.mem);
 	}
+}
+
+/* A device whose every access the mmio hook takes */
+static int plain_device(void *ctx, struct ppc_cpu *cpu)
+{
+	struct device *d = ctx;
+	struct mmio_access a;
+	if (!mmio_decode(&d->bus, cpu, &a))
+		return PPC_MMIO_NO;
+	mmio_perform(&a, cpu);
+	d->accesses++;
+	return PPC_MMIO_DONE;
+}
+
+/*
+ * Device registers through the mmio hook, by both engines, in a loop: the
+ * JIT offers each access to the hook itself, at once without fastmem, or
+ * once its instruction has faulted (and the interpreter has taken that one)
+ */
+static void test_device_in_place(void)
+{
+	const uint32_t prog[] = {
+		LIS(3, IO_PAGE >> 16), LI(0, 40), MTCTR(0),
+		LWZ(4, 0x10, 3), STW(4, 0x20, 3), LHA(5, 0x12, 3), STH(5, 0x30, 3), LWZU(7, 4, 3), STWU(7, 4, 3),
+		ADDI(6, 6, 1), BDNZ(-28),
+		SC,
+	};
+	static struct side s[2];
+	enum ppc_exit e[2];
+	for (int jit = 0; jit < 2; jit++) {
+		setup(&s[jit], jit);
+		for (unsigned k = 0; k < sizeof prog / sizeof prog[0]; k++)
+			mem_w32(&s[jit].mem, CODE + 4 * k, prog[k]);
+		s[jit].cpu.mmio = plain_device;
+		s[jit].cpu.mmio_ctx = &s[jit].dev;
+		s[jit].cpu.pc = CODE;
+		e[jit] = ppc_run(&s[jit].cpu, 10000);
+	}
+	if (s[1].cpu.jit) {
+		CHECK_EQ(e[0], PPC_EXIT_SC);
+		CHECK(same(&s[0], &s[1], e[0], e[1]));
+		CHECK_EQ(s[0].dev.accesses, 240);
+		CHECK_EQ(s[1].dev.accesses, 240);
+		CHECK_EQ(s[0].dev.state, s[1].dev.state);
+		CHECK(jit_exits(s[1].cpu.jit, "interpreter") <= 6);     /* (each access instruction's fault) */
+		jit_free(s[1].cpu.jit);
+	}
+	mem_free(&s[0].mem);
+	mem_free(&s[1].mem);
 }
 
 /* ---- SYSHM_JIT_BENCH=1: speed, not a test ---- */
@@ -1244,6 +1333,7 @@ void test_jit(void)
 	}
 	test_quick_sc();
 	test_kcalls();
+	test_device_in_place();
 	test_hostcall_fprs();
 	test_random_programs(programs, false);
 	test_random_programs(programs / 2 + 1, true);

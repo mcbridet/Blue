@@ -536,6 +536,16 @@ static inline uint8_t *x86_jcc8(struct x86_buf *b, enum x86_cond cc)
 	return at;
 }
 
+/* CALL rel32 */
+static inline void x86_call(struct x86_buf *b, const void *target)
+{
+	x86_byte(b, 0xE8);
+	uint8_t *at = b->p;
+	x86_imm(b, 0, 4);
+	if (!b->overflow)
+		x86_patch32(at, target);
+}
+
 static inline void x86_jmp_r(struct x86_buf *b, unsigned r)
 {
 	x86_op_rr(b, 0, 0, 0xFF, 4, r, 0);
@@ -600,6 +610,17 @@ static inline void x86_vmovq_to(struct x86_buf *b, unsigned r, unsigned xs)
 	x86_vex_rr(b, 1, 1, 1, 0x7E, xs, 0, r);
 }
 
+/* VMOVD: the same with 32 bits */
+static inline void x86_vmovd_from(struct x86_buf *b, unsigned xd, unsigned r)
+{
+	x86_vex_rr(b, 1, 1, 0, 0x6E, xd, 0, r);
+}
+
+static inline void x86_vmovd_to(struct x86_buf *b, unsigned r, unsigned xs)
+{
+	x86_vex_rr(b, 1, 1, 0, 0x7E, xs, 0, r);
+}
+
 /* VMOVSD xmm, [m] or [m], xmm */
 static inline void x86_vmovsd(struct x86_buf *b, bool store, unsigned x, struct x86_mem m)
 {
@@ -617,6 +638,26 @@ enum x86_pd { X86_VANDPD = 0x54, X86_VANDNPD, X86_VORPD, X86_VXORPD };
 static inline void x86_vpd(struct x86_buf *b, enum x86_pd op, unsigned d, unsigned a, unsigned s)
 {
 	x86_vex_rr(b, 1, 1, 0, op, d, a, s);
+}
+
+/* ... with 16 bytes at m */
+static inline void x86_vpd_m(struct x86_buf *b, enum x86_pd op, unsigned d, unsigned a, struct x86_mem m)
+{
+	x86_vex_rm(b, 1, 1, 0, op, d, a, m, 0);
+}
+
+/* VCMPSD d, a, s, predicate (0 EQ, 1 LT, 2 LE, ...): all ones where it holds */
+static inline void x86_vcmpsd(struct x86_buf *b, unsigned d, unsigned a, unsigned s, unsigned pred)
+{
+	x86_vex_rr(b, 1, 3, 0, 0xC2, d, a, s);
+	x86_byte(b, pred);
+}
+
+/* VBLENDVPD d, a, s, mask: s where mask's sign bits are set, else a */
+static inline void x86_vblendvpd(struct x86_buf *b, unsigned d, unsigned a, unsigned s, unsigned mask)
+{
+	x86_vex_rr(b, 3, 1, 0, 0x4B, d, a, s);
+	x86_byte(b, mask << 4);
 }
 
 /* FMA3, 231 forms: d = a * s + d (VFMADD), a * s - d (VFMSUB), -(a * s) + d, -(a * s) - d */

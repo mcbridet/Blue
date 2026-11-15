@@ -44,6 +44,10 @@
 /* Upper word given to fctiw[z]/mffs results; architecturally undefined */
 #define FP_INT_HI 0xFFF8000000000000ull
 
+#define FP_QUIET 0x0008000000000000ull                  /* a NaN's quiet bit */
+#define FP_DEFAULT_NAN 0x7FF8000000000000ull            /* an invalid operation's result */
+#define FP_SINGLE_MASK 0xFFFFFFFFE0000000ull            /* a double's bits that single precision keeps */
+
 enum fp_op { OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FMA, OP_SQRT, OP_OTHER };
 
 static inline double f64(uint64_t b)
@@ -65,6 +69,11 @@ static double barrier(double x)
 {
 	volatile double v = x;
 	return v;
+}
+
+static inline bool is_nan(uint64_t b)
+{
+	return (b & 0x7FF0000000000000ull) == 0x7FF0000000000000ull && (b & 0x000FFFFFFFFFFFFFull);
 }
 
 static inline bool is_snan(uint64_t b)
@@ -184,13 +193,14 @@ static void fp_finish(struct ppc_cpu *c, enum fp_op op, uint64_t a, uint64_t b, 
 		raise |= FPSCR_UX;
 	if (ex & FE_DIVBYZERO)
 		raise |= FPSCR_ZX;
-	if (ex & FE_INVALID) {
-		double da = f64(a), db = f64(b), dc = f64(cc);
+	double da = f64(a), db = f64(b), dc = f64(cc);
+	bool imz = op == OP_FMA && ((isinf(da) && dc == 0) || (da == 0 && isinf(dc)));
+	if ((ex & FE_INVALID) || imz) {         /* (∞ × 0 + a quiet NaN: hosts differ, a 750 says invalid) */
 		if (is_snan(a) || is_snan(b) || is_snan(cc))
 			raise |= FPSCR_VXSNAN;
 		else if (op == OP_DIV)
 			raise |= (isinf(da) && isinf(db)) ? FPSCR_VXIDI : FPSCR_VXZDZ;
-		else if (op == OP_MUL || (op == OP_FMA && ((isinf(da) && dc == 0) || (da == 0 && isinf(dc)))))
+		else if (op == OP_MUL || imz)
 			raise |= FPSCR_VXIMZ;
 		else if (op == OP_SQRT)
 			raise |= FPSCR_VXSQRT;
@@ -342,6 +352,19 @@ static bool fp_fast(struct ppc_cpu *c, unsigned op, unsigned xo5, double a, doub
 	return true;
 }
 
+/*
+ * A NaN result as a 750's: the first NaN operand of frA, frB and frC (those
+ * the operation uses: the others are 0 here), quieted, else (an invalid
+ * operation) the default NaN; never negated (fnmadd, fnmsub), and for
+ * single precision, with its fraction cut to single's. Hosts differ: x86's
+ * default NaN is negative, and both pick among NaN operands their own way.
+ */
+static uint64_t nan_result(uint64_t a, uint64_t b, uint64_t cc, bool single)
+{
+	uint64_t n = is_nan(a) ? a | FP_QUIET : is_nan(b) ? b | FP_QUIET : is_nan(cc) ? cc | FP_QUIET : FP_DEFAULT_NAN;
+	return single ? n & FP_SINGLE_MASK : n;
+}
+
 bool ppc_fp_fast_path = true;
 unsigned long ppc_fp_fast_ops;
 
@@ -433,7 +456,7 @@ bool ppc_fp_exec(struct ppc_cpu *c, uint32_t i)
 			bool directed = directed_rounding(c->fpscr);
 			feclearexcept(FE_ALL_EXCEPT);
 			r = barrier((double)(float)barrier(f64(b)));
-			f[frt] = is_snan(b) ? b | 0x0008000000000000ull : b64(r);
+			f[frt] = is_nan(b) ? (b | FP_QUIET) & FP_SINGLE_MASK : b64(r);
 			fp_finish(c, OP_OTHER, b, 0, 0, f64(f[frt]));
 			nearest_rounding(directed);
 			break;
@@ -503,6 +526,12 @@ bool ppc_fp_exec(struct ppc_cpu *c, uint32_t i)
 					1u << 26 | 1u << 28 | 1u << 29 | 1u << 30 | 1u << 31;
 	if (!((op == 59 ? valid59 : valid63) & (1u << xo5)))
 		return false;
+	if (xo5 == 22 || xo5 == 24 || xo5 == 26)                /* (operands an operation doesn't use: 0) */
+		a = 0;
+	if (xo5 == 25)
+		b = 0;
+	if (xo5 != 23 && xo5 != 25 && xo5 < 28)
+		cc = 0;
 
 	if (ppc_fp_fast_path && xo5 != 23 && fp_fast(c, op, xo5, f64(a), f64(b), f64(cc), &r)) {
 		f[frt] = b64(r);
@@ -538,7 +567,7 @@ bool ppc_fp_exec(struct ppc_cpu *c, uint32_t i)
 	if (op == 59 || xo5 == 24)
 		r = (double)(float)barrier(r);
 	r = barrier(r);
-	f[frt] = b64(r);
+	f[frt] = isnan(r) ? nan_result(a, b, cc, op == 59 || xo5 == 24) : b64(r);
 	fp_finish(c, kind, a, b, cc, r);
 	nearest_rounding(directed);
 	if (rc)

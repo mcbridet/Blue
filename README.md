@@ -873,7 +873,13 @@ software (on 8.6, an M5 Mac).
   NanoKernel ConfigInfo (memory map, low-memory init list).
 - User-mode PowerPC interpreter (integer, FP, string/multiple, reservations)
   with kernel exits for `sc`, traps, privileged instructions, faults and a
-  host-call opcode (primary opcode 6). AltiVec is not implemented.
+  host-call opcode (primary opcode 6). AltiVec is not implemented. Floating
+  point is the host's IEEE arithmetic, but NaN results are a 750's on
+  every host (the first NaN of frA, frB and frC, quieted, else
+  0x7FF8000000000000; never negated by `fnmadd`/`fnmsub`; cut to single
+  precision by single-precision operations and `frsp`), where hosts
+  differed (x86's default NaN is negative; each picked among NaN operands
+  its own way).
 - A JIT to AArch64 and x86-64, on Linux and macOS (`src/jit.c`, the
   runtime both share; `src/jit_a64.c` and `src/a64.h`, `src/jit_x86.c` and
   `src/x86.h`, the translators; `--interp` turns it off). What follows is
@@ -988,21 +994,26 @@ software (on 8.6, an M5 Mac).
     code (`pthread_jit_write_protect_np()`, about 25 ns a switch). What's
     left that only macOS pays (those switches, its slower fault signals) is
     under 1% of a boot.
-  - x86-64 (docs/x86-jit-plan.md, milestone 2 of 5): the same blocks,
+  - x86-64 (docs/x86-jit-plan.md, milestone 4 of 5): the same blocks,
     links, budget, exits, hooks and time base, with integer, compare,
-    condition-register and branch instructions translated, and loads and
+    condition-register and branch instructions translated, loads and
     stores (fastmem, as above, with MOVBE; checked once one faults; stores
-    to pages with translated code in place); floating point and the rest
-    call the interpreter from inside the block, and system calls, traps,
-    host calls and device registers leave for it (which makes kernel calls
-    and device accesses in place itself). It needs x86-64-v3 (AVX2, FMA3,
+    to pages with translated code in place), floating point as above (with
+    FMA3; FPRs cached in xmm6-xmm15), and kernel calls, the quick `sc` and
+    device registers in place as above (byte-reversed accesses to device
+    registers too, which AArch64 leaves to the interpreter). String
+    instructions call the interpreter from inside the block, as on
+    AArch64. It needs x86-64-v3 (AVX2, FMA3,
     BMI1/2, LZCNT, MOVBE; other processors interpret, and syshm says
     what's missing). Five guest registers live in host registers (CR, LR,
     r3, r4, r24) and four more are cached within a block. Under Rosetta 2,
     `ROSETTA_ADVERTISE_AVX=1` in the environment has it offer x86-64-v3.
     The 8.5, 9.1 and 9.2.2 CD boots in instruction time end exactly as on
-    AArch64; under Rosetta on an M5 the 8.5 CD's 4 billion instructions
-    take 6.3 s (interpreted: 24 s).
+    AArch64, and so do an installed 9.2.2's start and Unreal Tournament's
+    intro on 8.6; under Rosetta on an M5 the 8.5 CD's 4 billion
+    instructions take about 6 s (interpreted: 24 s), about 30% of it in
+    Rosetta's handling of syshm's writes to code that has run (new blocks,
+    links: about 13 µs each), a cost x86 processors don't have.
   - `SYSHM_JIT_PROFILE=1` samples where host time goes (translated blocks
     by guest address, stubs, C functions) and prints it at the end;
     `SYSHM_JIT_PROFILE=FROM:TO` samples only from instruction FROM to TO.
