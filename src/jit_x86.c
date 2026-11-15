@@ -31,10 +31,11 @@ _Static_assert(sizeof(struct jit) <= JIT_DATA, "struct jit fits before the code"
 /*
  * Host registers held for the whole of a run. jit_state needs none: struct
  * jit sits just before the code, so generated code reaches it RIP-relative.
+ * The instructions that may still run are jit_state.remaining, kept there
+ * (64 bits, BUDGET), and a guest register has the host register instead.
  */
 enum {
 	R_CPU = X86_RBX,        /* struct ppc_cpu * */
-	R_BUDGET = X86_R14,     /* instructions that may still run */
 	R_MEM = X86_R15,        /* guest address 0, in generated code's view (see fastmem) */
 };
 
@@ -59,12 +60,12 @@ enum { FIX_REL32, FIX_SITE };
 #define G_LR 34u
 #define G_CTR 35u
 #define NGUEST 36u
-#define NFIXED 5u
+#define NFIXED 6u
 #define CALLER_SAVED_FIXED 2u           /* the first fixed registers don't survive calls to C */
 #define NCACHE 4u                       /* (none of which survive calls to C) */
 
-static const uint8_t fixed_guest[NFIXED] = { 4, G_LR, G_CR, 24, 3 };
-static const uint8_t fixed_reg[NFIXED] = { X86_R10, X86_R11, X86_RBP, X86_R12, X86_R13 };
+static const uint8_t fixed_guest[NFIXED] = { 4, G_LR, G_CR, 24, 3, 29 };
+static const uint8_t fixed_reg[NFIXED] = { X86_R10, X86_R11, X86_RBP, X86_R12, X86_R13, X86_R14 };
 static const uint8_t cache_reg[NCACHE] = { X86_RSI, X86_RDI, X86_R8, X86_R9 };
 
 #define NO_REG 0xFFu
@@ -242,6 +243,7 @@ struct tx {
 #define GPR(r) (OFF(gpr) + 4 * (int32_t)(r))
 #define FPR(r) (OFF(fpr) + 8 * (int32_t)(r))
 #define ST(field) x86_rip(&t->j->st.field)
+#define BUDGET ST(remaining)
 
 static void ld32(struct tx *t, unsigned reg, int32_t off) { x86_load(B, 4, false, reg, x86_m(R_CPU, off)); }
 static void st32(struct tx *t, unsigned reg, int32_t off) { x86_store(B, 4, reg, x86_m(R_CPU, off)); }
@@ -831,7 +833,7 @@ static void lookup_jump(struct tx *t)
 static void budget_sub(struct tx *t, unsigned n)
 {
 	if (n)
-		x86_alu_ri(B, X86_SUB, 1, R_BUDGET, (int32_t)n);
+		x86_alu_mi(B, X86_SUB, 8, BUDGET, (int32_t)n);
 }
 
 /* Leaves the block for the pc in eax (after a branch: stop at the hook) */
@@ -1000,7 +1002,7 @@ static void time_base(struct tx *t)
 {
 	x86_load(B, 8, false, T0, x86_m(R_CPU, OFF(tb)));
 	x86_load(B, 8, false, T1, ST(entry_budget));
-	x86_alu_rr(B, X86_SUB, 1, T1, R_BUDGET);
+	x86_alu_rm(B, X86_SUB, 1, T1, BUDGET);
 	if (t->k)
 		x86_alu_ri(B, X86_ADD, 1, T1, (int32_t)t->k);
 	x86_load(B, 4, false, T2, x86_m(R_CPU, OFF(tb_step)));
@@ -1563,7 +1565,9 @@ static void slow_ios(struct tx *t)
 		x86_mov_ri(B, X86_RSI, io->insn);
 		x86_mov_ri(B, X86_RDX, io->pc);
 		x86_mov_ri(B, X86_R8, io->bytes | (unsigned)io->write << 8);
-		x86_lea(B, 1, X86_R9, x86_m(R_BUDGET, -(int32_t)io->k));       /* (instructions left, this one included) */
+		x86_load(B, 8, false, X86_R9, BUDGET);                  /* (instructions left, this one included) */
+		if (io->k)
+			x86_alu_ri(B, X86_SUB, 1, X86_R9, (int32_t)io->k);
 		x86_call(B, t->j->mmio_call);
 		rc_reset(t);                                            /* (all written back) */
 		x86_test_rr(B, 0, T0, T0);                              /* PPC_MMIO_NO: the interpreter */
@@ -2770,7 +2774,7 @@ static int system_call(struct tx *t, uint32_t insn)
 	x86_cmov(B, X86_E, 0, T0, T2);
 	x86_mov_rr(B, 0, wr(t, 0), T0);
 	x86_store_imm(B, 4, x86_m(R_CPU, OFF(exit_insn)), insn);
-	x86_alu_ri(B, X86_ADD, 1, R_BUDGET, 1);
+	x86_alu_mi(B, X86_ADD, 8, BUDGET, 1);
 	return EMITTED;
 }
 
@@ -3029,7 +3033,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	uint32_t pc = pc0;
 	unsigned n = 0, budget_needed, cover = 0;
 
-	x86_op_rr(&t.x, 0, 1, 0x81, X86_CMP, R_BUDGET, 0);     /* cmp r14, imm32 (the block's length, below) */
+	x86_op_rm(&t.x, 0, 1, 0x81, X86_CMP, x86_rip(&j->st.remaining), 4, 0);  /* cmp, imm32: the block's length (below) */
 	uint8_t *ninsn = t.x.p;
 	x86_imm(&t.x, 0, 4);
 	uint8_t *to_budget = x86_jcc(&t.x, X86_B, NULL);
@@ -3110,7 +3114,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 		} else {
 			x86_mov_ri(&t.x, T0, t.pcs[k]);
 			if (k)
-				x86_alu_ri(&t.x, X86_SUB, 1, R_BUDGET, (int32_t)k);
+				x86_alu_mi(&t.x, X86_SUB, 8, x86_rip(&j->st.remaining), (int32_t)k);
 			x86_jmp(&t.x, j->side_exit);
 		}
 		for (; f < t.nfix && t.fix[f].k == k && t.fix[f].after == after &&
@@ -3298,7 +3302,7 @@ static void build_stubs(struct jit *j)
 		x86_push(B, saved[k]);
 	x86_alu_ri(B, X86_SUB, 1, X86_RSP, FRAME);
 	x86_mov_rr(B, 1, R_CPU, X86_RDI);
-	x86_mov_rr(B, 1, R_BUDGET, X86_RDX);
+	x86_store(B, 8, X86_RDX, BUDGET);
 	x86_store(B, 8, X86_RDX, ST(entry_budget));
 	x86_load(B, 8, false, R_MEM, ST(fastbase));
 	fixed_load(t, NFIXED);
@@ -3307,7 +3311,6 @@ static void build_stubs(struct jit *j)
 	/* exit (kind in eax) */
 	j->exit = t->x.p;
 	fixed_store(t, NFIXED);
-	x86_store(B, 8, R_BUDGET, ST(remaining));
 	x86_alu_ri(B, X86_ADD, 1, X86_RSP, FRAME);
 	for (unsigned k = sizeof saved; k--;)
 		x86_pop(B, saved[k]);
