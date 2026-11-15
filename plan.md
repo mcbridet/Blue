@@ -853,10 +853,27 @@ Facts later tasks need, added as they are found.
   corner (`lroundf`), where OpenGL 1.2's 3.6.4 takes the position as it is
   (the same pixels at a zoom of 1 but at half-way positions); syshm rounds
   as Mesa does. For fractional and negative zooms, Mesa's rows and columns
-  fall where neither OpenGL 1.2's rectangles nor that rounding put them,
-  and its pixel maps quantize what they look up: syshm keeps OpenGL 1.2's
-  rectangles and maps (checked in `tests/test_glfront.c`), and the scenes
-  compared with Mesa zoom by whole numbers and use no maps.
+  fall where neither OpenGL 1.2's rectangles nor that rounding put them:
+  syshm keeps OpenGL 1.2's rectangles (checked in `tests/test_glfront.c`),
+  and the scenes compared with Mesa zoom by whole numbers. Mesa's pixel
+  maps don't work: see the next item.
+- **Mesa 25.2's pixel maps corrupt its heap** (OpenGL, milestone 5): its
+  `glDrawPixels` with `GL_MAP_COLOR` on frees a 40-byte block it goes on
+  using. Its blue and alpha come out as garbage, even through identity
+  maps, and when the context goes, Mesa reads the block and writes 4 bytes
+  into it (valgrind: freed in `glDrawPixels`, read and written in
+  `eglDestroyContext`). A program of a few calls to Mesa alone, without
+  syshm, aborts every time ("corrupted double-linked list"). In
+  `tests/test_opengl.c` it was the intermittent crash during milestone 5
+  (an abort or a segfault in about a third of the runs, depending on how
+  the threads' allocations fell; a sanitized build and `MALLOC_CHECK_`
+  changed that, and AddressSanitizer found nothing in syshm's code). It
+  stopped once the scene compared with Mesa used no maps, and wasn't
+  understood until it was reproduced, after the milestone, by putting the
+  maps back (10 crashes in 30 runs; none with a negative zoom but no
+  maps). syshm's GPU backend never uses Mesa's maps (the pixel transfer
+  is the front end's, on the host). The Mesa harness now fails a scene that turns
+  `GL_MAP_COLOR` on, rather than run it.
 - **SGI's GLU, 1.2 and 1.3** (OpenGL, milestone 5): Apple's OpenGLUtility
   is SGI's 1.2 ("1.2 MacOS 8.0"; it imports OpenGLLibrary's `glc_cc` as
   data, `NewPtr` and `DisposePtr`). 1.2 makes every mipmap level through

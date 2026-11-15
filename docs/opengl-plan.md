@@ -90,9 +90,11 @@ Milestone 5:
   drawn alike. "glu" is compared when `SYSHM_TEST_GLU` names Mesa's
   libGLU (`libGLU.so.1`). Unit tests (`tests/test_glfront.c`,
   `tests/test_opengl.c`) check what Mesa can't: OpenGL 1.2's rectangles
-  for fractional and negative zooms, pixel maps, color indices, depth and
-  stencil images read and drawn, OpenGLUtility's matrices, projections,
-  images, objects, strings and errors.
+  for fractional and negative zooms, pixel maps (Mesa 25.2's corrupt its
+  heap: see Findings in plan.md; that was milestone 5's intermittent crash
+  in the tests), color indices, depth and stencil images read and drawn,
+  OpenGLUtility's matrices, projections, images, objects, strings and
+  errors.
 - **The test application** imports OpenGLUtility now. Scene `lists`: a
   sphere, a sphere as lines and a ring under a call to the first made into
   lists through OpenGLUtility (`gluPerspective`, `gluLookAt`, quadrics),
