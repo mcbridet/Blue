@@ -12,11 +12,141 @@ It should come first (see Order).
 
 ## Status
 
-Milestones 0 (the groundwork, shared with Glide) and 1 (AGL and a clear)
-are built; milestones 2 to 6 are to do. The user chose OpenGL before
-Glide, and accepted the proposed decisions below for now (replacing the
-libraries, recording in guest memory, fixed function in C on the host,
-frames read back into guest memory, a Rage 128's identity).
+Milestones 0 (the groundwork, shared with Glide), 1 (AGL and a clear) and
+2 (a triangle) are built; milestones 3 to 6 are to do. The user chose
+OpenGL before Glide, and accepted the proposed decisions below for now
+(replacing the libraries, recording in guest memory, fixed function in C
+on the host, frames read back into guest memory, a Rage 128's identity).
+
+Milestone 2:
+
+- **Recording** (`src/opengl.c`): 317 of the 440 gl functions aren't host
+  calls. Those that return nothing and take only values, or values and
+  then one array whose size their name gives (the `v` forms of `glVertex`,
+  `glColor`, `glNormal`, `glTexCoord`, `glMultiTexCoord*ARB`,
+  `glSecondaryColor*EXT`, `glRasterPos`, `glIndex`, `glEdgeFlag`,
+  `glEvalCoord`; `glLoadMatrix`, `glMultMatrix` and their transposes),
+  have code of the library's own that appends a record to a 64 KB buffer
+  in the process's instance of the library's data (zero-filled, its
+  bounds at `OPENGL_DATA_RECORD`): a word, the function's entry << 16 | the
+  record's size, then the arguments, each integer a word as its register
+  (or past r10 the caller's parameter area) had it, each float the 4 bytes
+  `stfs` stores, each double its 8, an array's elements each as such an
+  argument (bytes and halfwords made words). `glVertex3f` records in 13
+  instructions, as the Transport section has it; the code is generated
+  from the function table (`record_code()`), and the library builds twice,
+  once for its data's layout and once with the code. A full buffer, or the
+  first call (the bounds start at 0 if the initialization routine hasn't
+  set them), takes the entry's host call instead, and the host makes the
+  same record from the registers and does it by the same code. Every host
+  call of the library's (a swap, `glGetError`, `aglSetCurrentContext`)
+  first does what's recorded, in order, to the current context, so errors
+  and state come out as if every call had been one. Calls through a
+  context's dispatch table are recorded too if it's the current context
+  (else they're host calls, to that context). Not recorded: `glFlush` and
+  `glFinish`, and what reads arrays then and there (`glArrayElement`,
+  `glDrawArrays`, `glDrawElements`, `glDrawRangeElements`,
+  `glLockArraysEXT`): unlike the Transport section's plan, `glArrayElement`
+  is a host call, as a record of its index would read the arrays later. In
+  the test application's triangle scene, a frame's 49 calls make one host
+  call, the swap.
+  Note: PowerPC's `stfs` doesn't round, it truncates; callers' floats are
+  floats already, so that's exact, as the host's reading is (it reads them
+  as `stfs` would).
+- **The front end** (`src/glfront.c`, `src/glfront.h`), built without
+  fused multiply-adds and with sines and cosines of its own (series in
+  doubles after exact steps of 90 degrees), so its numbers are the same
+  on every host: the matrix stacks (modelview 32 deep, projection and each
+  texture unit's 8: the Rage 128's depths aren't known), in floats with
+  Mesa's formulas (`glFrustum`'s and `glOrtho`'s arguments made floats
+  first); vertices transformed by the projection times the modelview;
+  all ten primitive modes assembled into points, lines and triangles, with
+  OpenGL's provoking vertices for flat shading (the last; a polygon's
+  first; a line loop's closing segment its first); clipping in clip
+  coordinates against the near and far planes, and against the others
+  only past a guard band of 4 view volumes (the raster state's clip is the
+  viewport, cut by the scissor box); culling by each triangle's area in
+  window coordinates; window coordinates through the viewport and depth
+  range; current colors clamped per vertex; the raster state (depth
+  function and mask, none without depth bits; blend factors, equation and
+  color; the alpha test, where `GL_NEVER` draws nothing; color masks, and
+  alpha kept at 1 without alpha bits) made again only when the state
+  changes. 16-bit drawables are presented as the 5 top bits of 8, not
+  dithered yet.
+- **Where OpenGL leaves room, the Rage 128's way** (as far as known; in
+  `glfront.h`): colors interpolated linearly in screen space (the chip's
+  setup corrected texture coordinates for perspective, not colors);
+  primitives partly off the screen drawn from their own vertices within the
+  guard band, as hardware with one drew them; quads split as (v0, v1, v3)
+  and (v1, v2, v3), as Mesa's software rasterizer of the time and (from
+  memory) the r128 DRI driver emitted them. Today's Mesa (llvmpipe) splits
+  them as (v0, v1, v2) and (v0, v2, v3): different only where a quad's
+  colors aren't a linear function of its position.
+- **OpenGL so far:** matrices (`glMatrixMode`, `glLoadIdentity`,
+  `glLoadMatrix`, `glMultMatrix` and the transposes, `glTranslate`,
+  `glScale`, `glRotate`, `glFrustum`, `glOrtho`, `glPushMatrix`,
+  `glPopMatrix`, with their errors), `glActiveTextureARB` (for the texture
+  matrices so far), `glBegin`/`glEnd` with every form of `glVertex`,
+  `glColor`, `glNormal`, `glTexCoord`, `glMultiTexCoord*ARB`,
+  `glSecondaryColor*EXT` and `glEdgeFlag` (found by name: the integer ones
+  normalized for colors and normals as OpenGL 1.2's table 2.6 says),
+  `glDepthFunc`, `glDepthMask`, `glDepthRange`, `glShadeModel`,
+  `glCullFace`, `glFrontFace`, `glBlendFunc`, `glBlendEquation(EXT)`,
+  `glBlendColor(EXT)`, `glAlphaFunc`, `glColorMask`, `glPointSize`,
+  `glLineWidth`, `glHint` (taken), `glEnable`/`glDisable`/`glIsEnabled`
+  for all of OpenGL 1.2's capabilities and its imaging subset's (kept;
+  per texture unit where they are), `GL_INVALID_OPERATION` between
+  `glBegin` and `glEnd` for what may not come there, and `glGet*` for all
+  of that (`glGetIntegerv` scaling colors and such as OpenGL says). Not
+  yet: textures, lighting, fog, `glRasterPos`, evaluators, polygon modes,
+  offset and stipple, line stipple; lines are `raster.c`'s (a pixel a step,
+  not OpenGL's diamond-exit rule).
+- **`gpu.c`**: its varyings are `smooth` rather than `noperspective`
+  (with w 1 everywhere, the same interpolation): Mesa's llvmpipe
+  interpolated `noperspective` ones wrongly where it clipped a triangle at
+  the target's edges, which OpenGL's triangles reach (found by the scene
+  comparisons; `test_past_edges` in `tests/test_gpu.c`). RAVE's software
+  pixels are untouched.
+- **Checked against Mesa** (`tests/test_opengl.c`, on Linux): six scenes
+  drawn through the libraries (by their host calls and records) in
+  software and on the GPU, and by Mesa 25.2's compatibility profile
+  (llvmpipe, a framebuffer object of EGL's surfaceless platform). Pixels
+  differing by more than 2 out of 6,912:
+
+  | scene | GPU | Mesa | what differs |
+  |---|---|---|---|
+  | gradient (orthographic, smooth, a quad) | 0 | 0 | |
+  | depth (functions, mask, ties) | 1 | 1 | a pixel center on an edge |
+  | flat (perspective, near-clipped floor) | 11 | 11 | centers on an edge of slope 1/3 |
+  | smooth (the same, smooth) | 11 | 2,739 (by up to 141) | Mesa's colors corrected for perspective |
+  | primitives (every mode, culling, viewport, scissor, points) | 0 | 0 | |
+  | blend (blending, masks, alpha test) | 0 | 2 | alpha at the test's reference |
+
+  The GPU and Mesa agree with each other on those edge pixels (both snap
+  vertices to fixed point; `raster.c` doesn't): no pixel is drawn by one
+  and not the other anywhere else.
+- **The test application:** scene `triangle` (a 4:3 frustum, a floor
+  from behind the near plane into the distance, a red-green-blue triangle
+  and a yellow quad tilted through it, turned 25 degrees, a flat-shaded fan
+  given partly by `glVertex3fv`), its floats passed rounded to single
+  precision as a compiled caller passes them. On installed 8.5 in
+  instruction time: the same screenshot on macOS and Linux (and `clear`'s
+  the same as milestone 1's); on the GPU (Metal), 11 edge pixels differ;
+  at 16 bits and on 8.6 it draws the same scene.
+- **Tests:** `tests/test_glfront.c` (sines against libm; the matrices
+  against references in doubles, stacks and errors; each mode's
+  primitives and their order; flat shading's colors for every mode;
+  culling for each face and mode; clipping by the near and far planes and
+  the guard band, and the viewport and scissor as the clip; pixels drawn
+  by `raster.c`: coverage, depth, masks, alpha test, blending);
+  `tests/test_opengl.c` (the library's recording code run by the
+  interpreter and the JIT: each record's bytes, a ninth argument from the
+  parameter area, through the dispatch table, a full buffer, a context
+  not current, a triangle drawn and swapped; the scenes above).
+- Not yet: pacing swaps to the display's refresh as the 3D engine's frames
+  are (with milestone 3, for Unreal Tournament); `GL_CLAMP` against Mesa
+  (with textures); transform still runs at the drain on the emulation
+  thread (the Host side section's backend thread is for milestone 6).
 
 Milestone 1:
 

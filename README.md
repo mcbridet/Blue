@@ -761,21 +761,6 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
   Mesa's llvmpipe included. `SYSHM_RAVE_FPS=1` prints the frame rate every
   second, and `SYSHM_LOG_RAVE=1` logs every call. docs/gpu-plan.md
   describes the GPU backend in full.
-- **syshm OpenGL Library, Memory and Utility** (under way; on the volume,
-  not offered by the installer yet: docs/opengl-plan.md): Mac OS 9's
-  OpenGL libraries, as syshm's own, under Apple's fragment names
-  (OpenGLLibrary, OpenGLMemory, OpenGLUtility) with Apple's exports, put
-  in Extensions (on 8.5 and 8.6, which have no OpenGL of their own). Their
-  calls are host calls (`src/opengl.c`), and they draw with the 3D
-  engine's backend, on the GPU in real time and in software otherwise,
-  into the context's window (clipped to its regions), the screen or an
-  offscreen buffer, when it's swapped. So far: AGL (one accelerated
-  renderer, ATI's "Rage 128 OpenGL Engine" as on Mac OS 9, its pixel
-  formats and renderer info; contexts laid out as Apple's, with their
-  dispatch tables; drawables, swaps, swap and buffer rectangles) and, of
-  OpenGL, clears (with the scissor box and masks), the viewport, strings,
-  errors and some queries; OpenGLMemory's allocations. `SYSHM_LOG_GL=1`
-  logs every call.
 
   Frames for the screen come at most one a vertical blank of the display's
   (60 a second of guest time), which shows no more; the iMac's 3D hardware
@@ -788,6 +773,28 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
   at twice the speed (see Findings in plan.md). Waiting, the host sleeps,
   as when the guest idles (but guest time ahead of the host clock isn't
   made up then: the game would show it).
+- **syshm OpenGL Library, Memory and Utility** (under way; on the volume,
+  not offered by the installer yet: docs/opengl-plan.md): Mac OS 9's
+  OpenGL libraries, as syshm's own, under Apple's fragment names
+  (OpenGLLibrary, OpenGLMemory, OpenGLUtility) with Apple's exports, put
+  in Extensions (on 8.5 and 8.6, which have no OpenGL of their own). Their
+  calls are host calls (`src/opengl.c`), but for most of gl's: the
+  library's own code records those in a buffer in the program's memory,
+  done on the host all together at its next host call (a swap,
+  `glGetError`). A front end on the host (`src/glfront.c`) does OpenGL's
+  fixed function, and it draws with the 3D engine's backend, on the GPU in
+  real time and in software otherwise, into the context's window (clipped
+  to its regions), the screen or an offscreen buffer, when it's swapped.
+  So far: AGL (one accelerated renderer, ATI's "Rage 128 OpenGL Engine" as
+  on Mac OS 9, its pixel formats and renderer info; contexts laid out as
+  Apple's, with their dispatch tables; drawables, swaps, swap and buffer
+  rectangles) and, of OpenGL, the matrices and their stacks, `glBegin` and
+  `glEnd`'s points, lines, triangles, quads and polygons with their colors,
+  transformed, clipped, culled, flat or smooth shaded, depth tested,
+  blended, alpha tested, masked and scissored in the viewport; clears,
+  strings, errors and queries; OpenGLMemory's allocations. Not yet:
+  textures, lighting, fog, vertex arrays, display lists, OpenGLUtility.
+  `SYSHM_LOG_GL=1` logs every call.
 
 Like the drivers, these are generated code fragments whose logic runs in
 syshm through host calls (`src/tools.c`). Bugdom's setup, for the record:
@@ -1368,8 +1375,14 @@ linking, as a game would). `SYSHM_TOOLS_GL_TEST=1 build/syshm tools create
 FILE` puts it on the tools volume; with the OpenGL libraries in a disk
 image's Extensions folder and it in Startup Items (hfsutils' `hcopy -m`
 copies them), a run in instruction time shows its window with the scene
-`SYSHM_GL_TEST_SCENE` names (`clear`: a clear, and a scissored one) at the
-depth `SYSHM_GL_TEST_DEPTH` sets (16 or 32), the same on every host.
+`SYSHM_GL_TEST_SCENE` names (`clear`: a clear, and a scissored one;
+`triangle`: in perspective, a floor cut by the near plane, a triangle and a
+quad crossing in depth, a flat-shaded fan) at the depth
+`SYSHM_GL_TEST_DEPTH` sets (16 or 32), the same on every host. On Linux,
+`make test` draws scenes through the libraries and compares them with Mesa's
+own OpenGL (its compatibility profile, which still has `glBegin`):
+`SYSHM_TEST_VERBOSE=1` says how far apart they are, and
+`SYSHM_TEST_SAVE=DIR` saves them as PNGs.
 `tools/gltable.py` made `src/opengl_table.h`, the libraries' functions,
 from Apple's (Mac OS 9.2.2's) and the macOS SDK's OpenGL headers.
 
@@ -1534,8 +1547,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           rsrc.c (resource forks), tools.c (guest tools), install.c
           (installing them from inside Mac OS), clip.c (the clipboard they
           share with the host), rave.c (3D engine), opengl.c +
-          opengl_table.h (the guest's OpenGL libraries), gltest.c (their test
-          application), surface.c + raster.c + gpu.c + gl.c (the 3D backend:
+          opengl_table.h (the guest's OpenGL libraries), glfront.c (their
+          fixed-function front end), gltest.c (their test application), surface.c + raster.c + gpu.c + gl.c (the 3D backend:
           drawing, in software and with OpenGL, and presenting), display.c (SDL2
           window), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), main.c

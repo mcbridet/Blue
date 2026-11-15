@@ -115,8 +115,11 @@ Done:
   in place of the Driver Services timer. The restored 9.2.2 reaches the
   Finder in instruction time without a key. See Findings, "The display's
   interrupt".
-- **OpenGL** (Task 18; milestones 0 and 1 of docs/opengl-plan.md): the
-  libraries, AGL and clears, checked by a test application in the guest.
+- **OpenGL** (Task 18; milestones 0 to 2 of docs/opengl-plan.md): the
+  libraries, AGL and clears, checked by a test application in the guest;
+  gl calls recorded in guest memory by the library's own code, and a
+  fixed-function front end on the host drawing triangles (matrices,
+  clipping, culling, depth, blending), checked against Mesa's OpenGL.
   The groundwork (milestone 0):
   the 3D backend's texture units and stages, blend equations and color
   masks, with RAVE drawing through them, pixels unchanged; the software
@@ -693,8 +696,20 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 18. OpenGL for Mac OS 9 games
 
-- **Status:** milestones 0 and 1 done (docs/opengl-plan.md has the plan,
-  its milestones and what's built). Milestone 1: the three libraries
+- **Status:** milestones 0 to 2 done (docs/opengl-plan.md has the plan,
+  its milestones and what's built). Milestone 2: most gl calls recorded by
+  code of the library's own into a buffer in the process's memory, done on
+  the host at its next host call; the fixed-function front end
+  (`src/glfront.c`): matrices, `glBegin`/`glEnd`'s primitives, clipping
+  with a guard band, culling, flat and smooth shading, depth, blending,
+  the alpha test, masks, scissor and viewport, the same numbers on every
+  host; where OpenGL leaves room, the Rage 128's way (colors linear in
+  screen space). Six scenes drawn through the libraries match `gpu.c` and
+  Mesa's compatibility profile but for pixels whose centers are on edges
+  (and, in a perspective scene, Mesa's perspective-corrected colors); a
+  perspective scene in the test application gives the same screenshot on
+  macOS and Linux. `gpu.c`'s varyings are smooth now (llvmpipe got
+  noperspective ones wrong where it clips). Milestone 1: the three libraries
   (`src/opengl.c`, from the table `tools/gltable.py` made of Apple's),
   AGL, contexts laid out as Apple's with their dispatch tables, swaps into
   a window's port clipped to its regions (`src/surface.c`), clears; a test
@@ -723,8 +738,8 @@ the kernel); 8 onwards as the boot progresses.
   on macOS (with the next item) and Linux; on the GPU, 4 frames differ,
   each in one pixel's channel by one step. The 8.5 and 9.1 CDs boot to the same screenshots as
   main's.
-- **Next:** milestone 2, a triangle (recording, matrices, the front end's
-  transform and clipping).
+- **Next:** milestone 3, textures, then Unreal Tournament's OpenGL build
+  (and installing the libraries; Mac OS 9.x).
 
 ## Findings
 
