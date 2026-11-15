@@ -116,6 +116,11 @@ bool surface_pending(const struct surface *s)
 	return s->batch[s->rec].ncmds != 0;
 }
 
+bool surface_busy(const struct surface *s)
+{
+	return s->batch[0].ncmds || s->batch[1].ncmds;
+}
+
 bool surface_finish(struct surface *s)
 {
 	draw_batch(s, &s->batch[s->rec]);

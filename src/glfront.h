@@ -22,6 +22,15 @@
  * - Quadrilaterals are split as (v0, v1, v3) and (v1, v2, v3), polygons
  *   fanned from their first vertex; each triangle is culled by its own
  *   facing.
+ * - GL_CLAMP clamps to the edge texels, as GL_CLAMP_TO_EDGE (the chip had
+ *   no texture borders, and its drivers took GL_CLAMP so); texture images
+ *   keep 8 bits a component whatever internal format is asked for.
+ *
+ * Textures (gltex.c) are objects of a namespace their contexts share, each
+ * with its levels' texels on the host; what the backend draws with is a
+ * raster_texture made from them when they're first drawn after a change
+ * (sharing their texels), and retired when they change again, to be freed
+ * once nothing recorded can use it (glf_free_retired()).
  */
 #ifndef SYSHM_GLFRONT_H
 #define SYSHM_GLFRONT_H
@@ -29,6 +38,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "gpu.h"
 #include "raster.h"
 #include "surface.h"
 
@@ -46,6 +56,15 @@ enum { GL_FRONT = 0x0404, GL_BACK, GL_FRONT_AND_BACK = 0x0408, GL_CW = 0x0900, G
 enum { GL_FLAT = 0x1D00, GL_SMOOTH };
 enum { GL_MODELVIEW = 0x1700, GL_PROJECTION, GL_TEXTURE };
 enum { GL_TEXTURE0_ARB = 0x84C0 };
+enum { GL_TEXTURE_ENV_MODE = 0x2200, GL_TEXTURE_ENV_COLOR = 0x2201, GL_TEXTURE_ENV = 0x2300 };
+enum { GL_MODULATE = 0x2100, GL_DECAL = 0x2101, GL_ADD = 0x0104, GL_REPLACE = 0x1E01 };   /* (and GL_BLEND) */
+enum { GL_TEXTURE_MAG_FILTER = 0x2800, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T };
+enum { GL_NEAREST = 0x2600, GL_LINEAR, GL_NEAREST_MIPMAP_NEAREST = 0x2700, GL_LINEAR_MIPMAP_NEAREST,
+       GL_NEAREST_MIPMAP_LINEAR, GL_LINEAR_MIPMAP_LINEAR };
+enum { GL_CLAMP = 0x2900, GL_REPEAT, GL_CLAMP_TO_EDGE = 0x812F };
+enum { GL_UNSIGNED_BYTE = 0x1401 };
+enum { GL_ALPHA = 0x1906, GL_RGB, GL_RGBA, GL_LUMINANCE, GL_LUMINANCE_ALPHA, GL_INTENSITY = 0x8049,
+       GL_BGR = 0x80E0, GL_BGRA = 0x80E1 };
 #define GL_DEPTH_BUFFER_BIT 0x0100u
 #define GL_ACCUM_BUFFER_BIT 0x0200u
 #define GL_STENCIL_BUFFER_BIT 0x0400u
@@ -61,6 +80,9 @@ enum { GL_POINT_SMOOTH = 0x0B10, GL_LINE_SMOOTH = 0x0B20, GL_CULL_FACE = 0x0B44,
 #define GLF_PROJECTION_DEPTH 8
 #define GLF_TEXTURE_DEPTH 8
 #define GLF_TEXTURE_UNITS RASTER_UNITS
+#define GLF_MAX_TEXTURE_SIZE 1024
+#define GLF_TEXTURE_LEVELS 11                   /* (1024 down to 1) */
+_Static_assert(GLF_TEXTURE_LEVELS <= RASTER_MAX_LEVELS, "raster.h's levels");
 
 struct gl_matrices {
 	float m[GLF_MODELVIEW_DEPTH][16];       /* column-major, as OpenGL's; the top is m[depth - 1] */
@@ -76,7 +98,49 @@ struct gl_vertex {
 
 /* Indexes of the capabilities in gl_state.caps (glfront.c's table has their names, these first) */
 enum { GLF_CAP_DEPTH_TEST, GLF_CAP_CULL_FACE, GLF_CAP_BLEND, GLF_CAP_ALPHA_TEST, GLF_CAP_SCISSOR_TEST,
-       GLF_CAP_DITHER, GLF_CAPS = 80 };
+       GLF_CAP_DITHER, GLF_CAP_TEXTURE_1D, GLF_CAP_TEXTURE_2D, GLF_CAPS = 80 };
+
+/* A texture object (1D or 2D): its levels, its parameters */
+enum { GLF_1D, GLF_2D, GLF_TARGETS };
+struct gl_level {
+	int width, height;                      /* (0: not specified) */
+	uint32_t internal, base;                /* as given; its base format (GL_ALPHA ... GL_RGBA) */
+	uint32_t *texels;                       /* 0xAARRGGBB, row 0 at t = 0 (see gltex.c for each base format) */
+};
+struct gl_texture {
+	uint32_t name;
+	int target;                             /* GLF_1D or GLF_2D (-1: not bound yet) */
+	struct gl_level level[GLF_TEXTURE_LEVELS];
+	uint32_t min_filter, mag_filter, wrap_s, wrap_t;
+	float border[4], priority, min_lod, max_lod;
+	int base_level, max_level;
+	struct raster_texture *drawn;           /* what's drawn with (its texels are the levels'), or NULL */
+	unsigned serial;                        /* (changes when drawing with it would) */
+	struct gl_texture *next;                /* (in its namespace's chain) */
+};
+
+/* The texture objects contexts share (aglCreateContext's share context) */
+#define GLF_NAME_CHAINS 256
+struct gl_names {
+	unsigned users;
+	struct gl_texture *chain[GLF_NAME_CHAINS];
+	uint32_t next_name;                     /* glGenTextures' next */
+	struct raster_texture **retired;        /* to be freed when nothing recorded can use them */
+	unsigned nretired, retired_cap;
+};
+
+/* glPixelStore's, for unpacking (images from the program) or packing (to it) */
+struct gl_pixel_store {
+	int32_t row_length, skip_rows, skip_pixels, alignment;
+	bool swap_bytes, lsb_first;
+};
+
+/* A texture unit's */
+struct gl_unit {
+	struct gl_texture *bound[GLF_TARGETS];
+	uint32_t env_mode;
+	float env_color[4];                     /* r, g, b, a */
+};
 
 struct gl_state {
 	uint32_t error;                         /* the first since glGetError() */
@@ -95,12 +159,19 @@ struct gl_state {
 	float blend_color[4];                   /* r, g, b, a */
 	float alpha_ref;
 	float point_size, line_width;
+	/* textures */
+	struct gl_names *names;                 /* (the context's: see glf_attach()) */
+	struct gl_texture defaults[GLF_TARGETS];        /* texture 0 */
+	struct gl_unit units[GLF_TEXTURE_UNITS];
+	struct gl_pixel_store pack, unpack;
+	unsigned client_active_texture;
 	/* matrices */
 	uint32_t matrix_mode;
 	unsigned active_texture;
 	struct gl_matrices modelview, projection, texture[GLF_TEXTURE_UNITS];
 	float mvp[16];                          /* projection times modelview */
 	bool mvp_stale;
+	bool texmat_identity[GLF_TEXTURE_UNITS], texmat_stale;
 	/* current attributes */
 	float color[4], secondary_color[4], normal[3], tex[GLF_TEXTURE_UNITS][4], fog_coord;
 	bool edge_flag;
@@ -111,8 +182,10 @@ struct gl_state {
 	struct gl_vertex vb[3];                 /* (what the primitive so far needs) */
 	/* the raster state drawing takes, made again when the GL state changes */
 	struct raster_state raster;
-	bool raster_stale, draw_none;
+	bool raster_stale, draw_none, textured;
 	int raster_width, raster_height;
+	const struct gl_texture *raster_tex[GLF_TEXTURE_UNITS];        /* (the textures it has, and their serials) */
+	unsigned raster_serial[GLF_TEXTURE_UNITS];
 	unsigned long primitives;               /* triangles, lines and points handed to the backend */
 };
 
@@ -125,6 +198,22 @@ struct gl_target {
 
 /* OpenGL's initial state; the viewport and scissor box are set when there's a drawable (glf_viewport()) */
 void glf_init(struct gl_state *st);
+
+/*
+ * A context's texture objects: a namespace of its own (share NULL), or the
+ * share context's; false if there's no memory. glf_detach() lets go of
+ * them (and the context's own default textures): the namespace is freed
+ * with the last context, which mustn't have drawing recorded. gpu: what
+ * drew them, if anything.
+ */
+bool glf_attach(struct gl_state *st, struct gl_state *share);
+void glf_detach(struct gl_state *st, struct gpu *gpu);
+
+/* aglCopyContext: the state, but not the textures (bindings to the defaults are to the destination's own) */
+void glf_copy(struct gl_state *to, const struct gl_state *from);
+
+/* Frees the backend textures retired (when nothing recorded anywhere can use them) */
+void glf_free_retired(struct gl_names *n, struct gpu *gpu);
 
 /* An error, as glGetError() gives the first */
 void glf_error(struct gl_state *st, uint32_t e);
@@ -185,5 +274,59 @@ void glf_clear(struct gl_state *st, const struct gl_target *t, uint32_t mask);
 
 /* A state's values (glGetDoublev's: up to 16); 0 for what the front end doesn't keep */
 unsigned glf_get(struct gl_state *st, uint32_t pname, double *v);
+
+/* ---- textures (gltex.c) ---- */
+
+/* (glf_init()'s part: the default textures, units, pixel stores) */
+void glf_textures_init(struct gl_state *st);
+
+/* glGenTextures' names (n of them, into out); glDeleteTextures; glIsTexture; glBindTexture */
+void glf_gen_textures(struct gl_state *st, int32_t n, uint32_t *out);
+void glf_delete_texture(struct gl_state *st, uint32_t name);
+bool glf_is_texture(struct gl_state *st, uint32_t name);
+const struct gl_texture *glf_texture(struct gl_state *st, uint32_t name);      /* (NULL: none of that name) */
+void glf_bind_texture(struct gl_state *st, uint32_t target, uint32_t name);
+/* A texture deleted (in another context of the namespace): bindings to it go back to the defaults */
+void glf_unbind(struct gl_state *st, const struct gl_texture *t);
+
+/* glPixelStore (false: not a parameter of it) */
+void glf_pixel_store(struct gl_state *st, uint32_t pname, int32_t v);
+
+/*
+ * The bytes of the program's memory an image (or a part, for glReadPixels)
+ * of this size, format and type takes as packed or unpacked by `ps`; 0 if
+ * the format or type isn't one OpenGL takes (or they don't go together)
+ */
+size_t glf_image_bytes(const struct gl_pixel_store *ps, uint32_t format, uint32_t type, int32_t w, int32_t h);
+
+/*
+ * glTexImage1D and 2D (h 1 for 1D) and glTexSubImage: the image from
+ * `pixels` (the program's memory, big-endian, glf_image_bytes() of it; NULL:
+ * none, for glTexImage)
+ */
+void glf_tex_image(struct gl_state *st, uint32_t target, int32_t level, int32_t internal, int32_t w, int32_t h,
+		   int32_t border, uint32_t format, uint32_t type, const uint8_t *pixels);
+void glf_tex_sub_image(struct gl_state *st, uint32_t target, int32_t level, int32_t x, int32_t y, int32_t w,
+		       int32_t h, uint32_t format, uint32_t type, const uint8_t *pixels);
+
+/* glTexParameter (values: as many as pname takes) and glTexEnv; glGetTexParameter, glGetTexEnv, glGetTexLevelParameter */
+void glf_tex_parameter(struct gl_state *st, uint32_t target, uint32_t pname, const float *v);
+void glf_tex_env(struct gl_state *st, uint32_t target, uint32_t pname, const float *v);
+unsigned glf_get_tex_parameter(struct gl_state *st, uint32_t target, uint32_t pname, double *v);
+unsigned glf_get_tex_env(struct gl_state *st, uint32_t target, uint32_t pname, double *v);
+unsigned glf_get_tex_level_parameter(struct gl_state *st, uint32_t target, int32_t level, uint32_t pname, double *v);
+
+/*
+ * glReadPixels: [x, x + w) x [y, y + h) (OpenGL's: from the bottom) of the
+ * target's pixels (finished) into `out` (the program's memory)
+ */
+void glf_read_pixels(struct gl_state *st, const struct gl_target *t, int32_t x, int32_t y, int32_t w, int32_t h,
+		     uint32_t format, uint32_t type, uint8_t *out);
+
+/*
+ * For drawing: a unit's texture, if it's enabled and complete (its
+ * raster_texture made if need be), else NULL
+ */
+struct gl_texture *glf_unit_texture(struct gl_state *st, unsigned unit, struct raster_texture **drawn);
 
 #endif
