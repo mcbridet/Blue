@@ -197,6 +197,80 @@ static void test_exports(void)
 	CHECK_EQ(be16(relocs), 0x4601);                         /* just the two TVectors */
 }
 
+/*
+ * Many exports, found as the Code Fragment Manager finds them: by the hash
+ * table's chain for each (PEFBinaryFormat.h's PEFHashTableIndex, checked
+ * against Apple's OpenGLLibrary). And code of the fragment's own for some
+ * entries, data exports, zero-filled data, termination, versions.
+ */
+static void test_many_exports(void)
+{
+	enum { ENTRIES = 300 };
+	static char names[ENTRIES][16];
+	static struct ndrv_export exports[ENTRIES + 1];
+	static uint32_t entry_code[ENTRIES];
+	for (unsigned k = 0; k < ENTRIES; k++) {
+		snprintf(names[k], sizeof names[k], "glFunction%u", k);
+		exports[k] = (struct ndrv_export){ .name = names[k], .entry = k };
+		entry_code[k] = NDRV_STUB;
+	}
+	exports[ENTRIES] = (struct ndrv_export){ .name = "glc_cc", .data = true, .offset = 8 };
+	const uint32_t code[3] = { 0x60000000u, 0x4E800020u, 0x4E800020u };    /* nop ; blr ; blr */
+	entry_code[7] = ndrv_code_offset(ENTRIES);
+	entry_code[9] = ndrv_code_offset(ENTRIES) + 8;
+	static const uint8_t extra[8] = { 's', 'y', 'G', 'L' };
+	struct ndrv_spec spec = { .kind = FRAG_LIBRARY, .entries = ENTRIES, .init_entry = 0, .term_entry = 1,
+				  .hostcall = 5, .exports = exports, .export_count = ENTRIES + 1, .code = code,
+				  .code_words = 3, .entry_code = entry_code, .current_version = 1, .extra = extra,
+				  .extra_len = sizeof extra, .zero_len = 0x10000 };
+	static uint8_t buf[64 << 10];
+	struct ndrv_layout l;
+	size_t n = ndrv_build(&spec, buf, sizeof buf, &l);
+	CHECK(n > 0);
+	if (!n)
+		return;
+	CHECK_EQ(be32(buf + 20), 0);                            /* oldest compatible definition */
+	CHECK_EQ(be32(buf + 28), 1);                            /* current version */
+	const uint8_t *data_hdr = buf + 40 + 28;
+	CHECK_EQ(be32(data_hdr + 8), be32(data_hdr + 12) + 0x10000);   /* zero-filled after the initialized */
+	CHECK_EQ(be32(data_hdr + 12), l.extra + sizeof extra);
+	const uint8_t *code_sec = buf + be32(buf + 40 + 20), *data = buf + be32(data_hdr + 20);
+	CHECK_EQ(be32(code_sec + ndrv_code_offset(ENTRIES) + 4), 0x4E800020u);
+	CHECK_EQ(be32(data + l.entry[7]), ndrv_code_offset(ENTRIES));   /* its own code */
+	CHECK_EQ(be32(data + l.entry[9]), ndrv_code_offset(ENTRIES) + 8);
+	CHECK_EQ(be32(data + l.entry[8]), 8 * 8);                       /* its stub */
+	CHECK_EQ(be32(code_sec + 8 * 8), 0x39600008u);
+	CHECK_EQ(be32(code_sec + 8 * 8 + 4) & 0xFC000003u, 0x48000000u); /* ... b common */
+	CHECK_EQ(8 * 8 + 4 + (be32(code_sec + 8 * 8 + 4) & 0x03FFFFFCu), 8 * ENTRIES);
+
+	const uint8_t *ld = buf + be32(buf + 40 + 56 + 20);
+	CHECK_EQ(be32(ld + 16), 1);                             /* term: entry 1's TVector */
+	CHECK_EQ(be32(ld + 20), l.entry[1]);
+	unsigned power = be32(ld + 48), nexports = be32(ld + 52);
+	CHECK_EQ(nexports, ENTRIES + 1);
+	CHECK_EQ(power, 4);                                     /* (chains of about 10) */
+	const uint8_t *strings = ld + be32(ld + 40), *hash = ld + be32(ld + 44);
+	const uint8_t *keys = hash + 4 * (1u << power), *syms = keys + 4 * nexports;
+	unsigned found = 0;
+	for (unsigned k = 0; k <= ENTRIES; k++) {
+		const char *name = exports[k].name;
+		uint32_t key = pef_hash_word(name, strlen(name));
+		uint32_t chain = be32(hash + 4 * ((key ^ key >> power) & ((1u << power) - 1)));
+		for (uint32_t j = chain & 0x3FFFF; j < (chain & 0x3FFFF) + (chain >> 18); j++) {
+			const uint8_t *sym = syms + 10 * j;
+			if (be32(keys + 4 * j) != key || memcmp(strings + (be32(sym) & 0xFFFFFF), name, strlen(name)))
+				continue;
+			found++;
+			CHECK_EQ(sym[0], k == ENTRIES ? 1 : 2);         /* data, or a TVector */
+			CHECK_EQ(be32(sym + 4), k == ENTRIES ? l.extra + 8 : l.entry[k]);
+		}
+	}
+	CHECK_EQ(found, ENTRIES + 1);
+
+	entry_code[9] = ndrv_code_offset(ENTRIES) + 12;         /* (past its code) */
+	CHECK_EQ(ndrv_build(&spec, buf, sizeof buf, &l), 0);
+}
+
 static void test_volume(void)
 {
 	char path[256];
@@ -578,6 +652,7 @@ void test_tools(void)
 	test_hfs_files();
 	test_fragments();
 	test_exports();
+	test_many_exports();
 	test_volume();
 	if (mem_init(&mem)) {
 		CHECK(!"mem_init");

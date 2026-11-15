@@ -1,9 +1,11 @@
 #include "ndrv.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "be.h"
 #include "ppc.h"
+#include "ppc_fp.h"
 
 /* PEF section kinds and sharing */
 #define SEC_CODE 0
@@ -25,7 +27,6 @@
 #define LOADER_HEADER_SIZE 56u
 #define DESCRIPTION_SIZE 0x80u
 #define FRAME_SIZE NDRV_FRAME_SIZE
-#define MAX_EXPORTS 64u
 
 uint32_t pef_hash_word(const char *name, size_t len)
 {
@@ -33,6 +34,37 @@ uint32_t pef_hash_word(const char *name, size_t len)
 	for (size_t k = 0; k < len; k++)
 		h = (int32_t)(((uint32_t)h << 1) - (uint32_t)(h >> 16)) ^ (uint8_t)name[k];
 	return (uint32_t)len << 16 | (uint16_t)(h ^ (h >> 16));
+}
+
+uint32_t ndrv_arg(const struct ndrv_call *c, unsigned k)
+{
+	if (k < 8)
+		return c->arg[k];
+	uint32_t at = c->frame + NDRV_FRAME_SIZE + 24 + 4 * k;
+	return mem_ok(c->mem, at, 4, MEM_R) ? mem_r32(c->mem, at) : 0;
+}
+
+uint32_t ndrv_next_word(struct ndrv_args *a)
+{
+	return ndrv_arg(a->c, a->word++);
+}
+
+uint32_t ndrv_next_float(struct ndrv_args *a)
+{
+	if (a->fpr >= 13)
+		return ndrv_next_word(a);
+	a->word++;
+	return ppc_fp_double_to_single(a->c->f[a->fpr++]);
+}
+
+uint64_t ndrv_next_double(struct ndrv_args *a)
+{
+	if (a->fpr >= 13) {
+		uint64_t hi = ndrv_next_word(a);
+		return hi << 32 | ndrv_next_word(a);
+	}
+	a->word += 2;
+	return a->c->f[a->fpr++];
 }
 
 static size_t align(size_t v, size_t a)
@@ -49,11 +81,12 @@ static void put_pstring(uint8_t *p, const char *s, size_t max)
 	memcpy(p + 1, s, n);
 }
 
-static void section_header(uint8_t *h, uint32_t size, uint32_t offset, uint8_t kind, uint8_t align_pow)
+static void section_header(uint8_t *h, uint32_t size, uint32_t total, uint32_t offset, uint8_t kind,
+			   uint8_t align_pow)
 {
 	put_be32(h + 0, 0xFFFFFFFFu);           /* no name */
 	put_be32(h + 4, 0);                     /* default address */
-	put_be32(h + 8, kind == SEC_LOADER ? 0 : size);
+	put_be32(h + 8, kind == SEC_LOADER ? 0 : total);
 	put_be32(h + 12, kind == SEC_LOADER ? 0 : size);
 	put_be32(h + 16, size);
 	put_be32(h + 20, offset);
@@ -63,8 +96,8 @@ static void section_header(uint8_t *h, uint32_t size, uint32_t offset, uint8_t k
 	h[27] = 0;
 }
 
-/* Entry k at 8 * k: li r11,k ; b common. Returns the code size; writes it if `p`. */
-static size_t make_code(uint8_t *p, uint32_t hostcall, unsigned entries)
+/* Entry k at 8 * k: li r11,k ; b common; then the fragment's own code. Returns the code size; writes it if `p`. */
+static size_t make_code(uint8_t *p, uint32_t hostcall, unsigned entries, const uint32_t *code, size_t code_words)
 {
 	const uint32_t common[] = {
 		0x7C0802A6u,                    /* common:  mflr r0 */
@@ -86,15 +119,42 @@ static size_t make_code(uint8_t *p, uint32_t hostcall, unsigned entries)
 		0x4E800020u,                    /*          blr */
 	};
 	const size_t ncommon = sizeof common / sizeof common[0];
+	_Static_assert(sizeof common == NDRV_COMMON_SIZE, "ndrv.h's NDRV_COMMON_SIZE");
 	if (p) {
 		for (unsigned k = 0; k < entries; k++) {
 			put_be32(p + 8 * k, 0x39600000u | k);
-			put_be32(p + 8 * k + 4, 0x48000000u | (8 * (entries - k) - 4));
+			put_be32(p + 8 * k + 4, 0x48000000u | ((8 * (entries - k) - 4) & 0x03FFFFFCu));
 		}
 		for (size_t k = 0; k < ncommon; k++)
 			put_be32(p + 8 * entries + 4 * k, common[k]);
+		for (size_t k = 0; k < code_words; k++)
+			put_be32(p + ndrv_code_offset(entries) + 4 * k, code[k]);
 	}
-	return 8 * entries + 4 * ncommon;
+	return ndrv_code_offset(entries) + 4 * code_words;
+}
+
+/* An export, and its chain in the hash table */
+struct export {
+	const char *name;
+	uint8_t sym_class;
+	uint32_t value;
+	uint32_t key;                           /* hash word */
+	unsigned slot;
+};
+
+static int by_slot(const void *a, const void *b)
+{
+	const struct export *p = a, *q = b;
+	return p->slot != q->slot ? (p->slot < q->slot ? -1 : 1) : 0;
+}
+
+/* As PEF linkers size it: chains of about 10 (PEFBinaryFormat.h's kExponentLimit and kAverageChainLimit) */
+static unsigned hash_power(unsigned exports)
+{
+	unsigned p = 16;
+	while (p > 0 && exports / (1u << p) < 10)
+		p--;
+	return p;
 }
 
 size_t ndrv_build(const struct ndrv_spec *spec, uint8_t *out, size_t size, struct ndrv_layout *layout)
@@ -103,20 +163,13 @@ size_t ndrv_build(const struct ndrv_spec *spec, uint8_t *out, size_t size, struc
 	const bool driver = spec->kind == FRAG_DRIVER;
 	const unsigned nexports = driver ? 2 : spec->kind == FRAG_LIBRARY ? spec->export_count : 0;
 
-	if ((driver && nimp == 0) || nimp > NDRV_MAX_IMPORTS || entries > NDRV_MAX_ENTRIES || nexports > MAX_EXPORTS)
+	if ((driver && nimp == 0) || nimp > NDRV_MAX_IMPORTS || entries > NDRV_MAX_ENTRIES ||
+	    nexports > NDRV_MAX_ENTRIES * 2 || entries > 0x7FFF)
 		return 0;
-	const char *export_name[MAX_EXPORTS];
-	uint8_t sym_class[MAX_EXPORTS];
-	uint32_t sym_value[MAX_EXPORTS];        /* (the description's offset is filled in below) */
-	for (unsigned k = 0; k < nexports; k++) {
-		bool data = !driver && spec->exports[k].data;
-		unsigned entry = driver || data ? 0 : spec->exports[k].entry;
-		if (entry >= entries || (data && spec->exports[k].offset >= spec->extra_len))
+	const size_t code_size = make_code(NULL, 0, entries, NULL, spec->code_words);
+	for (unsigned k = 0; spec->entry_code && k < entries; k++)
+		if (spec->entry_code[k] != NDRV_STUB && (spec->entry_code[k] >= code_size || spec->entry_code[k] % 4))
 			return 0;
-		export_name[k] = driver ? (k ? "TheDriverDescription" : "DoDriverIO") : spec->exports[k].name;
-		sym_class[k] = (driver && k) || data ? SYM_DATA : SYM_TVECTOR;
-		sym_value[k] = entry;
-	}
 
 	/* Libraries: runs of imports with the same library name */
 	const char *lib_name[NDRV_MAX_IMPORTS];
@@ -142,6 +195,41 @@ size_t ndrv_build(const struct ndrv_spec *spec, uint8_t *out, size_t size, struc
 	const uint32_t description = tvectors + 8 * entries;
 	layout->extra = description + (driver ? DESCRIPTION_SIZE : 0);
 
+	/* Exports, sorted into the hash table's chains */
+	struct export *exp = calloc(nexports ? nexports : 1, sizeof *exp);
+	if (!exp)
+		return 0;
+	const unsigned power = hash_power(nexports);
+	for (unsigned k = 0; k < nexports; k++) {
+		struct export *e = &exp[k];
+		bool data = driver ? k == 1 : spec->exports[k].data;
+		e->name = driver ? (k ? "TheDriverDescription" : "DoDriverIO") : spec->exports[k].name;
+		e->sym_class = data ? SYM_DATA : SYM_TVECTOR;
+		if (driver) {
+			e->value = k ? description : layout->entry[0];
+		} else if (data) {
+			if (spec->exports[k].offset >= spec->extra_len + spec->zero_len) {
+				free(exp);
+				return 0;
+			}
+			e->value = layout->extra + spec->exports[k].offset;
+		} else {
+			if (spec->exports[k].entry >= entries) {
+				free(exp);
+				return 0;
+			}
+			e->value = layout->entry[spec->exports[k].entry];
+		}
+		e->key = pef_hash_word(e->name, strlen(e->name));
+		e->slot = (e->key ^ e->key >> power) & ((1u << power) - 1);
+	}
+	/* (a stable sort: qsort isn't, so the original order breaks ties) */
+	for (unsigned k = 0; k < nexports; k++)
+		exp[k].slot = exp[k].slot << 16 | k;
+	qsort(exp, nexports, sizeof *exp, by_slot);
+	for (unsigned k = 0; k < nexports; k++)
+		exp[k].slot >>= 16;
+
 	uint16_t relocs[4];
 	size_t nrelocs = 0;
 	if (nimp)
@@ -151,7 +239,6 @@ size_t ndrv_build(const struct ndrv_spec *spec, uint8_t *out, size_t size, struc
 	relocs[nrelocs++] = (uint16_t)RELOC_TVECTOR8(entries);
 
 	const size_t code_off = align(HEADER_SIZE + 3 * SECTION_HEADER_SIZE, 16);
-	const size_t code_size = make_code(NULL, 0, entries);
 	const size_t data_off = align(code_off + code_size, 16);
 	const size_t data_size = layout->extra + spec->extra_len;
 	const size_t loader_off = align(data_off + data_size, 16);
@@ -168,33 +255,39 @@ size_t ndrv_build(const struct ndrv_spec *spec, uint8_t *out, size_t size, struc
 	for (unsigned k = 0; k < nimp; k++)
 		strings_size += strlen(spec->imports[k].name) + 1;
 	for (unsigned k = 0; k < nexports; k++)
-		strings_size += strlen(export_name[k]);
+		strings_size += strlen(exp[k].name);
 	const size_t hash_tab = align(strings + strings_size, 4);
-	const size_t key_tab = hash_tab + 4;
+	const size_t key_tab = hash_tab + 4 * ((size_t)1 << power);
 	const size_t sym_tab = key_tab + nexports * 4;
 	const size_t loader_size = sym_tab + nexports * 10;
 	const size_t total = loader_off + loader_size;
 
-	if (total > size)
+	if (total > size || code_size > 0x7FFFFFF0u) {
+		free(exp);
 		return 0;
+	}
 	memset(out, 0, total);
 
 	/* Container header */
 	memcpy(out, "Joy!peffpwpc", 12);
 	put_be32(out + 12, 1);                  /* format version */
+	put_be32(out + 20, spec->old_def_version);
+	put_be32(out + 28, spec->current_version);
 	put_be16(out + 32, 3);                  /* sections */
 	put_be16(out + 34, 2);                  /* instantiated sections */
-	section_header(out + HEADER_SIZE, (uint32_t)code_size, (uint32_t)code_off, SEC_CODE, 2);
-	section_header(out + HEADER_SIZE + SECTION_HEADER_SIZE, (uint32_t)data_size, (uint32_t)data_off, SEC_DATA, 3);
-	section_header(out + HEADER_SIZE + 2 * SECTION_HEADER_SIZE, (uint32_t)loader_size, (uint32_t)loader_off,
+	section_header(out + HEADER_SIZE, (uint32_t)code_size, (uint32_t)code_size, (uint32_t)code_off, SEC_CODE, 2);
+	section_header(out + HEADER_SIZE + SECTION_HEADER_SIZE, (uint32_t)data_size,
+		       (uint32_t)data_size + spec->zero_len, (uint32_t)data_off, SEC_DATA, 3);
+	section_header(out + HEADER_SIZE + 2 * SECTION_HEADER_SIZE, (uint32_t)loader_size, 0, (uint32_t)loader_off,
 		       SEC_LOADER, 0);
 
-	make_code(out + code_off, spec->hostcall, entries);
+	make_code(out + code_off, spec->hostcall, entries, spec->code, spec->code_words);
 
 	/* Data: entry TVectors (code offsets; relocated), description, driver data */
 	uint8_t *data = out + data_off;
 	for (unsigned k = 0; k < entries; k++)
-		put_be32(data + layout->entry[k], 8 * k);
+		put_be32(data + layout->entry[k], spec->entry_code && spec->entry_code[k] != NDRV_STUB ?
+						   spec->entry_code[k] : 8 * k);
 	if (driver) {
 		uint8_t *d = data + description;
 		memcpy(d, "mtej", 4);
@@ -219,9 +312,15 @@ size_t ndrv_build(const struct ndrv_spec *spec, uint8_t *out, size_t size, struc
 	if (spec->kind == FRAG_APPLICATION) {   /* main: entry 0 */
 		put_be32(l + 0, 1);
 		put_be32(l + 4, layout->entry[0]);
-	} else if (spec->kind == FRAG_LIBRARY && spec->init_entry >= 0 && (unsigned)spec->init_entry < entries) {
-		put_be32(l + 8, 1);
-		put_be32(l + 12, layout->entry[spec->init_entry]);
+	} else if (spec->kind == FRAG_LIBRARY) {
+		if (spec->init_entry >= 0 && (unsigned)spec->init_entry < entries) {
+			put_be32(l + 8, 1);
+			put_be32(l + 12, layout->entry[spec->init_entry]);
+		}
+		if (spec->term_entry && spec->term_entry < entries) {
+			put_be32(l + 16, 1);
+			put_be32(l + 20, layout->entry[spec->term_entry]);
+		}
 	}
 	put_be32(l + 24, nlibs);
 	put_be32(l + 28, nimp);
@@ -229,7 +328,7 @@ size_t ndrv_build(const struct ndrv_spec *spec, uint8_t *out, size_t size, struc
 	put_be32(l + 36, (uint32_t)reloc_instr);
 	put_be32(l + 40, (uint32_t)strings);
 	put_be32(l + 44, (uint32_t)hash_tab);
-	put_be32(l + 48, 0);                    /* hash table power: one chain */
+	put_be32(l + 48, power);
 	put_be32(l + 52, nexports);
 
 	size_t s = 0;
@@ -254,20 +353,24 @@ size_t ndrv_build(const struct ndrv_spec *spec, uint8_t *out, size_t size, struc
 	for (size_t k = 0; k < nrelocs; k++)
 		put_be16(l + reloc_instr + 2 * k, relocs[k]);
 
-	put_be32(l + hash_tab, nexports << 18 | 0);     /* chain 0: the exports, from index 0 */
-	for (unsigned k = 0; k < nexports; k++)
-		sym_value[k] = driver && k ? description :
-			       !driver && spec->exports[k].data ? layout->extra + spec->exports[k].offset :
-			       layout->entry[sym_value[k]];
+	/* the hash table: each chain's count and first export; the exports in chain order */
+	for (unsigned k = 0, first = 0; k < 1u << power; k++) {
+		unsigned n = 0;
+		while (first + n < nexports && exp[first + n].slot == k)
+			n++;
+		put_be32(l + hash_tab + 4 * k, n << 18 | first);
+		first += n;
+	}
 	for (unsigned k = 0; k < nexports; k++) {
-		size_t n = strlen(export_name[k]);
-		memcpy(str + s, export_name[k], n);
-		put_be32(l + key_tab + 4 * k, pef_hash_word(export_name[k], n));
+		size_t n = strlen(exp[k].name);
+		memcpy(str + s, exp[k].name, n);
+		put_be32(l + key_tab + 4 * k, exp[k].key);
 		uint8_t *e = l + sym_tab + 10 * k;
-		put_be32(e, (uint32_t)sym_class[k] << 24 | (uint32_t)s);
-		put_be32(e + 4, sym_value[k]);
+		put_be32(e, (uint32_t)exp[k].sym_class << 24 | (uint32_t)s);
+		put_be32(e + 4, exp[k].value);
 		put_be16(e + 8, 1);
 		s += n;
 	}
+	free(exp);
 	return total;
 }

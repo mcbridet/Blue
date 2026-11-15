@@ -16,10 +16,13 @@
  * (NDRV_FRAME_STATE words at r1 + NDRV_FRAME_STATE_OFFSET).
  *
  * Data section (r2 points at its start): import TVector pointers, the entry
- * TVectors, TheDriverDescription (drivers), then fragment-specific data.
- * Drivers export DoDriverIO (entry 0) and TheDriverDescription;
- * applications have entry 0 as their main routine; shared libraries may
- * have an initialization routine and export entries by name.
+ * TVectors, TheDriverDescription (drivers), then fragment-specific data,
+ * then zero-filled data. Drivers export DoDriverIO (entry 0) and
+ * TheDriverDescription; applications have entry 0 as their main routine;
+ * shared libraries may have initialization and termination routines, export
+ * entries and data by name, and have code of their own for some entries
+ * (after the common code; see ndrv_code_offset()), which can branch to any
+ * entry's stub, as above, to make the host call.
  */
 #ifndef SYSHM_NDRV_H
 #define SYSHM_NDRV_H
@@ -45,12 +48,21 @@ enum {
 #define NDRV_UNDER_EXPERT_CONTROL 0x04u
 
 #define NDRV_MAX_IMPORTS 48
-#define NDRV_MAX_ENTRIES 64
+#define NDRV_MAX_ENTRIES 1024
 #define NDRV_ENTRIES 2                  /* drivers: 0: DoDriverIO, 1: a secondary interrupt handler */
 #define NDRV_ENTRY_RESUME 0xFFFFFFFFu   /* r11 after a callout */
 #define NDRV_FRAME_SIZE 80u             /* the stub's stack frame */
 #define NDRV_FRAME_STATE_OFFSET 56u     /* after the linkage and parameter areas */
 #define NDRV_FRAME_STATE 6u
+#define NDRV_STUB_SIZE 8u               /* each entry's li r11,k ; b common, at NDRV_STUB_SIZE * k */
+#define NDRV_COMMON_SIZE 68u            /* the common code, after them */
+#define NDRV_STUB 0xFFFFFFFFu           /* (entry_code: the entry's stub) */
+
+/* Where a fragment's own code (ndrv_spec.code) starts in its code section */
+static inline uint32_t ndrv_code_offset(unsigned entries)
+{
+	return NDRV_STUB_SIZE * entries + NDRV_COMMON_SIZE;
+}
 
 struct ndrv_import {
 	const char *library, *name;     /* consecutive imports must group by library */
@@ -76,14 +88,21 @@ struct ndrv_spec {
 	uint32_t version;               /* NumVersion */
 	/* shared libraries */
 	int init_entry;                 /* the initialization routine, or -1 */
+	unsigned term_entry;            /* the termination routine, or 0 for none (entry 0 can't be it) */
 	const struct ndrv_export *exports;
 	unsigned export_count;
+	const uint32_t *code;           /* code of its own, at ndrv_code_offset(entries) */
+	size_t code_words;
+	const uint32_t *entry_code;     /* where each entry's TVector points: a byte offset in the code section */
+					/* (NDRV_STUB, or no entry_code: the entry's stub) */
+	uint32_t current_version, old_def_version;     /* (in the container's header: see tools.c's cfrg) */
 	/* all */
 	uint32_t hostcall;              /* selector the code traps with */
 	const struct ndrv_import *imports;
 	unsigned import_count;
 	const uint8_t *extra;           /* driver data, copied after the description */
 	size_t extra_len;
+	uint32_t zero_len;              /* zero-filled data after it */
 };
 
 /* Offsets within the data section (i.e. from r2) */
@@ -93,7 +112,10 @@ struct ndrv_layout {
 	uint32_t extra;
 };
 
-/* Returns the container size, or 0 if `size` is too small or the spec is invalid. */
+/*
+ * Returns the container size, or 0 if `size` is too small or the spec is
+ * invalid. Exports are found through a hash table as PEF linkers make them.
+ */
 size_t ndrv_build(const struct ndrv_spec *spec, uint8_t *out, size_t size, struct ndrv_layout *layout);
 
 /* PEF export hash word for a symbol name. */
@@ -110,7 +132,7 @@ struct ndrv_call {
 	uint32_t arg[8];
 	uint32_t toc, frame;
 	uint64_t tb;                    /* current timebase (AbsoluteTime on PowerPC) */
-	uint64_t f1;                    /* f1 (a first floating-point argument) */
+	uint64_t f[13];                 /* f1 to f13 (floating-point arguments: see ndrv_args) */
 	bool done;
 	uint32_t result;
 	bool set_f1;                    /* ... and a floating-point result in f1 */
@@ -146,6 +168,32 @@ static inline void ndrv_set_state(struct ndrv_call *c, unsigned k, uint32_t v)
 {
 	mem_w32(c->mem, c->frame + NDRV_FRAME_STATE_OFFSET + 4 * k, v);
 }
+
+/*
+ * A call's arguments in order, where the PowerPC calling convention puts
+ * them: integers and pointers in the next word (r3 to r10, then the
+ * caller's parameter area, 24 bytes into its frame), floating-point values
+ * in the next of f1 to f13, each skipping a word (a double, two), or in its
+ * words once f13 is taken. So glBitmap(w, h, xorig, yorig, xmove, ymove,
+ * bitmap) has bitmap in r9, and glTexImage2D's ninth argument is in the
+ * parameter area.
+ */
+struct ndrv_args {
+	const struct ndrv_call *c;
+	unsigned word, fpr;
+};
+
+static inline struct ndrv_args ndrv_args(const struct ndrv_call *c)
+{
+	return (struct ndrv_args){ c, 0, 0 };
+}
+
+/* Word k of the arguments (0 if the parameter area can't be read) */
+uint32_t ndrv_arg(const struct ndrv_call *c, unsigned k);
+
+uint32_t ndrv_next_word(struct ndrv_args *a);
+uint32_t ndrv_next_float(struct ndrv_args *a);  /* (its bits, as stfs stores the register) */
+uint64_t ndrv_next_double(struct ndrv_args *a); /* (its bits) */
 
 /* Where the call came from (the return address the stub saved in its caller's frame) */
 static inline uint32_t ndrv_caller(const struct ndrv_call *c)

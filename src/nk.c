@@ -2944,9 +2944,9 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		.toc = cpu->gpr[2],
 		.frame = cpu->gpr[1],
 		.tb = cpu->tb,
-		.f1 = cpu->fpr[1],
 	};
 	memcpy(c.arg, &cpu->gpr[3], sizeof c.arg);
+	memcpy(c.f, &cpu->fpr[1], sizeof c.f);
 	if (!mem_ok(&m->mem, c.frame, 80, MEM_RW))
 		return "driver stack frame not in writable memory";
 

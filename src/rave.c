@@ -1252,7 +1252,7 @@ static void draw_call(struct rave *r, struct ndrv_call *c, unsigned method)
 	case DM_SET_FLOAT: {
 		/* (the float argument arrives in f1, as a double) */
 		double d;
-		memcpy(&d, &c->f1, sizeof d);
+		memcpy(&d, &c->f[0], sizeof d);
 		if (a[1] < RAVE_TAGS)
 			x->floats[a[1]] = (float)d;
 		break;
@@ -1435,7 +1435,7 @@ void rave_call(struct rave *r, struct ndrv_call *c)
 	}
 	if (r->log && c->entry == E_DRAW + DM_SET_FLOAT) {
 		double d;
-		memcpy(&d, &c->f1, sizeof d);
+		memcpy(&d, &c->f[0], sizeof d);
 		printf("rave: setFloat(%08x %u %g) from %08x\n", c->arg[0], c->arg[1], d, ndrv_caller(c));
 	} else if (r->log && !(c->entry >= E_DRAW && c->entry - E_DRAW >= DM_DRAW_POINT &&
 			c->entry - E_DRAW <= DM_TRI_MESH_TEXTURE && c->entry - E_DRAW != DM_RENDER_START &&

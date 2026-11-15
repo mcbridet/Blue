@@ -742,6 +742,56 @@ static bool switch_kcall(struct ppc_cpu *c, unsigned n)
 	return true;
 }
 
+/*
+ * A host call with floating-point arguments, by both engines: f1 to f13
+ * are in the processor's registers at the exit (the JIT keeps some in host
+ * registers, written back at exits), as the guest computed them.
+ */
+static void test_hostcall_fprs(void)
+{
+	uint32_t prog[CODE_MAX];
+	unsigned n = 0;
+	for (unsigned k = 1; k <= 13; k++)
+		prog[n++] = LFD(k, (int)(8 * k), 3);
+	prog[n++] = FADD(13, 12, 1);            /* (computed in the block) */
+	prog[n++] = FMUL(2, 2, 3);
+	prog[n++] = HOSTCALL(0x123);
+	static struct side s;
+	uint64_t want[14];
+	for (int jit = 0; jit < 2; jit++) {
+		setup(&s, jit);
+		if (jit && !s.cpu.jit) {
+			mem_free(&s.mem);
+			return;
+		}
+		mem_invalidate(&s.mem, CODE, 4 * n);
+		for (unsigned k = 0; k < n; k++)
+			mem_w32(&s.mem, CODE + 4 * k, prog[k]);
+		for (unsigned k = 1; k <= 13; k++) {
+			double d = 1.5 * k - 0.25;
+			uint64_t b;
+			memcpy(&b, &d, 8);
+			mem_w64(&s.mem, DATA + 8 * k, b);
+		}
+		for (int run = 0; run < 3; run++) {     /* (translated, then through the translation) */
+			s.cpu.pc = CODE;
+			s.cpu.gpr[3] = DATA;
+			memset(s.cpu.fpr, 0, sizeof s.cpu.fpr);
+			CHECK_EQ(ppc_run(&s.cpu, 1000), PPC_EXIT_HOSTCALL);
+			CHECK_EQ(s.cpu.pc, CODE + 4 * (n - 1));
+			if (!jit && !run)
+				memcpy(want, s.cpu.fpr, sizeof want);
+			CHECK(!memcmp(s.cpu.fpr, want, sizeof want));
+		}
+		jit_free(s.cpu.jit);
+		mem_free(&s.mem);
+	}
+	double f13, f2;
+	memcpy(&f13, &want[13], 8);
+	memcpy(&f2, &want[2], 8);
+	CHECK(f13 == 1.5 * 12 - 0.25 + 1.25 && f2 == 2.75 * 4.25);
+}
+
 /* Kernel calls made in place by both engines: there and back; declined; out of time; never */
 static void test_kcalls(void)
 {
@@ -814,6 +864,7 @@ void test_jit(void)
 	unsigned programs = n ? (unsigned)strtoul(n, NULL, 0) : 3000;
 	test_quick_sc();
 	test_kcalls();
+	test_hostcall_fprs();
 	test_random_programs(programs, false);
 	test_random_programs(programs / 2 + 1, true);
 	setenv("SYSHM_JIT_FAR", "1", 1);        /* again, with the code far from the JIT's stubs */

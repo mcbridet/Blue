@@ -3,6 +3,7 @@
 #include "../src/adb.h"
 #include "../src/be.h"
 #include "../src/devtree.h"
+#include "../src/mem.h"
 #include "../src/ndrv.h"
 #include "test.h"
 
@@ -156,10 +157,61 @@ static void test_adb_bus(void)
 	CHECK_EQ(adb_command(&b, 0x3C, NULL, 0, r), -1);
 }
 
+/*
+ * A host call's arguments where the calling convention puts them: words in
+ * r3 to r10 and then the caller's parameter area (past the stub's frame),
+ * floats and doubles in f1 to f13, each skipping one or two words
+ */
+static void test_args(void)
+{
+	static struct mem m;
+	CHECK_EQ(mem_init(&m), 0);
+	mem_map(&m, 0, 0x10000, MEM_RW);
+	const uint32_t frame = 0x8000, params = frame + NDRV_FRAME_SIZE + 24;
+	struct ndrv_call c = { .mem = &m, .frame = frame };
+
+	/* glTexImage2D(target, level, internalformat, width, height, border, format, type, pixels) */
+	for (unsigned k = 0; k < 8; k++)
+		c.arg[k] = 100 + k;
+	mem_w32(&m, params + 4 * 8, 0x4000);
+	struct ndrv_args a = ndrv_args(&c);
+	for (unsigned k = 0; k < 8; k++)
+		CHECK_EQ(ndrv_next_word(&a), 100 + k);
+	CHECK_EQ(ndrv_next_word(&a), 0x4000);
+
+	/* glBitmap(width, height, xorig, yorig, xmove, ymove, bitmap): the floats in f1 to f4, bitmap in r9 */
+	for (unsigned k = 0; k < 4; k++) {
+		double d = 0.5 + k;
+		memcpy(&c.f[k], &d, 8);
+	}
+	a = ndrv_args(&c);
+	CHECK_EQ(ndrv_next_word(&a), 100);
+	CHECK_EQ(ndrv_next_word(&a), 101);
+	for (unsigned k = 0; k < 4; k++) {
+		float f = 0.5f + (float)k;
+		uint32_t b;
+		memcpy(&b, &f, 4);
+		CHECK_EQ(ndrv_next_float(&a), b);
+	}
+	CHECK_EQ(ndrv_next_word(&a), 106);
+
+	/* doubles take two words each; past f13, they're in the parameter area */
+	a = ndrv_args(&c);
+	for (unsigned k = 0; k < 13; k++)
+		ndrv_next_double(&a);
+	CHECK_EQ(a.word, 26);
+	mem_w32(&m, params + 4 * 26, 0x3FF00000u);
+	mem_w32(&m, params + 4 * 27, 1);
+	CHECK_EQ(ndrv_next_double(&a), 0x3FF0000000000001ull);
+	CHECK_EQ(ndrv_arg(&c, 3), 103);
+	mem_free(&m);
+}
+
 void test_drivers(void)
 {
 	test_hash();
 	test_container();
+	test_args();
 	test_flatten();
 	test_adb_bus();
 }
