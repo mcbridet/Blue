@@ -9,6 +9,7 @@
  * the GPU, and (on Linux) by Mesa's OpenGL in its compatibility profile,
  * the reference.
  */
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,7 +43,7 @@
 #define LM_MAIN_DEVICE 0x08A4u
 
 /* AGL's and OpenGL's numbers */
-enum { AGL_NONE, AGL_RGBA = 4, AGL_DOUBLEBUFFER = 5, AGL_DEPTH_SIZE = 12, AGL_ACCUM_RED_SIZE = 14,
+enum { AGL_NONE, AGL_RGBA = 4, AGL_DOUBLEBUFFER = 5, AGL_DEPTH_SIZE = 12, AGL_STENCIL_SIZE = 13, AGL_ACCUM_RED_SIZE = 14,
        AGL_PIXEL_SIZE = 50, AGL_RENDERER_ID = 70, AGL_ACCELERATED = 73, AGL_VIDEO_MEMORY = 120,
        AGL_SWAP_RECT = 200 };
 enum { AGL_BAD_ATTRIBUTE = 10000, AGL_BAD_CONTEXT = 10004, AGL_BAD_DRAWABLE = 10005 };
@@ -737,6 +738,171 @@ static const uint8_t *image(unsigned k, int w, int h)
 	return rgba[k];
 }
 
+/*
+ * Arrays the scenes draw from (glVertexPointer's and the rest, and
+ * glDrawElements' indices take one's number for the pointer): in the guest's
+ * memory big-endian, as a program has them, and Mesa's in the host's order
+ */
+#define VECDATA 0x130000u       /* (a parameter vector: glLightfv's, glFogfv's...) */
+#define ARRAYDATA 0x140000u     /* (array k at ARRAYDATA + k * 0x1000) */
+enum { ARR_MESH_POS, ARR_MESH_NORMAL, ARR_MESH_INDEX, ARR_SHORT_POS, ARR_UBYTE_COLOR, ARR_DOUBLE_POS, ARR_FLOAT_RGB,
+       ARR_BYTE_INDEX, ARR_INTERLEAVED, ARR_UINT_INDEX, ARR_SECONDARY, ARR_BYTE_NORMAL, ARRAYS };
+#define MESH_X 9                /* (a mesh's vertices: a bent sheet, its normals) */
+#define MESH_Y 7
+#define MESH_INDICES ((MESH_X - 1) * (MESH_Y - 1) * 6)
+
+static bool host_big(void)
+{
+	const uint16_t one = 1;
+	uint8_t b;
+	memcpy(&b, &one, 1);
+	return b == 0;
+}
+
+/* A value of a type at p, big-endian or the host's way; its size */
+static size_t put_value(uint8_t *p, uint32_t type, double v, bool big)
+{
+	uint8_t b[8];
+	size_t n;
+	switch (type) {
+	case GL_BYTE: case GL_UNSIGNED_BYTE: p[0] = (uint8_t)(int)v; return 1;
+	case GL_SHORT: case GL_UNSIGNED_SHORT: { uint16_t s = (uint16_t)(int32_t)v; memcpy(b, &s, 2); n = 2; break; }
+	case GL_INT: case GL_UNSIGNED_INT: { uint32_t s = (uint32_t)(int64_t)v; memcpy(b, &s, 4); n = 4; break; }
+	case GL_FLOAT: { float f = (float)v; memcpy(b, &f, 4); n = 4; break; }
+	default: memcpy(b, &v, 8); n = 8; break;
+	}
+	for (size_t k = 0; k < n; k++)
+		p[k] = big != host_big() ? b[n - 1 - k] : b[k];
+	return n;
+}
+
+static void mesh_vertex(int i, int j, float v[3], float n[3])
+{
+	v[0] = -1.2f + 0.3f * (float)i + 0.011f;
+	v[1] = -0.9f + 0.3f * (float)j + 0.007f;
+	v[2] = 0.6f * (1 - v[0] * v[0] / 1.44f);
+	float nx = 1.2f * v[0] / 1.44f, len = sqrtf(nx * nx + 1);
+	n[0] = nx / len;
+	n[1] = 0;
+	n[2] = 1 / len;
+}
+
+/* Array k's bytes (big-endian, or the host's way) into out; how many */
+static size_t array_bytes(unsigned k, bool big, uint8_t *out)
+{
+	uint8_t *p = out;
+#define PUT(type, v) (p += put_value(p, type, v, big))
+	switch (k) {
+	case ARR_MESH_POS:
+	case ARR_MESH_NORMAL:
+	case ARR_BYTE_NORMAL:
+		for (int j = 0; j < MESH_Y; j++)
+			for (int i = 0; i < MESH_X; i++) {
+				float v[3], n[3];
+				mesh_vertex(i, j, v, n);
+				for (int c = 0; c < 3; c++) {
+					if (k == ARR_MESH_POS)
+						PUT(GL_FLOAT, v[c]);
+					else if (k == ARR_MESH_NORMAL)
+						PUT(GL_FLOAT, n[c]);
+					else
+						PUT(GL_BYTE, floor(n[c] * 127 + 0.5));
+				}
+				if (k == ARR_BYTE_NORMAL)
+					PUT(GL_BYTE, 0);                /* (a stride of 4) */
+			}
+		break;
+	case ARR_MESH_INDEX:
+		for (int j = 0; j + 1 < MESH_Y; j++)
+			for (int i = 0; i + 1 < MESH_X; i++) {
+				int a = j * MESH_X + i, b = a + 1, c = a + MESH_X + 1, d = a + MESH_X;
+				const int tri[6] = { a, b, c, a, c, d };
+				for (int t = 0; t < 6; t++)
+					PUT(GL_UNSIGNED_SHORT, tri[t]);
+			}
+		break;
+	case ARR_SHORT_POS:                     /* (a strip, x and y) */
+		for (int v = 0; v < 8; v++) {
+			PUT(GL_SHORT, 4 + 10 * v);
+			PUT(GL_SHORT, v & 1 ? 21 : 5);
+		}
+		break;
+	case ARR_UBYTE_COLOR:
+		for (int v = 0; v < 8; v++) {
+			PUT(GL_UNSIGNED_BYTE, 30 * v);
+			PUT(GL_UNSIGNED_BYTE, 255 - 25 * v);
+			PUT(GL_UNSIGNED_BYTE, v & 1 ? 200 : 60);
+			PUT(GL_UNSIGNED_BYTE, 255);
+		}
+		break;
+	case ARR_DOUBLE_POS: {                  /* (two triangles) */
+		static const double xy[6][2] = { { 4.3, 26.2 }, { 40.7, 28.1 }, { 18.4, 46.6 }, { 44.1, 26.3 },
+						 { 52.2, 48.9 }, { 30.6, 47.7 } };
+		for (int v = 0; v < 6; v++) {
+			PUT(GL_DOUBLE, xy[v][0]);
+			PUT(GL_DOUBLE, xy[v][1]);
+			PUT(GL_DOUBLE, -0.2 * v);
+		}
+		break;
+	}
+	case ARR_FLOAT_RGB:
+		for (int v = 0; v < 6; v++) {
+			PUT(GL_FLOAT, v & 1 ? 0.9 : 0.1);
+			PUT(GL_FLOAT, 0.15 * v);
+			PUT(GL_FLOAT, v < 3 ? 0.8 : 0.3);
+		}
+		break;
+	case ARR_BYTE_INDEX: {
+		static const int idx[6] = { 2, 0, 1, 5, 3, 4 };
+		for (int v = 0; v < 6; v++)
+			PUT(GL_UNSIGNED_BYTE, idx[v]);
+		break;
+	}
+	case ARR_INTERLEAVED: {                 /* (GL_T2F_C4UB_V3F: a quad) */
+		static const double q[4][7] = { { 0, 0, 255, 255, 255, 255, 0 }, { 1, 0, 255, 128, 128, 255, 0 },
+						{ 1, 1, 128, 255, 128, 255, 0 }, { 0, 1, 128, 128, 255, 255, 0 } };
+		static const double xy[4][2] = { { 58.3, 4.4 }, { 92.6, 6.1 }, { 90.2, 40.7 }, { 60.1, 38.3 } };
+		for (int v = 0; v < 4; v++) {
+			PUT(GL_FLOAT, q[v][0]);
+			PUT(GL_FLOAT, q[v][1]);
+			for (int c = 0; c < 4; c++)
+				PUT(GL_UNSIGNED_BYTE, q[v][2 + c]);
+			PUT(GL_FLOAT, xy[v][0]);
+			PUT(GL_FLOAT, xy[v][1]);
+			PUT(GL_FLOAT, 0);
+		}
+		break;
+	}
+	case ARR_UINT_INDEX:
+		for (int v = 0; v < 4; v++)
+			PUT(GL_UNSIGNED_INT, v);
+		break;
+	case ARR_SECONDARY:                     /* (rgb, a stride of 4) */
+		for (int v = 0; v < 8; v++) {
+			PUT(GL_UNSIGNED_BYTE, v & 1 ? 0 : 90);
+			PUT(GL_UNSIGNED_BYTE, 40);
+			PUT(GL_UNSIGNED_BYTE, v * 20);
+			PUT(GL_UNSIGNED_BYTE, 0);
+		}
+		break;
+	}
+#undef PUT
+	return (size_t)(p - out);
+}
+
+/* Whether a call's pointer argument names an array (else it's a parameter vector, from the values after it) */
+static bool takes_array(const char *name)
+{
+	return strstr(name, "Pointer") || !strcmp(name, "glInterleavedArrays") || !strcmp(name, "glDrawElements") ||
+	       !strcmp(name, "glDrawRangeElements");
+}
+
+/* A parameter vector's values (from a[first]): as doubles for glClipPlane, else floats */
+static bool vector_of_doubles(const char *name)
+{
+	return !strcmp(name, "glClipPlane");
+}
+
 static const struct op scene_texture[] = {
 	ORTHO, CLEAR(0.2, 0.2, 0.3), { "glEnable", { GL_TEXTURE_2D } },
 	{ "glBindTexture", { 0x0DE1, 1 } }, TEX(1, 8, 8, IMAGE_CHECKER),
@@ -790,6 +956,210 @@ static const struct op scene_multitexture[] = {
 	{ NULL, { 0 } },
 };
 
+/* Lighting, fog, texture coordinate generation, client arrays, stencil, polygon offset, clip planes */
+enum { GL_VERTEX_ARRAY = 0x8074, GL_NORMAL_ARRAY, GL_COLOR_ARRAY, GL_TEXTURE_COORD_ARRAY = 0x8078,
+       GL_SECONDARY_COLOR_ARRAY_EXT = 0x845E, GL_T2F_C4UB_V3F = 0x2A29 };
+#define ORTHO_UNITS { "glMatrixMode", { GL_PROJECTION } }, { "glLoadIdentity", { 0 } }, \
+	{ "glOrtho", { -1.6, 1.6, -1.2, 1.2, 1, 20 } }, { "glMatrixMode", { GL_MODELVIEW } }, \
+	{ "glLoadIdentity", { 0 } }, { "glTranslatef", { 0, 0, -5 } }
+#define EN(cap) { "glEnable", { cap } }
+#define DIS(cap) { "glDisable", { cap } }
+#define N3(x, y, z) { "glNormal3f", { x, y, z } }
+#define LIGHTV(l, pname, a, b, c, d) { "glLightfv", { l, pname, a, b, c, d } }
+#define MATV(face, pname, a, b, c, d) { "glMaterialfv", { face, pname, a, b, c, d } }
+#define MESH(dx, dy, sx, sy) { "glPushMatrix", { 0 } }, { "glTranslatef", { dx, dy, 0 } }, \
+	{ "glScalef", { sx, sy, 0.5 } }, { "glEnableClientState", { GL_VERTEX_ARRAY } }, \
+	{ "glEnableClientState", { GL_NORMAL_ARRAY } }, { "glVertexPointer", { 3, GL_FLOAT, 0, ARR_MESH_POS } }, \
+	{ "glNormalPointer", { GL_FLOAT, 0, ARR_MESH_NORMAL } }, \
+	{ "glDrawElements", { GL_TRIANGLES, MESH_INDICES, GL_UNSIGNED_SHORT, ARR_MESH_INDEX } }, \
+	{ "glDisableClientState", { GL_VERTEX_ARRAY } }, { "glDisableClientState", { GL_NORMAL_ARRAY } }, \
+	{ "glPopMatrix", { 0 } }
+#define QUAD2(x0, y0, x1, y1) BEGIN(GL_QUADS), V2(x0, y0), V2(x1, y0), V2(x1, y1), V2(x0, y1), END
+
+/* (orthographic: Mesa corrects colors for perspective, ours are linear in screen space) */
+static const struct op scene_lighting[] = {
+	ORTHO_UNITS, CLEAR(0.05, 0.05, 0.1), EN(GL_DEPTH_TEST), EN(GL_LIGHTING),
+	{ "glLightModeli", { GL_LIGHT_MODEL_LOCAL_VIEWER, 1 } }, { "glLightModeli", { GL_LIGHT_MODEL_TWO_SIDE, 1 } },
+	EN(GL_LIGHT0), LIGHTV(GL_LIGHT0, GL_POSITION, 0.3, 0.5, 1, 0), LIGHTV(GL_LIGHT0, GL_DIFFUSE, 0.4, 0.4, 0.35, 1),
+	LIGHTV(GL_LIGHT0, GL_SPECULAR, 0.4, 0.4, 0.4, 1),
+	EN(GL_LIGHT0 + 1), LIGHTV(GL_LIGHT0 + 1, GL_POSITION, 1.2, -0.8, 1.5, 1),
+	LIGHTV(GL_LIGHT0 + 1, GL_DIFFUSE, 0.8, 0.3, 0.1, 1), LIGHTV(GL_LIGHT0 + 1, GL_SPECULAR, 0.5, 0.5, 0.5, 1),
+	{ "glLightf", { GL_LIGHT0 + 1, GL_LINEAR_ATTENUATION, 0.4 } },
+	EN(GL_LIGHT0 + 2), LIGHTV(GL_LIGHT0 + 2, GL_POSITION, -1, 1, 2, 1),
+	LIGHTV(GL_LIGHT0 + 2, GL_SPOT_DIRECTION, 0.5, -0.6, -1, 0), { "glLightf", { GL_LIGHT0 + 2, GL_SPOT_CUTOFF, 35 } },
+	{ "glLightf", { GL_LIGHT0 + 2, GL_SPOT_EXPONENT, 6 } }, LIGHTV(GL_LIGHT0 + 2, GL_DIFFUSE, 0.2, 0.4, 1, 1),
+	MATV(GL_FRONT, GL_AMBIENT, 0.2, 0.2, 0.2, 1), MATV(GL_FRONT, GL_DIFFUSE, 0.6, 0.6, 0.5, 1),
+	MATV(GL_FRONT, GL_SPECULAR, 0.6, 0.6, 0.6, 1), { "glMaterialf", { GL_FRONT, GL_SHININESS, 24 } },
+	MATV(GL_BACK, GL_DIFFUSE, 0.2, 0.8, 0.3, 1),
+	EN(GL_NORMALIZE), MESH(-0.35, 0.2, 0.9, 0.9), DIS(GL_NORMALIZE),
+	/* a back face (two-sided: the back's material, its normal turned round, to the lights) */
+	BEGIN(GL_QUADS), N3(0, 0, -1), V3(0.9, -1.1, 0.3), V3(0.9, -0.3, 0.3), V3(1.5, -0.3, 0.3), V3(1.5, -1.1, 0.3), END,
+	/* the material's ambient and diffuse colors tracking the current color; scaled, normals rescaled */
+	{ "glColorMaterial", { GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE } }, EN(GL_COLOR_MATERIAL),
+	EN(GL_RESCALE_NORMAL), { "glPushMatrix", { 0 } }, { "glTranslatef", { 1.2, 0.6, 0 } },
+	{ "glScalef", { 0.8, 0.8, 0.8 } },
+	BEGIN(GL_TRIANGLES), C3(1, 0.2, 0.2), N3(0, 0.3, 0.95), V3(-0.37, -0.48, 0.2), C3(0.2, 1, 0.2), N3(0.3, 0, 0.95),
+	V3(0.38, -0.37, 0.2), C3(0.2, 0.2, 1), N3(-0.2, -0.2, 0.96), V3(0.01, 0.51, 0.2), END,
+	{ "glPopMatrix", { 0 } }, DIS(GL_RESCALE_NORMAL), DIS(GL_COLOR_MATERIAL),
+	{ NULL, { 0 } },
+};
+
+/* separate specular over a texture (the color sum), then the single color */
+static const struct op scene_specular[] = {
+	ORTHO_UNITS, CLEAR(0.1, 0.1, 0.1), EN(GL_DEPTH_TEST), EN(GL_LIGHTING), EN(GL_LIGHT0),
+	LIGHTV(GL_LIGHT0, GL_POSITION, 0.4, 0.6, 1, 0), MATV(GL_FRONT, GL_DIFFUSE, 0.6, 0.6, 0.6, 1),
+	MATV(GL_FRONT, GL_SPECULAR, 0.5, 0.5, 0.5, 1), { "glMaterialf", { GL_FRONT, GL_SHININESS, 40 } },
+	EN(GL_TEXTURE_2D), { "glBindTexture", { 0x0DE1, 2 } }, TEX(2, 4, 4, IMAGE_GRADIENT),
+	TEXP(GL_TEXTURE_MIN_FILTER, GL_LINEAR), TEXP(GL_TEXTURE_MAG_FILTER, GL_LINEAR),
+	TEXP(GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE), TEXP(GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE),
+	{ "glTexGeni", { GL_S, GL_TEXTURE_GEN_MODE, GL_OBJECT_LINEAR } },
+	{ "glTexGenfv", { GL_S, GL_OBJECT_PLANE, 0.4, 0, 0, 0.5 } },
+	{ "glTexGeni", { GL_T, GL_TEXTURE_GEN_MODE, GL_OBJECT_LINEAR } },
+	{ "glTexGenfv", { GL_T, GL_OBJECT_PLANE, 0, 0.5, 0, 0.5 } }, EN(GL_TEXTURE_GEN_S), EN(GL_TEXTURE_GEN_S + 1),
+	{ "glLightModeli", { GL_LIGHT_MODEL_COLOR_CONTROL, GL_SEPARATE_SPECULAR_COLOR } }, EN(GL_NORMALIZE),
+	MESH(-0.8, 0.1, 0.62, 1),
+	{ "glLightModeli", { GL_LIGHT_MODEL_COLOR_CONTROL, GL_SINGLE_COLOR } },
+	MESH(0.8, 0.1, 0.62, 1),
+	{ NULL, { 0 } },
+};
+
+/* each fog mode on a strip going away, flat (constant colors: the fog coordinate is all that's interpolated) */
+#define STRIP(k, c) C3(c, c, c), BEGIN(GL_QUADS), V3(-1.43 + 0.7 * (k), -1, -1.5), V3(-0.87 + 0.7 * (k), -1, -1.5), \
+	V3(6 * (-0.87 + 0.7 * (k)), 6, -9), V3(6 * (-1.43 + 0.7 * (k)), 6, -9), END
+static const struct op scene_fog[] = {
+	FRUSTUM, CLEAR(0.5, 0.6, 0.7), EN(GL_DEPTH_TEST), { "glShadeModel", { GL_FLAT } }, EN(GL_FOG),
+	{ "glFogfv", { GL_FOG_COLOR, 0.5, 0.6, 0.7, 1 } },
+	{ "glFogi", { GL_FOG_MODE, GL_LINEAR } }, { "glFogf", { GL_FOG_START, 2 } }, { "glFogf", { GL_FOG_END, 9 } },
+	STRIP(0, 0.9),
+	{ "glFogi", { GL_FOG_MODE, GL_EXP } }, { "glFogf", { GL_FOG_DENSITY, 0.25 } }, STRIP(1, 0.1),
+	{ "glFogi", { GL_FOG_MODE, GL_EXP2 } }, { "glFogf", { GL_FOG_DENSITY, 0.15 } }, STRIP(2, 1),
+	{ "glFogi", { GL_FOG_MODE, GL_LINEAR } }, { "glFogf", { GL_FOG_START, -3 } }, STRIP(3, 0.4),
+	{ NULL, { 0 } },
+};
+
+/* texture coordinates generated: object and eye linear, the sphere map, the reflection vector */
+static const struct op scene_texgen[] = {
+	ORTHO_UNITS, CLEAR(0.1, 0.1, 0.1), EN(GL_TEXTURE_2D), { "glBindTexture", { 0x0DE1, 2 } },
+	TEX(2, 4, 4, IMAGE_GRADIENT), TEXP(GL_TEXTURE_MIN_FILTER, GL_LINEAR), TEXP(GL_TEXTURE_MAG_FILTER, GL_LINEAR),
+	TEXP(GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE), TEXP(GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE),
+	{ "glTexEnvi", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE } },
+	{ "glTexGeni", { GL_S, GL_TEXTURE_GEN_MODE, GL_OBJECT_LINEAR } },
+	{ "glTexGenfv", { GL_S, GL_OBJECT_PLANE, 0.8, 0.1, 0, 0.5 } },
+	{ "glTexGeni", { GL_T, GL_TEXTURE_GEN_MODE, GL_OBJECT_LINEAR } },
+	{ "glTexGenfv", { GL_T, GL_OBJECT_PLANE, 0, 0.9, 0, 0.45 } }, EN(GL_TEXTURE_GEN_S), EN(GL_TEXTURE_GEN_S + 1),
+	{ "glPushMatrix", { 0 } }, { "glTranslatef", { -0.9, 0.55, 0 } }, { "glRotatef", { 20, 0, 0, 1 } },
+	BEGIN(GL_QUADS), V3(-0.5, -0.4, 0), V3(0.5, -0.4, 0), V3(0.5, 0.4, 0), V3(-0.5, 0.4, 0), END,
+	{ "glPopMatrix", { 0 } },
+	/* (the eye planes as the modelview is when they're given, the quad turned) */
+	{ "glTexGeni", { GL_S, GL_TEXTURE_GEN_MODE, GL_EYE_LINEAR } },
+	{ "glTexGenfv", { GL_S, GL_EYE_PLANE, 0.7, 0, 0, 0.5 } },
+	{ "glTexGeni", { GL_T, GL_TEXTURE_GEN_MODE, GL_EYE_LINEAR } },
+	{ "glTexGenfv", { GL_T, GL_EYE_PLANE, 0, 0.7, 0.2, 0.4 } },
+	{ "glPushMatrix", { 0 } }, { "glTranslatef", { 0.8, 0.55, 0 } }, { "glRotatef", { -30, 0, 0, 1 } },
+	BEGIN(GL_QUADS), V3(-0.5, -0.4, 0), V3(0.5, -0.4, 0), V3(0.5, 0.4, 0), V3(-0.5, 0.4, 0), END,
+	{ "glPopMatrix", { 0 } },
+	{ "glTexGeni", { GL_S, GL_TEXTURE_GEN_MODE, GL_SPHERE_MAP } },
+	{ "glTexGeni", { GL_T, GL_TEXTURE_GEN_MODE, GL_SPHERE_MAP } },
+	MESH(-0.8, -0.6, 0.6, 0.55),
+	{ "glTexGeni", { GL_S, GL_TEXTURE_GEN_MODE, GL_REFLECTION_MAP_NV } },
+	{ "glTexGeni", { GL_T, GL_TEXTURE_GEN_MODE, GL_REFLECTION_MAP_NV } },
+	MESH(0.8, -0.6, 0.6, 0.55),
+	{ NULL, { 0 } },
+};
+
+/* client arrays of each type, interleaved, indexed by each type, by glArrayElement; a secondary color */
+static const struct op scene_arrays[] = {
+	ORTHO, CLEAR(0.15, 0.15, 0.15),
+	{ "glEnableClientState", { GL_VERTEX_ARRAY } }, { "glEnableClientState", { GL_COLOR_ARRAY } },
+	{ "glVertexPointer", { 2, GL_SHORT, 0, ARR_SHORT_POS } },
+	{ "glColorPointer", { 4, GL_UNSIGNED_BYTE, 0, ARR_UBYTE_COLOR } },
+	{ "glLockArraysEXT", { 0, 8 } }, { "glDrawArrays", { GL_TRIANGLE_STRIP, 0, 8 } }, { "glUnlockArraysEXT", { 0 } },
+	{ "glVertexPointer", { 3, GL_DOUBLE, 0, ARR_DOUBLE_POS } },
+	{ "glColorPointer", { 3, GL_FLOAT, 0, ARR_FLOAT_RGB } },
+	{ "glDrawElements", { GL_TRIANGLES, 6, GL_UNSIGNED_BYTE, ARR_BYTE_INDEX } },
+	EN(GL_TEXTURE_2D), { "glBindTexture", { 0x0DE1, 2 } }, TEX(2, 4, 4, IMAGE_GRADIENT),
+	TEXP(GL_TEXTURE_MIN_FILTER, GL_LINEAR), TEXP(GL_TEXTURE_MAG_FILTER, GL_LINEAR),
+	{ "glInterleavedArrays", { GL_T2F_C4UB_V3F, 0, ARR_INTERLEAVED } },
+	{ "glDrawElements", { GL_QUADS, 4, GL_UNSIGNED_INT, ARR_UINT_INDEX } },
+	DIS(GL_TEXTURE_2D), { "glDisableClientState", { GL_TEXTURE_COORD_ARRAY } },
+	{ "glDisableClientState", { GL_COLOR_ARRAY } },
+	{ "glVertexPointer", { 2, GL_SHORT, 0, ARR_SHORT_POS } }, { "glTranslatef", { 0.3, 46.2, 0 } },
+	{ "glEnableClientState", { GL_SECONDARY_COLOR_ARRAY_EXT } },
+	{ "glSecondaryColorPointerEXT", { 3, GL_UNSIGNED_BYTE, 4, ARR_SECONDARY } }, EN(GL_COLOR_SUM_EXT),
+	C3(0.3, 0.3, 0.6), BEGIN(GL_TRIANGLE_STRIP), { "glArrayElement", { 0 } }, { "glArrayElement", { 1 } },
+	{ "glArrayElement", { 2 } }, { "glArrayElement", { 3 } }, { "glArrayElement", { 4 } },
+	{ "glArrayElement", { 5 } }, END,
+	DIS(GL_COLOR_SUM_EXT), { "glDisableClientState", { GL_SECONDARY_COLOR_ARRAY_EXT } },
+	{ "glDisableClientState", { GL_VERTEX_ARRAY } },
+	{ NULL, { 0 } },
+};
+
+/* the stencil: a shape, counting, inverting with a write mask, after the alpha test, when the depth test fails */
+static const struct op scene_stencil[] = {
+	ORTHO, { "glClearColor", { 0.1, 0.1, 0.1, 1 } }, { "glClearDepth", { 1 } }, { "glClearStencil", { 0 } },
+	{ "glClear", { GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT } }, EN(GL_STENCIL_TEST),
+	{ "glStencilFunc", { GL_ALWAYS, 1, 0xFF } }, { "glStencilOp", { GL_KEEP, GL_KEEP, GL_REPLACE } },
+	{ "glColorMask", { 0, 0, 0, 0 } },
+	BEGIN(GL_TRIANGLES), V2(4.3, 4.2), V2(44.6, 8.1), V2(20.1, 40.7), END,
+	{ "glColorMask", { 1, 1, 1, 1 } },
+	{ "glStencilFunc", { GL_EQUAL, 1, 0xFF } }, { "glStencilOp", { GL_KEEP, GL_KEEP, GL_KEEP } },
+	C3(1, 0.2, 0.2), QUAD2(2.2, 2.3, 46.4, 44.6),
+	{ "glStencilFunc", { GL_ALWAYS, 0, 0xFF } }, { "glStencilOp", { GL_KEEP, GL_KEEP, GL_INCR } },
+	{ "glColorMask", { 0, 0, 0, 0 } },
+	BEGIN(GL_TRIANGLES), V2(50.3, 4.4), V2(92.5, 6.6), V2(70.2, 40.8), V2(52.1, 30.3), V2(60.4, 2.1),
+	V2(90.7, 22.2), END,
+	{ "glColorMask", { 1, 1, 1, 1 } }, { "glStencilFunc", { GL_LESS, 1, 0xFF } },
+	{ "glStencilOp", { GL_KEEP, GL_KEEP, GL_KEEP } }, C3(0.2, 1, 0.2), QUAD2(48.2, 1.3, 94.6, 44.7),
+	{ "glStencilMask", { 0x0F } }, { "glStencilFunc", { GL_ALWAYS, 0, 0xFF } },
+	{ "glStencilOp", { GL_KEEP, GL_KEEP, GL_INVERT } }, { "glColorMask", { 0, 0, 0, 0 } },
+	QUAD2(60.3, 10.2, 80.6, 30.7),
+	{ "glColorMask", { 1, 1, 1, 1 } }, { "glStencilMask", { 0xFF } }, { "glStencilFunc", { GL_EQUAL, 0x0D, 0x0F } },
+	{ "glStencilOp", { GL_KEEP, GL_KEEP, GL_KEEP } }, C3(0.2, 0.3, 1), QUAD2(48.2, 1.3, 94.6, 44.7),
+	EN(GL_ALPHA_TEST), { "glAlphaFunc", { GL_GREATER, 0.5 } }, { "glStencilFunc", { GL_ALWAYS, 5, 0xFF } },
+	{ "glStencilOp", { GL_KEEP, GL_KEEP, GL_REPLACE } }, { "glColorMask", { 0, 0, 0, 0 } },
+	BEGIN(GL_QUADS), C4(1, 1, 1, 0), V2(4.4, 48.3), C4(1, 1, 1, 1), V2(44.6, 48.3), V2(44.6, 70.2), C4(1, 1, 1, 0),
+	V2(4.4, 70.2), END,
+	DIS(GL_ALPHA_TEST), { "glColorMask", { 1, 1, 1, 1 } }, { "glStencilFunc", { GL_EQUAL, 5, 0xFF } },
+	{ "glStencilOp", { GL_KEEP, GL_KEEP, GL_KEEP } }, C3(1, 1, 0.3), QUAD2(4.4, 48.3, 44.6, 70.2),
+	EN(GL_DEPTH_TEST), { "glStencilFunc", { GL_ALWAYS, 0, 0xFF } }, C3(0.5, 0.5, 0.5),
+	BEGIN(GL_QUADS), V3(50.3, 48.2, 0.5), V3(80.4, 48.2, 0.5), V3(80.4, 68.3, 0.5), V3(50.3, 68.3, 0.5), END,
+	{ "glColorMask", { 0, 0, 0, 0 } }, { "glStencilOp", { GL_KEEP, GL_INCR, GL_KEEP } },
+	BEGIN(GL_QUADS), V3(60.2, 52.4, -0.5), V3(92.6, 52.4, -0.5), V3(92.6, 70.5, -0.5), V3(60.2, 70.5, -0.5), END,
+	{ "glColorMask", { 1, 1, 1, 1 } }, DIS(GL_DEPTH_TEST), { "glStencilFunc", { GL_EQUAL, 1, 0xFF } },
+	{ "glStencilOp", { GL_KEEP, GL_KEEP, GL_KEEP } }, C3(0.9, 0.4, 0.9), QUAD2(48.3, 46.4, 95.2, 71.5),
+	{ NULL, { 0 } },
+};
+
+/* decals on a floor and a wall: offset forward (shown), back (hidden) */
+static const struct op scene_offset[] = {
+	FRUSTUM, CLEAR(0.1, 0.1, 0.1), EN(GL_DEPTH_TEST), { "glShadeModel", { GL_FLAT } },
+	C3(0.5, 0.5, 0.5), BEGIN(GL_QUADS), V3(-2.1, -1, -1.5), V3(2.1, -1, -1.5), V3(2.1, -1, -9), V3(-2.1, -1, -9), END,
+	EN(GL_POLYGON_OFFSET_FILL), { "glPolygonOffset", { -1, -2 } },
+	C3(1, 0.2, 0.2), BEGIN(GL_QUADS), V3(-1.2, -1, -2), V3(-0.2, -1, -2), V3(-0.2, -1, -6), V3(-1.2, -1, -6), END,
+	{ "glPolygonOffset", { 1, 2 } },
+	C3(0.2, 0.2, 1), BEGIN(GL_QUADS), V3(0.2, -1, -2), V3(1.2, -1, -2), V3(1.2, -1, -6), V3(0.2, -1, -6), END,
+	DIS(GL_POLYGON_OFFSET_FILL),
+	C3(0.2, 0.8, 0.3), BEGIN(GL_QUADS), V3(-0.53, -1, -5), V3(0.47, -1, -5), V3(0.47, 0.5, -5), V3(-0.53, 0.5, -5), END,
+	EN(GL_POLYGON_OFFSET_FILL), { "glPolygonOffset", { 0, -40 } },
+	C3(1, 1, 0), BEGIN(GL_QUADS), V3(-0.31, -0.6, -5), V3(0.29, -0.6, -5), V3(0.29, 0.2, -5), V3(-0.31, 0.2, -5), END,
+	{ NULL, { 0 } },
+};
+
+/* user clip planes (given with the modelview turned) */
+static const struct op scene_clip[] = {
+	ORTHO_UNITS, CLEAR(0.2, 0.1, 0.1),
+	{ "glPushMatrix", { 0 } }, { "glRotatef", { 30, 0, 0, 1 } }, { "glClipPlane", { GL_CLIP_PLANE0, 1, 0.3, 0, 0.2 } },
+	{ "glPopMatrix", { 0 } }, EN(GL_CLIP_PLANE0),
+	BEGIN(GL_TRIANGLE_FAN), C3(1, 1, 1), V3(-0.71, 0.03, 0), C3(1, 0, 0), V3(-1.52, -0.02, 0), C3(1, 1, 0),
+	V3(-1.13, 0.83, 0), C3(0, 1, 0), V3(-0.31, 1.07, 0), C3(0, 1, 1), V3(0.12, 0.21, 0), C3(0, 0, 1),
+	V3(-0.38, -0.97, 0), C3(1, 0, 1), V3(-1.27, -0.88, 0), C3(1, 0, 0), V3(-1.52, -0.02, 0), END,
+	{ "glClipPlane", { GL_CLIP_PLANE0 + 1, 0, -1, 0, 0.5 } }, EN(GL_CLIP_PLANE0 + 1),
+	BEGIN(GL_QUADS), C3(0.9, 0.6, 0.1), V3(0.31, -1.13, 0), C3(0.1, 0.6, 0.9), V3(1.48, -1.07, 0), C3(0.9, 0.9, 0.9),
+	V3(1.42, 1.11, 0), C3(0.3, 0.9, 0.3), V3(0.37, 1.04, 0), END,
+	DIS(GL_CLIP_PLANE0), DIS(GL_CLIP_PLANE0 + 1),
+	{ NULL, { 0 } },
+};
+
 /*
  * Against Mesa's: pixels that may differ by more than 2, and that one draws
  * on and the other doesn't. Both snap vertices to 1/256 of a pixel and give
@@ -797,7 +1167,9 @@ static const struct op scene_multitexture[] = {
  * Mesa 25.2), but the transforms round each their own way, and a center on
  * an edge (the floor's edges are a third of a pixel down every pixel across)
  * may go to the triangle on either side; a fragment's alpha at the alpha
- * test's reference is decided by each's rounding too. In "smooth", Mesa
+ * test's reference is decided by each's rounding too, and in "lighting" the
+ * back face (lit by the attenuated light) is a few levels apart in places
+ * (milestone 4's scenes otherwise differ by 2 at most). In "smooth", Mesa
  * corrects colors for perspective and ours are linear in screen space (see
  * glfront.h), most of all on the floor that goes from the near plane to the
  * far distance; and in "clamp", GL_CLAMP past the texture's edges is Mesa's
@@ -814,6 +1186,9 @@ static const struct {
 	{ "smooth", scene_smooth, SW * SH / 2, 2 }, { "primitives", scene_primitives, 0, 0 },
 	{ "blend", scene_blend, 4, 4 }, { "texture", scene_texture, 2, 2 }, { "clamp", scene_clamp, SW * SH, 0 },
 	{ "edge", scene_edge, 0, 0 }, { "multitexture", scene_multitexture, 0, 0 },
+	{ "lighting", scene_lighting, 24, 2 }, { "specular", scene_specular, 4, 2 }, { "fog", scene_fog, 4, 2 },
+	{ "texgen", scene_texgen, 4, 2 }, { "arrays", scene_arrays, 4, 2 }, { "stencil", scene_stencil, 4, 2 },
+	{ "offset", scene_offset, 4, 2 }, { "clip", scene_clip, 4, 2 },
 };
 #define SCENES (sizeof scenes / sizeof scenes[0])
 
@@ -836,9 +1211,26 @@ static void our_invoke(const struct op *op)
 	uint32_t w[16] = { 0 };
 	double f[13];
 	unsigned nw = 0, nf = 0;
-	for (const char *c = functions[fn].args; *c; c++) {
-		double v = op->a[c - functions[fn].args];
-		if (*c == 'f') {                        /* (as a compiled caller passes a float) */
+	const char *sig = functions[fn].args, *pointer = strchr(sig, 'p');
+	uint32_t at = 0;                        /* (the pointer argument, if there's one) */
+	if (pointer) {
+		unsigned k = (unsigned)(pointer - sig);
+		if (takes_array(op->name)) {
+			unsigned id = (unsigned)op->a[k];
+			at = ARRAYDATA + 0x1000u * id;
+			array_bytes(id, true, mem_ptr(&mem, at));
+		} else {
+			at = VECDATA;
+			for (unsigned j = k; j < 6; j++)
+				put_value(mem_ptr(&mem, VECDATA + (vector_of_doubles(op->name) ? 8 : 4) * (j - k)),
+					  vector_of_doubles(op->name) ? GL_DOUBLE : GL_FLOAT, op->a[j], true);
+		}
+	}
+	for (const char *c = sig; *c; c++) {
+		double v = op->a[c - sig];
+		if (*c == 'p') {
+			w[nw++] = at;
+		} else if (*c == 'f') {                 /* (as a compiled caller passes a float) */
 			f[nf++] = (float)v;
 			nw++;
 		} else if (*c == 'd') {
@@ -856,9 +1248,10 @@ static void our_scene(const struct op *ops, uint32_t *out)
 {
 	call_entry(OPENGL_ENTRY_INIT, NULL, 0, NULL, 0);
 	make_port(32);
-	const uint32_t attribs[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_DEPTH_SIZE, 24, AGL_NONE };
-	put_attribs(attribs, 5);
+	const uint32_t attribs[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_DEPTH_SIZE, 24, AGL_STENCIL_SIZE, 8, AGL_NONE };
+	put_attribs(attribs, 7);
 	uint32_t pf = CALL(aglChoosePixelFormat, 0, 0, ATTRIBS), ctx = CALL(aglCreateContext, pf, 0);
+	CALL(aglDestroyPixelFormat, pf);
 	CHECK_EQ(CALL(aglSetOffScreen, ctx, SW, SH, SW * 4, OFFSCREEN), 1);
 	CHECK_EQ(CALL(aglSetCurrentContext, ctx), 1);
 	for (const struct op *op = ops; op->name; op++)
@@ -1006,7 +1399,54 @@ static void mesa_invoke(const struct op *op)
 #define U(k) ((uint32_t)(int64_t)a[k])
 #define F(k) ((float)a[k])
 #define B(k) ((uint8_t)a[k])
-	if (!strcmp(sig, ""))
+#define I(k) ((int32_t)a[k])
+	const char *pointer = strchr(sig, 'p');
+	const void *hp = NULL;                  /* (the pointer argument: an array, or a parameter vector) */
+	static uint8_t arrays[ARRAYS][0x1000];
+	static union {
+		float f[6];
+		double d[6];
+	} vec;
+	if (pointer) {
+		unsigned k = (unsigned)(pointer - sig);
+		if (takes_array(op->name)) {
+			unsigned id = (unsigned)a[k];
+			array_bytes(id, false, arrays[id]);
+			hp = arrays[id];
+		} else {
+			for (unsigned j = k; j < 6; j++) {
+				vec.d[j - k] = a[j];
+				if (!vector_of_doubles(op->name))
+					vec.f[j - k] = (float)a[j];
+			}
+			hp = &vec;
+		}
+	}
+	if (!strcmp(sig, "IIp"))
+		((void (*)(uint32_t, uint32_t, const void *))p)(U(0), U(1), hp);
+	else if (!strcmp(sig, "Ip"))
+		((void (*)(uint32_t, const void *))p)(U(0), hp);
+	else if (!strcmp(sig, "iIip"))
+		((void (*)(int32_t, uint32_t, int32_t, const void *))p)(I(0), U(1), I(2), hp);
+	else if (!strcmp(sig, "Iip"))
+		((void (*)(uint32_t, int32_t, const void *))p)(U(0), I(1), hp);
+	else if (!strcmp(sig, "IiIp"))
+		((void (*)(uint32_t, int32_t, uint32_t, const void *))p)(U(0), I(1), U(2), hp);
+	else if (!strcmp(sig, "Iii"))
+		((void (*)(uint32_t, int32_t, int32_t))p)(U(0), I(1), I(2));
+	else if (!strcmp(sig, "ii"))
+		((void (*)(int32_t, int32_t))p)(I(0), I(1));
+	else if (!strcmp(sig, "i"))
+		((void (*)(int32_t))p)(I(0));
+	else if (!strcmp(sig, "IIf"))
+		((void (*)(uint32_t, uint32_t, float))p)(U(0), U(1), F(2));
+	else if (!strcmp(sig, "Ii"))
+		((void (*)(uint32_t, int32_t))p)(U(0), I(1));
+	else if (!strcmp(sig, "IiI"))
+		((void (*)(uint32_t, int32_t, uint32_t))p)(U(0), I(1), U(2));
+	else if (!strcmp(sig, "III"))
+		((void (*)(uint32_t, uint32_t, uint32_t))p)(U(0), U(1), U(2));
+	else if (!strcmp(sig, ""))
 		((void (*)(void))p)();
 	else if (!strcmp(sig, "I"))
 		((void (*)(uint32_t))p)(U(0));
@@ -1042,6 +1482,7 @@ static void mesa_invoke(const struct op *op)
 #undef U
 #undef F
 #undef B
+#undef I
 }
 
 /* A scene drawn by Mesa (a fresh context's), as our_scene() reads ours */
@@ -1051,9 +1492,8 @@ static bool mesa_scene(const struct op *ops, uint32_t *out)
 	void *ctx = egl.CreateContext(egl.display, egl.config, NULL, none);
 	if (!ctx || !egl.MakeCurrent(egl.display, NULL, NULL, ctx))
 		return false;
-	enum { GL_FRAMEBUFFER = 0x8D40, GL_RENDERBUFFER = 0x8D41, GL_RGBA8 = 0x8058, GL_DEPTH_COMPONENT24 = 0x81A6,
-	       GL_COLOR_ATTACHMENT0 = 0x8CE0, GL_DEPTH_ATTACHMENT = 0x8D00, GL_RGBA = 0x1908,
-	       GL_UNSIGNED_BYTE = 0x1401 };
+	enum { GL_FRAMEBUFFER = 0x8D40, GL_RENDERBUFFER = 0x8D41, GL_RGBA8 = 0x8058, GL_DEPTH24_STENCIL8 = 0x88F0,
+	       GL_COLOR_ATTACHMENT0 = 0x8CE0, GL_DEPTH_STENCIL_ATTACHMENT = 0x821A, GL_RGBA = 0x1908 };
 	uint32_t fbo, rb[2];
 	GLFN(void (*)(int32_t, uint32_t *), "glGenFramebuffers")(1, &fbo);
 	GLFN(void (*)(int32_t, uint32_t *), "glGenRenderbuffers")(2, rb);
@@ -1061,9 +1501,9 @@ static bool mesa_scene(const struct op *ops, uint32_t *out)
 	for (int k = 0; k < 2; k++) {
 		GLFN(void (*)(uint32_t, uint32_t), "glBindRenderbuffer")(GL_RENDERBUFFER, rb[k]);
 		GLFN(void (*)(uint32_t, uint32_t, int32_t, int32_t), "glRenderbufferStorage")(
-			GL_RENDERBUFFER, k ? GL_DEPTH_COMPONENT24 : GL_RGBA8, SW, SH);
+			GL_RENDERBUFFER, k ? GL_DEPTH24_STENCIL8 : GL_RGBA8, SW, SH);
 		GLFN(void (*)(uint32_t, uint32_t, uint32_t, uint32_t), "glFramebufferRenderbuffer")(
-			GL_FRAMEBUFFER, k ? GL_DEPTH_ATTACHMENT : GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb[k]);
+			GL_FRAMEBUFFER, k ? GL_DEPTH_STENCIL_ATTACHMENT : GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb[k]);
 	}
 	/* (as ours start: the viewport and scissor box the drawable's) */
 	GLFN(void (*)(int32_t, int32_t, int32_t, int32_t), "glViewport")(0, 0, SW, SH);

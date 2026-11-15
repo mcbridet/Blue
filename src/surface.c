@@ -15,7 +15,8 @@ bool surface_init(struct surface *s, int width, int height, struct gpu *gpu)
 	s->target.height = height;
 	s->target.color = calloc(n, 4);
 	s->target.depth = calloc(n, sizeof(float));
-	if (!s->target.color || !s->target.depth) {
+	s->target.stencil = calloc(n, 1);
+	if (!s->target.color || !s->target.depth || !s->target.stencil) {
 		surface_free(s);
 		return false;
 	}
@@ -47,6 +48,7 @@ void surface_free(struct surface *s)
 	surface_lose_gpu(s);
 	free(s->target.color);
 	free(s->target.depth);
+	free(s->target.stencil);
 	for (int k = 0; k < 2; k++) {
 		free(s->batch[k].cmds);
 		free(s->batch[k].states);

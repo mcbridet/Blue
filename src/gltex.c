@@ -130,6 +130,7 @@ bool glf_attach(struct gl_state *st, struct gl_state *share)
 
 void glf_detach(struct gl_state *st, struct gpu *gpu)
 {
+	glf_free(st);
 	struct gl_names *n = st->names;
 	if (!n)
 		return;
@@ -155,7 +156,16 @@ void glf_copy(struct gl_state *to, const struct gl_state *from)
 	struct gl_names *names = to->names;
 	struct gl_texture defaults[GLF_TARGETS];
 	memcpy(defaults, to->defaults, sizeof defaults);
+	struct gl_saved *stack[GLF_ATTRIB_DEPTH];       /* (the attribute stacks stay the destination's) */
+	struct gl_client_saved *client[GLF_ATTRIB_DEPTH];
+	unsigned depth = to->attrib_depth, client_depth = to->client_depth;
+	memcpy(stack, to->attrib_stack, sizeof stack);
+	memcpy(client, to->client_stack, sizeof client);
 	*to = *from;
+	memcpy(to->attrib_stack, stack, sizeof stack);
+	memcpy(to->client_stack, client, sizeof client);
+	to->attrib_depth = depth;
+	to->client_depth = client_depth;
 	to->names = names;
 	memcpy(to->defaults, defaults, sizeof defaults);
 	for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++)
@@ -258,7 +268,6 @@ void glf_bind_texture(struct gl_state *st, uint32_t target, uint32_t name)
 /* ---- pixel transfer -------------------------------------------------------------- */
 
 enum { GL_COLOR_INDEX = 0x1900, GL_RED = 0x1903, GL_GREEN, GL_BLUE, GL_ABGR_EXT = 0x8000 };
-enum { GL_BYTE = 0x1400, GL_SHORT = 0x1402, GL_UNSIGNED_SHORT, GL_INT, GL_UNSIGNED_INT, GL_FLOAT };
 enum { GL_UNPACK_SWAP_BYTES = 0x0CF0, GL_UNPACK_LSB_FIRST, GL_UNPACK_ROW_LENGTH, GL_UNPACK_SKIP_ROWS,
        GL_UNPACK_SKIP_PIXELS, GL_UNPACK_ALIGNMENT, GL_PACK_SWAP_BYTES = 0x0D00, GL_PACK_LSB_FIRST,
        GL_PACK_ROW_LENGTH, GL_PACK_SKIP_ROWS, GL_PACK_SKIP_PIXELS, GL_PACK_ALIGNMENT };

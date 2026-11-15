@@ -50,6 +50,7 @@ typedef struct __GLsync *GLsync;
 
 #define GL_CULL_FACE 0x0B44
 #define GL_DEPTH_TEST 0x0B71
+#define GL_STENCIL_TEST 0x0B90
 #define GL_DITHER 0x0BD0
 #define GL_BLEND 0x0BE2
 #define GL_SCISSOR_TEST 0x0C11
@@ -91,6 +92,14 @@ typedef struct __GLsync *GLsync;
 #define GL_FUNC_SUBTRACT 0x800A
 #define GL_FUNC_REVERSE_SUBTRACT 0x800B
 
+#define GL_KEEP 0x1E00
+#define GL_REPLACE 0x1E01
+#define GL_INCR 0x1E02
+#define GL_DECR 0x1E03
+#define GL_INVERT 0x150A
+#define GL_INCR_WRAP 0x8507
+#define GL_DECR_WRAP 0x8508
+
 #define GL_TRIANGLES 0x0004
 
 #define GL_UNSIGNED_BYTE 0x1401
@@ -104,6 +113,7 @@ typedef struct __GLsync *GLsync;
 #define GL_RGBA8 0x8058
 #define GL_DEPTH_COMPONENT24 0x81A6
 #define GL_DEPTH_COMPONENT32F 0x8CAC
+#define GL_DEPTH32F_STENCIL8 0x8CAD
 
 #define GL_UNPACK_ROW_LENGTH 0x0CF2
 #define GL_UNPACK_ALIGNMENT 0x0CF5
@@ -134,6 +144,7 @@ typedef struct __GLsync *GLsync;
 #define GL_RENDERBUFFER 0x8D41
 #define GL_COLOR_ATTACHMENT0 0x8CE0
 #define GL_DEPTH_ATTACHMENT 0x8D00
+#define GL_DEPTH_STENCIL_ATTACHMENT 0x821A
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
 
 #define GL_ARRAY_BUFFER 0x8892
@@ -179,6 +190,10 @@ typedef struct __GLsync *GLsync;
 	X(void, ColorMask, (GLboolean r, GLboolean g, GLboolean b, GLboolean a)) \
 	X(void, DepthMask, (GLboolean flag)) \
 	X(void, DepthFunc, (GLenum func)) \
+	X(void, ClearStencil, (GLint s)) \
+	X(void, StencilFunc, (GLenum func, GLint ref, GLuint mask)) \
+	X(void, StencilOp, (GLenum sfail, GLenum dpfail, GLenum dppass)) \
+	X(void, StencilMask, (GLuint mask)) \
 	X(void, BlendFunc, (GLenum sfactor, GLenum dfactor)) \
 	X(void, BlendFuncSeparate, (GLenum srgb, GLenum drgb, GLenum salpha, GLenum dalpha)) \
 	X(void, BlendEquation, (GLenum mode)) \

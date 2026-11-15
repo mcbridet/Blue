@@ -86,7 +86,7 @@ static struct raster_cmd tri_cmd(unsigned state, struct raster_vertex a, struct 
 /* The commands drawn by raster.c into cpu_color */
 static void draw_cpu(const struct raster_state *states, const struct raster_cmd *cmds, unsigned n)
 {
-	struct raster_target t = { W, H, cpu_color, cpu_depth };
+	struct raster_target t = { W, H, cpu_color, cpu_depth, NULL };
 	raster_run(&t, states, cmds, n);
 }
 
@@ -339,7 +339,7 @@ static void test_random(struct gpu *g)
 		c->argb = 0xFF102030u;
 		c->z = 1;
 	}
-	struct raster_target cpu = { W, H, cpu_color, cpu_depth };
+	struct raster_target cpu = { W, H, cpu_color, cpu_depth, NULL };
 	raster_clear(&cpu, 0, 0, W, H, true, 0xFF000000u, true, 1);
 	draw_cpu(states, cmds, CMDS);
 	struct gpu_target *t = gpu_target_new(g, W, H);

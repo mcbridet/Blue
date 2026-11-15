@@ -4,7 +4,7 @@
  * ask of hardware (QuickDraw 3D RAVE, OpenGL's fixed function, each through
  * a layer of its own): Gouraud shading, perspective-correct texturing from
  * up to RASTER_UNITS textures, combined in stages with the vertices' colors,
- * fog, alpha test, z functions, blending and color masks. Everything is
+ * fog, alpha test, stencil, z functions, blending and color masks. Everything is
  * plain C on host floats, without fused multiply-adds, so the same input
  * gives the same pixels on every host.
  *
@@ -58,6 +58,9 @@ enum { RASTER_EQ_ADD, RASTER_EQ_SUBTRACT, RASTER_EQ_REVERSE_SUBTRACT, RASTER_EQ_
 enum { RASTER_FOG_NONE, RASTER_FOG_ALPHA, RASTER_FOG_LINEAR, RASTER_FOG_EXP, RASTER_FOG_EXP2 };
 enum { RASTER_ALPHA_NONE, RASTER_ALPHA_LT, RASTER_ALPHA_EQ, RASTER_ALPHA_LE, RASTER_ALPHA_GT,
        RASTER_ALPHA_NE, RASTER_ALPHA_GE, RASTER_ALPHA_TRUE };
+/* What a stencil value becomes (as OpenGL's GL_KEEP...; the wrapping ones as GL_EXT_stencil_wrap's) */
+enum { RASTER_STENCIL_KEEP, RASTER_STENCIL_ZERO, RASTER_STENCIL_REPLACE, RASTER_STENCIL_INCR, RASTER_STENCIL_DECR,
+       RASTER_STENCIL_INVERT, RASTER_STENCIL_INCR_WRAP, RASTER_STENCIL_DECR_WRAP };
 
 /* Texture filters (as OpenGL's; raster.c takes one mipmap level per triangle, so *_LINEAR as *_NEAREST) */
 enum { RASTER_NEAREST, RASTER_LINEAR, RASTER_NEAREST_MIPMAP_NEAREST, RASTER_LINEAR_MIPMAP_NEAREST,
@@ -109,6 +112,16 @@ struct raster_state {
 	unsigned alpha_test;
 	float alpha_ref;
 	/*
+	 * The stencil test (RASTER_Z_NONE: none): passes if the reference's bits
+	 * in stencil_mask compare so with the target's; then each of the
+	 * target's stencil bits in stencil_write becomes the operation's for the
+	 * stencil test failing, the z test failing, or both passing. With it, the
+	 * tests are OpenGL's in its order: alpha, stencil, z.
+	 */
+	unsigned stencil_func;
+	uint8_t stencil_ref, stencil_mask, stencil_write;
+	uint8_t stencil_op[3];
+	/*
 	 * Fragments whose alpha is 0 or less are drawn too (as OpenGL draws
 	 * them); otherwise they leave depth alone, and color too unless they add
 	 * some (as hardware RAVE engines skip transparent texels).
@@ -149,6 +162,7 @@ struct raster_target {
 	int width, height;
 	uint32_t *color;
 	float *depth;
+	uint8_t *stencil;                       /* (NULL: none; then the stencil test passes) */
 };
 
 /* Depth that means "farthest" in the state's z mode */
@@ -174,7 +188,9 @@ struct raster_cmd {
 	uint8_t kind;
 	bool textured;                          /* triangles (see raster_textured()) */
 	bool clear_color, clear_depth;          /* clears: rect's rows within the clip's, to argb (but */
-						/* for color_keep's bits) and z */
+						/* for color_keep's bits) and z, */
+	bool clear_stencil;                     /* ... and the stencil's bits in stencil_write to `stencil` */
+	uint8_t stencil;
 	unsigned state;                         /* index into the states given with the commands */
 	struct raster_vertex v[3];              /* (bitmaps: at v[0].x, y, z) */
 	const struct raster_texture *image;     /* bitmaps */

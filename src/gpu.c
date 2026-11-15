@@ -202,6 +202,7 @@ struct gpu {
 	GLuint blank;                   /* (bound when drawing without a texture: drivers want one) */
 	GLenum blend_eq;                /* as last set (changing them costs, on some drivers) */
 	float blend_color[4];
+	bool stencil;                   /* (the stencil test on) */
 	float anisotropy;
 	float *verts;
 	size_t nverts, verts_cap;       /* (vertices) */
@@ -484,19 +485,21 @@ static bool new_target(struct gpu *g, struct gpu_target *t)
 	gl->RenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, t->width, t->height);
 	gl->GenRenderbuffers(1, &t->depth);
 	gl->BindRenderbuffer(GL_RENDERBUFFER, t->depth);
-	gl->RenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT32F, t->width, t->height);
+	gl->RenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH32F_STENCIL8, t->width, t->height);
 	gl->GenFramebuffers(1, &t->fbo);
 	gl->BindFramebuffer(GL_FRAMEBUFFER, t->fbo);
 	gl->FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, t->color);
-	gl->FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, t->depth);
+	gl->FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, t->depth);
 	if (gl->CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
 		return false;
 	gl->Disable(GL_SCISSOR_TEST);
 	gl->ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 	gl->DepthMask(GL_TRUE);
+	gl->StencilMask(0xFF);
 	gl->ClearColor(0, 0, 0, 0);
 	gl->ClearDepth(0);
-	gl->Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	gl->ClearStencil(0);
+	gl->Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 	gl->Enable(GL_SCISSOR_TEST);
 	return true;
 }
@@ -528,6 +531,13 @@ static GLenum depth_func(const struct raster_state *s)
 					  GL_ALWAYS, GL_NEVER };
 	unsigned f = s->z_func <= RASTER_Z_FALSE ? s->z_func : RASTER_Z_TRUE;
 	return s->perspective_z ? flipped[f] : direct[f];
+}
+
+static GLenum stencil_op(unsigned op)
+{
+	static const GLenum gl[] = { GL_KEEP, GL_ZERO, GL_REPLACE, GL_INCR, GL_DECR, GL_INVERT, GL_INCR_WRAP,
+				     GL_DECR_WRAP };
+	return op < sizeof gl / sizeof gl[0] ? gl[op] : GL_KEEP;
 }
 
 static GLenum blend_factor(unsigned f)
@@ -744,6 +754,11 @@ static void clear(struct gpu *g, const struct gpu_target *t, const struct raster
 		gl->ClearDepth(gl_depth(s, c->z));
 		bits |= GL_DEPTH_BUFFER_BIT;
 	}
+	if (c->clear_stencil) {
+		gl->StencilMask(s->stencil_write);
+		gl->ClearStencil(c->stencil);
+		bits |= GL_STENCIL_BUFFER_BIT;
+	}
 	if (bits)
 		gl->Clear(bits);
 }
@@ -797,6 +812,20 @@ static bool set_state(struct gpu *g, const struct gpu_target *t, const struct ra
 		gl->Enable(GL_DEPTH_TEST);
 		gl->DepthFunc(depth_func(s));
 		gl->DepthMask(s->z_write ? GL_TRUE : GL_FALSE);
+	}
+	if (s->stencil_func == RASTER_Z_NONE) {
+		if (g->stencil)
+			gl->Disable(GL_STENCIL_TEST);
+		g->stencil = false;
+	} else {
+		static const GLenum funcs[] = { GL_ALWAYS, GL_LESS, GL_EQUAL, GL_LEQUAL, GL_GREATER, GL_NOTEQUAL,
+						GL_GEQUAL, GL_ALWAYS, GL_NEVER };
+		gl->Enable(GL_STENCIL_TEST);
+		g->stencil = true;
+		gl->StencilFunc(funcs[s->stencil_func <= RASTER_Z_FALSE ? s->stencil_func : 0], s->stencil_ref,
+				s->stencil_mask);
+		gl->StencilOp(stencil_op(s->stencil_op[0]), stencil_op(s->stencil_op[1]), stencil_op(s->stencil_op[2]));
+		gl->StencilMask(s->stencil_write);
 	}
 	GLenum eq = GL_FUNC_ADD;
 	switch (s->blend) {
@@ -859,7 +888,7 @@ static void copy(struct gpu *g, const struct gpu_target *to, const struct gpu_ta
 	gl->BindFramebuffer(GL_DRAW_FRAMEBUFFER, to->fbo);
 	gl->Disable(GL_SCISSOR_TEST);
 	gl->BlitFramebuffer(0, 0, from->width, from->height, 0, 0, to->width, to->height,
-			    GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+			    GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT, GL_NEAREST);
 	gl->Enable(GL_SCISSOR_TEST);
 	gl->BindFramebuffer(GL_FRAMEBUFFER, 0);
 }
@@ -966,7 +995,7 @@ static bool self_test(struct gpu *g, char *why, size_t why_size)
 	cmds[7].v[0].x = 44.4f;
 	cmds[7].v[0].y = 36.6f;
 
-	struct raster_target cpu = { W, H, cpu_color, cpu_depth };
+	struct raster_target cpu = { W, H, cpu_color, cpu_depth, NULL };
 	for (unsigned k = 0; k < 8; k++) {
 		const struct raster_cmd *c = &cmds[k];
 		const struct raster_state *s = &states[c->state];

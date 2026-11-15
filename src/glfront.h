@@ -72,7 +72,28 @@ enum { GL_ALPHA = 0x1906, GL_RGB, GL_RGBA, GL_LUMINANCE, GL_LUMINANCE_ALPHA, GL_
 /* glEnable's capabilities the front end draws by (the rest are kept: see glf_enable()) */
 enum { GL_POINT_SMOOTH = 0x0B10, GL_LINE_SMOOTH = 0x0B20, GL_CULL_FACE = 0x0B44, GL_LIGHTING = 0x0B50,
        GL_FOG = 0x0B60, GL_DEPTH_TEST = 0x0B71, GL_ALPHA_TEST = 0x0BC0, GL_DITHER = 0x0BD0, GL_BLEND = 0x0BE2,
-       GL_SCISSOR_TEST = 0x0C11, GL_TEXTURE_1D = 0x0DE0, GL_TEXTURE_2D = 0x0DE1 };
+       GL_SCISSOR_TEST = 0x0C11, GL_TEXTURE_1D = 0x0DE0, GL_TEXTURE_2D = 0x0DE1, GL_TEXTURE_GEN_S = 0x0C60,
+       GL_LIGHT0 = 0x4000, GL_NORMALIZE = 0x0BA1, GL_RESCALE_NORMAL = 0x803A, GL_COLOR_MATERIAL = 0x0B57,
+       GL_COLOR_SUM_EXT = 0x8458, GL_CLIP_PLANE0 = 0x3000, GL_POLYGON_OFFSET_POINT = 0x2A01,
+       GL_POLYGON_OFFSET_LINE = 0x2A02, GL_POLYGON_OFFSET_FILL = 0x8037, GL_STENCIL_TEST = 0x0B90 };
+/* Lighting, fog, texture coordinate generation */
+enum { GL_AMBIENT = 0x1200, GL_DIFFUSE, GL_SPECULAR, GL_POSITION, GL_SPOT_DIRECTION, GL_SPOT_EXPONENT,
+       GL_SPOT_CUTOFF, GL_CONSTANT_ATTENUATION, GL_LINEAR_ATTENUATION, GL_QUADRATIC_ATTENUATION };
+enum { GL_EMISSION = 0x1600, GL_SHININESS, GL_AMBIENT_AND_DIFFUSE, GL_COLOR_INDEXES };
+enum { GL_LIGHT_MODEL_LOCAL_VIEWER = 0x0B51, GL_LIGHT_MODEL_TWO_SIDE, GL_LIGHT_MODEL_AMBIENT,
+       GL_LIGHT_MODEL_COLOR_CONTROL = 0x81F8, GL_SINGLE_COLOR, GL_SEPARATE_SPECULAR_COLOR };
+enum { GL_FOG_INDEX = 0x0B61, GL_FOG_DENSITY, GL_FOG_START, GL_FOG_END, GL_FOG_MODE, GL_FOG_COLOR,
+       GL_EXP = 0x0800, GL_EXP2 };
+enum { GL_S = 0x2000, GL_T, GL_R, GL_Q, GL_TEXTURE_GEN_MODE = 0x2500, GL_OBJECT_PLANE, GL_EYE_PLANE,
+       GL_EYE_LINEAR = 0x2400, GL_OBJECT_LINEAR, GL_SPHERE_MAP, GL_NORMAL_MAP_NV = 0x8511, GL_REFLECTION_MAP_NV };
+/* Polygons, stencil, hints */
+enum { GL_POINT = 0x1B00, GL_LINE, GL_FILL };
+enum { GL_DONT_CARE = 0x1100, GL_FASTEST, GL_NICEST };
+enum { GL_KEEP = 0x1E00, GL_INCR = 0x1E02, GL_DECR, GL_INVERT = 0x150A, GL_INCR_WRAP_EXT = 0x8507,
+       GL_DECR_WRAP_EXT };
+/* Types of arrays' and indices' values */
+enum { GL_BYTE = 0x1400, GL_SHORT = 0x1402, GL_UNSIGNED_SHORT, GL_INT, GL_UNSIGNED_INT, GL_FLOAT,
+       GL_DOUBLE = 0x140A };
 
 #define GLF_GUARD 4.0f                  /* the guard band, in view volumes (see above) */
 #define GLF_MAX_SIZE 4096               /* viewports, drawables */
@@ -82,6 +103,10 @@ enum { GL_POINT_SMOOTH = 0x0B10, GL_LINE_SMOOTH = 0x0B20, GL_CULL_FACE = 0x0B44,
 #define GLF_TEXTURE_UNITS RASTER_UNITS
 #define GLF_MAX_TEXTURE_SIZE 1024
 #define GLF_TEXTURE_LEVELS 11                   /* (1024 down to 1) */
+#define GLF_LIGHTS 8
+#define GLF_CLIP_PLANES 6
+#define GLF_ATTRIB_DEPTH 16                     /* glPushAttrib's stack, and glPushClientAttrib's */
+#define GLF_MAX_ELEMENTS 65536                  /* (GL_MAX_ELEMENTS_VERTICES and _INDICES: advice) */
 _Static_assert(GLF_TEXTURE_LEVELS <= RASTER_MAX_LEVELS, "raster.h's levels");
 
 struct gl_matrices {
@@ -89,16 +114,27 @@ struct gl_matrices {
 	unsigned depth, max;
 };
 
-/* A vertex on its way: clip coordinates, then what's interpolated */
+/* A vertex on its way: clip coordinates, then what's interpolated (all floats: clipping interpolates them) */
 struct gl_vertex {
 	float clip[4];
-	float color[4];                         /* r, g, b, a (clamped) */
+	float color[2][4];                      /* r, g, b, a (clamped): the front's, the back's */
+	float secondary[2][4];                  /* (lighting's specular, or the secondary color) */
 	float tex[GLF_TEXTURE_UNITS][4];
+	float fog;                              /* the fog coordinate (eye-space |z|) */
+	float user[GLF_CLIP_PLANES];            /* distances from the user clip planes (enabled ones) */
+	float edge;                             /* (polygon modes: the edge from this vertex to the next is drawn) */
 };
 
-/* Indexes of the capabilities in gl_state.caps (glfront.c's table has their names, these first) */
+/*
+ * Indexes of the capabilities in gl_state.caps (glfront.c's table has their
+ * names, these first; per texture unit ones have bit k for unit k)
+ */
 enum { GLF_CAP_DEPTH_TEST, GLF_CAP_CULL_FACE, GLF_CAP_BLEND, GLF_CAP_ALPHA_TEST, GLF_CAP_SCISSOR_TEST,
-       GLF_CAP_DITHER, GLF_CAP_TEXTURE_1D, GLF_CAP_TEXTURE_2D, GLF_CAPS = 80 };
+       GLF_CAP_DITHER, GLF_CAP_TEXTURE_1D, GLF_CAP_TEXTURE_2D, GLF_CAP_TEXTURE_GEN_S,     /* (s, t, r, q) */
+       GLF_CAP_LIGHTING = GLF_CAP_TEXTURE_GEN_S + 4, GLF_CAP_LIGHT0, GLF_CAP_NORMALIZE = GLF_CAP_LIGHT0 + GLF_LIGHTS,
+       GLF_CAP_RESCALE_NORMAL, GLF_CAP_COLOR_MATERIAL, GLF_CAP_FOG, GLF_CAP_COLOR_SUM, GLF_CAP_CLIP_PLANE0,
+       GLF_CAP_OFFSET_POINT = GLF_CAP_CLIP_PLANE0 + GLF_CLIP_PLANES, GLF_CAP_OFFSET_LINE, GLF_CAP_OFFSET_FILL,
+       GLF_CAP_STENCIL_TEST, GLF_CAP_NAMED, GLF_CAPS = 80 };
 
 /* A texture object (1D or 2D): its levels, its parameters */
 enum { GLF_1D, GLF_2D, GLF_TARGETS };
@@ -142,6 +178,39 @@ struct gl_unit {
 	float env_color[4];                     /* r, g, b, a */
 };
 
+/* Lighting (gllight.c): a light, in eye coordinates as it was given; a face's material */
+struct gl_light {
+	float ambient[4], diffuse[4], specular[4];
+	float position[4], spot_direction[3];
+	float spot_exponent, spot_cutoff;
+	float attenuation[3];                   /* constant, linear, quadratic */
+};
+struct gl_material {
+	float ambient[4], diffuse[4], specular[4], emission[4];
+	float shininess;
+};
+
+/* A texture coordinate's generation (s, t, r or q of a unit): GL_EYE_LINEAR... and its planes */
+struct gl_texgen {
+	uint32_t mode;
+	float object[4], eye[4];                /* (the eye plane in eye coordinates, as it was given) */
+};
+
+/* A client array (glVertexPointer's and the rest): where it is in the program's memory, and how */
+enum { GLF_ARRAY_VERTEX, GLF_ARRAY_NORMAL, GLF_ARRAY_COLOR, GLF_ARRAY_SECONDARY, GLF_ARRAY_EDGE, GLF_ARRAY_INDEX,
+       GLF_ARRAY_TEX0, GLF_ARRAYS = GLF_ARRAY_TEX0 + GLF_TEXTURE_UNITS };
+struct gl_array {
+	bool enabled;
+	int32_t size, stride;                   /* (the stride as given: 0 for packed) */
+	uint32_t type, pointer;
+	/* (for drawing: elements [first, first + count) on the host, element `first` at data; NULL: none) */
+	const uint8_t *data;
+	uint32_t first, count;
+};
+
+struct gl_saved;                                /* (glPushAttrib's) */
+struct gl_client_saved;
+
 struct gl_state {
 	uint32_t error;                         /* the first since glGetError() */
 	uint8_t caps[GLF_CAPS];                 /* enabled (per texture unit ones: bit k for unit k) */
@@ -159,6 +228,35 @@ struct gl_state {
 	float blend_color[4];                   /* r, g, b, a */
 	float alpha_ref;
 	float point_size, line_width;
+	uint32_t polygon_mode[2];               /* the front's, the back's */
+	float offset_factor, offset_units;
+	int32_t line_stipple_factor;
+	uint16_t line_stipple;
+	uint8_t polygon_stipple[128];           /* (kept: neither stipple is drawn) */
+	/* stencil */
+	uint32_t stencil_func, stencil_fail, stencil_zfail, stencil_zpass;
+	int32_t stencil_ref, clear_stencil;
+	uint32_t stencil_mask, stencil_write_mask;
+	/* hints: perspective correction, points, lines, polygons, fog, clip volume clipping, transform (Apple's) */
+	uint32_t hints[7];
+	/* lighting, fog (gllight.c) */
+	struct gl_light lights[GLF_LIGHTS];
+	struct gl_material material[2];         /* the front's, the back's */
+	float light_model_ambient[4];
+	bool local_viewer, two_side, separate_specular;
+	uint32_t color_material_face, color_material_mode;
+	uint32_t fog_mode;
+	float fog_density, fog_start, fog_end, fog_color[4];
+	/* texture coordinate generation, user clip planes (eye coordinates) */
+	struct gl_texgen texgen[GLF_TEXTURE_UNITS][4];
+	float clip_planes[GLF_CLIP_PLANES][4];
+	/* client arrays (glarray.c) */
+	struct gl_array arrays[GLF_ARRAYS];
+	int32_t lock_first, lock_count;         /* glLockArraysEXT's */
+	/* glPushAttrib's and glPushClientAttrib's stacks */
+	struct gl_saved *attrib_stack[GLF_ATTRIB_DEPTH];
+	struct gl_client_saved *client_stack[GLF_ATTRIB_DEPTH];
+	unsigned attrib_depth, client_depth;
 	/* textures */
 	struct gl_names *names;                 /* (the context's: see glf_attach()) */
 	struct gl_texture defaults[GLF_TARGETS];        /* texture 0 */
@@ -171,6 +269,8 @@ struct gl_state {
 	struct gl_matrices modelview, projection, texture[GLF_TEXTURE_UNITS];
 	float mvp[16];                          /* projection times modelview */
 	bool mvp_stale;
+	float normal_matrix[9], rescale;        /* (the modelview's upper 3x3 inverted, for normals; its scale) */
+	bool normal_stale;
 	bool texmat_identity[GLF_TEXTURE_UNITS], texmat_stale;
 	/* current attributes */
 	float color[4], secondary_color[4], normal[3], tex[GLF_TEXTURE_UNITS][4], fog_coord;
@@ -180,6 +280,8 @@ struct gl_state {
 	uint32_t mode;
 	unsigned count;                         /* vertices since glBegin */
 	struct gl_vertex vb[3];                 /* (what the primitive so far needs) */
+	int polygon_face;                       /* (the last triangle's: 0 front, 1 back, -1 not drawn; and */
+	float polygon_offset;                   /* its offset: for a polygon's closing edge in polygon modes) */
 	/* the raster state drawing takes, made again when the GL state changes */
 	struct raster_state raster;
 	bool raster_stale, draw_none, textured;
@@ -193,7 +295,7 @@ struct gl_state {
 struct gl_target {
 	struct surface *surface;
 	int width, height;
-	unsigned depth_bits, alpha_bits;
+	unsigned depth_bits, alpha_bits, stencil_bits;
 };
 
 /* OpenGL's initial state; the viewport and scissor box are set when there's a drawable (glf_viewport()) */
@@ -227,6 +329,8 @@ static inline void glf_changed(struct gl_state *st)
 /* glEnable and glDisable; false for what isn't a capability. glIsEnabled: -1 for that. */
 bool glf_enable(struct gl_state *st, uint32_t cap, bool on);
 int glf_is_enabled(const struct gl_state *st, uint32_t cap);
+/* A capability's index in gl_state.caps (-1: not one) */
+int glf_cap(uint32_t cap);
 
 /* State: as gl* (each checks its arguments, and sets an error if they're wrong) */
 void glf_viewport(struct gl_state *st, int32_t x, int32_t y, int32_t w, int32_t h);
@@ -245,6 +349,23 @@ void glf_shade_model(struct gl_state *st, uint32_t mode);
 void glf_point_size(struct gl_state *st, float size);
 void glf_line_width(struct gl_state *st, float width);
 void glf_active_texture(struct gl_state *st, uint32_t unit);
+void glf_polygon_mode(struct gl_state *st, uint32_t face, uint32_t mode);
+void glf_polygon_offset(struct gl_state *st, float factor, float units);
+void glf_line_stipple(struct gl_state *st, int32_t factor, uint16_t pattern);
+void glf_hint(struct gl_state *st, uint32_t target, uint32_t mode);
+void glf_stencil_func(struct gl_state *st, uint32_t func, int32_t ref, uint32_t mask);
+void glf_stencil_op(struct gl_state *st, uint32_t fail, uint32_t zfail, uint32_t zpass);
+void glf_stencil_mask(struct gl_state *st, uint32_t mask);
+
+/*
+ * glPushAttrib and glPopAttrib; glPushClientAttrib and glPopClientAttrib.
+ * glf_free() lets go of what they keep (and glf_detach() does it too).
+ */
+void glf_push_attrib(struct gl_state *st, uint32_t mask);
+void glf_pop_attrib(struct gl_state *st);
+void glf_push_client_attrib(struct gl_state *st, uint32_t mask);
+void glf_pop_client_attrib(struct gl_state *st);
+void glf_free(struct gl_state *st);
 
 /* Matrices: glMatrixMode, glLoadIdentity, glLoadMatrix, glMultMatrix (column-major), and the rest */
 void glf_matrix_mode(struct gl_state *st, uint32_t mode);
@@ -269,11 +390,80 @@ void glf_begin(struct gl_state *st, uint32_t mode);
 void glf_vertex(struct gl_state *st, const struct gl_target *t, const float v[4]);
 void glf_end(struct gl_state *st, const struct gl_target *t);
 
-/* glClear (GL_COLOR_BUFFER_BIT and GL_DEPTH_BUFFER_BIT; the others are accepted) */
+/* glClear (GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT and GL_STENCIL_BUFFER_BIT; the accumulation buffer's is taken) */
 void glf_clear(struct gl_state *st, const struct gl_target *t, uint32_t mask);
 
 /* A state's values (glGetDoublev's: up to 16); 0 for what the front end doesn't keep */
 unsigned glf_get(struct gl_state *st, uint32_t pname, double *v);
+
+/* ---- lighting, fog, texture coordinate generation, user clip planes (gllight.c) ---- */
+
+/* (glf_init()'s part) */
+void glf_lighting_init(struct gl_state *st);
+
+/*
+ * glLight, glLightModel, glMaterial, glColorMaterial, glFog: v has as many
+ * values as pname takes (integers given as GL converts them: colors to
+ * -1..1, the rest as they are)
+ */
+void glf_light(struct gl_state *st, uint32_t light, uint32_t pname, const float *v);
+void glf_light_model(struct gl_state *st, uint32_t pname, const float *v);
+void glf_material(struct gl_state *st, uint32_t face, uint32_t pname, const float *v);
+void glf_color_material(struct gl_state *st, uint32_t face, uint32_t mode);
+void glf_fog(struct gl_state *st, uint32_t pname, const float *v);
+/* glTexGen (for the active texture unit) and glClipPlane */
+void glf_tex_gen(struct gl_state *st, uint32_t coord, uint32_t pname, const double *v);
+void glf_clip_plane(struct gl_state *st, uint32_t plane, const double eq[4]);
+/* glGetLight, glGetMaterial, glGetTexGen, glGetClipPlane: the values, how many (0: an error, set) */
+unsigned glf_get_light(struct gl_state *st, uint32_t light, uint32_t pname, double *v);
+unsigned glf_get_material(struct gl_state *st, uint32_t face, uint32_t pname, double *v);
+unsigned glf_get_tex_gen(struct gl_state *st, uint32_t coord, uint32_t pname, double *v);
+unsigned glf_get_clip_plane(struct gl_state *st, uint32_t plane, double *v);
+/* glf_get()'s for lighting's and fog's state (0: not theirs) */
+unsigned glf_get_lighting(struct gl_state *st, uint32_t pname, double *v);
+
+/*
+ * A vertex's eye-space work: its colors (lit, or the current ones), fog
+ * coordinate, texture coordinates (generated, then through the texture
+ * matrices) and clip distances, from its object coordinates and the
+ * current attributes; clip already set.
+ */
+void glf_shade(struct gl_state *st, const float obj[4], struct gl_vertex *v);
+
+/* ---- client arrays, glDrawArrays and glDrawElements (glarray.c) ---- */
+
+/* (glf_init()'s part) */
+void glf_arrays_init(struct gl_state *st);
+
+/* glVertexPointer and the rest (array: GLF_ARRAY_..., the client active unit's for texture coordinates) */
+void glf_array_pointer(struct gl_state *st, unsigned array, int32_t size, uint32_t type, int32_t stride,
+		       uint32_t pointer);
+/* glEnableClientState and glDisableClientState; false for what isn't an array. Is it enabled (-1: not an array)? */
+bool glf_enable_client(struct gl_state *st, uint32_t cap, bool on);
+int glf_array_enabled(const struct gl_state *st, uint32_t cap);
+void glf_interleaved_arrays(struct gl_state *st, uint32_t format, int32_t stride, uint32_t pointer);
+void glf_lock_arrays(struct gl_state *st, int32_t first, int32_t count);
+void glf_unlock_arrays(struct gl_state *st);
+/* An array's (GLF_ARRAY_...) stride, as drawn; and the bytes elements [0, n) take from its pointer */
+uint32_t glf_array_stride(const struct gl_array *a);
+uint64_t glf_array_bytes(const struct gl_array *a, uint32_t n);
+/* glf_get()'s for the arrays' state (0: not theirs); glGetPointerv's (false: not an array's) */
+unsigned glf_get_arrays(struct gl_state *st, uint32_t pname, double *v);
+bool glf_get_pointer(const struct gl_state *st, uint32_t pname, uint32_t *p);
+
+/*
+ * Drawing from the arrays: each enabled one's data must be set (to the
+ * bytes on the host of the elements that can be read: see gl_array).
+ * Elements outside them leave that array's attribute as it is.
+ * glArrayElement; glDrawArrays; glDrawElements and glDrawRangeElements
+ * (the indices big-endian, as type).
+ */
+void glf_array_element(struct gl_state *st, const struct gl_target *t, int32_t i);
+void glf_draw_arrays(struct gl_state *st, const struct gl_target *t, uint32_t mode, int32_t first, int32_t count);
+void glf_draw_elements(struct gl_state *st, const struct gl_target *t, uint32_t mode, int32_t count, uint32_t type,
+		       const uint8_t *indices);
+/* The bytes an index of this type takes (0: not a type of index) */
+unsigned glf_index_size(uint32_t type);
 
 /* ---- textures (gltex.c) ---- */
 
