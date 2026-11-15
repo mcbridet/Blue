@@ -307,7 +307,7 @@ static void test_volume(void)
 	uint8_t pef[16], fork[1024];
 	CHECK(pread(fd, pef, 16, (off_t)al_bl_st * 512 + (off_t)be16(f + 74) * al_siz) == 16);
 	CHECK(!memcmp(pef, "Joy!peffpwpc", 12));
-	CHECK_EQ(be16(mdb + 12), TOOLS_FILES + TOOLS_GL_FILES); /* and the 3D engine, the OpenGL libraries */
+	CHECK_EQ(be16(mdb + 12), TOOLS_FILES);                  /* and the 3D engine, the OpenGL libraries */
 	uint32_t rlen = be32(f + 36), len = 0;
 	CHECK(rlen <= sizeof fork);
 	CHECK(pread(fd, fork, rlen, (off_t)al_bl_st * 512 + (off_t)be16(f + 86) * al_siz) == (ssize_t)rlen);

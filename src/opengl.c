@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "be.h"
 #include "opengl_table.h"
@@ -115,11 +116,14 @@ enum { OPTION_SWAP_RECT, OPTION_BUFFER_RECT, OPTION_SWAP_LIMIT, OPTION_COLORMAP_
 #define RENDERER_ID 0x00021000u
 #define VIDEO_MEMORY (32u << 20)
 #define TEXTURE_MEMORY (32u << 20)
-#define MAX_TEXTURE_SIZE 1024
 static const char vendor[] = "ATI Technologies Inc.";
 static const char renderer[] = "Rage 128 OpenGL Engine";
 static const char version[] = "1.2 syshm";
-static const char extensions[] = "";
+/* (Mac OS 9.2.2's engine's, in its order, but only those syshm does) */
+static const char extensions[] = "GL_APPLE_packed_pixel GL_ARB_transpose_matrix GL_EXT_clip_volume_hint "
+				 "GL_ARB_multitexture GL_ARB_texture_env_add GL_EXT_blend_color GL_EXT_blend_minmax "
+				 "GL_EXT_blend_subtract GL_EXT_texture_env_add GL_EXT_abgr GL_EXT_bgra "
+				 "GL_SGIS_texture_edge_clamp";
 /* aglErrorString()'s, as Apple's */
 static const char *const agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE] = {
 	"invalid pixel format attribute", "invalid renderer property", "invalid pixel format",
@@ -641,10 +645,23 @@ static uint32_t data_of(const struct opengl *o, const struct opengl_instance *in
 
 static void free_context(struct opengl *o, struct opengl_context *x)
 {
-	(void)o;
 	if (x->has_surface)
 		surface_free(&x->surface);
+	glf_detach(&x->st, o->gpu);
 	memset(x, 0, sizeof *x);
+}
+
+/* Textures retired since, freed if no context has drawing recorded that could use them */
+static void free_retired(struct opengl *o)
+{
+	for (unsigned i = 0; i < OPENGL_INSTANCES; i++)
+		for (unsigned k = 0; k < OPENGL_CONTEXTS; k++)
+			if (o->inst[i].ctx[k].has_surface && surface_busy(&o->inst[i].ctx[k].surface))
+				return;
+	for (unsigned i = 0; i < OPENGL_INSTANCES; i++)
+		for (unsigned k = 0; k < OPENGL_CONTEXTS; k++)
+			if (o->inst[i].ctx[k].used && o->inst[i].ctx[k].st.names)
+				glf_free_retired(o->inst[i].ctx[k].st.names, o->gpu);
 }
 
 static void free_instance(struct opengl *o, struct opengl_instance *in)
@@ -789,10 +806,32 @@ static void show(struct opengl *o, struct opengl_context *x)
 {
 	if (!x->has_surface || x->kind == DRAWABLE_NONE)
 		return;
+	struct timespec t0, t1;
+	if (o->fps)
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+	bool gpu = x->surface.gpu != NULL;
 	if (!surface_finish(&x->surface))
 		lose_gpu(o);
 	else if (x->surface.gpu)
 		o->gpu_frames++;
+	free_retired(o);
+	if (o->fps) {                   /* (SYSHM_GL_FPS: the frame rate, every second of host time) */
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		double now = (double)t1.tv_sec + 1e-9 * (double)t1.tv_nsec;
+		o->fps_drawing += now - ((double)t0.tv_sec + 1e-9 * (double)t0.tv_nsec);
+		o->fps_frames++;
+		if (!o->fps_since) {
+			o->fps_since = now;
+		} else if (now - o->fps_since >= 1) {
+			double span = now - o->fps_since;
+			printf("opengl: %.1f frames/s %s, waiting for drawing %.0f%% of the time\n", o->fps_frames / span,
+			       gpu ? "on the GPU" : "in software", 100 * o->fps_drawing / span);
+			fflush(stdout);
+			o->fps_since = now;
+			o->fps_frames = 0;
+			o->fps_drawing = 0;
+		}
+	}
 	x->frames++;
 	o->frames++;
 	int l = 0, t = 0, r = x->width, b = x->height;
@@ -980,13 +1019,93 @@ static unsigned gl_get(struct opengl_context *x, uint32_t pname, double *v)
 	bool deep = x->pixel_size == 32;
 	switch (pname) {
 	case GL_DOUBLEBUFFER: v[0] = (x->format & PF_DOUBLE) != 0; return 1;
-	case GL_MAX_TEXTURE_SIZE: v[0] = MAX_TEXTURE_SIZE; return 1;
+	case GL_MAX_TEXTURE_SIZE: v[0] = GLF_MAX_TEXTURE_SIZE; return 1;
 	case GL_RED_BITS: case GL_GREEN_BITS: case GL_BLUE_BITS: v[0] = deep ? 8 : 5; return 1;
 	case GL_ALPHA_BITS: v[0] = deep ? 8 : 0; return 1;
 	case GL_DEPTH_BITS: v[0] = x->depth_bits; return 1;
 	case GL_STENCIL_BITS: v[0] = x->stencil_bits; return 1;
 	default: return 0;
 	}
+}
+
+/* glGet*v's values into the program's memory, as fn's type (glGetBooleanv's... or glGetTexParameteriv's...) */
+static void put_values(struct mem *m, uint32_t at, char type, uint32_t pname, const double *v, unsigned n)
+{
+	unsigned size = type == 'B' ? 1 : type == 'd' ? 8 : 4;
+	if (!writable(m, at, n * size))
+		return;
+	for (unsigned k = 0; k < n; k++, at += size) {
+		if (type == 'B') {
+			mem_w8(m, at, v[k] != 0);
+		} else if (type == 'i') {
+			double d = scaled(pname) ? (v[k] < -1 ? -1 : v[k] > 1 ? 1 : v[k]) * 2147483647.0 : floor(v[k] + 0.5);
+			d = d < -2147483648.0 ? -2147483648.0 : d > 2147483647.0 ? 2147483647.0 : d;
+			mem_w32(m, at, (uint32_t)(int32_t)d);
+		} else if (type == 'f') {
+			float f = (float)v[k];
+			uint32_t b;
+			memcpy(&b, &f, 4);
+			mem_w32(m, at, b);
+		} else {
+			uint64_t b;
+			memcpy(&b, &v[k], 8);
+			mem_w64(m, at, b);
+		}
+	}
+}
+
+/* An integer as a color component (glTexEnviv's, glTexParameteriv's): -1..1 */
+static float int_color(int32_t c)
+{
+	return (float)((2.0 * c + 1) / 4294967295.0);
+}
+
+/* glTexParameterv's and glTexEnvv's values (4 for colors, else 1), as floats; false if they can't be read */
+static bool vector_arg(struct mem *m, uint32_t at, uint32_t pname, bool ints, float *v)
+{
+	bool color = pname == 0x1004 || pname == GL_TEXTURE_ENV_COLOR;     /* (GL_TEXTURE_BORDER_COLOR) */
+	unsigned n = color ? 4 : 1;
+	if (!readable(m, at, 4 * n))
+		return false;
+	for (unsigned k = 0; k < n; k++) {
+		uint32_t w = mem_r32(m, at + 4 * k);
+		if (!ints)
+			memcpy(&v[k], &w, 4);
+		else
+			v[k] = color ? int_color((int32_t)w) : (float)(int32_t)w;
+	}
+	return true;
+}
+
+/* glTexImage1D and 2D, glTexSubImage1D and 2D: the image's bytes there to be read (or none given) */
+static void tex_image(struct opengl *o, struct gl_state *st, bool sub, uint32_t target, int32_t level, int32_t internal,
+		      int32_t x, int32_t y, int32_t w, int32_t h, int32_t border, uint32_t format, uint32_t type,
+		      uint32_t pixels)
+{
+	size_t bytes = glf_image_bytes(&st->unpack, format, type, w, h);
+	const uint8_t *p = NULL;
+	if (pixels && bytes) {
+		if (bytes > (64u << 20) || !readable(o->mem, pixels, (uint32_t)bytes))
+			return;                 /* (the program would have crashed reading it) */
+		p = mem_ptr(o->mem, pixels);
+	}
+	if (sub)
+		glf_tex_sub_image(st, target, level, x, y, w, h, format, type, p);
+	else
+		glf_tex_image(st, target, level, internal, w, h, border, format, type, p);
+}
+
+/* glDeleteTextures' one: no longer bound in any context of its namespace */
+static void delete_texture(struct opengl *o, struct opengl_context *x, uint32_t name)
+{
+	const struct gl_texture *t = glf_texture(&x->st, name);
+	if (!t)
+		return;
+	for (unsigned i = 0; i < OPENGL_INSTANCES; i++)
+		for (unsigned k = 0; k < OPENGL_CONTEXTS; k++)
+			if (o->inst[i].ctx[k].used && o->inst[i].ctx[k].st.names == x->st.names)
+				glf_unbind(&o->inst[i].ctx[k].st, t);
+	glf_delete_texture(&x->st, name);
 }
 
 static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn, const union arg *a)
@@ -1085,39 +1204,130 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 	case F_glGetDoublev: {
 		double v[16];
 		unsigned n = gl_get(x, a[0].u, v);
-		unsigned size = fn == F_glGetBooleanv ? 1 : fn == F_glGetDoublev ? 8 : 4;
 		if (!n) {
 			glf_error(st, GL_INVALID_ENUM);
 			return 0;
 		}
-		if (!writable(m, a[1].u, n * size))
-			return 0;
-		for (unsigned k = 0; k < n; k++) {
-			uint32_t at = a[1].u + k * size;
-			if (fn == F_glGetBooleanv) {
-				mem_w8(m, at, v[k] != 0);
-			} else if (fn == F_glGetIntegerv) {
-				double d = scaled(a[0].u) ? (v[k] < -1 ? -1 : v[k] > 1 ? 1 : v[k]) * 2147483647.0 :
-					   floor(v[k] + 0.5);
-				d = d < -2147483648.0 ? -2147483648.0 : d > 2147483647.0 ? 2147483647.0 : d;
-				mem_w32(m, at, (uint32_t)(int32_t)d);
-			} else if (fn == F_glGetFloatv) {
-				float f = (float)v[k];
-				uint32_t b;
-				memcpy(&b, &f, 4);
-				mem_w32(m, at, b);
-			} else {
-				uint64_t b;
-				memcpy(&b, &v[k], 8);
-				mem_w64(m, at, b);
-			}
-		}
+		put_values(m, a[1].u, fn == F_glGetBooleanv ? 'B' : fn == F_glGetIntegerv ? 'i' :
+				      fn == F_glGetFloatv ? 'f' : 'd', a[0].u, v, n);
 		return 0;
 	}
 	case F_glFlush:
 	case F_glFinish:
 		if (!(x->format & PF_DOUBLE))
 			show(o, x);
+		return 0;
+	/* textures */
+	case F_glBindTexture: glf_bind_texture(st, a[0].u, a[1].u); return 0;
+	case F_glGenTextures:
+		if (a[0].i < 0) {
+			glf_error(st, GL_INVALID_VALUE);
+			return 0;
+		}
+		if (a[0].i > (1 << 20) || !writable(m, a[1].u, 4 * a[0].u))
+			return 0;
+		for (uint32_t k = 0; k < a[0].u; k++) {
+			uint32_t name;
+			glf_gen_textures(st, 1, &name);
+			mem_w32(m, a[1].u + 4 * k, name);
+		}
+		return 0;
+	case F_glDeleteTextures:
+		if (a[0].i < 0) {
+			glf_error(st, GL_INVALID_VALUE);
+			return 0;
+		}
+		if (a[0].i > (1 << 20) || !readable(m, a[1].u, 4 * a[0].u))
+			return 0;
+		for (uint32_t k = 0; k < a[0].u; k++)
+			delete_texture(o, x, mem_r32(m, a[1].u + 4 * k));
+		return 0;
+	case F_glIsTexture: return glf_is_texture(st, a[0].u);
+	case F_glAreTexturesResident: return 1;         /* (all are: then the list isn't written) */
+	case F_glPrioritizeTextures: return 0;
+	case F_glTexImage1D:
+		tex_image(o, st, false, a[0].u, a[1].i, a[2].i, 0, 0, a[3].i, 1, a[4].i, a[5].u, a[6].u, a[7].u);
+		return 0;
+	case F_glTexImage2D:
+		tex_image(o, st, false, a[0].u, a[1].i, a[2].i, 0, 0, a[3].i, a[4].i, a[5].i, a[6].u, a[7].u, a[8].u);
+		return 0;
+	case F_glTexSubImage1D:
+		tex_image(o, st, true, a[0].u, a[1].i, 0, a[2].i, 0, a[3].i, 1, 0, a[4].u, a[5].u, a[6].u);
+		return 0;
+	case F_glTexSubImage2D:
+		tex_image(o, st, true, a[0].u, a[1].i, 0, a[2].i, a[3].i, a[4].i, a[5].i, 0, a[6].u, a[7].u, a[8].u);
+		return 0;
+	case F_glTexParameteri:
+	case F_glTexParameterf:
+	case F_glTexEnvi:
+	case F_glTexEnvf: {
+		float v[4] = { fn == F_glTexParameteri || fn == F_glTexEnvi ? (float)a[2].i : a[2].f, 0, 0, 0 };
+		if (fn == F_glTexEnvi || fn == F_glTexEnvf)
+			glf_tex_env(st, a[0].u, a[1].u, v);
+		else
+			glf_tex_parameter(st, a[0].u, a[1].u, v);
+		return 0;
+	}
+	case F_glTexParameteriv:
+	case F_glTexParameterfv:
+	case F_glTexEnviv:
+	case F_glTexEnvfv: {
+		float v[4];
+		bool env = fn == F_glTexEnviv || fn == F_glTexEnvfv;
+		if (vector_arg(m, a[2].u, a[1].u, fn == F_glTexParameteriv || fn == F_glTexEnviv, v)) {
+			if (env)
+				glf_tex_env(st, a[0].u, a[1].u, v);
+			else
+				glf_tex_parameter(st, a[0].u, a[1].u, v);
+		}
+		return 0;
+	}
+	case F_glGetTexParameteriv:
+	case F_glGetTexParameterfv:
+	case F_glGetTexEnviv:
+	case F_glGetTexEnvfv:
+	case F_glGetTexLevelParameteriv:
+	case F_glGetTexLevelParameterfv: {
+		double v[4];
+		bool level = fn == F_glGetTexLevelParameteriv || fn == F_glGetTexLevelParameterfv;
+		unsigned n = level ? glf_get_tex_level_parameter(st, a[0].u, a[1].i, a[2].u, v) :
+			     fn == F_glGetTexEnviv || fn == F_glGetTexEnvfv ? glf_get_tex_env(st, a[0].u, a[1].u, v) :
+			     glf_get_tex_parameter(st, a[0].u, a[1].u, v);
+		if (!n) {
+			glf_error(st, GL_INVALID_ENUM);
+			return 0;
+		}
+		bool ints = fn == F_glGetTexParameteriv || fn == F_glGetTexEnviv || fn == F_glGetTexLevelParameteriv;
+		put_values(m, level ? a[3].u : a[2].u, ints ? 'i' : 'f', ints && n == 4 ? 0x0B00 : 0, v, n);
+		return 0;
+	}
+	case F_glPixelStorei: glf_pixel_store(st, a[0].u, a[1].i); return 0;
+	case F_glPixelStoref: glf_pixel_store(st, a[0].u, (int32_t)floorf(a[1].f + 0.5f)); return 0;
+	case F_glReadPixels: {
+		size_t bytes = glf_image_bytes(&st->pack, a[4].u, a[5].u, a[2].i, a[3].i);
+		if (!bytes) {
+			glf_error(st, GL_INVALID_ENUM);
+			return 0;
+		}
+		if (a[2].i < 0 || a[3].i < 0) {
+			glf_error(st, GL_INVALID_VALUE);
+			return 0;
+		}
+		if (bytes > (64u << 20) || !writable(m, a[6].u, (uint32_t)bytes))
+			return 0;
+		if (x->has_surface && !surface_finish(&x->surface))
+			lose_gpu(o);
+		glf_read_pixels(st, &t, a[0].i, a[1].i, a[2].i, a[3].i, a[4].u, a[5].u, mem_ptr(m, a[6].u));
+		return 0;
+	}
+	case F_glReadBuffer:
+	case F_glDrawBuffer:
+		return 0;                       /* (one buffer to draw in and read: the back buffer, shown when swapped) */
+	case F_glClientActiveTextureARB:
+		if (a[0].u - GL_TEXTURE0_ARB < GLF_TEXTURE_UNITS)
+			st->client_active_texture = a[0].u - GL_TEXTURE0_ARB;
+		else
+			glf_error(st, GL_INVALID_ENUM);
 		return 0;
 	default:
 		not_yet(o, fn);
@@ -1458,7 +1668,8 @@ static bool describe_renderer(uint32_t prop, int32_t *v)
 	return true;
 }
 
-static struct opengl_context *new_context(struct opengl *o, struct opengl_instance *in, uint32_t pf)
+static struct opengl_context *new_context(struct opengl *o, struct opengl_instance *in, uint32_t pf,
+					  struct opengl_context *share)
 {
 	struct mem *m = o->mem;
 	unsigned k = 0;
@@ -1478,6 +1689,10 @@ static struct opengl_context *new_context(struct opengl *o, struct opengl_instan
 	x->pixel_size = mem_r32(m, pf + PF_PIXEL);
 	x->swap_interval = 0;
 	glf_init(&x->st);
+	if (!glf_attach(&x->st, share ? &share->st : NULL)) {
+		memset(x, 0, sizeof *x);
+		return NULL;
+	}
 	/* the handle (itself), then the dispatch table: each gl function's TVector, taking the handle first */
 	mem_w32(m, guest, guest);
 	for (unsigned slot = 0; slot < TABLE_SLOTS; slot++)
@@ -1571,7 +1786,7 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 			agl_error(in, AGL_BAD_MATCH);
 			return 0;
 		}
-		x = new_context(o, in, a[0].u);
+		x = new_context(o, in, a[0].u, context_at(o, in, a[1].u));
 		if (!x) {
 			agl_error(in, AGL_BAD_ALLOC);
 			return 0;
@@ -1638,7 +1853,7 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 			agl_error(in, AGL_BAD_CONTEXT);
 			return 0;
 		}
-		context_at(o, in, a[1].u)->st = x->st;          /* (all of it, whatever the mask) */
+		glf_copy(&context_at(o, in, a[1].u)->st, &x->st);      /* (all of it, whatever the mask) */
 		return 1;
 	case F_aglUpdateContext:
 		if (x->kind == DRAWABLE_PORT)
@@ -1703,6 +1918,10 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 		return 0;
 	case F_aglSwapBuffers:
 		show(o, x);
+		if (x->kind == DRAWABLE_PORT) {         /* (for the screen: paced by its refresh, see nk.c) */
+			o->shown = 1 + (unsigned)(in - o->inst) * OPENGL_CONTEXTS + (unsigned)(x - in->ctx);
+			o->shown_id = x->guest;
+		}
 		return 0;
 	case F_aglEnable:
 	case F_aglDisable:
@@ -1771,6 +1990,7 @@ static void finish_call(struct ndrv_call *c, const char *result, uint32_t v)
 void opengl_library_call(struct opengl *o, struct ndrv_call *c)
 {
 	o->calls++;
+	o->shown = 0;
 	if (c->entry == E_INIT || c->entry == E_TERM) {
 		/* CFM's initialization (a new process: its instance from scratch) and termination */
 		struct opengl_instance *in = instance_of(o, c->toc, c->entry == E_INIT);

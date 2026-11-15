@@ -256,6 +256,9 @@ static void test_agl(void)
 	CHECK_EQ(screen(5, 5, 32), 0);                          /* (not until it's swapped) */
 	CALL(aglSwapBuffers, ctx);
 	CHECK_EQ(screen(5, 5, 32), 0x4080BF);
+	CHECK(gl.shown && gl.shown_id == ctx);                  /* (a frame for the screen: paced, see nk.c) */
+	CALL0(glGetError);
+	CHECK_EQ(gl.shown, 0);
 	CHECK_EQ(screen(31, 0, 32), 0x4080BF);
 	CHECK_EQ(screen(15, 12, 32), 0);                        /* (the hole) */
 	CHECK_EQ(screen(9, 12, 32), 0x4080BF);
@@ -298,6 +301,7 @@ static void test_agl(void)
 	CHECK_EQ(mem_r32(&mem, OFFSCREEN), 0);                  /* (double buffered: not until swapped) */
 	CALL(aglSwapBuffers, ctx);
 	CHECK_EQ(mem_r32(&mem, OFFSCREEN + 32 + 12), 0x800000FFu);
+	CHECK_EQ(gl.shown, 0);                                  /* (offscreen: not paced) */
 
 	CHECK_EQ(CALL(aglDestroyContext, ctx), 1);
 	CHECK_EQ(CALL0(aglGetCurrentContext), 0);
@@ -704,14 +708,101 @@ static const struct op scene_blend[] = {
 	{ NULL, { 0 } },
 };
 
+/* Textures: (glTexImage2D's arguments: target, level, internal format, width, height, then the image's number) */
+#define TEXDATA 0x120000u       /* (the image, in the guest's memory) */
+#define TEX(name, w, h, image) { "glTexImage2D", { 0x0DE1, 0, 0x8058, w, h, image } }
+#define TEXP(pname, v) { "glTexParameteri", { 0x0DE1, pname, v } }
+#define TC(s, t) { "glTexCoord2f", { s, t } }
+enum { IMAGE_CHECKER, IMAGE_GRADIENT, IMAGES };
+
+/* An image's RGBA bytes (8 x 8 at most) */
+static const uint8_t *image(unsigned k, int w, int h)
+{
+	static uint8_t rgba[IMAGES][8 * 8 * 4];
+	uint8_t *p = rgba[k];
+	for (int y = 0; y < h; y++)
+		for (int x = 0; x < w; x++, p += 4) {
+			if (k == IMAGE_CHECKER) {       /* (four colors, alpha falling) */
+				p[0] = (x + y) & 1 ? 230 : 40;
+				p[1] = x < w / 2 ? 200 : 60;
+				p[2] = y < h / 2 ? 50 : 210;
+				p[3] = (uint8_t)(255 - 20 * x);
+			} else {                        /* (smooth, bright to its edges) */
+				p[0] = (uint8_t)(40 + 50 * x);
+				p[1] = (uint8_t)(220 - 40 * y);
+				p[2] = 180;
+				p[3] = 255;
+			}
+		}
+	return rgba[k];
+}
+
+static const struct op scene_texture[] = {
+	ORTHO, CLEAR(0.2, 0.2, 0.3), { "glEnable", { GL_TEXTURE_2D } },
+	{ "glBindTexture", { 0x0DE1, 1 } }, TEX(1, 8, 8, IMAGE_CHECKER),
+	TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST), TEXP(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	/* (texel edges a third of a pixel off pixels' centers) */
+	BEGIN(GL_QUADS), C3(1, 0.8, 0.6), TC(0, 0), V2(4.3, 4.3), TC(2, 0), V2(36.3, 4.3), TC(2, 2), V2(36.3, 36.3),
+	TC(0, 2), V2(4.3, 36.3), END,
+	{ "glTexEnvi", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE } },
+	BEGIN(GL_QUADS), TC(0, 0), V2(44.3, 4.3), TC(1, 0), V2(92.3, 4.3), TC(1, 1), V2(92.3, 36.3), TC(0, 1),
+	V2(44.3, 36.3), END,
+	{ "glTexEnvi", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL } },
+	BEGIN(GL_TRIANGLES), C3(0.2, 0.9, 0.4), TC(0, 0), V2(4.3, 40.3), TC(1, 0), V2(52.3, 40.3), TC(0.5, 1), V2(28.3, 68.3),
+	END,
+	{ "glTexEnvi", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE } }, { "glEnable", { GL_BLEND } },
+	{ "glBlendFunc", { GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA } },
+	BEGIN(GL_TRIANGLES), C4(1, 1, 1, 0.8), TC(0, 0), V2(52.3, 40.3), TC(1, 0), V2(92.3, 44.3), TC(1, 1), V2(70.3, 68.3),
+	END,
+	{ NULL, { 0 } },
+};
+
+/* the same smooth image, magnified with linear filtering past its edges: wrap (ws, wt) */
+#define CLAMP_SCENE(ws, wt) \
+	ORTHO, CLEAR(0, 0, 0), { "glEnable", { GL_TEXTURE_2D } }, { "glBindTexture", { 0x0DE1, 2 } }, \
+	TEX(2, 4, 4, IMAGE_GRADIENT), TEXP(GL_TEXTURE_MIN_FILTER, GL_LINEAR), TEXP(GL_TEXTURE_MAG_FILTER, GL_LINEAR), \
+	TEXP(GL_TEXTURE_WRAP_S, ws), TEXP(GL_TEXTURE_WRAP_T, wt), \
+	{ "glTexEnvi", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE } }, \
+	BEGIN(GL_QUADS), TC(-0.25, -0.25), V2(8.3, 4.3), TC(1.25, -0.25), V2(88.3, 4.3), TC(1.25, 1.25), V2(88.3, 68.3), \
+	TC(-0.25, 1.25), V2(8.3, 68.3), END, { NULL, { 0 } }
+static const struct op scene_clamp[] = { CLAMP_SCENE(GL_CLAMP, GL_CLAMP) };
+static const struct op scene_edge[] = { CLAMP_SCENE(GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE) };
+
+/* two units, modulated; textured in perspective (linear: the same level of detail everywhere) */
+static const struct op scene_multitexture[] = {
+	FRUSTUM, CLEAR(0.1, 0.1, 0.1), { "glEnable", { GL_DEPTH_TEST } },
+	{ "glActiveTextureARB", { GL_TEXTURE0_ARB } }, { "glEnable", { GL_TEXTURE_2D } },
+	{ "glBindTexture", { 0x0DE1, 1 } }, TEX(1, 8, 8, IMAGE_CHECKER),
+	TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST), TEXP(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	{ "glActiveTextureARB", { GL_TEXTURE0_ARB + 1 } }, { "glEnable", { GL_TEXTURE_2D } },
+	{ "glBindTexture", { 0x0DE1, 2 } }, TEX(2, 4, 4, IMAGE_GRADIENT),
+	TEXP(GL_TEXTURE_MIN_FILTER, GL_LINEAR), TEXP(GL_TEXTURE_MAG_FILTER, GL_LINEAR),
+	{ "glTranslatef", { 0, 0, -3 } }, { "glRotatef", { -60, 1, 0, 0 } },
+	BEGIN(GL_QUADS), C3(1, 1, 1),
+	{ "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB, 0, 0 } }, { "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB + 1, 0.1, 0.1 } },
+	V3(-1.53, -1.47, 0),
+	{ "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB, 3, 0 } }, { "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB + 1, 0.9, 0.1 } },
+	V3(1.47, -1.53, 0),
+	{ "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB, 3, 3 } }, { "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB + 1, 0.9, 0.9 } },
+	V3(1.53, 1.47, 0),
+	{ "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB, 0, 3 } }, { "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB + 1, 0.1, 0.9 } },
+	V3(-1.47, 1.53, 0), END,
+	{ NULL, { 0 } },
+};
+
 /*
  * Against Mesa's: pixels that may differ by more than 2, and that one draws
  * on and the other doesn't. Those are where a pixel's center is on an edge
  * (where the floor's edges are a third of a pixel down every pixel across,
  * say) or a fragment's alpha is the alpha test's reference, which each
- * decides by its own rounding; and in "smooth", Mesa corrects colors for
- * perspective and ours are linear in screen space (see glfront.h), most
- * of all on the floor that goes from the near plane to the far distance.
+ * decides by its own rounding (raster.c's float edge functions can leave
+ * out a pixel whose center is exactly on two triangles' shared edge: a few
+ * in "texture"); in "smooth", Mesa corrects colors for perspective and ours
+ * are linear in screen space (see glfront.h), most of all on the floor that
+ * goes from the near plane to the far distance; and in "clamp", GL_CLAMP
+ * past the texture's edges is Mesa's blend with the border color, and
+ * clamping to the edge texels in ours (see glfront.h; checked the same
+ * where the coordinates are within the texture, test_mesa()).
  */
 static const struct {
 	const char *name;
@@ -720,7 +811,8 @@ static const struct {
 } scenes[] = {
 	{ "gradient", scene_gradient, 0, 0 }, { "depth", scene_depth, 2, 2 }, { "flat", scene_flat, 12, 12 },
 	{ "smooth", scene_smooth, SW * SH / 2, 12 }, { "primitives", scene_primitives, 0, 0 },
-	{ "blend", scene_blend, 4, 4 },
+	{ "blend", scene_blend, 4, 4 }, { "texture", scene_texture, 4, 4 }, { "clamp", scene_clamp, SW * SH, 0 },
+	{ "edge", scene_edge, 0, 0 }, { "multitexture", scene_multitexture, 0, 0 },
 };
 #define SCENES (sizeof scenes / sizeof scenes[0])
 
@@ -732,6 +824,14 @@ static void our_invoke(const struct op *op)
 	CHECK(fn >= 0);
 	if (fn < 0)
 		return;
+	if (!strcmp(op->name, "glTexImage2D")) {
+		int w = (int)op->a[3], h = (int)op->a[4];
+		memcpy(mem_ptr(&mem, TEXDATA), image((unsigned)op->a[5], w, h), (size_t)(w * h * 4));
+		const uint32_t words[9] = { (uint32_t)op->a[0], (uint32_t)op->a[1], (uint32_t)op->a[2], (uint32_t)w,
+					    (uint32_t)h, 0, 0x1908, 0x1401, TEXDATA };
+		call_entry((unsigned)fn, words, 9, NULL, 0);
+		return;
+	}
 	uint32_t w[16] = { 0 };
 	double f[13];
 	unsigned nw = 0, nf = 0;
@@ -896,6 +996,12 @@ static void mesa_invoke(const struct op *op)
 		return;
 	const char *sig = functions[fn].args;
 	const double *a = op->a;
+	if (!strcmp(op->name, "glTexImage2D")) {
+		int w = (int)a[3], h = (int)a[4];
+		((void (*)(uint32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t, const void *))p)(
+			(uint32_t)a[0], (int32_t)a[1], (int32_t)a[2], w, h, 0, 0x1908, 0x1401, image((unsigned)a[5], w, h));
+		return;
+	}
 #define U(k) ((uint32_t)(int64_t)a[k])
 #define F(k) ((float)a[k])
 #define B(k) ((uint8_t)a[k])
@@ -907,6 +1013,10 @@ static void mesa_invoke(const struct op *op)
 		((void (*)(uint32_t, uint32_t))p)(U(0), U(1));
 	else if (!strcmp(sig, "If"))
 		((void (*)(uint32_t, float))p)(U(0), F(1));
+	else if (!strcmp(sig, "IIi"))
+		((void (*)(uint32_t, uint32_t, int32_t))p)(U(0), U(1), (int32_t)a[2]);
+	else if (!strcmp(sig, "Iff"))
+		((void (*)(uint32_t, float, float))p)(U(0), F(1), F(2));
 	else if (!strcmp(sig, "f"))
 		((void (*)(float))p)(F(0));
 	else if (!strcmp(sig, "ff"))
@@ -997,6 +1107,13 @@ static void test_mesa(void)
 			       "%u covered by one only\n", scenes[k].name, n, most, covered);
 		CHECK(n <= scenes[k].allowed);
 		CHECK(covered <= scenes[k].edges);
+		if (scenes[k].ops == scene_clamp) {     /* (where s and t are within 0.125-0.875: the same) */
+			unsigned inside = 0;
+			for (int y = 22; y < 50; y++)
+				for (int x = 30; x < 66; x++)
+					inside += channel_diff(images[0][k][y * SW + x], ref[y * SW + x]) > 2;
+			CHECK_EQ(inside, 0);
+		}
 	}
 }
 #endif

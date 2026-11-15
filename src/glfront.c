@@ -27,7 +27,9 @@ static const struct cap {
 	[GLF_CAP_ALPHA_TEST] = { GL_ALPHA_TEST, false, false },
 	[GLF_CAP_SCISSOR_TEST] = { GL_SCISSOR_TEST, false, false },
 	[GLF_CAP_DITHER] = { GL_DITHER, false, true },
-	{ GL_TEXTURE_1D, true, false }, { GL_TEXTURE_2D, true, false }, { 0x806F, true, false },        /* 3D */
+	[GLF_CAP_TEXTURE_1D] = { GL_TEXTURE_1D, true, false },
+	[GLF_CAP_TEXTURE_2D] = { GL_TEXTURE_2D, true, false },
+	{ 0x806F, true, false },                                        /* 3D */
 	{ 0x0C60, true, false }, { 0x0C61, true, false }, { 0x0C62, true, false }, { 0x0C63, true, false },
 	{ GL_LIGHTING, false, false }, { 0x4000, false, false }, { 0x4001, false, false }, { 0x4002, false, false },
 	{ 0x4003, false, false }, { 0x4004, false, false }, { 0x4005, false, false }, { 0x4006, false, false },
@@ -126,7 +128,8 @@ void glf_init(struct gl_state *st)
 		stack_init(&st->texture[k], GLF_TEXTURE_DEPTH);
 		st->tex[k][3] = 1;
 	}
-	st->mvp_stale = true;
+	st->mvp_stale = st->texmat_stale = true;
+	glf_textures_init(st);
 	st->color[0] = st->color[1] = st->color[2] = st->color[3] = 1;
 	st->secondary_color[3] = 1;
 	st->normal[2] = 1;
@@ -332,6 +335,8 @@ static void touched(struct gl_state *st)
 {
 	if (st->matrix_mode != GL_TEXTURE)
 		st->mvp_stale = true;
+	else
+		st->texmat_stale = true;
 }
 
 /* out = a b (out may be either) */
@@ -555,13 +560,117 @@ static void cut(int *l, int *t, int *r, int *b, const int32_t gl[4], int height)
 	*b = y1 < *b ? (int)y1 : *b;
 }
 
+/*
+ * A unit's stage: its texture environment's function (OpenGL 1.2's table
+ * 3.18, and GL_ADD's), for its texture's base format, as raster.h's
+ * operations on the previous stage's color (P), the texture's (T) and the
+ * environment's (C)
+ */
+static void env_stage(struct raster_stage *s, unsigned unit, uint32_t mode, uint32_t base, const float color[4])
+{
+	enum { P = RASTER_PREVIOUS, C = RASTER_CONSTANT, TA = RASTER_ALPHA };
+	const uint8_t T = (uint8_t)(RASTER_TEXTURE0 + unit);
+	/* (each: rgb's operation and arguments, then alpha's) */
+	struct f {
+		uint8_t op, a0, a1, a2;
+	} rgb = { RASTER_OP_REPLACE, P, 0, 0 }, alpha = { RASTER_OP_REPLACE, P, 0, 0 };
+	const struct f keep = { RASTER_OP_REPLACE, P, 0, 0 }, take = { RASTER_OP_REPLACE, T, 0, 0 };
+	const struct f modulate = { RASTER_OP_MODULATE, P, T, 0 }, add = { RASTER_OP_ADD, P, T, 0 };
+	const struct f blend = { RASTER_OP_INTERPOLATE, C, P, T };
+	bool a = base == GL_ALPHA, l = base == GL_LUMINANCE, la = base == GL_LUMINANCE_ALPHA, i = base == GL_INTENSITY;
+	bool rgba = base == GL_RGBA, with_alpha = a || la || rgba;
+	switch (mode) {
+	case GL_REPLACE:
+		rgb = a ? keep : take;
+		alpha = with_alpha || i ? take : keep;
+		break;
+	case GL_DECAL:                          /* (only RGB and RGBA have it) */
+		if (base == GL_RGB) {
+			rgb = take;
+		} else if (rgba) {
+			rgb = (struct f){ RASTER_OP_INTERPOLATE, T, P, T | TA };
+		}
+		break;
+	case GL_BLEND:
+		rgb = a ? keep : blend;
+		alpha = i ? blend : with_alpha ? modulate : keep;
+		break;
+	case GL_ADD:
+		rgb = a ? keep : add;
+		alpha = i ? add : with_alpha ? modulate : keep;
+		break;
+	default:                                /* GL_MODULATE */
+		rgb = a ? keep : modulate;
+		alpha = with_alpha || i ? modulate : keep;
+		break;
+	}
+	(void)l;
+	memset(s, 0, sizeof *s);
+	s->op[0] = rgb.op;
+	s->op[1] = alpha.op;
+	const uint8_t args[2][3] = { { rgb.a0, rgb.a1, rgb.a2 }, { alpha.a0, alpha.a1, alpha.a2 } };
+	memcpy(s->arg, args, sizeof args);
+	s->clamp[0] = s->clamp[1] = true;
+	s->constant[0] = color[3];
+	for (int k = 0; k < 3; k++)
+		s->constant[k + 1] = color[k];
+}
+
+/* The texture a unit would draw with (enabled and bound; complete or not) */
+static const struct gl_texture *unit_candidate(const struct gl_state *st, unsigned unit)
+{
+	unsigned bit = 1u << unit;
+	int k = st->caps[GLF_CAP_TEXTURE_2D] & bit ? GLF_2D : st->caps[GLF_CAP_TEXTURE_1D] & bit ? GLF_1D : -1;
+	return k < 0 ? NULL : st->units[unit].bound[k];
+}
+
+/* Whether the raster state made last has the textures there are to draw with */
+static bool textures_current(const struct gl_state *st)
+{
+	for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++) {
+		const struct gl_texture *t = unit_candidate(st, u);
+		if (t != st->raster_tex[u] || (t && t->serial != st->raster_serial[u]))
+			return false;
+	}
+	return true;
+}
+
+/* The units' textures and stages */
+static void textures(struct gl_state *st, struct raster_state *s)
+{
+	unsigned n = 0;
+	for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++) {
+		struct raster_texture *drawn = NULL;
+		struct gl_texture *t = glf_unit_texture(st, u, &drawn);
+		const struct gl_texture *c = unit_candidate(st, u);
+		st->raster_tex[u] = c;
+		st->raster_serial[u] = c ? c->serial : 0;
+		if (!t)
+			continue;
+		struct raster_unit *r = &s->unit[u];
+		r->texture = drawn;
+		r->min_filter = (uint8_t)(t->min_filter >= GL_NEAREST_MIPMAP_NEAREST ?
+					  RASTER_NEAREST_MIPMAP_NEAREST + (t->min_filter - GL_NEAREST_MIPMAP_NEAREST) :
+					  RASTER_NEAREST + (t->min_filter - GL_NEAREST));
+		r->mag_filter = (uint8_t)(RASTER_NEAREST + (t->mag_filter - GL_NEAREST));
+		r->clamp_s = t->wrap_s != GL_REPEAT;           /* (GL_CLAMP as GL_CLAMP_TO_EDGE: see glfront.h) */
+		r->clamp_t = t->wrap_t != GL_REPEAT;
+		env_stage(&s->stage[n++], u, st->units[u].env_mode, t->level[t->base_level].base,
+			  st->units[u].env_color);
+	}
+	s->stages = n;
+	st->textured = n > 0;
+}
+
 /* What draws primitives in the current state into the target */
 static const struct raster_state *raster(struct gl_state *st, const struct gl_target *t)
 {
-	if (!st->raster_stale && st->raster_width == t->width && st->raster_height == t->height)
+	if (!st->raster_stale && st->raster_width == t->width && st->raster_height == t->height &&
+	    textures_current(st))
 		return &st->raster;
 	struct raster_state *s = &st->raster;
 	memset(s, 0, sizeof *s);
+	textures(st, s);
 	bool depth = st->caps[GLF_CAP_DEPTH_TEST] && t->depth_bits;
 	s->z_func = depth ? z_func(st->depth_func) : RASTER_Z_NONE;
 	s->z_write = depth && st->depth_mask;
@@ -657,6 +766,11 @@ static bool project(const struct gl_state *st, const struct gl_target *t, const 
 	r->z = v->clip[2] * iw * st->vp_scale[2] + st->vp_offset[2];
 	r->invw = iw;
 	memcpy(r->color[0], v->color, sizeof v->color);
+	for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++) {      /* (divided by w: see raster.h) */
+		r->tex[u][0] = v->tex[u][0] * iw;
+		r->tex[u][1] = v->tex[u][1] * iw;
+		r->tex[u][2] = v->tex[u][3] * iw;
+	}
 	win[0] = x;
 	win[1] = y;
 	return true;
@@ -718,12 +832,26 @@ static void triangle(struct gl_state *st, const struct gl_target *t, const struc
 	    (st->cull_mode == GL_FRONT_AND_BACK || (st->cull_mode == GL_FRONT) == front))
 		return;
 	const struct raster_state *s = raster(st, t);
+	struct raster_state projective;
+	if (st->textured) {                     /* (q not 1: divided by q/w, per pixel) */
+		bool q = false;
+		for (unsigned k = 0; k < n && !q; k++)
+			for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++)
+				q |= s->unit[u].texture && buf[cur][k].tex[u][3] != 1;
+		if (q) {
+			projective = *s;
+			for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++)
+				projective.unit[u].projective = projective.unit[u].texture != NULL;
+			s = &projective;
+		}
+	}
 	for (unsigned k = 1; k + 1 < n; k++) {
 		struct raster_cmd *cmd = surface_cmd(t->surface, s, RASTER_CMD_TRIANGLE);
 		if (!cmd) {
 			glf_error(st, GL_OUT_OF_MEMORY);
 			return;
 		}
+		cmd->textured = st->textured;
 		cmd->v[0] = rv[0];
 		cmd->v[1] = rv[k];
 		cmd->v[2] = rv[k + 1];
@@ -860,7 +988,20 @@ void glf_vertex(struct gl_state *st, const struct gl_target *t, const float obj[
 		v.clip[i] = m[i] * obj[0] + m[4 + i] * obj[1] + m[8 + i] * obj[2] + m[12 + i] * obj[3];
 	for (int i = 0; i < 4; i++)
 		v.color[i] = clampf(st->color[i]);
-	memcpy(v.tex, st->tex, sizeof v.tex);
+	if (st->texmat_stale) {
+		static const float id[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+		for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++)
+			st->texmat_identity[u] = !memcmp(st->texture[u].m[st->texture[u].depth - 1], id, sizeof id);
+		st->texmat_stale = false;
+	}
+	for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++) {
+		const float *c = st->tex[u], *tm = st->texture[u].m[st->texture[u].depth - 1];
+		if (st->texmat_identity[u])
+			memcpy(v.tex[u], c, sizeof v.tex[u]);
+		else
+			for (int i = 0; i < 4; i++)
+				v.tex[u][i] = tm[i] * c[0] + tm[4 + i] * c[1] + tm[8 + i] * c[2] + tm[12 + i] * c[3];
+	}
 	unsigned k = st->count++;
 	struct gl_vertex *vb = st->vb;
 	bool draw = drawing(st, t);
@@ -1053,6 +1194,18 @@ unsigned glf_get(struct gl_state *st, uint32_t pname, double *v)
 	case GL_CURRENT_TEXTURE_COORDS: return values(v, st->tex[st->active_texture], 4);
 	case GL_CURRENT_FOG_COORDINATE_EXT: v[0] = st->fog_coord; return 1;
 	case GL_EDGE_FLAG: v[0] = st->edge_flag; return 1;
+	case 0x8068: case 0x8069: {             /* GL_TEXTURE_BINDING_1D, 2D */
+		const struct gl_texture *t = st->units[st->active_texture].bound[pname == 0x8069 ? GLF_2D : GLF_1D];
+		v[0] = t->name;
+		return 1;
+	}
+	case 0x84E1: v[0] = GL_TEXTURE0_ARB + st->client_active_texture; return 1;   /* GL_CLIENT_ACTIVE_TEXTURE_ARB */
+	case 0x0CF0: case 0x0D00: v[0] = (pname == 0x0D00 ? &st->pack : &st->unpack)->swap_bytes; return 1;
+	case 0x0CF1: case 0x0D01: v[0] = (pname == 0x0D01 ? &st->pack : &st->unpack)->lsb_first; return 1;
+	case 0x0CF2: case 0x0D02: v[0] = (pname == 0x0D02 ? &st->pack : &st->unpack)->row_length; return 1;
+	case 0x0CF3: case 0x0D03: v[0] = (pname == 0x0D03 ? &st->pack : &st->unpack)->skip_rows; return 1;
+	case 0x0CF4: case 0x0D04: v[0] = (pname == 0x0D04 ? &st->pack : &st->unpack)->skip_pixels; return 1;
+	case 0x0CF5: case 0x0D05: v[0] = (pname == 0x0D05 ? &st->pack : &st->unpack)->alignment; return 1;
 	default: return 0;
 	}
 }

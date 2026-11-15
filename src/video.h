@@ -26,7 +26,7 @@
 #define VIDEO_CUSTOM_MODES 2            /* sized to the host window on request (see below) */
 #define VIDEO_FIRST_DEPTH_MODE 0x80u
 #define VIDEO_VBL_HZ 60u
-#define VIDEO_FRAME_SOURCES 16          /* 3D drawing contexts paced by its refresh (see video_frame_shown()) */
+#define VIDEO_FRAME_SOURCES 32          /* 3D drawing contexts paced by its refresh (see video_frame_shown()) */
 
 struct video_mode {
 	uint16_t width, height;

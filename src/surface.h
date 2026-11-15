@@ -49,6 +49,9 @@ struct raster_cmd *surface_cmd(struct surface *s, const struct raster_state *sta
 /* Whether anything is recorded and not drawn yet */
 bool surface_pending(const struct surface *s);
 
+/* Whether anything recorded since it was last finished may still use its textures */
+bool surface_busy(const struct surface *s);
+
 /*
  * Everything recorded drawn, and the pixels in target.color. False if the
  * GPU failed: what it drew is lost, and the surface goes on in software

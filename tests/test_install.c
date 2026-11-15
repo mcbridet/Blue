@@ -1,9 +1,10 @@
 /*
  * Installing the guest tools: the check of the startup disk (on small HFS
  * volumes made with hfs.c: tools missing, current, differing, disabled, in
- * a localized Extensions folder, a locked volume), when they're offered,
- * and the installer driven as Mac OS would drive it, against a small File
- * Manager of the test's own.
+ * a localized Extensions folder, a locked volume; Apple's OpenGL libraries
+ * enabled or disabled), when they're offered, and the installer driven as
+ * Mac OS would drive it, against a small File Manager of the test's own
+ * (Apple's OpenGL libraries moved to Extensions (Disabled) and back).
  */
 #include <fcntl.h>
 #include <stdlib.h>
@@ -45,10 +46,10 @@ static char volume_path[256];
 /* A volume "Test" whose blessed System Folder (SYSTEM) holds the `items` (folders before what's in them) */
 static void write_volume(const struct item *items, unsigned n, uint16_t attributes)
 {
-	struct hfs_entry e[16] = { { .name = "\x04Test", .folder = true },
+	struct hfs_entry e[24] = { { .name = "\x04Test", .folder = true },
 				   { .name = "\x0DSystem Folder", .folder = true, .id = SYSTEM } };
-	CHECK(n + 2 <= 16);
-	for (unsigned k = 0; k < n && k + 2 < 16; k++) {
+	CHECK(n + 2 <= 24);
+	for (unsigned k = 0; k < n && k + 2 < 24; k++) {
 		const struct item *it = &items[k];
 		struct hfs_entry *x = &e[k + 2];
 		x->name[0] = (uint8_t)strlen(it->name);
@@ -93,6 +94,29 @@ static int temp_file(char *path, size_t len)
 
 static struct hfs_file tools[TOOLS_FILES];
 static uint8_t older[4096];                     /* an older Enhancements: the same, but for a byte */
+static const uint8_t apple_pef[24] = "Joy!peffpwpc\0\0\0\1";
+
+/* syshm's OpenGL libraries, current, in a folder: appended to items (returns how many there are then) */
+static unsigned with_gl(struct item *items, unsigned n, uint32_t folder, uint32_t first_id)
+{
+	for (unsigned t = TOOLS_GL_FIRST; t < TOOLS_GL_FIRST + TOOLS_GL_FILES; t++) {
+		const struct hfs_file *f = &tools[t];
+		items[n++] = (struct item){ folder, first_id + t, f->name, false, f->type, f->creator, f->data, f->rsrc,
+					    f->data_len, f->rsrc_len };
+	}
+	return n;
+}
+
+/* Apple's OpenGL libraries in a folder: appended to items */
+static unsigned with_apple(struct item *items, unsigned n, uint32_t folder, uint32_t first_id)
+{
+	static const char *const names[3] = { "OpenGLLibrary", "OpenGLMemory", "OpenGLUtility" };
+	for (unsigned k = 0; k < 3; k++)
+		items[n++] = (struct item){ folder, first_id + k, names[k], false, FOURCC('s', 'h', 'l', 'b'),
+					    FOURCC('g', 'l', 'l', 'b'), apple_pef, apple_pef, sizeof apple_pef,
+					    sizeof apple_pef };
+	return n;
+}
 
 static struct item tool_item(unsigned t, uint32_t folder, uint32_t id, const char *name, bool old)
 {
@@ -134,10 +158,14 @@ static void test_check(void)
 	CHECK_EQ(ck.tool[TOOLS_3D_ENGINE].state, INSTALL_MISSING);
 	CHECK(install_needed(&ck));
 
+	CHECK_EQ(ck.tool[TOOLS_GL_LIBRARY].state, INSTALL_MISSING);
+
 	/* current, under other names */
-	struct item both[] = { folders[0], folders[1], tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, "Helper", false),
-			       tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, "3D", false) };
-	CHECK_EQ(check(both, 4, &ck), 0);
+	struct item both[12] = { folders[0], folders[1], tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, "Helper", false),
+				 tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, "3D", false) };
+	CHECK_EQ(check(both, with_gl(both, 4, EXTENSIONS, 70), &ck), 0);
+	CHECK_EQ(ck.tool[TOOLS_GL_LIBRARY].state, INSTALL_CURRENT);
+	CHECK_EQ(ck.tool[TOOLS_GL_UTILITY].id, 70 + TOOLS_GL_UTILITY);
 	CHECK_EQ(ck.tool[TOOLS_ENHANCEMENTS].state, INSTALL_CURRENT);
 	CHECK_EQ(ck.tool[TOOLS_ENHANCEMENTS].dir, EXTENSIONS);
 	CHECK_EQ(ck.tool[TOOLS_ENHANCEMENTS].id, 50);
@@ -145,6 +173,32 @@ static void test_check(void)
 	CHECK_EQ(ck.tool[TOOLS_3D_ENGINE].state, INSTALL_CURRENT);
 	CHECK_EQ(ck.tool[TOOLS_3D_ENGINE].id, 51);
 	CHECK(!install_needed(&ck));
+	CHECK(!ck.apple_disable && !ck.apple_restore);
+
+	/* Apple's OpenGL in Extensions beside syshm's: to be disabled */
+	CHECK_EQ(check(both, with_apple(both, with_gl(both, 4, EXTENSIONS, 70), EXTENSIONS, 80), &ck), 0);
+	CHECK(ck.apple[0].found[0] && ck.apple[2].found[0] && !ck.apple[0].found[1]);
+	CHECK_EQ(ck.apple[1].dir[0], EXTENSIONS);
+	CHECK(ck.apple_disable && !ck.apple_restore);
+	CHECK(install_needed(&ck));
+	/* ... without syshm's (on 9.x before they're installed): they are, and Apple's go then */
+	CHECK_EQ(check(both, with_apple(both, 4, EXTENSIONS, 80), &ck), 0);
+	CHECK(!ck.apple_disable && !ck.apple_restore);
+	CHECK_EQ(ck.tool[TOOLS_GL_MEMORY].state, INSTALL_MISSING);
+	CHECK(install_needed(&ck));
+	/* Apple's disabled, syshm's gone: Apple's to be put back, syshm's not wanted */
+	CHECK_EQ(check(both, with_apple(both, 4, DISABLED, 80), &ck), 0);
+	CHECK(!ck.apple_disable && ck.apple_restore);
+	CHECK(ck.apple[0].found[1] && ck.apple[0].dir[1] == DISABLED);
+	CHECK(install_needed(&ck));
+	/* ... unless some of syshm's are there: then they're installed, and Apple's stay */
+	both[4] = tool_item(TOOLS_GL_MEMORY, DISABLED, 79, NULL, false);
+	CHECK_EQ(check(both, with_apple(both, 5, DISABLED, 80), &ck), 0);
+	CHECK(!ck.apple_disable && !ck.apple_restore);
+	/* (a file of one of those names but of syshm's creator isn't Apple's) */
+	struct item mine[] = { folders[0], tool_item(TOOLS_GL_LIBRARY, EXTENSIONS, 90, "OpenGLLibrary", false) };
+	CHECK_EQ(check(mine, 2, &ck), 0);
+	CHECK(!ck.apple[0].found[0] && ck.tool[TOOLS_GL_LIBRARY].state == INSTALL_CURRENT);
 
 	/* differing: an older Enhancements; the engine disabled, a differing copy elsewhere too */
 	struct item old[] = { folders[0], folders[1], tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 52, NULL, true),
@@ -204,17 +258,39 @@ static void test_offer(void)
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_OFF);
 
-	struct item both[] = { folders[0], tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, NULL, false),
-			       tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, false) };
-	write_volume(both, 3, 0);
+	struct item both[12] = { folders[0], tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, NULL, false),
+				 tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, false) };
+	unsigned n = with_gl(both, 3, EXTENSIONS, 70);
+	write_volume(both, n, 0);
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_OFF);
 	both[2] = tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, true);
-	write_volume(both, 3, 0);
+	write_volume(both, n, 0);
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
 	CHECK(strcmp(in.yes, "Update") == 0);
-	CHECK(strstr(in.question, "syshm 3D Engine is from another version of syshm") != NULL);
+	CHECK(strstr(in.question, "need updating: syshm 3D Engine is from another version of syshm.") != NULL);
+
+	/* Mac OS 9: Apple's OpenGL goes when syshm's comes; syshm's beside Apple's; Apple's back */
+	struct item folders9[] = { folder(SYSTEM, EXTENSIONS, "Extensions"), folder(SYSTEM, DISABLED, "Extensions (Disabled)") };
+	struct item nine[12] = { folders9[0], folders9[1] };
+	write_volume(nine, with_apple(nine, 2, EXTENSIONS, 80), 0);
+	install_begin(&in, volume_path, 0, false);
+	CHECK(strstr(in.question, "aren't installed on \"Test\"") != NULL);
+	CHECK(strstr(in.question, "Apple's OpenGL libraries go to \"Extensions (Disabled)\": syshm's take their place.") !=
+	      NULL);
+	nine[2] = tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, NULL, false);
+	nine[3] = tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, false);
+	write_volume(nine, with_apple(nine, with_gl(nine, 4, EXTENSIONS, 70), EXTENSIONS, 80), 0);
+	install_begin(&in, volume_path, 0, false);
+	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
+	CHECK(strcmp(in.yes, "Move") == 0);
+	CHECK(strstr(in.question, "move Apple's to \"Extensions (Disabled)\"?") != NULL);
+	write_volume(nine, with_apple(nine, 4, DISABLED, 80), 0);
+	install_begin(&in, volume_path, 0, false);
+	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
+	CHECK(strcmp(in.yes, "Put Back") == 0);
+	CHECK(strstr(in.question, "syshm's OpenGL libraries aren't on \"Test\", and Apple's are in") != NULL);
 }
 
 /* ---- the installer, as Mac OS runs it ----------------------------------------------- */
@@ -232,7 +308,10 @@ static void test_offer(void)
 #define DRIVE 8u
 
 /* Its imports, in order */
-enum { FIND_FOLDER, HGET_VINFO, GET_CAT_INFO, DELETE, CREATE, OPEN_DF, OPEN_RF, WRITE, CLOSE, SET_FINFO, RENAME, LAUNCH };
+enum { FIND_FOLDER, HGET_VINFO, GET_CAT_INFO, DELETE, CREATE, OPEN_DF, OPEN_RF, WRITE, CLOSE, SET_FINFO, RENAME, LAUNCH,
+       CAT_MOVE, IMPORTS };
+#define FILES 16
+#define FORK_MAX 0x20000u
 
 static struct mem mem;
 
@@ -242,13 +321,13 @@ struct file {
 	uint32_t dir, id;
 	char name[64];
 	uint32_t type, creator;
-	uint8_t fork[2][4096];
+	uint8_t fork[2][FORK_MAX];
 	uint32_t len[2];
 	bool locked;
 };
 
 static struct fs {
-	struct file f[8];
+	struct file f[FILES];
 	uint32_t next_id;
 	bool volume_locked, full;
 	unsigned launches;
@@ -266,7 +345,7 @@ static void pname(uint32_t p, char *out)
 
 static struct file *find(uint32_t dir, const char *name)
 {
-	for (unsigned k = 0; k < 8; k++)
+	for (unsigned k = 0; k < FILES; k++)
 		if (fs.f[k].used && fs.f[k].dir == dir && strcmp(fs.f[k].name, name) == 0)
 			return &fs.f[k];
 	return NULL;
@@ -281,7 +360,7 @@ static struct file *by_spec(uint32_t spec)
 
 static struct file *add_file(uint32_t dir, const char *name, uint32_t id, const struct hfs_file *f)
 {
-	for (unsigned k = 0; k < 8; k++) {
+	for (unsigned k = 0; k < FILES; k++) {
 		struct file *x = &fs.f[k];
 		if (x->used)
 			continue;
@@ -311,9 +390,9 @@ static int16_t file_manager(unsigned call, const uint32_t *a)
 	switch (call) {
 	case FIND_FOLDER:
 		CHECK_EQ(a[0], 0xFFFF8000u);
-		CHECK_EQ(a[1], FOURCC('e', 'x', 't', 'n'));
+		CHECK(a[1] == FOURCC('e', 'x', 't', 'n') || (a[1] == FOURCC('e', 'x', 't', 'D') && a[2] == 1));
 		mem_w16(&mem, a[3], VREF);
-		mem_w32(&mem, a[4], EXTENSIONS);
+		mem_w32(&mem, a[4], a[1] == FOURCC('e', 'x', 't', 'n') ? EXTENSIONS : DISABLED);
 		return 0;
 	case HGET_VINFO:
 		CHECK_EQ(mem_r16(&mem, pb + 22), VREF);
@@ -330,7 +409,7 @@ static int16_t file_manager(unsigned call, const uint32_t *a)
 			memcpy(mem_ptr(&mem, name_ptr + 1), folder, strlen(folder));
 			return 0;
 		}
-		for (unsigned k = 0, n = 0; k < 8; k++) {
+		for (unsigned k = 0, n = 0; k < FILES; k++) {
 			f = &fs.f[k];
 			if (!f->used || f->dir != dir || ++n != (unsigned)index)
 				continue;
@@ -372,6 +451,9 @@ static int16_t file_manager(unsigned call, const uint32_t *a)
 		uint32_t n = mem_r32(&mem, a[1]);
 		if (fs.full)
 			return -34;
+		CHECK(f->len[fork] + n <= FORK_MAX);
+		if (f->len[fork] + n > FORK_MAX)
+			return -34;
 		memcpy(f->fork[fork] + f->len[fork], mem_ptr(&mem, a[2]), n);
 		f->len[fork] += n;
 		return 0;
@@ -400,6 +482,15 @@ static int16_t file_manager(unsigned call, const uint32_t *a)
 		pname(mem_r32(&mem, pb + 16) + 6, fs.launched);
 		fs.launched_dir = mem_r32(&mem, mem_r32(&mem, pb + 16) + 2);
 		return 0;
+	case CAT_MOVE:                          /* (a CMovePBRec: the name, ioDirID, ioNewDirID) */
+		pname(mem_r32(&mem, pb + 18), name);
+		CHECK_EQ(mem_r32(&mem, pb + 28), 0);
+		if (!(f = find(mem_r32(&mem, pb + 48), name)))
+			return -43;
+		if (find(mem_r32(&mem, pb + 36), name))
+			return -48;
+		f->dir = mem_r32(&mem, pb + 36);
+		return 0;
 	default:
 		CHECK(!"an import");
 		return -50;
@@ -423,12 +514,12 @@ static bool idle_until_diverted(struct install *in, struct helper *h, uint64_t *
 /* The bootstrap's work, then the installer's main routine and its callouts until it returns */
 static void run_installer(struct install *in, struct helper *h)
 {
-	for (unsigned k = 0; k < 12; k++)
+	for (unsigned k = 0; k < IMPORTS; k++)
 		mem_w32(&mem, TOC + in->layout.import[k], TVECTORS + 8 * k);
 	struct ndrv_call c = { .mem = &mem, .entry = 0, .toc = TOC, .frame = FRAME };
 	install_call(in, &c, h);
 	for (unsigned steps = 0; !c.done && steps < 1000; steps++) {
-		CHECK(c.tvector >= TVECTORS && c.tvector < TVECTORS + 8 * 12 && c.tvector % 8 == 0);
+		CHECK(c.tvector >= TVECTORS && c.tvector < TVECTORS + 8 * IMPORTS && c.tvector % 8 == 0);
 		int16_t err = file_manager((c.tvector - TVECTORS) / 8, c.out);
 		c = (struct ndrv_call){ .mem = &mem, .entry = NDRV_ENTRY_RESUME, .toc = TOC, .frame = FRAME };
 		c.arg[0] = (uint32_t)(int32_t)err;
@@ -449,9 +540,9 @@ static void test_installer(void)
 {
 	static struct install in;
 	struct helper h = { .running = false };
-	struct item items[] = { folder(SYSTEM, EXTENSIONS, "Extensions"), folder(SYSTEM, DISABLED, "Extensions (Disabled)"),
-				tool_item(TOOLS_3D_ENGINE, DISABLED, 60, "Old 3D", true) };
-	write_volume(items, 3, 0);
+	struct item items[8] = { folder(SYSTEM, EXTENSIONS, "Extensions"), folder(SYSTEM, DISABLED, "Extensions (Disabled)"),
+				 tool_item(TOOLS_3D_ENGINE, DISABLED, 60, "Old 3D", true) };
+	write_volume(items, with_gl(items, 3, EXTENSIONS, 70), 0);
 	memset(&fs, 0, sizeof fs);
 	fs.next_id = 100;
 	add_file(DISABLED, "Old 3D", 60, &tools[TOOLS_3D_ENGINE])->fork[0][0] ^= 1;
@@ -504,9 +595,10 @@ static void test_installer_errors(void)
 {
 	static struct install in;
 	struct helper h = { .running = false };
-	struct item items[] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
-				tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 61, NULL, true) };
-	write_volume(items, 2, 0);
+	struct item items[8] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
+				 tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 61, NULL, true) };
+	unsigned n = with_gl(items, 2, EXTENSIONS, 70);
+	write_volume(items, n, 0);
 	memset(&fs, 0, sizeof fs);
 	fs.next_id = 100;
 	struct file *old = add_file(EXTENSIONS, "syshm 3D Engine", 61, &tools[TOOLS_3D_ENGINE]);
@@ -520,7 +612,7 @@ static void test_installer_errors(void)
 	idle_trap = IDLE_TRAP;
 	CHECK_EQ(mem_r32(&mem, TRAP_ENTRY_9), INSTALL_REGION);
 	CHECK_EQ(mem_r32(&mem, INSTALL_REGION + 10), TRAP_ENTRY_9);
-	for (unsigned k = 0; k < 12; k++)
+	for (unsigned k = 0; k < IMPORTS; k++)
 		mem_w32(&mem, TOC + in.layout.import[k], TVECTORS + 8 * k);
 
 	/* (run it by hand to fill the disk after Enhancements) */
@@ -544,7 +636,7 @@ static void test_installer_errors(void)
 
 	/* a locked volume: nothing done */
 	fs.full = false;
-	write_volume(items, 2, 0);
+	write_volume(items, n, 0);
 	memset(&fs, 0, sizeof fs);
 	fs.volume_locked = true;
 	install_begin(&in, volume_path, 0, false);
@@ -562,10 +654,10 @@ static void test_installer_quit(void)
 {
 	static struct install in;
 	struct helper h = { .running = true };
-	struct item items[] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
-				tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 62, "syshm Helper", true),
-				tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 63, NULL, false) };
-	write_volume(items, 3, 0);
+	struct item items[8] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
+				 tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 62, "syshm Helper", true),
+				 tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 63, NULL, false) };
+	write_volume(items, with_gl(items, 3, EXTENSIONS, 70), 0);
 	memset(&fs, 0, sizeof fs);
 	fs.next_id = 100;
 	add_file(EXTENSIONS, "syshm Helper", 62, &tools[TOOLS_ENHANCEMENTS])->locked = true;
@@ -613,6 +705,89 @@ static void test_installer_quit(void)
 	CHECK_EQ(in.phase, INSTALL_DONE);
 }
 
+/* Mac OS 9: syshm's OpenGL in, Apple's out to Extensions (Disabled); then, syshm's gone, Apple's back */
+static void test_installer_apple(void)
+{
+	static struct install in;
+	struct helper h = { .running = false };
+	static const char *const names[3] = { "OpenGLLibrary", "OpenGLMemory", "OpenGLUtility" };
+
+	/* 8.5 and 8.6 (no OpenGL of Apple's): all five in Extensions, said in one go */
+	struct item none[] = { folder(SYSTEM, EXTENSIONS, "Extensions") };
+	write_volume(none, 1, 0);
+	memset(&fs, 0, sizeof fs);
+	fs.next_id = 100;
+	install_begin(&in, volume_path, 0, false);
+	install_answer(&in, true, &h);
+	uint64_t tb = HZ;
+	CHECK(idle_until_diverted(&in, &h, &tb));
+	run_installer(&in, &h);
+	for (unsigned t = 0; t < TOOLS_FILES; t++)
+		CHECK(same_as(find(EXTENSIONS, tools[t].name), t));
+	CHECK(strcmp(in.news, "installed syshm Enhancements, syshm 3D Engine, syshm OpenGL Library, syshm OpenGL Memory "
+			      "and syshm OpenGL Utility in \"Test:System Folder:Extensions\". syshm Enhancements is "
+			      "running. Programs opened from now on find the 3D engine and syshm's OpenGL.") == 0);
+	h.running = true;
+
+	struct item items[12] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
+				  tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, NULL, false),
+				  tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, false) };
+	write_volume(items, with_apple(items, 3, EXTENSIONS, 80), 0);
+	memset(&fs, 0, sizeof fs);
+	fs.next_id = 100;
+	for (unsigned k = 0; k < 3; k++)
+		add_file(EXTENSIONS, names[k], 80 + k, NULL);
+	install_begin(&in, volume_path, 0, false);
+	install_answer(&in, true, &h);
+	CHECK(idle_until_diverted(&in, &h, &tb));
+	run_installer(&in, &h);
+	for (unsigned t = TOOLS_GL_FIRST; t < TOOLS_GL_FIRST + TOOLS_GL_FILES; t++)
+		CHECK(same_as(find(EXTENSIONS, tools[t].name), t));
+	for (unsigned k = 0; k < 3; k++)
+		CHECK(find(DISABLED, names[k]) && !find(EXTENSIONS, names[k]));
+	CHECK(strstr(in.news, "installed syshm OpenGL Library, syshm OpenGL Memory and syshm OpenGL Utility in "
+			      "\"Test:System Folder:Extensions\"; moved Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility "
+			      "to \"Test:System Folder:Extensions (Disabled)\". Programs opened from now on find syshm's "
+			      "OpenGL.") == in.news);
+	CHECK_EQ(fs.launches, 0);
+
+	/* syshm's deleted (the user's doing): Apple's back, syshm's not installed */
+	for (unsigned t = TOOLS_GL_FIRST; t < TOOLS_GL_FIRST + TOOLS_GL_FILES; t++)
+		find(EXTENSIONS, tools[t].name)->used = false;
+	struct item folders[2] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
+				   folder(SYSTEM, DISABLED, "Extensions (Disabled)") };
+	memcpy(items, folders, sizeof folders);
+	items[2] = tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, NULL, false);
+	items[3] = tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, false);
+	write_volume(items, with_apple(items, 4, DISABLED, 80), 0);
+	install_begin(&in, volume_path, 0, false);
+	install_answer(&in, true, &h);
+	CHECK(idle_until_diverted(&in, &h, &tb));
+	run_installer(&in, &h);
+	for (unsigned k = 0; k < 3; k++)
+		CHECK(find(EXTENSIONS, names[k]) && !find(DISABLED, names[k]));
+	CHECK(!find(EXTENSIONS, tools[TOOLS_GL_LIBRARY].name));
+	CHECK(strstr(in.news, "put Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility back in "
+			      "\"Test:System Folder:Extensions\". Programs opened from now on find Apple's OpenGL.") ==
+	      in.news);
+
+	/* one that can't move (one of that name in the way): said, the rest moved */
+	memset(&fs, 0, sizeof fs);
+	fs.next_id = 100;
+	for (unsigned k = 0; k < 3; k++)
+		add_file(EXTENSIONS, names[k], 80 + k, NULL);
+	add_file(DISABLED, names[1], 99, NULL);
+	write_volume(items, with_apple(items, 4, EXTENSIONS, 80), 0);
+	install_begin(&in, volume_path, 0, false);
+	install_answer(&in, true, &h);
+	CHECK(idle_until_diverted(&in, &h, &tb));
+	run_installer(&in, &h);
+	CHECK(find(DISABLED, names[0]) && find(EXTENSIONS, names[1]) && find(DISABLED, names[2]));
+	CHECK(strstr(in.news, "; moved Apple's OpenGLLibrary and OpenGLUtility to \"Test:System Folder:Extensions "
+			      "(Disabled)\"; couldn't move Apple's OpenGLMemory: something of that name is in the way.") !=
+	      NULL);
+}
+
 void test_install(void)
 {
 	int fd = temp_file(volume_path, sizeof volume_path);
@@ -637,6 +812,7 @@ void test_install(void)
 	test_installer();
 	test_installer_errors();
 	test_installer_quit();
+	test_installer_apple();
 	fflush(stdout);
 	if (out >= 0)
 		dup2(out, 1);

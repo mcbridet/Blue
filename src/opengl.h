@@ -68,9 +68,15 @@ struct opengl {
 	bool gpu_asked;
 	struct opengl_instance inst[OPENGL_INSTANCES];
 	bool log;                       /* SYSHM_LOG_GL: every call */
+	bool fps;                       /* SYSHM_GL_FPS: the frame rate every second */
+	double fps_since, fps_drawing;
+	unsigned fps_frames;
 	unsigned char unimplemented[1024];      /* (said once each: OpenGLLibrary's functions) */
 	uint64_t glu_told;                      /* (... OpenGLUtility's) */
 	unsigned long calls, recorded, contexts, frames, gpu_frames;
+	/* the last call swapped a frame to the screen (a port): its context's number from 1 (0: it didn't), its AGLContext */
+	unsigned shown;
+	uint32_t shown_id;
 	unsigned long bad_records;              /* (records that made no sense: the rest of the buffer dropped) */
 };
 
