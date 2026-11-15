@@ -745,9 +745,15 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
     engine says so and goes on in software.
   - Otherwise, a software rasterizer (`src/raster.c`) draws it in bands of
     rows on helper threads; the pixels are always the same, however many
-    threads draw them, so instruction-time runs stay the same on every host.
-    `SYSHM_RASTER_THREADS` sets the number (default 3, counting the
-    emulated processor's).
+    threads draw them, and it's built without the fused multiply-adds
+    compilers use on some hosts (Apple silicon's), so instruction-time runs
+    stay the same on every host. `SYSHM_RASTER_THREADS` sets the number
+    (default 3, counting the emulated processor's).
+
+  The rasterizer and the GPU take what Mac OS 9's OpenGL will need too
+  (docs/opengl-plan.md): two texture units combined in stages as OpenGL's
+  texture environments combine them, blend equations, color masks, fog by
+  a fog coordinate; RAVE's texture operations are such stages.
 
   `--no-gpu` (or `SYSHM_GPU=0`) draws in software in real time too;
   `SYSHM_GPU=1` draws with OpenGL in any run, a software renderer such as
@@ -1284,11 +1290,11 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 
 ## Next steps
 
-1. 3D: Glide, then OpenGL with Mac OS 9: docs/glide-plan.md and
-   docs/opengl-plan.md (what Mac OS 9.1's OpenGL is and what games link
-   to, the design, and why Glide first). (The RAVE engine draws with the
-   host's GPU; what's left there, such as reading back less of each frame,
-   is in docs/gpu-plan.md.)
+1. 3D: OpenGL with Mac OS 9, then Glide: docs/opengl-plan.md (what Mac OS
+   9.1's OpenGL is and what games link to, the design; under way: the
+   groundwork, which Glide shares, is done) and docs/glide-plan.md. (The
+   RAVE engine draws with the host's GPU; what's left there, such as
+   reading back less of each frame, is in docs/gpu-plan.md.)
 2. Networking: host ports forwarded to the guest (so it can serve).
 3. Shared folder: writing back when Mac OS ejects the volume, then offering
    the folder again as new media, so that changes cross during a run (it
@@ -1470,7 +1476,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           bootinfo.c + devtree.c (Trampoline replacement, device tree),
           rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
           dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
-          (configuration space), nvram.c (devices), ndrv.c (PEF driver generator),
+          (configuration space), nvram.c (devices), ndrv.c (PEF fragment
+          generator: drivers, the guest tools),
           video.c, disk.c (native drivers), floppy.c (floppy images),
           drives.c (removable drives: where images go, the menu),
           cdrom.c (the CD-ROM driver's calls), cdimage.c (CD images: cue
@@ -1480,16 +1487,16 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           reader: the startup disk's ROM file), share.c (shared folder),
           rsrc.c (resource forks), tools.c (guest tools), install.c
           (installing them from inside Mac OS), clip.c (the clipboard they
-          share with the host), rave.c + raster.c
-          + gpu.c + gl.c (3D engine: software and OpenGL), display.c (SDL2
+          share with the host), rave.c (3D engine) + raster.c + gpu.c + gl.c
+          (the 3D backend: software and OpenGL), display.c (SDL2
           window), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), main.c
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
           devtree.py (device-tree copy dumper), disasm.py (disassembler)
-docs/     gpu-plan.md (the 3D engine's OpenGL backend), glide-plan.md and
-          opengl-plan.md (3dfx Glide and Mac OS 9's OpenGL, planned),
+docs/     gpu-plan.md (the 3D engine's OpenGL backend), opengl-plan.md and
+          glide-plan.md (Mac OS 9's OpenGL, under way, and 3dfx Glide),
           nk2-reference.md (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2
           does)
 third_party/imgui/  Dear ImGui 1.93.0 (MIT; its core files only, as released)

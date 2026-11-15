@@ -115,6 +115,12 @@ Done:
   in place of the Driver Services timer. The restored 9.2.2 reaches the
   Finder in instruction time without a key. See Findings, "The display's
   interrupt".
+- **OpenGL's groundwork** (Task 18; milestone 0 of docs/opengl-plan.md):
+  the 3D backend's texture units and stages, blend equations and color
+  masks, with RAVE drawing through them, pixels unchanged; the software
+  rasterizer without fused multiply-adds; the fragment builder's many
+  exports, own code and zero-filled data; host calls with floats. See
+  Findings, "Fused multiply-adds".
 
 Where it stops:
 
@@ -683,9 +689,49 @@ the kernel); 8 onwards as the boot progresses.
   without a menu bar, idle (with the VBL interrupt kept off too, and with
   the old timer); quitting it on a cleanly unmounted restore works.
 
+### 18. OpenGL for Mac OS 9 games
+
+- **Status:** milestone 0 done (docs/opengl-plan.md has the plan, its
+  milestones and what's built). syshm's own OpenGLLibrary, OpenGLMemory and
+  OpenGLUtility, recording calls in guest memory, with OpenGL's fixed
+  function in C on the host, drawn by `raster.c` and `gpu.c`. Done: the
+  3D backend's richer vertices and states (three colors, a fog coordinate,
+  two texture units combined in up to four stages as `GL_COMBINE`, blend
+  equations and constant colors, no blending, color masks, fragments
+  without alpha drawn too), RAVE's texture operations as stages
+  (`raster_rave_stages()`), a GPU program for each configuration of stages;
+  the rasterizer built without fused multiply-adds; `ndrv_build()` with
+  any number of exports through a PEF hash table, data exports, code of a
+  fragment's own, zero-filled data, termination routines and versions; host
+  calls with f1 to f13 and `ndrv_args`. Tests: `tests/test_raster.c` (each
+  stage operation and kind of argument, blend equations, constant colors,
+  color masks drawn and cleared, the fog coordinate, fragments without
+  alpha), `tests/test_gpu.c` (the same against `raster.c`, a projective
+  unit, minifying and magnifying filters), `tests/test_tools.c` (300
+  exports found as the Code Fragment Manager finds them, the rest of the
+  builder), `tests/test_drivers.c` (`ndrv_args`), `tests/test_jit.c`
+  (f1 to f13 at a host call, both engines). Checked: 20 random streams of
+  RAVE calls (6,000 frames) give the same pixels as before in software,
+  on macOS (with the next item) and Linux; on the GPU, 4 frames differ,
+  each in one pixel's channel by one step. The 8.5 and 9.1 CDs boot to the same screenshots as
+  main's.
+- **Next:** milestone 1, AGL and a clear.
+
 ## Findings
 
 Facts later tasks need, added as they are found.
+
+- **Fused multiply-adds** (OpenGL, milestone 0): clang contracts `a * b +
+  c` into one fused operation within an expression by default, and does on
+  Apple silicon (345 in `raster.c`), where it rounds once instead of twice;
+  so the software rasterizer's pixels on Apple silicon Macs differed from
+  Linux's and Intel Macs'. `#pragma STDC FP_CONTRACT OFF` (clang's; GCC
+  ignores it and warns) stops that; GCC contracts nothing in ISO C mode
+  (`-std=c11`), but does in its default GNU mode: `CFLAGS` given on make's
+  command line replace the Makefile's, `-std=c11` with them, so give them
+  in the environment, as CI does. Apple's OpenGL driver: setting the blend
+  equation for every draw call, even to the same value, cut a test of many
+  small draws to a fifth of its frame rate.
 
 - **CD audio, Apple's CD-ROM driver** (Technical Note DV22, "CD-ROM Driver
   Calls", developer.apple.com/library/archive/technotes/dv/dv_22.html):

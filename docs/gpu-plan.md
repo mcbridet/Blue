@@ -30,6 +30,17 @@ Built (milestones 1 to 5): `src/gl.c` (CGL, EGL), `src/gpu.c`, the seam in
 Milestone 6 (performance) is still to do, as is the in-game comparison
 with Bugdom.
 
+Since, for OpenGL (opengl-plan.md, milestone 0), the backend's vertices
+and states are richer: three colors, a fog coordinate, two texture units
+combined in stages, blend equations, constant colors, color masks. The
+vertex format below has 23 floats, and the fragment shader is made for
+each way of drawing (a program per configuration of stages, the first
+time it's drawn with) rather than taking RAVE's texture operation as a
+uniform; RAVE's operations are stages. Setting the blend equation and
+color for every draw call cost Apple's driver dearly (a frame rate a fifth
+of what it was in a test of many small draws), so they're set only when
+they change.
+
 ## Decisions
 
 - **API:** OpenGL 3.3 core profile (4.1 core on macOS, which accepts

@@ -12,15 +12,62 @@ It should come first (see Order).
 
 ## Status
 
-Research and design only; nothing is built. Facts checked on the media are
+Milestone 0, the groundwork (shared with Glide), is built; milestones 1 to
+6 are to do. The user chose OpenGL before Glide, and accepted the proposed
+decisions below for now (replacing the libraries, recording in guest
+memory, fixed function in C on the host, frames read back into guest
+memory, a Rage 128's identity).
+
+- **The 3D backend** (`src/raster.h`, `src/raster.c`, `src/gpu.c`):
+  vertices carry three colors (the primary one; OpenGL's secondary color,
+  or RAVE's kd and ks), a fog coordinate (divided by w), and two texture
+  units' s/w, t/w and q/w. A state has two texture units (OpenGL's six
+  filters, clamping or repeating, coordinates divided per pixel by their
+  own q/w or by 1/w) combined in up to four stages as `GL_COMBINE` does
+  (replace, modulate, add, add signed, interpolate, subtract; arguments
+  from the stage before, the colors, either unit's texture or a constant,
+  their alpha in every channel, or one minus that; scaled and clamped or
+  not), blend equations (add, subtract, reverse subtract, min, max) with
+  the constant-color factors, no blending, color masks (clears included),
+  fog by the fog coordinate, and fragments without alpha drawn as OpenGL
+  draws them or skipped as RAVE's engines do. RAVE's texture operations
+  are stages too (`raster_rave_stages()`), and its pixels are unchanged:
+  20 random streams of RAVE calls (6,000 frames, 3 million triangles,
+  every kind of call and state) give the same bytes as before, on macOS
+  and on Linux. On the GPU each way of drawing gets a program of its own,
+  made the first time it's needed (a few milliseconds); 4 of those 6,000
+  frames differ from before, each in one pixel's channel, by one step. In software, drawing with
+  one or two stages takes as long as before or up to 5% longer, with three
+  (RAVE's modulate and highlight, ATI's multitexturing) 10-20% longer.
+- **Reproducible software pixels:** `raster.c` is built without fused
+  multiply-adds. Clang used 345 of them on Apple silicon, so RAVE's pixels
+  there differed from Linux's and Intel Macs'; they're the same everywhere
+  now (Linux's didn't change).
+- **The fragment builder** (`src/ndrv.c`): any number of entries and
+  exports (looked up through a hash table as PEF linkers lay it out:
+  `PEFHashTableIndex`, checked against all 474 of Apple's OpenGLLibrary's
+  exports), data exports, code of a fragment's own for chosen entries
+  (which can branch to any entry's host-call stub), zero-filled data after
+  the initialized, a termination routine, and the container's versions.
+- **Host calls** see f1 to f13 as well as r3 to r10, and `ndrv_args`
+  walks a call's arguments where the calling convention puts them,
+  floats and doubles included, and words past r10 in the caller's
+  parameter area.
+
+Before that, research and design only. Facts checked on the media are
 marked **verified**, with where they come from; the rest is from memory or
 from documents found on the web, and is marked so. The media were read on
 APFS clones with hfsutils; `tools/pef.py` (with a few lines more for weak
 flags and versions) listed imports and exports, capstone disassembled,
 `unar` opened the UT CD's Compact Pro archive, and the `arc-mac` crate's
-tome reader unpacked the 9.1 installer's files.
+tome reader unpacked the 9.1 installer's files. Mac OS 9.2.2's OpenGL
+(on the user's installed 9.2.2, which is HFS+, read through macOS) is
+1.2.2: OpenGLLibrary is 233,966 bytes, with the same 474 exports, current
+version 1, oldest compatible definition 0, initialization and termination
+routines, and 7,116 bytes of zero-filled data. Unreal Tournament's OpenGL
+build imports every library with versions 0 and 0, so any version will do.
 
-## Decisions (proposed)
+## Decisions (accepted for now)
 
 - **Replace the libraries:** syshm provides OpenGLLibrary (gl and agl),
   OpenGLMemory and OpenGLUtility (glu) under Apple's fragment names, with
@@ -40,11 +87,15 @@ tome reader unpacked the 9.1 installer's files.
 - **Frames go back into guest memory**, into the drawable (window, memory
   or the whole screen), as the RAVE engine does. Presenting full-screen
   contexts straight in syshm's window comes later, as an optimization.
-- **Identity:** an ATI renderer, as the RAVE engine reports one (proposed:
-  "Rage 128 OpenGL Engine"; see Identity: the user decides).
+- **Identity:** an ATI renderer, "Rage 128 OpenGL Engine" with ATI's
+  vendor string, as the RAVE engine reports one (see Identity).
 - **First target:** Unreal Tournament's OpenGL build, on the UT CD, which
   needs 45 functions.
-- **Order:** Glide first, then OpenGL (see Order).
+- **Order:** OpenGL first (the user's choice; this plan proposed Glide
+  first, see Order). Milestone 0's groundwork is Glide's too.
+- **Installation:** on 9.x syshm's libraries replace Apple's (moved to
+  "Extensions (Disabled)" when they're installed); on 8.5 and 8.6 they're
+  added.
 
 ## What Mac OS 9 ships
 

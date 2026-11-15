@@ -18,9 +18,15 @@ presentation) and referred to here.
 
 ## Status
 
-Research and design only; nothing is built. Facts checked on the media are
-marked **verified**; the rest comes from the documents and projects named,
-or from memory, and is marked so.
+Research and design only. The groundwork this plan shares with OpenGL is
+built (opengl-plan.md, milestone 0, which the user chose to do first): the
+fragment builder's exports and fragment names, host calls with floats, and
+the backend's two texture units combined in stages, blend equations,
+constant colors, color masks and fog coordinate; what Glide adds there
+(its combine units' general form, fog tables, chroma key, W buffering) is
+still to do. Facts checked on the media are marked **verified**; the rest
+comes from the documents and projects named, or from memory, and is marked
+so.
 
 ## Decisions (proposed)
 
