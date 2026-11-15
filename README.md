@@ -1119,7 +1119,13 @@ lacks: syshm says to install it again (and a window offers to update it).
     used a tick, which on a fast guest it could take forever to do. In real
     time, guest time runs ahead of the host clock by what transfers took,
     and catches up while the guest idles (running at 3/4 speed, unless sound
-    plays).
+    plays). While sound plays, though, guest time ahead would be sound
+    played ahead, which the host can't play: there a transfer takes host
+    time, all of it, as a real drive's DMA does while the processor goes
+    on. The guest waits in the driver's call until the transfer is over,
+    taking interrupts meanwhile, so the sound keeps the host clock's pace (a
+    movie streaming from disk used to run guest time 1.1 to 2.3 times as
+    fast, its sound dropped in pieces; plan.md, Findings).
 - Ethernet (`src/net.c`): no chip is emulated. On New World Macs the
   firmware supplies the hardware layer of Mac OS's Ethernet driver, as a
   code fragment in the `ethernet` node's `lanLib,AAPL,MacOS,PowerPC`
@@ -1243,8 +1249,10 @@ lacks: syshm says to install it again (and a window offers to update it).
   In narrow windows (640 wide, say) the names are shortened and the text
   made smaller to fit.
   SDL2 sound output (`src/audio.c`; in real time, `--no-sound` turns it
-  off; a small queue is kept so the guest's clock and the device's can't
-  drift into growing delay),
+  off; a small queue is kept, its frames resampled to play up to 0.5%
+  faster or slower as it's fuller or emptier than its goal, so that the
+  guest's clock and the device's can't drift apart into growing delay or
+  gaps, and a stall of the host is made up within seconds),
   PNG screenshots (`src/png.c`), NVRAM kept
   in a file, real-time guest time with `--window`/`--realtime`, and
   `syshm disk create`, which lays out an empty HFS volume (`src/hfs.c`, which
@@ -1472,7 +1480,13 @@ requests (a CD-ROM drive's calls with their parameters in and out, and what it p
 address range (optionally only one instruction word), with instruction
 counts and r3-r5/LR, cheaply enough for whole boots. `SYSHM_LOG_SOUND=1`
 logs the sound chip's register accesses, and `SYSHM_SOUND_WAV=FILE` records
-what it plays (also in instruction time; CD audio included). `SYSHM_LOG_USB=1` logs the USB
+what it plays (also in instruction time; CD audio included).
+`SYSHM_LOG_AUDIO=1` prints, every second while sound plays in real time,
+how the host's sound queue fared (its depth, how much faster or slower it
+played, chunks dropped, silence added) and what paces it (the frames the
+guest's sound DMA gave, how far guest time is ahead of the host clock, the
+disks' transfers and the guest time they took, how much the host's sleeps
+overran). `SYSHM_LOG_USB=1` logs the USB
 controller's register accesses (not the frame number, which drivers poll),
 `SYSHM_LOG_PCI=1` configuration space accesses.
 `--io-ram` backs unmodelled I/O pages with plain RAM. Under gdb, `handle
