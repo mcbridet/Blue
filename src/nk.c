@@ -2518,6 +2518,17 @@ static uint32_t trap_table(const struct machine *m)
 	return m->ci.la_emulator_code + m->ci.kernel_trap_table_offset;
 }
 
+/*
+ * The register copies below vectorize on AArch64; x86 has no byte swap for
+ * vectors without SSSE3, and GCC keeps them loops there, at twice the
+ * instructions of a straight run (as clang has them)
+ */
+#if defined(__x86_64__)
+#define UNROLL_SWAPS _Pragma("GCC unroll 32")
+#else
+#define UNROLL_SWAPS
+#endif
+
 static void save_context(struct machine *m, uint32_t cb, uint32_t pc)
 {
 	struct mem *mem = &m->mem;
@@ -2532,8 +2543,10 @@ static void save_context(struct machine *m, uint32_t cb, uint32_t pc)
 	mem_w32(mem, cb + CB_CTR, cpu->ctr);
 	mem_w32(mem, cb + CB_FPSCR, cpu->fpscr);
 	uint8_t *p = mem_ptr(mem, cb);          /* (one base pointer: the loops vectorize) */
+	UNROLL_SWAPS
 	for (int r = 0; r < 32; r++)
 		put_be32(p + CB_GPR + 8 * r + 4, cpu->gpr[r]);
+	UNROLL_SWAPS
 	for (int r = 0; r < 32; r++)
 		put_be64(p + CB_FPR + 8 * r, cpu->fpr[r]);
 }
@@ -2552,8 +2565,10 @@ static void load_context(struct machine *m, uint32_t cb)
 	cpu->ctr = mem_r32(mem, cb + CB_CTR);
 	ppc_fp_set_fpscr(cpu, mem_r32(mem, cb + CB_FPSCR));     /* (as by mtfsf) */
 	const uint8_t *p = mem_ptr(mem, cb);
+	UNROLL_SWAPS
 	for (int r = 0; r < 32; r++)
 		cpu->gpr[r] = be32(p + CB_GPR + 8 * r + 4);
+	UNROLL_SWAPS
 	for (int r = 0; r < 32; r++)
 		cpu->fpr[r] = be64(p + CB_FPR + 8 * r);
 	cpu->resv_valid = false;
