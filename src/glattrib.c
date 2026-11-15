@@ -240,7 +240,10 @@ void glf_pop_attrib(struct gl_state *st)
 		cap(st, o, GL_DITHER);
 		cap(st, o, 0x0BF1);                             /* GL_INDEX_LOGIC_OP */
 		cap(st, o, 0x0BF2);                             /* GL_COLOR_LOGIC_OP */
+		st->logic_op = o->logic_op;
 	}
+	if (m & GL_ACCUM_BUFFER_BIT)
+		memcpy(st->clear_accum, o->clear_accum, sizeof st->clear_accum);
 	if (m & A_HINT)
 		memcpy(st->hints, o->hints, sizeof st->hints);
 	if (m & A_LIST)
@@ -311,6 +314,8 @@ void glf_free(struct gl_state *st)
 		free(st->client_stack[--st->client_depth]);
 	free(st->select.words);
 	st->select.words = NULL;
+	free(st->accum);
+	st->accum = NULL;
 	st->select.cap = st->select.count = 0;
 	free(st->eval);
 	st->eval = NULL;

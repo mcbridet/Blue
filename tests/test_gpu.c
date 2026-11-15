@@ -2,7 +2,8 @@
  * The GPU backend against raster.c: where both must agree exactly
  * (coverage of whole-pixel geometry, depth, texture orientation, clears,
  * points, lines and bitmaps, copies, reading back), and within a tolerance
- * on a random scene (edges and filtering may round differently). Skipped
+ * on a random scene (edges and filtering may round differently) and on
+ * OpenGL's points and lines, logic ops and stipples. Skipped
  * without OpenGL, unless BLUE_TEST_GPU=1.
  */
 #include <stdlib.h>
@@ -574,6 +575,83 @@ static void test_pipeline(struct gpu *g)
 	gpu_texture_free(g, &bx);
 }
 
+/*
+ * OpenGL's points and lines (each fragment raster.c's: the same pixels, their
+ * values within rounding), aliased, wide, smooth, stippled, textured; logic
+ * ops; the polygon stipple
+ */
+static void test_gl(struct gpu *g)
+{
+	static uint32_t texels[4 * 4];
+	for (unsigned k = 0; k < 16; k++)
+		texels[k] = 0xFF000000u | (k % 4 * 64) << 16 | (k / 4 * 64) << 8 | 0x40;
+	struct raster_texture tx = { .levels = 1, .width = { 4 }, .height = { 4 }, .texels = { texels } };
+	enum { N = 9 };
+	struct raster_state s[N];
+	for (unsigned k = 0; k < N; k++) {
+		s[k] = plain();
+		s[k].blend = RASTER_BLEND_NONE;
+		s[k].all_fragments = true;
+		s[k].gl_points = true;
+	}
+	s[1].width = 3;                                 /* wide */
+	s[2].width = 2.5f;                              /* smooth, blended */
+	s[2].smooth = true;
+	s[2].blend = RASTER_BLEND_FACTORS;
+	s[2].blend_src = RASTER_F_SRC_ALPHA;
+	s[2].blend_dst = RASTER_F_ONE_MINUS_SRC_ALPHA;
+	s[3] = s[2];
+	s[3].width = 6.5f;
+	s[4].line_stippled = true;                      /* stippled */
+	s[4].line_stipple = 0x0F33;
+	s[4].line_stipple_factor = 2;
+	s[5].width = 4;                                 /* textured (nearest: magnified) */
+	s[5].unit[0].texture = &tx;
+	s[5].stages = 1;
+	s[5].stage[0].arg[0][0] = s[5].stage[0].arg[1][0] = RASTER_TEXTURE0;
+	s[6] = s[5];
+	s[6].width = 1;
+	s[7].blend = RASTER_BLEND_LOGIC;                /* XOR */
+	s[7].logic_op = RASTER_LOGIC_XOR;
+	s[8].polygon_stippled = true;                   /* stippled polygons */
+	for (int k = 0; k < 32; k++)
+		s[8].polygon_stipple[k] = 0x0F0F0F0Fu << (k % 4) | (uint32_t)k;
+	struct raster_cmd c[16];
+	memset(c, 0, sizeof c);
+	c[0] = clear_cmd(0xFF203040u, 1);
+	struct raster_vertex v[2] = { vertex(2.3f, 3.4f, 0, 1, 0.5f, 0.25f), vertex(40.6f, 12.7f, 0, 0.2f, 1, 0.6f) };
+	unsigned n = 1;
+	for (unsigned k = 0; k < 7; k++, n++) {
+		c[n].kind = k == 3 ? RASTER_CMD_POINT : RASTER_CMD_LINE;
+		c[n].state = k;
+		c[n].textured = k >= 5;
+		c[n].v[0] = v[0];
+		c[n].v[1] = v[1];
+		c[n].stipple = 5;
+		for (int j = 0; j < 2; j++) {
+			c[n].v[j].x += k * 0.7f + (k == 3 ? 40 : 0);
+			c[n].v[j].y += 5 * k;
+			c[n].v[j].tex[0][0] = j ? 1 : 0.1f;
+			c[n].v[j].tex[0][1] = j ? 0.3f : 0.9f;
+			c[n].v[j].tex[0][2] = 1;
+		}
+	}
+	c[n++] = tri_cmd(7, vertex(30.3f, 2.2f, 0, 0.5f, 0.25f, 0.75f), vertex(62.6f, 4.4f, 0, 0.5f, 0.25f, 0.75f),
+			 vertex(50.2f, 40.7f, 0, 0.5f, 0.25f, 0.75f), false);
+	c[n++] = tri_cmd(8, vertex(2.3f, 40.2f, 0, 1, 1, 0), vertex(60.6f, 46.4f, 0, 0, 1, 1),
+			 vertex(20.2f, 20.7f, 0, 1, 0, 1), false);
+	both(g, s, c, n);
+	if (getenv("BLUE_GPU_DEBUG"))
+		printf("gpu: OpenGL's points and lines: %u pixels off by more than 1, %u by more than 3\n", differing(1),
+		       differing(3));
+	CHECK_EQ(differing(3), 0);
+	CHECK(differing(1) <= 8);
+	unsigned drawn = 0;
+	for (unsigned k = 0; k < W * H; k++)
+		drawn += cpu_color[k] != 0xFF203040u;
+	CHECK(drawn > 400);
+}
+
 /* A failed job: everything after it is refused, and freeing still works */
 static void test_failure(void)
 {
@@ -617,6 +695,7 @@ void test_gpu(void)
 	test_multitexture(g);
 	test_blend_factors(g);
 	test_pipeline(g);
+	test_gl(g);
 	CHECK(!gpu_failed(g));
 	gpu_close(g);
 	test_failure();

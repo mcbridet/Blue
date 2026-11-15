@@ -76,7 +76,13 @@ enum { GL_POINT_SMOOTH = 0x0B10, GL_LINE_SMOOTH = 0x0B20, GL_CULL_FACE = 0x0B44,
        GL_TEXTURE_GEN_S = 0x0C60,
        GL_LIGHT0 = 0x4000, GL_NORMALIZE = 0x0BA1, GL_RESCALE_NORMAL = 0x803A, GL_COLOR_MATERIAL = 0x0B57,
        GL_COLOR_SUM_EXT = 0x8458, GL_CLIP_PLANE0 = 0x3000, GL_POLYGON_OFFSET_POINT = 0x2A01,
-       GL_POLYGON_OFFSET_LINE = 0x2A02, GL_POLYGON_OFFSET_FILL = 0x8037, GL_STENCIL_TEST = 0x0B90 };
+       GL_POLYGON_OFFSET_LINE = 0x2A02, GL_POLYGON_OFFSET_FILL = 0x8037, GL_STENCIL_TEST = 0x0B90,
+       GL_LINE_STIPPLE = 0x0B24, GL_POLYGON_SMOOTH = 0x0B41, GL_POLYGON_STIPPLE = 0x0B42, GL_INDEX_LOGIC_OP = 0x0BF1,
+       GL_COLOR_LOGIC_OP = 0x0BF2 };
+/* The accumulation buffer's operations (and GL_ADD) */
+enum { GL_ACCUM = 0x0100, GL_LOAD, GL_RETURN, GL_MULT };
+/* Logic operations: GL_CLEAR to GL_SET */
+enum { GL_CLEAR = 0x1500, GL_COPY = 0x1503, GL_SET = 0x150F };
 /* Lighting, fog, texture coordinate generation */
 enum { GL_AMBIENT = 0x1200, GL_DIFFUSE, GL_SPECULAR, GL_POSITION, GL_SPOT_DIRECTION, GL_SPOT_EXPONENT,
        GL_SPOT_CUTOFF, GL_CONSTANT_ATTENUATION, GL_LINEAR_ATTENUATION, GL_QUADRATIC_ATTENUATION };
@@ -101,6 +107,7 @@ enum { GL_COLOR_INDEX = 0x1900, GL_STENCIL_INDEX, GL_DEPTH_COMPONENT, GL_RED, GL
 
 #define GLF_GUARD 4.0f                  /* the guard band, in view volumes (see above) */
 #define GLF_MAX_SIZE 4096               /* viewports, drawables */
+#define GLF_MAX_POINT_SIZE 64           /* points' sizes, lines' widths */
 #define GLF_MODELVIEW_DEPTH 32          /* matrix stacks' depths */
 #define GLF_PROJECTION_DEPTH 8
 #define GLF_TEXTURE_DEPTH 8
@@ -140,7 +147,8 @@ enum { GLF_CAP_DEPTH_TEST, GLF_CAP_CULL_FACE, GLF_CAP_BLEND, GLF_CAP_ALPHA_TEST,
        GLF_CAP_LIGHTING = GLF_CAP_TEXTURE_GEN_S + 4, GLF_CAP_LIGHT0, GLF_CAP_NORMALIZE = GLF_CAP_LIGHT0 + GLF_LIGHTS,
        GLF_CAP_RESCALE_NORMAL, GLF_CAP_COLOR_MATERIAL, GLF_CAP_FOG, GLF_CAP_COLOR_SUM, GLF_CAP_CLIP_PLANE0,
        GLF_CAP_OFFSET_POINT = GLF_CAP_CLIP_PLANE0 + GLF_CLIP_PLANES, GLF_CAP_OFFSET_LINE, GLF_CAP_OFFSET_FILL,
-       GLF_CAP_STENCIL_TEST, GLF_CAP_TEXTURE_3D, GLF_CAP_NAMED, GLF_CAPS = 80 };
+       GLF_CAP_STENCIL_TEST, GLF_CAP_TEXTURE_3D, GLF_CAP_POINT_SMOOTH, GLF_CAP_LINE_SMOOTH, GLF_CAP_LINE_STIPPLE,
+       GLF_CAP_POLYGON_SMOOTH, GLF_CAP_POLYGON_STIPPLE, GLF_CAP_INDEX_LOGIC_OP, GLF_CAP_COLOR_LOGIC_OP, GLF_CAPS = 80 };
 
 /* A texture object (1D, 2D or 3D): its levels, its parameters */
 enum { GLF_1D, GLF_2D, GLF_3D, GLF_TARGETS };
@@ -316,7 +324,13 @@ struct gl_state {
 	float offset_factor, offset_units;
 	int32_t line_stipple_factor;
 	uint16_t line_stipple;
-	uint8_t polygon_stipple[128];           /* (kept: neither stipple is drawn) */
+	unsigned stipple_counter;               /* (the next line's first fragment's: see glf_vertex()) */
+	uint32_t polygon_stipple[32];           /* rows from the bottom, bit 31 - x % 32 for column x % 32 */
+	uint32_t logic_op;
+	/* the accumulation buffer (glpixel.c's: see glf_accum()), as big as the drawable last was */
+	float clear_accum[4];                   /* r, g, b, a */
+	int16_t *accum;
+	int accum_width, accum_height;
 	/* stencil */
 	uint32_t stencil_func, stencil_fail, stencil_zfail, stencil_zpass;
 	int32_t stencil_ref, clear_stencil;
@@ -390,6 +404,7 @@ struct gl_target {
 	struct surface *surface;
 	int width, height;
 	unsigned depth_bits, alpha_bits, stencil_bits;
+	unsigned accum_bits;                    /* (each component's; 0: no accumulation buffer) */
 };
 
 /* OpenGL's initial state; the viewport and scissor box are set when there's a drawable (glf_viewport()) */
@@ -713,6 +728,29 @@ void glf_copy_pixels(struct gl_state *st, const struct gl_target *t, int32_t x, 
 
 /* The raster state drawing in the target takes now (glfront.c's) */
 const struct raster_state *glf_raster_state(struct gl_state *st, const struct gl_target *t);
+
+/*
+ * glPolygonStipple's pattern from the program's bitmap (unpacked as
+ * glBitmap's: glf_polygon_stipple_bytes() of them), and
+ * glGetPolygonStipple's into it (packed)
+ */
+void glf_polygon_stipple(struct gl_state *st, const uint8_t *bits);
+size_t glf_polygon_stipple_bytes(const struct gl_pixel_store *ps);
+void glf_get_polygon_stipple(const struct gl_state *st, uint8_t *bits);
+
+/*
+ * The accumulation buffer: glAccum (the target finished: its colors read by
+ * GL_ACCUM and GL_LOAD), glClearAccum, and its clear (glf_clear()'s). Each
+ * component in [-1, 1], kept to the bits the drawable has (8 or 16); the
+ * operations within the scissor box, if it's on. GL_RETURN draws the
+ * result as a pixel rectangle through the color mask alone.
+ */
+void glf_accum(struct gl_state *st, const struct gl_target *t, uint32_t op, float value);
+void glf_clear_accum(struct gl_state *st, float r, float g, float b, float a);
+void glf_clear_accum_buffer(struct gl_state *st, const struct gl_target *t);
+
+/* glLogicOp */
+void glf_logic_op(struct gl_state *st, uint32_t op);
 
 /* ---- evaluators (gleval.c) ---- */
 

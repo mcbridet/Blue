@@ -52,7 +52,13 @@ struct raster_vertex {
 /* Values as RAVE's (kQAZFunction_ etc.) */
 enum { RASTER_Z_NONE, RASTER_Z_LT, RASTER_Z_EQ, RASTER_Z_LE, RASTER_Z_GT, RASTER_Z_NE, RASTER_Z_GE,
        RASTER_Z_TRUE, RASTER_Z_FALSE };
-enum { RASTER_BLEND_PREMULTIPLY, RASTER_BLEND_INTERPOLATE, RASTER_BLEND_FACTORS, RASTER_BLEND_NONE };
+enum { RASTER_BLEND_PREMULTIPLY, RASTER_BLEND_INTERPOLATE, RASTER_BLEND_FACTORS, RASTER_BLEND_NONE,
+       RASTER_BLEND_LOGIC };
+/* Logic operations on the color and the target's (as OpenGL's GL_CLEAR to GL_SET, in their order) */
+enum { RASTER_LOGIC_CLEAR, RASTER_LOGIC_AND, RASTER_LOGIC_AND_REVERSE, RASTER_LOGIC_COPY, RASTER_LOGIC_AND_INVERTED,
+       RASTER_LOGIC_NOOP, RASTER_LOGIC_XOR, RASTER_LOGIC_OR, RASTER_LOGIC_NOR, RASTER_LOGIC_EQUIV, RASTER_LOGIC_INVERT,
+       RASTER_LOGIC_OR_REVERSE, RASTER_LOGIC_COPY_INVERTED, RASTER_LOGIC_OR_INVERTED, RASTER_LOGIC_NAND,
+       RASTER_LOGIC_SET };
 /* Blend factors (as OpenGL's GL_ZERO, GL_ONE, GL_SRC_COLOR...; the constant ones from blend_color) */
 enum { RASTER_F_ZERO, RASTER_F_ONE, RASTER_F_SRC_COLOR, RASTER_F_ONE_MINUS_SRC_COLOR, RASTER_F_SRC_ALPHA,
        RASTER_F_ONE_MINUS_SRC_ALPHA, RASTER_F_DST_ALPHA, RASTER_F_ONE_MINUS_DST_ALPHA, RASTER_F_DST_COLOR,
@@ -140,9 +146,29 @@ struct raster_state {
 	unsigned blend_src, blend_dst;          /* (RASTER_BLEND_FACTORS) */
 	unsigned blend_eq;
 	float blend_color[4];                   /* a, r, g, b */
+	unsigned logic_op;                      /* (RASTER_BLEND_LOGIC: the color's bits with the target's) */
 	uint32_t color_keep;                    /* bits of the target's colors left as they are (0: none) */
 	float width;                            /* of points and lines */
 	int clip_left, clip_top, clip_right, clip_bottom;      /* pixels drawn: [left, right) x [top, bottom) */
+	/*
+	 * Points and lines as OpenGL draws them (else as RAVE's: a square of
+	 * `width` at each step along a line): see raster_gl_fragments().
+	 * Antialiased (smooth), each fragment's alpha is times its coverage.
+	 * Stippled, a line's fragment k is drawn if bit (stipple_counter + k) /
+	 * factor % 16 of the pattern is set (the counter: the command's
+	 * `stipple`).
+	 */
+	bool gl_points;
+	bool smooth;
+	bool line_stippled;
+	uint16_t line_stipple, line_stipple_factor;
+	/*
+	 * Triangles stippled: a pixel is drawn if bit 31 - x % 32 of row
+	 * (height - 1 - y) % 32 is set (as OpenGL's, its rows going up from the
+	 * bottom of the target)
+	 */
+	bool polygon_stippled;
+	uint32_t polygon_stipple[32];
 };
 
 /* RAVE's texture operations (see raster_rave_stages()) */
@@ -220,7 +246,34 @@ struct raster_cmd {
 	int rect[4];                            /* left, top, right, bottom */
 	uint32_t argb;
 	float z;
+	unsigned stipple;                       /* (OpenGL's lines: the stipple counter at their first fragment) */
 };
+
+/*
+ * The fragments of an OpenGL point or line (a command whose state has
+ * gl_points), within [left, right) x [top, bottom): fn(ctx, x, y, t,
+ * cover) for each, in order along a line, with t where along it its values
+ * are (0 at v[0], 1 at v[1]; points' 0) and cover its coverage (1 unless
+ * smooth). Points are squares of the width rounded (at least 1), centered as
+ * OpenGL 1.2 has it; lines take the pixels whose diamonds they leave (the
+ * diamond-exit rule, ties broken as OpenGL's perturbed endpoints break
+ * them), or columns or rows of the width rounded where wider; smooth, the
+ * pixels a disk of the width, or a rectangle of the width along the line,
+ * covers some of, by the area covered. Stippled lines' fragments are left
+ * out as their pattern has it. Returns how far a line moves the stipple
+ * counter on (its fragments along it; fn may be NULL).
+ */
+typedef void raster_fragment_fn(void *ctx, int x, int y, float t, float cover);
+unsigned raster_gl_fragments(const struct raster_state *s, const struct raster_cmd *c, int left, int top, int right,
+			     int bottom, raster_fragment_fn *fn, void *ctx);
+
+/* A vertex's values (but x and y) t of the way from a's to b's, as raster_gl_fragments()'s fragments have them */
+void raster_lerp_vertex(struct raster_vertex *out, const struct raster_vertex *a, const struct raster_vertex *b,
+			float t);
+
+/* A level of detail for a unit's texture along a line (log2 of texels per pixel; 0 if it doesn't change) */
+float raster_line_lod(const struct raster_unit *u, unsigned unit, const struct raster_vertex *v0,
+		      const struct raster_vertex *v1);
 
 /*
  * Does the commands in order. Threads (BLUE_RASTER_THREADS in all, the

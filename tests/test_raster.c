@@ -3,7 +3,10 @@
  * triangles share), depth testing, texture orientation, and drawing
  * recorded commands on helper threads, at once or in background batches,
  * which must give exactly the pixels of drawing them one at a time.
+ * OpenGL's points and lines (as Mesa's llvmpipe draws them, but for its
+ * ties), their stipple and coverage; logic ops; the polygon stipple.
  */
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -537,8 +540,247 @@ static void test_stencil(void)
 	CHECK(stencil_a[0] == 0xAF && stencil_a[5 * W + 50] == 0xA0);
 }
 
+/* ---- OpenGL's points and lines, logic ops, the polygon stipple ---- */
+
+/* A state drawing OpenGL's points and lines, replacing what's there */
+static struct raster_state gl_state(float width)
+{
+	struct raster_state s = plain();
+	s.blend = RASTER_BLEND_NONE;
+	s.all_fragments = true;
+	s.gl_points = true;
+	s.width = width;
+	return s;
+}
+
+/* A vertex at window (x, y): OpenGL's y going up from the target's bottom */
+static struct raster_vertex win(float x, float y)
+{
+	return vertex(x, (float)H - y, 0, 1, 1, 1);
+}
+
+/* The pixels lit (window coordinates: x + 1000 y), sorted, from the bottom left */
+static unsigned lit(const uint32_t *color, unsigned *out, unsigned max)
+{
+	unsigned n = 0;
+	for (int y = 0; y < H; y++)
+		for (int x = 0; x < W; x++)
+			if (color[(H - 1 - y) * W + x] && n < max)
+				out[n++] = (unsigned)(x + 1000 * y);
+	return n;
+}
+
+static unsigned draw_lit(const struct raster_state *s, const struct raster_cmd *c, unsigned *out, unsigned max)
+{
+	struct raster_target t = target(color_a, depth_a);
+	raster_clear(&t, 0, 0, W, H, true, 0, true, 1);
+	raster_run(&t, s, c, 1);
+	return lit(color_a, out, max);
+}
+
+static struct raster_cmd line_cmd(float xa, float ya, float xb, float yb)
+{
+	struct raster_cmd c;
+	memset(&c, 0, sizeof c);
+	c.kind = RASTER_CMD_LINE;
+	c.v[0] = win(xa, ya);
+	c.v[1] = win(xb, yb);
+	return c;
+}
+
+/*
+ * Lines by the diamond-exit rule, as Mesa's llvmpipe draws them (but for
+ * its ties): ends in diamonds and out, on pixels' edges (the perturbed
+ * endpoints going down and left), every way; wide ones; aliased points
+ */
+static void test_gl_lines(void)
+{
+	static const struct {
+		float a[4];
+		unsigned n, first, last;        /* (fragments; the first and last in lit()'s order) */
+	} lines[] = {
+		{ { 2, 2, 12, 2 }, 10, 1002, 1011 },            /* (on a pixel edge: the row below) */
+		{ { 2.5f, 4.5f, 12.5f, 4.5f }, 10, 4002, 4011 }, /* (center to center: the last left out) */
+		{ { 15, 2, 15, 12 }, 10, 2014, 11014 },         /* (on an edge: the column left) */
+		{ { 30, 2, 26, 6 }, 4, 2029, 5026 },
+		{ { 40, 2, 30, 7 }, 10, 2038, 6031 },
+		{ { 2.3f, 11.7f, 13.6f, 15.2f }, 11, 11002, 14012 },   /* (ends in the last pixel's diamond) */
+		{ { 35.4f, 10.4f, 35.6f, 10.6f }, 0, 0, 0 },    /* (within one diamond) */
+		{ { 33.5f, 10.5f, 33.5f, 10.5f }, 0, 0, 0 },
+	};
+	struct raster_state s = gl_state(1);
+	unsigned px[256];
+	for (unsigned k = 0; k < sizeof lines / sizeof lines[0]; k++) {
+		struct raster_cmd c = line_cmd(lines[k].a[0], lines[k].a[1], lines[k].a[2], lines[k].a[3]);
+		unsigned n = draw_lit(&s, &c, px, 256);
+		CHECK_EQ(n, lines[k].n);
+		CHECK_EQ(raster_gl_fragments(&s, &c, 0, 0, 0, 0, NULL, NULL), lines[k].n);
+		if (n && n == lines[k].n) {
+			CHECK_EQ(px[0], lines[k].first);
+			CHECK_EQ(px[n - 1], lines[k].last);
+		}
+	}
+	/* wide: columns of 3 (2: from the width-1 pixel up), rows of 3 for a y-major line */
+	s = gl_state(3);
+	struct raster_cmd c = line_cmd(2.3f, 3.4f, 14.6f, 7.2f);
+	CHECK_EQ(draw_lit(&s, &c, px, 256), 36);
+	CHECK_EQ(px[0], 2002);
+	CHECK_EQ(px[35], 7013);
+	c = line_cmd(20.2f, 2.3f, 23.6f, 14.8f);
+	CHECK_EQ(draw_lit(&s, &c, px, 256), 36);
+	CHECK_EQ(px[0], 2019);
+	s = gl_state(2);
+	c = line_cmd(30.2f, 3.4f, 44.6f, 9.2f);
+	CHECK_EQ(draw_lit(&s, &c, px, 256), 28);
+	CHECK_EQ(px[0], 3030);
+	CHECK_EQ(px[27], 9043);
+	/* points: n x n, rounded, centered on the pixel (odd) or the corner (even) */
+	static const struct {
+		float size, x, y;
+		unsigned first, last;
+	} points[] = { { 1, 3.3f, 3.6f, 3003, 3003 }, { 2, 9.5f, 3.5f, 3009, 4010 }, { 3, 15.5f, 3.5f, 2014, 4016 },
+		       { 2.4f, 21.2f, 3.7f, 3020, 4021 }, { 2.6f, 27.2f, 3.7f, 2026, 4028 }, { 4, 34, 4, 2032, 5035 } };
+	for (unsigned k = 0; k < sizeof points / sizeof points[0]; k++) {
+		s = gl_state(points[k].size);
+		memset(&c, 0, sizeof c);
+		c.kind = RASTER_CMD_POINT;
+		c.v[0] = win(points[k].x, points[k].y);
+		unsigned n = draw_lit(&s, &c, px, 256), side = (unsigned)(points[k].size + 0.5f);
+		CHECK_EQ(n, side * side);
+		CHECK_EQ(px[0], points[k].first);
+		CHECK_EQ(px[n - 1], points[k].last);
+	}
+}
+
+/*
+ * Stippled lines: fragment k of a line drawn if bit (counter + k) / factor %
+ * 16 is set; a strip going on from where its last segment got to
+ */
+static void test_gl_stipple(void)
+{
+	struct raster_state s = gl_state(1);
+	s.line_stippled = true;
+	s.line_stipple = 0x00FF;
+	s.line_stipple_factor = 2;
+	struct raster_cmd c = line_cmd(1.5f, 2.5f, 41.5f, 2.5f);
+	unsigned px[256], n = draw_lit(&s, &c, px, 256);
+	CHECK_EQ(n, 24);                        /* (0-15, 32-39: of 40) */
+	CHECK_EQ(px[15], 2016);
+	CHECK_EQ(px[16], 2033);
+	c.stipple = 20;                         /* (a strip's later segment: 12 off, 16 on, 12 off) */
+	n = draw_lit(&s, &c, px, 256);
+	CHECK_EQ(n, 16);
+	CHECK_EQ(px[0], 2013);
+	CHECK_EQ(px[15], 2028);
+	CHECK_EQ(raster_gl_fragments(&s, &c, 0, 0, 0, 0, NULL, NULL), 40);
+}
+
+/* Smooth: a pixel's coverage the area of it the disk or rectangle covers (all of it inside) */
+struct sum {
+	double cover;
+	unsigned n, inside;
+};
+
+static void add_cover(void *ctx, int x, int y, float t, float cover)
+{
+	(void)x;
+	(void)y;
+	(void)t;
+	struct sum *s = ctx;
+	s->cover += cover;
+	s->n++;
+	s->inside += cover == 1;
+}
+
+static void test_gl_smooth(void)
+{
+	struct raster_state s = gl_state(9);
+	s.smooth = true;
+	struct raster_cmd c;
+	memset(&c, 0, sizeof c);
+	c.kind = RASTER_CMD_POINT;
+	c.v[0] = win(20.3f, 20.6f);
+	struct sum sum = { 0, 0, 0 };
+	raster_gl_fragments(&s, &c, 0, 0, W, H, add_cover, &sum);
+	CHECK(sum.cover > 63.6 - 0.2 && sum.cover < 63.6 + 0.2);       /* (pi 4.5^2, to 1/256 a pixel) */
+	CHECK(sum.inside >= 44 && sum.n < 100);
+	s.width = 2;
+	c = line_cmd(3.3f, 4.6f, 30.7f, 22.1f);
+	memset(&sum, 0, sizeof sum);
+	raster_gl_fragments(&s, &c, 0, 0, W, H, add_cover, &sum);
+	double len = sqrt(27.4 * 27.4 + 17.5 * 17.5);
+	CHECK(sum.cover > 2 * len - 1e-3 && sum.cover < 2 * len + 1e-3);       /* (exact: the rectangle's area) */
+	/* drawn: alpha times the coverage (blending by it) */
+	struct raster_target t = target(color_a, depth_a);
+	raster_clear(&t, 0, 0, W, H, true, 0xFF000000u, true, 1);
+	s.blend = RASTER_BLEND_FACTORS;
+	s.blend_src = RASTER_F_SRC_ALPHA;
+	s.blend_dst = RASTER_F_ONE_MINUS_SRC_ALPHA;
+	raster_run(&t, &s, &c, 1);
+	unsigned partial = 0, full = 0;
+	for (int k = 0; k < W * H; k++) {
+		unsigned g = color_a[k] >> 8 & 255;
+		partial += g > 0 && g < 255;
+		full += g == 255;
+	}
+	CHECK(partial > 40 && full > 20);
+}
+
+/* Logic ops: the color's bits with the target's, then the color mask */
+static void test_logic(void)
+{
+	/* (0x3C2444F8 with 0x0CAA3BC5) */
+	static const uint32_t want[16] = { 0x00000000, 0x0C2000C0, 0x30044438, 0x3C2444F8, 0x008A3B05, 0x0CAA3BC5,
+					    0x308E7F3D, 0x3CAE7FFD, 0xC3518002, 0xCF7180C2, 0xF355C43A, 0xFF75C4FA,
+					    0xC3DBBB07, 0xCFFBBBC7, 0xF3DFFF3F, 0xFFFFFFFF };
+	for (unsigned op = 0; op < 16; op++) {
+		struct raster_target t = target(color_a, depth_a);
+		raster_clear(&t, 0, 0, W, H, true, 0x0CAA3BC5u, true, 1);
+		struct raster_state s = gl_state(1);
+		s.blend = RASTER_BLEND_LOGIC;
+		s.logic_op = op;
+		struct raster_vertex v[3] = { vertex(0, 0, 0, 0x24 / 255.0f, 0x44 / 255.0f, 0xF8 / 255.0f),
+					      vertex(8, 0, 0, 0x24 / 255.0f, 0x44 / 255.0f, 0xF8 / 255.0f),
+					      vertex(0, 8, 0, 0x24 / 255.0f, 0x44 / 255.0f, 0xF8 / 255.0f) };
+		for (int k = 0; k < 3; k++)
+			v[k].color[0][3] = 0x3C / 255.0f;
+		raster_triangle(&t, &s, &v[0], &v[1], &v[2], false);
+		CHECK_EQ(color_a[W + 1], want[op]);
+		raster_clear(&t, 0, 0, W, H, true, 0x0CAA3BC5u, true, 1);
+		s.color_keep = 0xFF00FF00u;             /* (alpha and green masked) */
+		raster_triangle(&t, &s, &v[0], &v[1], &v[2], false);
+		CHECK_EQ(color_a[W + 1], (want[op] & 0x00FF00FFu) | 0x0C003B00u);
+	}
+}
+
+/* The polygon stipple: bit 31 - x % 32 of row (height - 1 - y) % 32 */
+static void test_polygon_stipple(void)
+{
+	struct raster_target t = target(color_a, depth_a);
+	raster_clear(&t, 0, 0, W, H, true, 0, true, 1);
+	struct raster_state s = gl_state(1);
+	s.polygon_stippled = true;
+	for (int k = 0; k < 32; k++)
+		s.polygon_stipple[k] = k == 3 ? 0x80000001u : k == 5 ? 0xFFFFFFFFu : 0;
+	struct raster_vertex v[4] = { vertex(0, 0, 0, 1, 1, 1), vertex(W, 0, 0, 1, 1, 1), vertex(W, H, 0, 1, 1, 1),
+				      vertex(0, H, 0, 1, 1, 1) };
+	raster_triangle(&t, &s, &v[0], &v[1], &v[2], false);
+	raster_triangle(&t, &s, &v[0], &v[2], &v[3], false);
+	unsigned px[512], n = lit(color_a, px, 512);
+	CHECK_EQ(n, 2 * 4 + 64 * 2);            /* (rows 3 and 35: 4 pixels; rows 5 and 37: all) */
+	CHECK_EQ(px[0], 3000);
+	CHECK_EQ(px[1], 3031);
+	CHECK_EQ(px[2], 3032);
+	CHECK_EQ(px[4], 5000);
+}
+
 void test_raster(void)
 {
+	test_gl_lines();
+	test_gl_stipple();
+	test_gl_smooth();
+	test_logic();
+	test_polygon_stipple();
 	test_coverage();
 	test_shared_edges();
 	test_depth();

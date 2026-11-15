@@ -31,6 +31,7 @@ static const char vertex_source[] =
 	"layout(location = 5) in vec3 a_tex0;\n"         /* s/w, t/w, q/w (bitmaps: texel coordinates) */
 	"layout(location = 6) in vec3 a_tex1;\n"
 	"layout(location = 7) in vec2 a_texr;\n"         /* each unit's r/w (3D textures) */
+	"layout(location = 8) in float a_cover;\n"       /* (OpenGL's smooth points and lines: coverage) */
 	"uniform vec2 u_size;\n"
 	"smooth out float v_invw;\n"
 	"smooth out vec4 v_color0;\n"
@@ -40,6 +41,7 @@ static const char vertex_source[] =
 	"smooth out vec3 v_tex0;\n"
 	"smooth out vec3 v_tex1;\n"
 	"smooth out vec2 v_texr;\n"
+	"flat out float v_cover;\n"
 	"void main()\n"
 	"{\n"
 	"	gl_Position = vec4(a_pos.x * 2.0 / u_size.x - 1.0, a_pos.y * 2.0 / u_size.y - 1.0,\n"
@@ -52,6 +54,7 @@ static const char vertex_source[] =
 	"	v_tex0 = a_tex0;\n"
 	"	v_tex1 = a_tex1;\n"
 	"	v_texr = a_texr;\n"
+	"	v_cover = a_cover;\n"
 	"}\n";
 
 /*
@@ -59,7 +62,9 @@ static const char vertex_source[] =
  * program): MODE 0 color 0, 1 textured, 2 bitmaps, 3 pixels; PERSPECTIVE_Z;
  * textured, UNIT0 and UNIT1 (sampled), PROJECTIVE0 and PROJECTIVE1, and
  * VOLUME0 and VOLUME1 (3D textures), and the stages' code between the head
- * and the tail (see stage_code()).
+ * and the tail (see stage_code()); COVER (alpha times the coverage:
+ * OpenGL's smooth points and lines), STIPPLE (the polygon stipple; rows go
+ * up from the bottom of the target, as OpenGL's do).
  */
 static const char fragment_head[] =
 	"smooth in float v_invw;\n"
@@ -70,6 +75,11 @@ static const char fragment_head[] =
 	"smooth in vec3 v_tex0;\n"
 	"smooth in vec3 v_tex1;\n"
 	"smooth in vec2 v_texr;\n"
+	"flat in float v_cover;\n"
+	"#ifdef STIPPLE\n"
+	"uniform vec2 u_size;\n"
+	"uniform uint u_stipple[32];\n"
+	"#endif\n"
 	"#ifdef VOLUME0\n"
 	"uniform sampler3D u_texture0;\n"
 	"#else\n"
@@ -95,6 +105,11 @@ static const char fragment_head[] =
 	"layout(location = 0) out vec4 o_color;\n"
 	"void main()\n"
 	"{\n"
+	"#ifdef STIPPLE\n"
+	"	uint sy = uint(u_size.y) - 1u - uint(gl_FragCoord.y);\n"
+	"	if ((u_stipple[sy & 31u] >> (31u - (uint(gl_FragCoord.x) & 31u)) & 1u) == 0u)\n"
+	"		discard;\n"
+	"#endif\n"
 	"#ifdef PERSPECTIVE_Z\n"
 	"	gl_FragDepth = v_invw > 0.0 ? v_invw / (1.0 + v_invw) : 0.0;\n"
 	"#endif\n"
@@ -165,6 +180,9 @@ static const char fragment_tail[] =
 	"		f = clamp(f, 0.0, 1.0);\n"
 	"		c.rgb = f * c.rgb + (1.0 - f) * u_fog_color;\n"
 	"	}\n"
+	"#ifdef COVER\n"
+	"	c.a *= v_cover;\n"
+	"#endif\n"
 	"	if (u_alpha_test != 0) {\n"
 	"		bool pass = u_alpha_test == 1 ? c.a < u_alpha_ref : u_alpha_test == 2 ? c.a == u_alpha_ref :\n"
 	"			    u_alpha_test == 3 ? c.a <= u_alpha_ref : u_alpha_test == 4 ? c.a > u_alpha_ref :\n"
@@ -184,7 +202,7 @@ enum { MODE_COLOR, MODE_TEXTURED, MODE_BITMAP, MODE_PIXELS };
 
 /* What a program draws: what it's made for (all but the stages of textured drawing zero) */
 struct program_key {
-	uint8_t mode, perspective_z, units, projective, volume, stages;
+	uint8_t mode, perspective_z, units, projective, volume, stages, cover, stipple;
 	struct raster_stage stage[RASTER_STAGES];       /* (but for their constants, which are uniforms) */
 };
 
@@ -192,11 +210,13 @@ struct program {
 	struct program_key key;
 	GLuint id;
 	GLint size, texture0, texture1, constant, fog_mode, fog_coord, fog_color, fog_start, fog_end, fog_density,
-	      alpha_test, alpha_ref, transparent, pix_origin, pix_inv, pix_size, pix_kind, pix_bit, pix_color, pix_z;
+	      alpha_test, alpha_ref, transparent, pix_origin, pix_inv, pix_size, pix_kind, pix_bit, pix_color, pix_z,
+	      stipple;
 };
 
-/* per vertex: x, y, z, 1/w, the colors (r, g, b, a), fog, each unit's s/w, t/w, q/w, then each's r/w */
-#define FLOATS (4 + 4 * RASTER_COLORS + 1 + 4 * RASTER_UNITS)
+/* per vertex: x, y, z, 1/w, the colors (r, g, b, a), fog, each unit's s/w, t/w, q/w, then each's r/w, coverage */
+#define FLOATS (4 + 4 * RASTER_COLORS + 1 + 4 * RASTER_UNITS + 1)
+#define COVER (FLOATS - 1)
 _Static_assert(RASTER_UNITS == 2 && RASTER_COLORS == 3 && RASTER_CONSTANT == 6, "the shaders' units and sources");
 
 /* ---- the backend ----------------------------------------------------------------- */
@@ -216,6 +236,7 @@ struct range {
 	int mode;
 	const struct raster_texture *image;     /* (bitmaps, pixels) */
 	const struct raster_cmd *pixels;        /* (pixels: the command) */
+	bool cover, stipple;                    /* (OpenGL's smooth points and lines; stippled triangles) */
 };
 
 struct gpu {
@@ -254,6 +275,7 @@ struct gpu {
 	GLuint blank;                   /* (bound when drawing without a texture: drivers want one) */
 	GLenum blend_eq;                /* as last set (changing them costs, on some drivers) */
 	float blend_color[4];
+	int logic_op;                   /* (-1: none) */
 	bool stencil;                   /* (the stencil test on) */
 	float anisotropy;
 	float *verts;
@@ -375,12 +397,13 @@ static struct program *program_of(struct gpu *g, const struct program_key *key)
 	p->key = *key;
 
 	struct gl *gl = &g->gl;
-	char defines[256], code[4096];
-	snprintf(defines, sizeof defines, "#define MODE %u\n%s%s%s%s%s%s%s", key->mode,
+	char defines[512], code[4096];
+	snprintf(defines, sizeof defines, "#define MODE %u\n%s%s%s%s%s%s%s%s%s", key->mode,
 		 key->perspective_z ? "#define PERSPECTIVE_Z\n" : "", key->units & 1 ? "#define UNIT0\n" : "",
 		 key->units & 2 ? "#define UNIT1\n" : "", key->projective & 1 ? "#define PROJECTIVE0\n" : "",
 		 key->projective & 2 ? "#define PROJECTIVE1\n" : "", key->volume & 1 ? "#define VOLUME0\n" : "",
-		 key->volume & 2 ? "#define VOLUME1\n" : "");
+		 key->volume & 2 ? "#define VOLUME1\n" : "", key->cover ? "#define COVER\n" : "",
+		 key->stipple ? "#define STIPPLE\n" : "");
 	stage_code(key, code, sizeof code);
 	debug(g, "program %u: %s%s", g->nprograms, defines, code);
 	GLuint vs = compile(g, GL_VERTEX_SHADER, "", vertex_source, "", "");
@@ -428,6 +451,7 @@ static struct program *program_of(struct gpu *g, const struct program_key *key)
 	U(pix_bit, "u_pix_bit");
 	U(pix_color, "u_pix_color");
 	U(pix_z, "u_pix_z");
+	U(stipple, "u_stipple");
 #undef U
 	gl->UseProgram(p->id);
 	gl->Uniform1i(p->texture0, 0);
@@ -437,11 +461,14 @@ static struct program *program_of(struct gpu *g, const struct program_key *key)
 }
 
 /* What draws a range */
-static void key_of(const struct raster_state *s, int mode, struct program_key *k)
+static void key_of(const struct raster_state *s, const struct range *r, struct program_key *k)
 {
+	int mode = r->mode;
 	memset(k, 0, sizeof *k);
 	k->mode = (uint8_t)mode;
 	k->perspective_z = s->perspective_z;
+	k->cover = r->cover;
+	k->stipple = r->stipple;
 	if (mode != MODE_TEXTURED)
 		return;
 	k->units = (uint8_t)raster_units_used(s);
@@ -654,6 +681,7 @@ static void put_vertex(float *p, const struct raster_vertex *v, float x, float y
 	p[4 + 4 * RASTER_COLORS] = v->fog;
 	memcpy(p + 5 + 4 * RASTER_COLORS, v->tex, sizeof v->tex);
 	memcpy(p + 5 + 4 * RASTER_COLORS + 3 * RASTER_UNITS, v->texr, sizeof v->texr);
+	p[COVER] = 1;
 }
 
 /* A rectangle of pixels [x0, x1) x [y0, y1) with one vertex's values, as two triangles */
@@ -699,6 +727,64 @@ static bool put_line(struct gpu *g, const struct raster_state *s, const struct r
 	return true;
 }
 
+/*
+ * OpenGL's points and lines: each fragment raster_gl_fragments() makes a
+ * pixel's square, its values there (along a line, raster.c's), its
+ * coverage; textured along a line, its coordinates changing across the
+ * square as they do along the line, so that the GPU's level of detail is
+ * the line's (OpenGL 1.2's: texels along it a pixel)
+ */
+struct gl_quads {
+	struct gpu *g;
+	const struct raster_state *s;
+	const struct raster_cmd *c;
+	bool line, ok;
+	float grad[RASTER_UNITS][3];            /* (s, t, r a pixel along the line) */
+};
+
+static void gl_quad(void *ctx, int x, int y, float t, float cover)
+{
+	struct gl_quads *q = ctx;
+	float *p = q->ok ? new_vertices(q->g, 6) : NULL;
+	if (!p) {
+		q->ok = false;
+		return;
+	}
+	struct raster_vertex v = q->c->v[0];
+	if (q->line)
+		raster_lerp_vertex(&v, &q->c->v[0], &q->c->v[1], t);
+	const float corner[6][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, { 0, 1 } };
+	for (int k = 0; k < 6; k++) {
+		struct raster_vertex w = v;
+		float d = corner[k][0] - 0.5f;
+		for (unsigned u = 0; q->line && u < RASTER_UNITS; u++) {
+			float by = q->s->unit[u].projective ? v.tex[u][2] : v.invw;
+			w.tex[u][0] += d * q->grad[u][0] * by;
+			w.tex[u][1] += d * q->grad[u][1] * by;
+			w.texr[u] += d * q->grad[u][2] * by;
+		}
+		put_vertex(p + k * FLOATS, &w, (float)x + corner[k][0], (float)y + corner[k][1]);
+		p[k * FLOATS + COVER] = cover;
+	}
+}
+
+static bool put_gl(struct gpu *g, const struct raster_state *s, const struct raster_cmd *c)
+{
+	struct gl_quads q = { g, s, c, c->kind == RASTER_CMD_LINE, true, { { 0 } } };
+	const struct raster_vertex *a = &c->v[0], *b = &c->v[1];
+	float dx = b->x - a->x, dy = b->y - a->y, len = sqrtf(dx * dx + dy * dy);
+	for (unsigned u = 0; q.line && len > 0 && u < RASTER_UNITS; u++) {
+		float ia = s->unit[u].projective ? a->tex[u][2] : a->invw, ib = s->unit[u].projective ? b->tex[u][2] : b->invw;
+		if (!(ia != 0 && ib != 0))
+			continue;
+		q.grad[u][0] = (b->tex[u][0] / ib - a->tex[u][0] / ia) / len;
+		q.grad[u][1] = (b->tex[u][1] / ib - a->tex[u][1] / ia) / len;
+		q.grad[u][2] = (b->texr[u] / ib - a->texr[u] / ia) / len;
+	}
+	raster_gl_fragments(s, c, s->clip_left, s->clip_top, s->clip_right, s->clip_bottom, gl_quad, &q);
+	return q.ok;
+}
+
 /* The pixels a pixels command may draw (as raster.c's pixel_span(): the shader finds each one's texel) */
 static bool put_pixels(struct gpu *g, const struct raster_cmd *c)
 {
@@ -733,14 +819,15 @@ static bool put_bitmap(struct gpu *g, const struct raster_texture *image, const 
 }
 
 static bool add_range(struct gpu *g, unsigned first, const struct raster_cmd *clear, unsigned state, int mode,
-		      const struct raster_texture *image, const struct raster_cmd *pixels)
+		      const struct raster_texture *image, const struct raster_cmd *pixels, bool cover, bool stipple)
 {
 	unsigned count = (unsigned)g->nverts - first;
 	if (!clear && !count)
 		return true;
 	struct range *last = g->nranges ? &g->ranges[g->nranges - 1] : NULL;
 	if (!clear && !pixels && last && !last->clear && last->state == state && last->mode == mode &&
-	    last->image == image && last->first + last->count == first) {
+	    last->image == image && last->cover == cover && last->stipple == stipple &&
+	    last->first + last->count == first) {
 		last->count += count;
 		return true;
 	}
@@ -752,7 +839,7 @@ static bool add_range(struct gpu *g, unsigned first, const struct raster_cmd *cl
 		g->ranges = r;
 		g->ranges_cap = cap;
 	}
-	g->ranges[g->nranges++] = (struct range){ first, count, clear, state, mode, image, pixels };
+	g->ranges[g->nranges++] = (struct range){ first, count, clear, state, mode, image, pixels, cover, stipple };
 	return true;
 }
 
@@ -767,11 +854,12 @@ static bool build(struct gpu *g, const struct raster_state *states, const struct
 		unsigned first = (unsigned)g->nverts;
 		int mode = MODE_COLOR;
 		const struct raster_texture *image = NULL;
-		bool ok = true;
+		bool ok = true, cover = false, stipple = false;
 		switch (c->kind) {
 		case RASTER_CMD_TRIANGLE: {
 			if (raster_textured(s, c->textured))
 				mode = MODE_TEXTURED;
+			stipple = s->polygon_stippled;
 			float *p = new_vertices(g, 3);
 			ok = p != NULL;
 			for (int j = 0; ok && j < 3; j++)
@@ -779,10 +867,17 @@ static bool build(struct gpu *g, const struct raster_state *states, const struct
 			break;
 		}
 		case RASTER_CMD_LINE:
-			ok = put_line(g, s, &c->v[0], &c->v[1]);
-			break;
 		case RASTER_CMD_POINT:
-			ok = put_square(g, s, &c->v[0], c->v[0].x, c->v[0].y);
+			if (s->gl_points) {
+				if (raster_textured(s, c->textured))
+					mode = MODE_TEXTURED;
+				cover = s->smooth;
+				ok = put_gl(g, s, c);
+			} else if (c->kind == RASTER_CMD_LINE) {
+				ok = put_line(g, s, &c->v[0], &c->v[1]);
+			} else {
+				ok = put_square(g, s, &c->v[0], c->v[0].x, c->v[0].y);
+			}
 			break;
 		case RASTER_CMD_BITMAP:
 			if (!c->image || !c->image->levels)
@@ -800,12 +895,12 @@ static bool build(struct gpu *g, const struct raster_state *states, const struct
 			ok = put_pixels(g, c);
 			break;
 		case RASTER_CMD_CLEAR:
-			ok = add_range(g, first, c, c->state, 0, NULL, NULL);
+			ok = add_range(g, first, c, c->state, 0, NULL, NULL, false, false);
 			continue;
 		default:
 			continue;
 		}
-		if (!ok || !add_range(g, first, NULL, c->state, mode, image, mode == MODE_PIXELS ? c : NULL))
+		if (!ok || !add_range(g, first, NULL, c->state, mode, image, mode == MODE_PIXELS ? c : NULL, cover, stipple))
 			return false;
 	}
 	return true;
@@ -857,17 +952,20 @@ static void clear(struct gpu *g, const struct gpu_target *t, const struct raster
 }
 
 /* Sets up drawing a range with its state; false if there's no program for it */
-static bool set_state(struct gpu *g, const struct gpu_target *t, const struct raster_state *s, int mode,
-		      const struct raster_texture *image)
+static bool set_state(struct gpu *g, const struct gpu_target *t, const struct raster_state *s, const struct range *r)
 {
 	struct gl *gl = &g->gl;
 	struct program_key key;
-	key_of(s, mode, &key);
+	int mode = r->mode;
+	const struct raster_texture *image = r->image;
+	key_of(s, r, &key);
 	const struct program *p = program_of(g, &key);
 	if (!p)
 		return false;
 	gl->UseProgram(p->id);
 	gl->Uniform2f(p->size, (float)t->width, (float)t->height);
+	if (key.stipple)
+		gl->Uniform1uiv(p->stipple, 32, s->polygon_stipple);
 	unsigned units = key.units;
 	if (key.stages && p->constant >= 0) {
 		GLfloat constant[RASTER_STAGES * 4];
@@ -944,6 +1042,16 @@ static bool set_state(struct gpu *g, const struct gpu_target *t, const struct ra
 		g->blend_eq = eq;
 		gl->BlendEquation(eq);
 	}
+	int logic_op = s->blend == RASTER_BLEND_LOGIC ? (int)(s->logic_op & 15u) : -1;   /* (blending's off then) */
+	if (logic_op != g->logic_op) {
+		if (logic_op < 0)
+			gl->Disable(GL_COLOR_LOGIC_OP);
+		else if (g->logic_op < 0)
+			gl->Enable(GL_COLOR_LOGIC_OP);
+		if (logic_op >= 0)
+			gl->LogicOp(GL_CLEAR + (GLenum)logic_op);
+		g->logic_op = logic_op;
+	}
 	color_mask(g, s->color_keep);
 	scissor(g, t, s->clip_left, s->clip_top, s->clip_right, s->clip_bottom);
 	return true;
@@ -1008,7 +1116,7 @@ static bool draw(struct gpu *g, const struct gpu_target *t, const struct raster_
 			clear(g, t, s, r->clear);
 			continue;
 		}
-		if (!set_state(g, t, s, r->mode, r->image))
+		if (!set_state(g, t, s, r))
 			return false;
 		if (r->pixels)
 			draw_pixels(g, s, r);
@@ -1244,9 +1352,9 @@ static bool init(struct gpu *g)
 	gl->BindVertexArray(g->vao);
 	gl->GenBuffers(1, &g->vbo);
 	gl->BindBuffer(GL_ARRAY_BUFFER, g->vbo);
-	static const struct { GLint size, offset; } attrib[8] = { { 4, 0 }, { 4, 4 }, { 4, 8 }, { 4, 12 }, { 1, 16 },
-								  { 3, 17 }, { 3, 20 }, { 2, 23 } };
-	for (GLuint k = 0; k < 8; k++) {
+	static const struct { GLint size, offset; } attrib[9] = { { 4, 0 }, { 4, 4 }, { 4, 8 }, { 4, 12 }, { 1, 16 },
+								  { 3, 17 }, { 3, 20 }, { 2, 23 }, { 1, COVER } };
+	for (GLuint k = 0; k < 9; k++) {
 		gl->EnableVertexAttribArray(k);
 		gl->VertexAttribPointer(k, attrib[k].size, GL_FLOAT, GL_FALSE, FLOATS * sizeof(float),
 					(const void *)(uintptr_t)(attrib[k].offset * sizeof(float)));
@@ -1259,6 +1367,7 @@ static bool init(struct gpu *g)
 	gl->Enable(GL_BLEND);
 	gl->BlendEquation(GL_FUNC_ADD);
 	g->blend_eq = GL_FUNC_ADD;
+	g->logic_op = -1;
 	gl->BlendColor(0, 0, 0, 0);
 	gl->Enable(GL_SCISSOR_TEST);
 	gl->PixelStorei(GL_UNPACK_ALIGNMENT, 4);

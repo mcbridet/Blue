@@ -324,6 +324,40 @@ static void put_pixels(uint8_t *p, const uint32_t *src, int n, unsigned bits, bo
 	}
 }
 
+/*
+ * A component v's 5 bits dithered by threshold b (0 to 15: its place in the
+ * 4 x 4 matrix): v * 31 / 255 + (2b + 1) / 32, rounded down (at most 31)
+ */
+#define DITHER(b, v) (uint8_t)(((v) * 31 * 32 + (2 * (b) + 1) * 255) / (255 * 32))
+#define DITHER4(b, v) DITHER(b, v), DITHER(b, (v) + 1), DITHER(b, (v) + 2), DITHER(b, (v) + 3)
+#define DITHER16(b, v) DITHER4(b, v), DITHER4(b, (v) + 4), DITHER4(b, (v) + 8), DITHER4(b, (v) + 12)
+#define DITHER64(b, v) DITHER16(b, v), DITHER16(b, (v) + 16), DITHER16(b, (v) + 32), DITHER16(b, (v) + 48)
+#define DITHER256(b) { DITHER64(b, 0), DITHER64(b, 64), DITHER64(b, 128), DITHER64(b, 192) }
+static const uint8_t dithered[16][256] = { DITHER256(0), DITHER256(1), DITHER256(2), DITHER256(3), DITHER256(4),
+					   DITHER256(5), DITHER256(6), DITHER256(7), DITHER256(8), DITHER256(9),
+					   DITHER256(10), DITHER256(11), DITHER256(12), DITHER256(13), DITHER256(14),
+					   DITHER256(15) };
+
+static inline void put_dithered_pixel(uint8_t *p, uint32_t c, const uint8_t *t)
+{
+	put_be16(p, (uint16_t)(t[c >> 16 & 255] << 10 | t[c >> 8 & 255] << 5 | t[c & 255]));
+}
+
+/* 16 bits a pixel, dithered (x, y: where the first pixel goes in the destination) */
+static void put_dithered(uint8_t *p, const uint32_t *src, int n, int x, int y)
+{
+	static const uint8_t bayer[4][4] = { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+	const uint8_t *t[4];                    /* (the tables of the pixels from the first, 4 apart) */
+	for (int j = 0; j < 4; j++)
+		t[j] = dithered[bayer[(unsigned)y & 3][(unsigned)(x + j) & 3]];
+	int k = 0;
+	for (; k + 4 <= n; k += 4)
+		for (int j = 0; j < 4; j++)
+			put_dithered_pixel(p + 2 * (k + j), src[k + j], t[j]);
+	for (; k < n; k++)
+		put_dithered_pixel(p + 2 * k, src[k], t[k & 3]);
+}
+
 void surface_present(const struct surface *s, struct mem *m, const struct surface_dest *d, int l, int t, int r,
 		     int b)
 {
@@ -363,8 +397,11 @@ void surface_present(const struct surface *s, struct mem *m, const struct surfac
 			uint32_t len = (uint32_t)(x1 - x0) * bpp;
 			if (!guest_ok(m, addr, len, true))
 				continue;
-			put_pixels(mem_ptr(m, addr), s->target.color + (size_t)y * (size_t)s->target.width + (size_t)x0,
-				   x1 - x0, d->bits, d->alpha);
+			const uint32_t *from = s->target.color + (size_t)y * (size_t)s->target.width + (size_t)x0;
+			if (d->bits == 16 && d->dither)
+				put_dithered(mem_ptr(m, addr), from, x1 - x0, d->x + x0, d->y + y);
+			else
+				put_pixels(mem_ptr(m, addr), from, x1 - x0, d->bits, d->alpha);
 		}
 	}
 }

@@ -20,7 +20,9 @@
 	X(glMaterialfv) X(glMaterialf) X(glFogi) X(glFogf) X(glFogfv) X(glEnableClientState) \
 	X(glDisableClientState) X(glVertexPointer) X(glNormalPointer) X(glDrawElements) X(glStencilFunc) \
 	X(glStencilOp) X(glColorMask) X(glNewList) X(glEndList) X(glCallList) X(glRasterPos2f) X(glDrawPixels) \
-	X(glBitmap) X(glCopyPixels) X(glPixelZoom) X(aglSetFullScreen) X(aglUseFont) X(glListBase) X(glCallLists)
+	X(glBitmap) X(glCopyPixels) X(glPixelZoom) X(aglSetFullScreen) X(aglUseFont) X(glListBase) X(glCallLists) \
+	X(glVertex2f) X(glLineStipple) X(glLineWidth) X(glPointSize) X(glPolygonStipple) X(glLogicOp) X(glBlendFunc) \
+	X(glHint) X(glTexImage1D) X(glTexParameteri) X(glTexEnvi) X(glTexCoord2f) X(glAccum) X(glClearAccum)
 #define GLU_IMPORTS(X) X(gluNewQuadric) X(gluDeleteQuadric) X(gluQuadricDrawStyle) X(gluQuadricNormals) \
 	X(gluSphere) X(gluDisk) X(gluPerspective) X(gluLookAt) X(gluOrtho2D)
 
@@ -57,7 +59,9 @@ static const char *const import_names[I_COUNT] = {
  * position and color, a material's colors, the fog's color) and a mesh's
  * arrays (positions, normals, indices), "lists"' colors, "pixels"' image
  * (16 x 16 RGBA) and glyph (16 x 16 bits, in rows of 4 bytes),
- * "fullscreen"'s pixel format's attributes, "font"'s lines of text
+ * "fullscreen"'s pixel format's attributes, "font"'s lines of text,
+ * "lines"' polygon stipple (32 rows of 4 bytes) and a list's name 24 times
+ * (bytes), "accum"'s pixel format's attributes
  */
 #define MESH_X 7
 #define MESH_Z 5
@@ -69,7 +73,9 @@ enum { D_QD = 0, D_THE_PORT = 202, D_EVENT = 208, D_RECT = 224, D_TITLE = 232, D
        D_POSITIONS = D_FOG_COLOR + 16, D_NORMALS = D_POSITIONS + 12 * MESH_X * MESH_Z,
        D_INDICES = D_NORMALS + 12 * MESH_X * MESH_Z, D_RED = D_INDICES + 2 * MESH_INDICES, D_GREEN = D_RED + 16,
        D_IMAGE = D_GREEN + 16, D_GLYPH = D_IMAGE + 16 * 16 * 4, D_FULL_ATTRIBS = D_GLYPH + 16 * 4,
-       D_TEXT = D_FULL_ATTRIBS + 32, D_TEXT2 = D_TEXT + 32, D_SIZE = D_TEXT2 + 32 };
+       D_TEXT = D_FULL_ATTRIBS + 32, D_TEXT2 = D_TEXT + 32, D_STIPPLE = D_TEXT2 + 32, D_FAN = D_STIPPLE + 128,
+       D_ACCUM_ATTRIBS = D_FAN + 24, D_SIZE = D_ACCUM_ATTRIBS + 40 };
+#define FAN_LIST 10
 #define TEXT "Blue's aglUseFont"
 #define TEXT2 "Geneva 18, bold: (aj)"
 #define FULL_WIDTH 640
@@ -84,6 +90,9 @@ enum { D_QD = 0, D_THE_PORT = 202, D_EVENT = 208, D_RECT = 224, D_TITLE = 232, D
 #define AGL_DOUBLEBUFFER 5
 #define AGL_DEPTH_SIZE 12
 #define AGL_STENCIL_SIZE 13
+#define AGL_ACCUM_RED_SIZE 14
+#define AGL_ACCUM_GREEN_SIZE 15
+#define AGL_ACCUM_BLUE_SIZE 16
 #define AGL_FULLSCREEN 54
 #define AGL_ACCELERATED 73
 #define GL_DEPTH_BUFFER_BIT 0x0100u
@@ -130,6 +139,34 @@ enum { D_QD = 0, D_THE_PORT = 202, D_EVENT = 208, D_RECT = 224, D_TITLE = 232, D
 #define GL_RGBA 0x1908u
 #define GL_UNSIGNED_BYTE 0x1401u
 #define GL_COLOR 0x1800u
+#define GL_POINTS 0u
+#define GL_LINES 1u
+#define GL_LINE_LOOP 2u
+#define GL_LINE_STRIP 3u
+#define GL_LINE_STIPPLE 0x0B24u
+#define GL_POLYGON_STIPPLE 0x0B42u
+#define GL_COLOR_LOGIC_OP 0x0BF2u
+#define GL_XOR 0x1506u
+#define GL_BLEND 0x0BE2u
+#define GL_SRC_ALPHA 0x0302u
+#define GL_ONE_MINUS_SRC_ALPHA 0x0303u
+#define GL_POINT_SMOOTH 0x0B10u
+#define GL_LINE_SMOOTH 0x0B20u
+#define GL_LINE_SMOOTH_HINT 0x0C52u
+#define GL_NICEST 0x1102u
+#define GL_TEXTURE_1D 0x0DE0u
+#define GL_TEXTURE_MAG_FILTER 0x2800u
+#define GL_TEXTURE_MIN_FILTER 0x2801u
+#define GL_NEAREST 0x2600u
+#define GL_TEXTURE_ENV 0x2300u
+#define GL_TEXTURE_ENV_MODE 0x2200u
+#define GL_MODULATE 0x2100u
+#define GL_ACCUM 0x0100u
+#define GL_LOAD 0x0101u
+#define GL_RETURN 0x0102u
+#define GL_MULT 0x0103u
+#define GL_ADD 0x0104u
+#define GL_ACCUM_BUFFER_BIT 0x0200u
 #define FONT_TIMES 20
 #define FONT_GENEVA 3
 #define BOLD 1
@@ -165,7 +202,12 @@ size_t gltest_build(uint8_t *out, size_t size, struct ndrv_layout *layout)
 	_Static_assert(sizeof full <= D_TEXT - D_FULL_ATTRIBS, "room for the full screen's attributes");
 	for (unsigned k = 0; k < sizeof full / sizeof full[0]; k++)
 		put_be32(data + D_FULL_ATTRIBS + 4 * k, full[k]);
-	_Static_assert(sizeof TEXT <= D_TEXT2 - D_TEXT && sizeof TEXT2 <= D_SIZE - D_TEXT2, "room for the text");
+	static const uint32_t accum[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_ACCUM_RED_SIZE, 16, AGL_ACCUM_GREEN_SIZE, 16,
+					  AGL_ACCUM_BLUE_SIZE, 16, 0 };
+	_Static_assert(sizeof accum <= D_SIZE - D_ACCUM_ATTRIBS, "room for the accumulation's attributes");
+	for (unsigned k = 0; k < sizeof accum / sizeof accum[0]; k++)
+		put_be32(data + D_ACCUM_ATTRIBS + 4 * k, accum[k]);
+	_Static_assert(sizeof TEXT <= D_TEXT2 - D_TEXT && sizeof TEXT2 <= D_STIPPLE - D_TEXT2, "room for the text");
 	memcpy(data + D_TEXT, TEXT, sizeof TEXT);
 	memcpy(data + D_TEXT2, TEXT2, sizeof TEXT2);
 	static const uint32_t vertex[3] = { 0x3FB33333u, 0x3F99999Au, 0 };     /* (1.4, 1.2, 0) */
@@ -195,6 +237,14 @@ size_t gltest_build(uint8_t *out, size_t size, struct ndrv_layout *layout)
 					    0x03C0, 0x03C0, 0x03C0, 0x03C0, 0x03C0, 0x03C0, 0x03C0, 0x03C0 };
 	for (unsigned j = 0; j < 16; j++)               /* (rows from the bottom: the arrow points down) */
 		put_be16(data + D_GLYPH + 4 * j, glyph[j]);
+	/* "lines": a stipple of diamonds, one in another; the list making a fan, 24 times */
+	for (int j = 0; j < 32; j++)
+		for (int i = 0; i < 32; i++) {
+			int d = abs(i - 15) + abs(j - 15);
+			if (d % 6 < 3)
+				data[D_STIPPLE + 4 * j + i / 8] |= (uint8_t)(0x80u >> (i % 8));
+		}
+	memset(data + D_FAN, FAN_LIST, 24);
 	for (int z = 0; z < MESH_Z; z++)
 		for (int x = 0; x < MESH_X; x++) {
 			float px = -1.5f + 0.5f * (float)x, pz = -1 + 0.5f * (float)z;
@@ -563,6 +613,161 @@ static const struct gltest_step scene_font[] = {
 	CALL(aglSwapBuffers, VAR(V_CONTEXT)),
 };
 
+/*
+ * "lines": in window coordinates, a smooth-shaded quad through a polygon
+ * stipple, and a quad drawn over it by XOR; stippled lines (a strip, the
+ * stipple going on from segment to segment, and a loop 3 wide); fans of 24
+ * lines (a display list: a line, then a turn of 15 degrees), aliased and
+ * antialiased (blended by their coverage); points 2, 5, 8 and 11 across,
+ * aliased and antialiased; a line 5 wide and points 12 across textured by a
+ * row of "pixels"' image (a 1D texture)
+ */
+#define V2(x, y) CALL_F(glVertex2f, x, y)
+#define C3(r, g, b) CALL_F(glColor3f, r, g, b)
+#define POINT(size, x, y) CALL_F(glPointSize, size), CALL(glBegin, GL_POINTS), V2(x, y), CALL0(glEnd)
+static const struct gltest_step scene_lines[] = {
+	CALL_F(glClearColor, 0.12, 0.12, 0.18, 1.0),
+	CALL(glClear, GL_COLOR_BUFFER_BIT),
+	CALL(glMatrixMode, GL_PROJECTION),
+	CALL0(glLoadIdentity),
+	CALL_D(gluOrtho2D, 0.0, 320.0, 0.0, 240.0),
+	CALL(glMatrixMode, GL_MODELVIEW),
+	CALL0(glLoadIdentity),
+	CALL(glEnable, GL_POLYGON_STIPPLE),
+	CALL(glPolygonStipple, DATA(D_STIPPLE)),
+	CALL(glBegin, GL_QUADS),
+	C3(1.0, 0.3, 0.2), V2(12.0, 12.0), C3(1.0, 0.9, 0.2), V2(112.0, 12.0),
+	C3(0.2, 0.8, 1.0), V2(112.0, 92.0), C3(0.6, 0.2, 1.0), V2(12.0, 92.0),
+	CALL0(glEnd),
+	CALL(glDisable, GL_POLYGON_STIPPLE),
+	CALL(glEnable, GL_COLOR_LOGIC_OP),
+	CALL(glLogicOp, GL_XOR),
+	C3(0.5, 1.0, 0.75),
+	CALL(glBegin, GL_QUADS), V2(62.0, 52.0), V2(152.0, 52.0), V2(152.0, 122.0), V2(62.0, 122.0), CALL0(glEnd),
+	CALL(glDisable, GL_COLOR_LOGIC_OP),
+	CALL(glEnable, GL_LINE_STIPPLE),
+	CALL(glLineStipple, 2, 0x1C47),
+	C3(1.0, 1.0, 0.4),
+	CALL(glBegin, GL_LINE_STRIP), V2(12.5, 228.5), V2(60.5, 196.5), V2(108.5, 228.5), V2(156.5, 196.5),
+	CALL0(glEnd),
+	CALL_F(glLineWidth, 3.0),
+	CALL(glLineStipple, 1, 0xF0F0),
+	C3(0.4, 1.0, 0.6),
+	CALL(glBegin, GL_LINE_LOOP), V2(16.3, 140.6), V2(150.2, 148.3), V2(120.7, 184.4), V2(30.4, 180.2),
+	CALL0(glEnd),
+	CALL_F(glLineWidth, 1.0),
+	CALL(glDisable, GL_LINE_STIPPLE),
+	CALL(glNewList, FAN_LIST, GL_COMPILE),
+	CALL(glBegin, GL_LINES), V2(6.0, 0.0), V2(36.0, 0.0), CALL0(glEnd),
+	CALL_F(glRotatef, 15.0, 0.0, 0.0, 1.0),
+	CALL0(glEndList),
+	C3(1.0, 1.0, 1.0),
+	CALL0(glPushMatrix),
+	CALL_F(glTranslatef, 200.3, 190.4, 0.0),
+	CALL(glCallLists, 24, GL_UNSIGNED_BYTE, DATA(D_FAN)),
+	CALL0(glPopMatrix),
+	CALL(glEnable, GL_BLEND),
+	CALL(glBlendFunc, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA),
+	CALL(glEnable, GL_LINE_SMOOTH),
+	CALL(glHint, GL_LINE_SMOOTH_HINT, GL_NICEST),
+	CALL_F(glLineWidth, 1.5),
+	CALL0(glPushMatrix),
+	CALL_F(glTranslatef, 278.3, 190.4, 0.0),
+	CALL(glCallLists, 24, GL_UNSIGNED_BYTE, DATA(D_FAN)),
+	CALL0(glPopMatrix),
+	CALL_F(glLineWidth, 1.0),
+	CALL(glDisable, GL_LINE_SMOOTH),
+	C3(1.0, 0.6, 0.3),
+	POINT(2.0, 182.3, 85.6), POINT(5.0, 212.3, 85.6), POINT(8.0, 247.3, 85.6), POINT(11.0, 287.3, 85.6),
+	CALL(glEnable, GL_POINT_SMOOTH),
+	POINT(2.0, 182.3, 110.6), POINT(5.0, 212.3, 110.6), POINT(8.0, 247.3, 110.6), POINT(11.0, 287.3, 110.6),
+	CALL(glDisable, GL_POINT_SMOOTH),
+	CALL(glDisable, GL_BLEND),
+	CALL(glTexImage1D, GL_TEXTURE_1D, 0, GL_RGBA, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, DATA(D_IMAGE)),
+	CALL(glTexParameteri, GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST),
+	CALL(glTexParameteri, GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	CALL(glTexEnvi, GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE),
+	CALL(glEnable, GL_TEXTURE_1D),
+	CALL_F(glLineWidth, 5.0),
+	CALL(glBegin, GL_LINES),
+	CALL_F(glTexCoord2f, 0.0, 0.0), V2(172.4, 20.3), CALL_F(glTexCoord2f, 1.0, 0.0), V2(312.6, 62.7),
+	CALL0(glEnd),
+	CALL_F(glLineWidth, 1.0),
+	CALL_F(glPointSize, 12.0),
+	CALL(glBegin, GL_POINTS),
+	CALL_F(glTexCoord2f, 0.1, 0.0), V2(182.0, 136.0), CALL_F(glTexCoord2f, 0.4, 0.0), V2(212.0, 136.0),
+	CALL_F(glTexCoord2f, 0.6, 0.0), V2(242.0, 136.0), CALL_F(glTexCoord2f, 0.9, 0.0), V2(272.0, 136.0),
+	CALL0(glEnd),
+	CALL_F(glPointSize, 1.0),
+	CALL(glDisable, GL_TEXTURE_1D),
+	CALL(aglSwapBuffers, VAR(V_CONTEXT)),
+};
+
+/*
+ * "accum": first, a context of a pixel format with an accumulation buffer
+ * (Apple's generic renderer's, as only it had one) in place of the first;
+ * then, at the left, a bar turning (eight passes, a display list's, each
+ * cleared, drawn, accumulated an eighth and turned 6 degrees, within the
+ * scissor box) and its last place outlined; at the right, a gradient
+ * loaded and scaled, a triangle accumulated over it, a little added; all
+ * of it returned at once
+ */
+static const struct gltest_step setup_accum[] = {
+	CALL(aglSetDrawable, VAR(V_CONTEXT), 0),
+	CALL_INTO(V_FORMAT, aglChoosePixelFormat, 0, 0, DATA(D_ACCUM_ATTRIBS)),
+	CALL_INTO(V_CONTEXT, aglCreateContext, VAR(V_FORMAT), 0),
+	CALL(aglSetDrawable, VAR(V_CONTEXT), VAR(V_WINDOW)),
+	CALL(aglSetCurrentContext, VAR(V_CONTEXT)),
+	CALL_SHOW(glGetString, GL_VENDOR),
+	CALL_SHOW(glGetString, GL_RENDERER),
+};
+
+#define BAR(r, g, b) C3(r, g, b), V2(-64.0, -7.0), V2(64.0, -7.0), C3(1.0, 1.0, 1.0), V2(64.0, 7.0), V2(-64.0, 7.0)
+static const struct gltest_step scene_accum[] = {
+	CALL_F(glClearColor, 0.1, 0.1, 0.15, 1.0),
+	CALL_F(glClearAccum, 0.0, 0.0, 0.0, 0.0),
+	CALL(glClear, GL_COLOR_BUFFER_BIT | GL_ACCUM_BUFFER_BIT),
+	CALL(glMatrixMode, GL_PROJECTION),
+	CALL0(glLoadIdentity),
+	CALL_D(gluOrtho2D, 0.0, 320.0, 0.0, 240.0),
+	CALL(glMatrixMode, GL_MODELVIEW),
+	CALL0(glLoadIdentity),
+	CALL(glNewList, FAN_LIST, GL_COMPILE),
+	CALL(glClear, GL_COLOR_BUFFER_BIT),
+	CALL(glBegin, GL_QUADS), BAR(1.0, 0.4, 0.1), CALL0(glEnd),
+	CALL_WF(glAccum, true, W(GL_ACCUM), 0.125),
+	CALL_F(glRotatef, 6.0, 0.0, 0.0, 1.0),
+	CALL0(glEndList),
+	CALL(glEnable, GL_SCISSOR_TEST),
+	CALL(glScissor, 0, 0, 160, 240),
+	CALL0(glPushMatrix),
+	CALL_F(glTranslatef, 80.2, 120.3, 0.0),
+	CALL(glCallLists, 8, GL_UNSIGNED_BYTE, DATA(D_FAN)),
+	CALL0(glPopMatrix),
+	CALL(glScissor, 160, 0, 160, 240),
+	CALL(glClear, GL_COLOR_BUFFER_BIT),
+	CALL(glBegin, GL_QUADS),
+	C3(0.2, 0.3, 1.0), V2(170.0, 20.0), C3(1.0, 0.3, 0.2), V2(310.0, 20.0),
+	C3(1.0, 1.0, 0.3), V2(310.0, 220.0), C3(0.2, 1.0, 0.4), V2(170.0, 220.0),
+	CALL0(glEnd),
+	CALL_WF(glAccum, true, W(GL_LOAD), 1.0),
+	CALL_WF(glAccum, true, W(GL_MULT), 0.6),
+	CALL(glClear, GL_COLOR_BUFFER_BIT),
+	C3(1.0, 1.0, 1.0),
+	CALL(glBegin, GL_TRIANGLES), V2(180.3, 40.6), V2(300.2, 60.4), V2(240.7, 205.3), CALL0(glEnd),
+	CALL_WF(glAccum, true, W(GL_ACCUM), 0.5),
+	CALL_WF(glAccum, true, W(GL_ADD), 0.05),
+	CALL(glDisable, GL_SCISSOR_TEST),
+	CALL_WF(glAccum, true, W(GL_RETURN), 1.0),
+	C3(1.0, 1.0, 1.0),
+	CALL0(glPushMatrix),
+	CALL_F(glTranslatef, 80.2, 120.3, 0.0),
+	CALL_F(glRotatef, 42.0, 0.0, 0.0, 1.0),
+	CALL(glBegin, GL_LINE_LOOP), V2(-64.0, -7.0), V2(64.0, -7.0), V2(64.0, 7.0), V2(-64.0, 7.0), CALL0(glEnd),
+	CALL0(glPopMatrix),
+	CALL(aglSwapBuffers, VAR(V_CONTEXT)),
+};
+
 #define STEPS(s) s, sizeof s / sizeof s[0]
 static const struct {
 	const char *name;
@@ -579,6 +784,8 @@ static const struct {
 	{ "pixels", STEPS(scene_pixels), NULL, 0, false },
 	{ "fullscreen", STEPS(scene_triangle), STEPS(setup_fullscreen), true },
 	{ "font", STEPS(scene_font), STEPS(setup_font), false },
+	{ "lines", STEPS(scene_lines), NULL, 0, false },
+	{ "accum", STEPS(scene_accum), STEPS(setup_accum), false },
 };
 
 void gltest_init(struct gltest *t)

@@ -706,10 +706,11 @@ void glf_read_pixels(struct gl_state *st, const struct gl_target *t, int32_t x, 
 /*
  * An image (w x h texels as RASTER_PIXELS_ kind has them, from malloc(): the
  * backend's to free, once drawn) drawn with its row 0 at the bottom, its
- * corner at window (x, y), each texel zoom pixels wide and high
+ * corner at window (x, y), each texel zoom pixels wide and high; with the
+ * state drawing takes now, or s
  */
-static void emit(struct gl_state *st, const struct gl_target *t, unsigned kind, uint32_t *texels, int32_t w,
-		 int32_t h, float x, float y, float zx, float zy)
+static void emit_with(struct gl_state *st, const struct gl_target *t, const struct raster_state *with, unsigned kind,
+		      uint32_t *texels, int32_t w, int32_t h, float x, float y, float zx, float zy)
 {
 	struct raster_texture *image = calloc(1, sizeof *image);
 	if (!image) {
@@ -722,7 +723,7 @@ static void emit(struct gl_state *st, const struct gl_target *t, unsigned kind, 
 	image->height[0] = (unsigned)h;
 	image->texels[0] = texels;
 	glf_retire(st->names, image);           /* (freed once nothing recorded can draw it) */
-	struct raster_state s = *glf_raster_state(st, t);
+	struct raster_state s = with ? *with : *glf_raster_state(st, t);
 	s.stencil_write = (uint8_t)st->stencil_write_mask;     /* (stencil images write it, whatever the test) */
 	struct raster_cmd *c = surface_cmd(t->surface, &s, RASTER_CMD_PIXELS);
 	if (!c) {
@@ -738,6 +739,136 @@ static void emit(struct gl_state *st, const struct gl_target *t, unsigned kind, 
 	memcpy(c->v[0].color[0], st->rpos.color, sizeof st->rpos.color);
 	c->v[1].x = zx;
 	c->v[1].y = -zy;
+}
+
+static void emit(struct gl_state *st, const struct gl_target *t, unsigned kind, uint32_t *texels, int32_t w,
+		 int32_t h, float x, float y, float zx, float zy)
+{
+	emit_with(st, t, NULL, kind, texels, w, h, x, y, zx, zy);
+}
+
+/* ---- the accumulation buffer ----------------------------------------------------------- */
+
+/* The buffer as big as the target (its values 0 if it's new); false if there's none */
+static bool accum_buffer(struct gl_state *st, const struct gl_target *t)
+{
+	if (!t->accum_bits || t->width <= 0 || t->height <= 0)
+		return false;
+	if (st->accum && st->accum_width == t->width && st->accum_height == t->height)
+		return true;
+	free(st->accum);
+	st->accum = calloc((size_t)t->width * (size_t)t->height, 4 * sizeof *st->accum);
+	st->accum_width = st->accum ? t->width : 0;
+	st->accum_height = st->accum ? t->height : 0;
+	if (!st->accum)
+		glf_error(st, GL_OUT_OF_MEMORY);
+	return st->accum != NULL;
+}
+
+/* The part of the target the operations take: within the scissor box, if it's on (window coordinates) */
+static void accum_box(const struct gl_state *st, const struct gl_target *t, int32_t box[4])
+{
+	box[0] = 0;
+	box[1] = 0;
+	box[2] = t->width;
+	box[3] = t->height;
+	if (!st->caps[GLF_CAP_SCISSOR_TEST])
+		return;
+	int64_t x0 = st->scissor[0], y0 = st->scissor[1];
+	int64_t x1 = x0 + st->scissor[2], y1 = y0 + st->scissor[3];
+	box[0] = x0 > 0 ? (int32_t)x0 : 0;
+	box[1] = y0 > 0 ? (int32_t)y0 : 0;
+	box[2] = x1 < t->width ? (int32_t)x1 : t->width;
+	box[3] = y1 < t->height ? (int32_t)y1 : t->height;
+}
+
+/* A component kept to the buffer's bits: within [-1, 1], to the nearest of its steps */
+static int16_t accum_value(const struct gl_target *t, float v)
+{
+	float max = t->accum_bits >= 16 ? 32767.0f : (float)((1u << (t->accum_bits - 1)) - 1);
+	v = v < -1 ? -1 : v > 1 ? 1 : v;
+	float q = floorf(v * max + 0.5f) / max;
+	return (int16_t)floorf(q * 32767.0f + (q < 0 ? -0.5f : 0.5f));
+}
+
+void glf_clear_accum(struct gl_state *st, float r, float g, float b, float a)
+{
+	const float c[4] = { r, g, b, a };
+	for (int k = 0; k < 4; k++)
+		st->clear_accum[k] = c[k] < -1 ? -1 : c[k] > 1 ? 1 : c[k];
+}
+
+void glf_clear_accum_buffer(struct gl_state *st, const struct gl_target *t)
+{
+	if (!accum_buffer(st, t))
+		return;
+	int32_t box[4];
+	accum_box(st, t, box);
+	int16_t v[4];
+	for (int k = 0; k < 4; k++)
+		v[k] = accum_value(t, st->clear_accum[k]);
+	for (int32_t y = box[1]; y < box[3]; y++)
+		for (int32_t x = box[0]; x < box[2]; x++)
+			memcpy(&st->accum[4 * ((size_t)y * (size_t)t->width + (size_t)x)], v, sizeof v);
+}
+
+void glf_accum(struct gl_state *st, const struct gl_target *t, uint32_t op, float value)
+{
+	if (op < GL_ACCUM || op > GL_ADD) {
+		glf_error(st, GL_INVALID_ENUM);
+		return;
+	}
+	if (!t->accum_bits || glf_selecting(st)) {
+		if (!t->accum_bits)
+			glf_error(st, GL_INVALID_OPERATION);
+		return;
+	}
+	if (!accum_buffer(st, t))
+		return;
+	int32_t box[4];
+	accum_box(st, t, box);
+	int32_t w = box[2] - box[0], h = box[3] - box[1];
+	if (w <= 0 || h <= 0)
+		return;
+	uint32_t *texels = op == GL_RETURN && t->surface ? malloc((size_t)w * (size_t)h * 4) : NULL;
+	if (op == GL_RETURN && t->surface && !texels) {
+		glf_error(st, GL_OUT_OF_MEMORY);
+		return;
+	}
+	for (int32_t j = 0; j < h; j++)
+		for (int32_t i = 0; i < w; i++) {
+			int16_t *p = &st->accum[4 * ((size_t)(box[1] + j) * (size_t)t->width + (size_t)(box[0] + i))];
+			uint8_t c[4] = { 0, 0, 0, 0 };
+			size_t k;
+			if ((op == GL_ACCUM || op == GL_LOAD) && t->surface && at(t, box[0] + i, box[1] + j, &k))
+				color_at(t, k, c);
+			for (int n = 0; n < 4; n++) {
+				float a = (float)p[n] / 32767.0f, f = (float)c[n] / 255.0f;
+				switch (op) {
+				case GL_ACCUM: p[n] = accum_value(t, a + value * f); break;
+				case GL_LOAD: p[n] = accum_value(t, value * f); break;
+				case GL_ADD: p[n] = accum_value(t, a + value); break;
+				case GL_MULT: p[n] = accum_value(t, a * value); break;
+				default: c[n] = to_byte(value * a); break;
+				}
+			}
+			if (texels)
+				texels[(size_t)j * (size_t)w + (size_t)i] = (uint32_t)c[3] << 24 | (uint32_t)c[0] << 16 |
+									    (uint32_t)c[1] << 8 | c[2];
+		}
+	if (!texels)
+		return;
+	/* (through the scissor and the color mask alone: OpenGL 1.2's 4.2.4) */
+	struct raster_state s;
+	memset(&s, 0, sizeof s);
+	s.blend = RASTER_BLEND_NONE;
+	s.all_fragments = true;
+	s.color_keep = glf_raster_state(st, t)->color_keep;
+	s.clip_left = box[0];
+	s.clip_right = box[2];
+	s.clip_top = t->height - box[3];
+	s.clip_bottom = t->height - box[1];
+	emit_with(st, t, &s, RASTER_PIXELS_COLOR, texels, w, h, (float)box[0], (float)box[1], 1, 1);
 }
 
 /* Whether drawing at the raster position does anything */
@@ -760,6 +891,35 @@ static bool select_raster(struct gl_state *st, uint32_t token)
 		glf_select_primitive(st, token, &v, 1);
 	}
 	return true;
+}
+
+void glf_polygon_stipple(struct gl_state *st, const uint8_t *bits)
+{
+	struct layout L;
+	layout_of(&st->unpack, GL_COLOR_INDEX, GL_BITMAP, 32, &L);
+	for (int32_t j = 0; j < 32; j++) {
+		uint32_t row = 0;
+		for (int32_t i = 0; i < 32; i++)
+			row = row << 1 | (uint32_t)unpack_index(&L, bits + L.start + (size_t)j * L.row, i, &st->unpack);
+		st->polygon_stipple[j] = row;
+	}
+	st->raster_stale = true;
+}
+
+size_t glf_polygon_stipple_bytes(const struct gl_pixel_store *ps)
+{
+	struct layout L;
+	layout_of(ps, GL_COLOR_INDEX, GL_BITMAP, 32, &L);
+	return L.start + 32 * L.row;
+}
+
+void glf_get_polygon_stipple(const struct gl_state *st, uint8_t *bits)
+{
+	struct layout L;
+	layout_of(&st->pack, GL_COLOR_INDEX, GL_BITMAP, 32, &L);
+	for (int32_t j = 0; j < 32; j++)
+		for (int32_t i = 0; i < 32; i++)
+			pack_index(&L, bits + L.start + (size_t)j * L.row, i, &st->pack, st->polygon_stipple[j] >> (31 - i) & 1);
 }
 
 void glf_bitmap(struct gl_state *st, const struct gl_target *t, int32_t w, int32_t h, float xorig, float yorig,

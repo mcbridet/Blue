@@ -585,9 +585,12 @@ static ALWAYS_INLINE void blend_factors(const struct raster_state *s, float c[4]
 	memcpy(c, &cv, sizeof cv);
 }
 
-/* Compile-time variants of the pixel loop */
+/* Compile-time variants of the pixel loop (and run-time ones: OpenGL's points and lines, stippled triangles) */
 #define F_TEX 1u
 #define F_FOG 2u
+#define F_COVER 4u                      /* alpha times the coverage (a[A_COVER]) */
+#define F_STIPPLE 8u                    /* the polygon stipple */
+#define A_COVER (A_FOG + 1)
 
 /* A fragment's color (a, r, g, b) from the interpolated attributes (a) and, if textured, the stages; fogged */
 static ALWAYS_INLINE void color_of(const struct raster_state *s, const float *a, const struct shade *sh,
@@ -622,6 +625,31 @@ static ALWAYS_INLINE void color_of(const struct raster_state *s, const float *a,
 		for (int k = 1; k < 4; k++)
 			c[k] = f * c[k] + (1 - f) * s->fog_color[k];
 	}
+	if (flags & F_COVER)
+		c[0] *= a[A_COVER];
+}
+
+/* OpenGL's logic operation of a color's bits (s) with the target's (d) */
+static uint32_t logic(unsigned op, uint32_t s, uint32_t d)
+{
+	switch (op) {
+	case RASTER_LOGIC_CLEAR: return 0;
+	case RASTER_LOGIC_AND: return s & d;
+	case RASTER_LOGIC_AND_REVERSE: return s & ~d;
+	case RASTER_LOGIC_COPY: return s;
+	case RASTER_LOGIC_AND_INVERTED: return ~s & d;
+	case RASTER_LOGIC_NOOP: return d;
+	case RASTER_LOGIC_XOR: return s ^ d;
+	case RASTER_LOGIC_OR: return s | d;
+	case RASTER_LOGIC_NOR: return ~(s | d);
+	case RASTER_LOGIC_EQUIV: return ~(s ^ d);
+	case RASTER_LOGIC_INVERT: return ~d;
+	case RASTER_LOGIC_OR_REVERSE: return s | ~d;
+	case RASTER_LOGIC_COPY_INVERTED: return ~s;
+	case RASTER_LOGIC_OR_INVERTED: return ~s | d;
+	case RASTER_LOGIC_NAND: return ~(s & d);
+	default: return 0xFFFFFFFFu;
+	}
 }
 
 /* A fragment of color c that's passed the tests, into the target at index i */
@@ -639,6 +667,10 @@ static ALWAYS_INLINE void put(struct raster_target *t, const struct raster_state
 		t->depth[i] = depth;
 	if (s->blend == RASTER_BLEND_FACTORS) {
 		blend_factors(s, c, &t->color[i]);
+	} else if (s->blend == RASTER_BLEND_LOGIC) {
+		uint32_t p = logic(s->logic_op, pack(c), t->color[i]);
+		t->color[i] = (p & ~s->color_keep) | (t->color[i] & s->color_keep);
+		return;
 	} else if (s->blend != RASTER_BLEND_NONE && c[0] < 1) {
 		vec4 d = unpack(t->color[i]);
 		float as = clamp01(c[0]);
@@ -743,8 +775,14 @@ static bool linear_filter(unsigned f)
  * A unit's texture over a triangle: magnified or minified, and if minified
  * and mipmapped, at the level nearest its level of detail
  */
-static void unit_setup(const struct raster_unit *u, unsigned unit, const struct raster_vertex *v[3], float area2,
-		       struct sampler *sm)
+static bool lod_needed(const struct raster_unit *u)
+{
+	return (u->min_filter >= RASTER_NEAREST_MIPMAP_NEAREST && u->texture->levels > 1) ||
+	       linear_filter(u->min_filter) != (u->mag_filter == RASTER_LINEAR);
+}
+
+/* (at that level of detail, if lod_needed()) */
+static void unit_setup_lod(const struct raster_unit *u, float lod, struct sampler *sm)
 {
 	const struct raster_texture *tx = u->texture;
 	bool mipmap = u->min_filter >= RASTER_NEAREST_MIPMAP_NEAREST && tx->levels > 1;
@@ -752,7 +790,6 @@ static void unit_setup(const struct raster_unit *u, unsigned unit, const struct 
 	bool linear = mag_linear;
 	unsigned level = 0;
 	if (mipmap || min_linear != mag_linear) {
-		float lod = triangle_lod(u, unit, v, area2);
 		float edge = mag_linear && (u->min_filter == RASTER_NEAREST_MIPMAP_NEAREST ||
 					    u->min_filter == RASTER_NEAREST_MIPMAP_LINEAR) ? 0.5f : 0;
 		if (lod > edge) {
@@ -764,6 +801,12 @@ static void unit_setup(const struct raster_unit *u, unsigned unit, const struct 
 		}
 	}
 	sampler_init(sm, u, level, linear);
+}
+
+static void unit_setup(const struct raster_unit *u, unsigned unit, const struct raster_vertex *v[3], float area2,
+		       struct sampler *sm)
+{
+	unit_setup_lod(u, lod_needed(u) ? triangle_lod(u, unit, v, area2) : 0, sm);
 }
 
 /*
@@ -897,17 +940,26 @@ static ALWAYS_INLINE void tri_rows(struct raster_target *t, const struct raster_
 			for (unsigned k = 0; k < na; k++)
 				a[k] += T->ax[k];
 		size_t row = (size_t)y * (size_t)t->width;
+		uint32_t pattern = flags & F_STIPPLE ? s->polygon_stipple[(uint32_t)(t->height - 1 - y) & 31u] : 0;
 		for (int x = xa; x < xb; x++) {
 			size_t i = row + (size_t)x;
 			float depth = s->perspective_z ? -a[A_W] : a[A_Z];
-			if (stencil)
-				stenciled(t, s, i, a, &T->sh, flags, depth);
-			else if (!ztest || z_pass(s->z_func, depth, t->depth[i]))
-				fragment(t, s, i, a, &T->sh, flags, depth);
+			if (!(flags & F_STIPPLE) || pattern >> (31u - ((uint32_t)x & 31u)) & 1) {
+				if (stencil)
+					stenciled(t, s, i, a, &T->sh, flags, depth);
+				else if (!ztest || z_pass(s->z_func, depth, t->depth[i]))
+					fragment(t, s, i, a, &T->sh, flags, depth);
+			}
 			for (unsigned k = 0; k < na; k++)
 				a[k] += T->ax[k];
 		}
 	}
+}
+
+/* (the variants that are seldom drawn: the flags looked at as it goes) */
+static void tri_rows_any(struct raster_target *t, const struct raster_state *s, const struct tri *T, unsigned flags)
+{
+	tri_rows(t, s, T, flags);
 }
 
 static void triangle(struct raster_target *t, const struct prepared *p, const int rows[2],
@@ -919,12 +971,14 @@ static void triangle(struct raster_target *t, const struct prepared *p, const in
 	struct tri T;
 	if (!tri_setup(t, p, rows, v0, v1, v2, textured, &T))
 		return;
-	unsigned flags = (textured ? F_TEX : 0) | (s->fog_mode != RASTER_FOG_NONE ? F_FOG : 0);
+	unsigned flags = (textured ? F_TEX : 0) | (s->fog_mode != RASTER_FOG_NONE ? F_FOG : 0) |
+			 (s->polygon_stippled ? F_STIPPLE : 0);
 	switch (flags) {
 	case 0: tri_rows(t, s, &T, 0); break;
 	case F_TEX: tri_rows(t, s, &T, F_TEX); break;
 	case F_FOG: tri_rows(t, s, &T, F_FOG); break;
-	default: tri_rows(t, s, &T, F_TEX | F_FOG); break;
+	case F_TEX | F_FOG: tri_rows(t, s, &T, F_TEX | F_FOG); break;
+	default: tri_rows_any(t, s, &T, flags); break;
 	}
 }
 
@@ -935,6 +989,320 @@ void raster_triangle(struct raster_target *t, const struct raster_state *s, cons
 	struct prepared p;
 	prepare(s, &p);
 	triangle(t, &p, rows, v0, v1, v2, textured);
+}
+
+/* ---- OpenGL's points and lines ------------------------------------------------ */
+
+/*
+ * (Window coordinates here go down, as raster.h's: OpenGL's rules, which
+ * have them going up, are turned over. In particular OpenGL breaks ties by
+ * moving lines' endpoints by (-e, -e^2), which is (-e, +e^2) here.)
+ */
+
+/* Where fragments go: through fn, within the clip; a line's left out by its stipple */
+struct gl_emit {
+	const struct raster_state *s;
+	int l, t, r, b;
+	raster_fragment_fn *fn;
+	void *ctx;
+	unsigned counter;               /* (the line's stipple counter at its first fragment) */
+};
+
+/* A fragment (of a line, k fragments along it: stippled; of a point, k is -1) */
+static void gl_emit(const struct gl_emit *e, int x, int y, float t, float cover, long k)
+{
+	if (!e->fn || x < e->l || x >= e->r || y < e->t || y >= e->b)
+		return;
+	if (k >= 0 && e->s->line_stippled) {
+		unsigned f = e->s->line_stipple_factor ? e->s->line_stipple_factor : 1;
+		if (!(e->s->line_stipple >> ((e->counter + (unsigned long)k) / f % 16) & 1))
+			return;
+	}
+	e->fn(e->ctx, x, y, t, cover);
+}
+
+/* A width or size as aliased points and lines take it: rounded, at least 1 */
+static int whole_width(float w)
+{
+	return !(w < 1024) ? 1024 : w < 1.5f ? 1 : (int)(w + 0.5f);
+}
+
+/* Whether the perturbed point (x, y) is in pixel (i, j)'s diamond, the points less than half a pixel away in x + y */
+static bool in_diamond(double x, double y, int i, int j)
+{
+	double dx = x - ((double)i + 0.5), dy = y - ((double)j + 0.5), d = fabs(dx) + fabs(dy);
+	return d < 0.5 || (d == 0.5 && dx > 0);        /* (on its edge: in if moving left takes it in) */
+}
+
+/* The pixel whose diamond the perturbed point is in; false if none (near pixels' corners) */
+static bool diamond_of(double x, double y, int *i, int *j)
+{
+	int x0 = (int)floor(x), y0 = (int)floor(y);
+	for (int dj = -1; dj <= 1; dj++)
+		for (int di = -1; di <= 1; di++)
+			if (in_diamond(x, y, x0 + di, y0 + dj)) {
+				*i = x0 + di;
+				*j = y0 + dj;
+				return true;
+			}
+	return false;
+}
+
+/* Where along a line from a to b a fragment's center is (OpenGL 1.2's t), within 0..1 */
+static float along(double xa, double ya, double xb, double yb, double x, double y)
+{
+	double dx = xb - xa, dy = yb - ya, l2 = dx * dx + dy * dy;
+	double t = l2 > 0 ? ((x - xa) * dx + (y - ya) * dy) / l2 : 0;
+	return t < 0 ? 0.0f : t > 1 ? 1.0f : (float)t;
+}
+
+/*
+ * An aliased line (OpenGL 1.2's 3.4.2): the pixels whose diamonds the
+ * segment, its endpoints perturbed, goes through, but for the one its end
+ * is in; wider (n), moved (n - 1) / 2 down (x major) or left (y major), each
+ * such pixel the first of a column up or a row right of n
+ */
+static unsigned gl_line(const struct gl_emit *e, double xa, double ya, double xb, double yb, int n)
+{
+	double dx = xb - xa, dy = yb - ya;
+	if (dx == 0 && dy == 0)
+		return 0;
+	bool xmajor = fabs(dx) >= fabs(dy);
+	double shift = (double)(n - 1) * 0.5;
+	double sxa = xmajor ? xa : xa - shift, sxb = xmajor ? xb : xb - shift;
+	double sya = xmajor ? ya + shift : ya, syb = xmajor ? yb + shift : yb;
+	int si = 0, sj = 0, ei = 0, ej = 0;
+	bool start = diamond_of(sxa, sya, &si, &sj), end = diamond_of(sxb, syb, &ei, &ej);
+	double lo = xmajor ? fmin(sxa, sxb) : fmin(sya, syb), hi = xmajor ? fmax(sxa, sxb) : fmax(sya, syb);
+	/* the centers crossed: x major [lo, hi) (moved left), y major (lo, hi] (moved down) */
+	long c0 = xmajor ? (long)ceil(lo - 0.5) : (long)floor(lo - 0.5) + 1;
+	long c1 = xmajor ? (long)ceil(hi - 0.5) - 1 : (long)floor(hi - 0.5);
+	bool forward = xmajor ? dx > 0 : dy > 0;
+	long k = 0;
+	if (start && !(xmajor ? si >= c0 && si <= c1 : sj >= c0 && sj <= c1) && !(end && si == ei && sj == ej)) {
+		float t = along(sxa, sya, sxb, syb, (double)si + 0.5, (double)sj + 0.5);
+		for (int w = 0; w < n; w++)
+			gl_emit(e, xmajor ? si : si + w, xmajor ? sj - w : sj, t, 1, k);
+		k++;
+	}
+	for (long m = 0; m <= c1 - c0; m++) {
+		long c = forward ? c0 + m : c1 - m;
+		double cc = (double)c + 0.5;
+		int i, j;
+		if (xmajor) {
+			double yv = sya + (cc - sxa) * dy / dx;
+			i = (int)c;
+			j = (int)(dy / dx < 0 ? ceil(yv) - 1 : floor(yv));
+		} else {
+			double xv = sxa + (cc - sya) * dx / dy;
+			i = (int)(ceil(xv) - 1);
+			j = (int)c;
+		}
+		if (end && i == ei && j == ej)
+			continue;
+		float t = along(sxa, sya, sxb, syb, (double)i + 0.5, (double)j + 0.5);
+		for (int w = 0; w < n; w++)
+			gl_emit(e, xmajor ? i : i + w, xmajor ? j - w : j, t, 1, k);
+		k++;
+	}
+	return (unsigned)k;
+}
+
+/* The part of polygon p (n points, x and y) where a x + b y + c >= 0, into out; its points */
+static int clip_half(const double *p, int n, double a, double b, double c, double *out)
+{
+	int m = 0;
+	for (int k = 0; k < n; k++) {
+		const double *u = p + 2 * k, *v = p + 2 * ((k + 1) % n);
+		double du = a * u[0] + b * u[1] + c, dv = a * v[0] + b * v[1] + c;
+		if (du >= 0) {
+			out[2 * m] = u[0];
+			out[2 * m + 1] = u[1];
+			m++;
+		}
+		if ((du >= 0) != (dv >= 0)) {
+			double f = du / (du - dv);
+			out[2 * m] = u[0] + (v[0] - u[0]) * f;
+			out[2 * m + 1] = u[1] + (v[1] - u[1]) * f;
+			m++;
+		}
+	}
+	return m;
+}
+
+/*
+ * A smooth line: the pixels a rectangle of the width along the segment
+ * covers some of, each by the area covered (its square clipped to the
+ * rectangle); stippled by how far along the major axis its center is
+ */
+static unsigned gl_smooth_line(const struct gl_emit *e, double xa, double ya, double xb, double yb, double width)
+{
+	double dx = xb - xa, dy = yb - ya, len = sqrt(dx * dx + dy * dy);
+	if (!(len > 0))
+		return 0;
+	double ux = dx / len, uy = dy / len, hw = width * 0.5, major = fmax(fabs(dx), fabs(dy));
+	double px = -uy * hw, py = ux * hw;
+	double xmin = fmin(xa, xb) - fabs(px), xmax = fmax(xa, xb) + fabs(px);
+	double ymin = fmin(ya, yb) - fabs(py), ymax = fmax(ya, yb) + fabs(py);
+	for (int j = (int)floor(ymin); j <= (int)floor(ymax); j++)
+		for (int i = (int)floor(xmin); i <= (int)floor(xmax); i++) {
+			double sq[16] = { i, j, i + 1, j, i + 1, j + 1, i, j + 1 }, a[16], b[16];
+			int m = clip_half(sq, 4, ux, uy, -(ux * xa + uy * ya), a);         /* from a on */
+			m = clip_half(a, m, -ux, -uy, ux * xb + uy * yb, b);               /* to b */
+			m = clip_half(b, m, -uy, ux, uy * xa - ux * ya + hw, a);           /* within the width */
+			m = clip_half(a, m, uy, -ux, -uy * xa + ux * ya + hw, b);
+			double area = 0;
+			for (int k = 0; k < m; k++) {
+				const double *u = b + 2 * k, *v = b + 2 * ((k + 1) % m);
+				area += u[0] * v[1] - v[0] * u[1];
+			}
+			area = fabs(area) * 0.5;
+			if (!(area > 0))
+				continue;
+			double cx = i + 0.5, cy = j + 0.5, d = (cx - xa) * ux + (cy - ya) * uy;
+			long k = d > 0 ? (long)floor(d / len * major) : 0;
+			gl_emit(e, i, j, along(xa, ya, xb, yb, cx, cy), area < 1 ? (float)area : 1.0f, k);
+		}
+	return (unsigned)floor(major + 0.5);
+}
+
+/* Of a pixel, the part a disk covers (to 1/256: its square sampled 16 x 16) */
+static float disk_cover(double cx, double cy, double r, int i, int j)
+{
+	double nx = fmax(i - cx, fmax(0, cx - (i + 1))), ny = fmax(j - cy, fmax(0, cy - (j + 1)));
+	if (nx * nx + ny * ny >= r * r)
+		return 0;
+	double fx = fmax(fabs(i - cx), fabs(i + 1 - cx)), fy = fmax(fabs(j - cy), fabs(j + 1 - cy));
+	if (fx * fx + fy * fy <= r * r)
+		return 1;
+	int in = 0;
+	for (int v = 0; v < 16; v++)
+		for (int u = 0; u < 16; u++) {
+			double x = i + (u + 0.5) / 16 - cx, y = j + (v + 0.5) / 16 - cy;
+			in += x * x + y * y < r * r;
+		}
+	return (float)in / 256;
+}
+
+/*
+ * A point (OpenGL 1.2's 3.3): aliased, an n x n square whose center is the
+ * pixel's the point is in (n odd) or the pixel corner nearest it (n even);
+ * smooth, the pixels a disk of the size covers some of
+ */
+static void gl_point(const struct gl_emit *e, const struct raster_vertex *v)
+{
+	double x = v->x, y = v->y;
+	if (e->s->smooth) {
+		double r = e->s->width * 0.5;
+		if (!(r > 0) || !(r < 512))
+			return;
+		for (int j = (int)floor(y - r); j <= (int)floor(y + r); j++)
+			for (int i = (int)floor(x - r); i <= (int)floor(x + r); i++) {
+				float c = disk_cover(x, y, r, i, j);
+				if (c > 0)
+					gl_emit(e, i, j, 0, c, -1);
+			}
+		return;
+	}
+	int n = whole_width(e->s->width);
+	int x0 = n & 1 ? (int)floor(x) - (n - 1) / 2 : (int)floor(x + 0.5) - n / 2;
+	int y0 = n & 1 ? (int)ceil(y) - (n + 1) / 2 : (int)ceil(y - 0.5) - n / 2;
+	for (int j = y0; j < y0 + n; j++)
+		for (int i = x0; i < x0 + n; i++)
+			gl_emit(e, i, j, 0, 1, -1);
+}
+
+unsigned raster_gl_fragments(const struct raster_state *s, const struct raster_cmd *c, int left, int top, int right,
+			     int bottom, raster_fragment_fn *fn, void *ctx)
+{
+	const struct gl_emit e = { s, left, top, right, bottom, fn, ctx, c->stipple };
+	const struct raster_vertex *a = &c->v[0], *b = &c->v[1];
+	if (!(fabsf(a->x) < 1e6f && fabsf(a->y) < 1e6f))
+		return 0;
+	if (c->kind == RASTER_CMD_POINT) {
+		gl_point(&e, a);
+		return 0;
+	}
+	if (c->kind != RASTER_CMD_LINE || !(fabsf(b->x) < 1e6f && fabsf(b->y) < 1e6f))
+		return 0;
+	if (s->smooth)
+		return s->width > 0 && s->width < 1024 ? gl_smooth_line(&e, a->x, a->y, b->x, b->y, s->width) : 0;
+	return gl_line(&e, a->x, a->y, b->x, b->y, whole_width(s->width));
+}
+
+void raster_lerp_vertex(struct raster_vertex *out, const struct raster_vertex *a, const struct raster_vertex *b,
+			float t)
+{
+	out->z = a->z + (b->z - a->z) * t;
+	out->invw = a->invw + (b->invw - a->invw) * t;
+	for (unsigned k = 0; k < RASTER_COLORS; k++)
+		for (int j = 0; j < 4; j++)
+			out->color[k][j] = a->color[k][j] + (b->color[k][j] - a->color[k][j]) * t;
+	out->fog = a->fog + (b->fog - a->fog) * t;
+	for (unsigned u = 0; u < RASTER_UNITS; u++) {
+		for (int j = 0; j < 3; j++)
+			out->tex[u][j] = a->tex[u][j] + (b->tex[u][j] - a->tex[u][j]) * t;
+		out->texr[u] = a->texr[u] + (b->texr[u] - a->texr[u]) * t;
+	}
+}
+
+float raster_line_lod(const struct raster_unit *u, unsigned unit, const struct raster_vertex *v0,
+		      const struct raster_vertex *v1)
+{
+	const struct raster_texture *tx = u->texture;
+	const struct raster_vertex *v[2] = { v0, v1 };
+	float s[2], t[2];
+	for (int k = 0; k < 2; k++) {
+		float iw = u->projective ? v[k]->tex[unit][2] : v[k]->invw;
+		float inv = iw != 0 ? 1.0f / iw : 0;
+		s[k] = v[k]->tex[unit][0] * inv * (float)tx->width[0];
+		t[k] = v[k]->tex[unit][1] * inv * (float)tx->height[0];
+	}
+	float dx = v1->x - v0->x, dy = v1->y - v0->y, ds = s[1] - s[0], dt = t[1] - t[0];
+	float len2 = dx * dx + dy * dy, rho2 = ds * ds + dt * dt;
+	if (!(len2 > 0) || !(rho2 > 0) || !(rho2 < 1e30f))
+		return 0;
+	return 0.5f * log2f(rho2 / len2);
+}
+
+/* Drawing them here: each fragment's values from v[0]'s to v[1]'s, then as a triangle's */
+struct gl_draw {
+	struct raster_target *t;
+	const struct raster_state *s;
+	struct shade sh;
+	unsigned flags;
+	float a0[A_MAX], a1[A_MAX];
+};
+
+static void gl_fragment(void *ctx, int x, int y, float t, float cover)
+{
+	const struct gl_draw *d = ctx;
+	float a[A_MAX];
+	for (unsigned k = 0; k < d->sh.L->n; k++)
+		a[k] = d->a0[k] + (d->a1[k] - d->a0[k]) * t;
+	a[A_COVER] = cover;
+	size_t i = (size_t)y * (size_t)d->t->width + (size_t)x;
+	test(d->t, d->s, i, a, &d->sh, d->flags, d->s->perspective_z ? -a[A_W] : a[A_Z]);
+}
+
+static void gl_draw(struct raster_target *t, const struct prepared *p, const int rows[2], const struct raster_cmd *c)
+{
+	const struct raster_state *s = p->s;
+	struct gl_draw d = { .t = t, .s = s };
+	bool textured = c->textured && p->textures, line = c->kind == RASTER_CMD_LINE;
+	d.sh.L = textured ? &p->textured : &p->plain;
+	d.sh.units = textured ? p->units : 0;
+	d.sh.stage = p->stage;
+	for (unsigned k = 0; k < RASTER_UNITS; k++)
+		if (d.sh.units >> k & 1)        /* (points: magnified; lines: by the texels along them a pixel) */
+			unit_setup_lod(&s->unit[k], line && lod_needed(&s->unit[k]) ?
+				       raster_line_lod(&s->unit[k], k, &c->v[0], &c->v[1]) : 0, &d.sh.sm[k]);
+	d.flags = (textured ? F_TEX : 0) | (s->fog_mode != RASTER_FOG_NONE ? F_FOG : 0) | (s->smooth ? F_COVER : 0);
+	attribs(&c->v[0], d.sh.L, d.a0);
+	attribs(line ? &c->v[1] : &c->v[0], d.sh.L, d.a1);
+	int l, top, r, b;
+	clip_rows(t, s, rows, &l, &top, &r, &b);
+	raster_gl_fragments(s, c, l, top, r, b, gl_fragment, &d);
 }
 
 /* ---- lines, points, bitmaps ------------------------------------------------- */
@@ -977,7 +1345,12 @@ void raster_point(struct raster_target *t, const struct raster_state *s, const s
 	const int rows[2] = { s->clip_top, s->clip_bottom };
 	struct prepared p;
 	prepare(s, &p);
-	point(t, &p, rows, v);
+	if (s->gl_points) {
+		struct raster_cmd c = { .kind = RASTER_CMD_POINT, .v = { *v } };
+		gl_draw(t, &p, rows, &c);
+	} else {
+		point(t, &p, rows, v);
+	}
 }
 
 static void line(struct raster_target *t, const struct prepared *p, const int rows[2],
@@ -1006,7 +1379,12 @@ void raster_line(struct raster_target *t, const struct raster_state *s, const st
 	const int rows[2] = { s->clip_top, s->clip_bottom };
 	struct prepared p;
 	prepare(s, &p);
-	line(t, &p, rows, v0, v1);
+	if (s->gl_points) {
+		struct raster_cmd c = { .kind = RASTER_CMD_LINE, .v = { *v0, *v1 } };
+		gl_draw(t, &p, rows, &c);
+	} else {
+		line(t, &p, rows, v0, v1);
+	}
 }
 
 static void bitmap(struct raster_target *t, const struct raster_state *s, const int rows[2],
@@ -1161,10 +1539,16 @@ static void run_band(struct raster_target *t, const struct raster_state *states,
 			triangle(t, &p, rows, &c->v[0], &c->v[1], &c->v[2], c->textured);
 			break;
 		case RASTER_CMD_LINE:
-			line(t, &p, rows, &c->v[0], &c->v[1]);
+			if (s->gl_points)
+				gl_draw(t, &p, rows, c);
+			else
+				line(t, &p, rows, &c->v[0], &c->v[1]);
 			break;
 		case RASTER_CMD_POINT:
-			point(t, &p, rows, &c->v[0]);
+			if (s->gl_points)
+				gl_draw(t, &p, rows, c);
+			else
+				point(t, &p, rows, &c->v[0]);
 			break;
 		case RASTER_CMD_BITMAP:
 			bitmap(t, s, rows, c->image, c->v[0].x, c->v[0].y, c->v[0].z);

@@ -13,7 +13,9 @@
  * offset; the stencil's state and clears; the attribute stacks; client
  * arrays (types, indices, bounds, interleaved); queries. Selection and
  * feedback where Mesa's depart from OpenGL 1.2's; evaluators' maps, errors,
- * values, normals and current values.
+ * values, normals and current values. The line stipple's counter, the
+ * polygon stipple through the pixel store, logic ops' state, the
+ * accumulation buffer.
  */
 #include <math.h>
 #include <stdlib.h>
@@ -40,7 +42,7 @@ static void start(void)
 	CHECK(glf_attach(&st, NULL));
 	glf_viewport(&st, 0, 0, W, H);
 	glf_scissor(&st, 0, 0, W, H);
-	target = (struct gl_target){ &surf, W, H, 24, 8, 8 };
+	target = (struct gl_target){ &surf, W, H, 24, 8, 8, 0 };
 }
 
 /* Object coordinates as window coordinates (x right, y up, z 0 in the middle of the depth range) */
@@ -1935,6 +1937,133 @@ static void test_evaluators(void)
 	CHECK_EQ(error(), GL_NO_ERROR);
 }
 
+/*
+ * Line stipple through glBegin and glEnd: a strip's counter going on from
+ * segment to segment, separate lines starting it again; the polygon stipple
+ * through the pixel store (packed back the same); logic ops' state
+ */
+static void test_stipple_logic(void)
+{
+	start();
+	ortho();
+	glf_clear(&st, &target, GL_COLOR_BUFFER_BIT);
+	glf_enable(&st, GL_LINE_STIPPLE, true);
+	glf_line_stipple(&st, 1, 0x00FF);
+	color(1, 1, 1);
+	glf_begin(&st, GL_LINE_STRIP);          /* (row 2: 10 pixels, then 10 more) */
+	vertex(1.5f, 2.5f, 0);
+	vertex(11.5f, 2.5f, 0);
+	vertex(21.5f, 2.5f, 0);
+	glf_end(&st, &target);
+	glf_begin(&st, GL_LINES);               /* (row 5: two of 10, each from bit 0) */
+	vertex(1.5f, 5.5f, 0);
+	vertex(11.5f, 5.5f, 0);
+	vertex(21.5f, 5.5f, 0);
+	vertex(31.5f, 5.5f, 0);
+	glf_end(&st, &target);
+	drawn();
+	for (int x = 1; x < 21; x++)
+		CHECK_EQ(pixel(x, 2) != 0, x - 1 < 8 || x - 1 >= 16);
+	for (int x = 1; x < 31; x++)            /* (1 to 10, 21 to 30: the second from bit 0 again) */
+		CHECK_EQ(pixel(x, 5) != 0, (x <= 10 || x >= 21) && (x - 1) % 10 < 8);
+	glf_enable(&st, GL_LINE_STIPPLE, false);
+
+	/* the polygon stipple: rows of bits from the bottom, each unpacked as glBitmap's (here LSB first, rows of 8) */
+	uint8_t bits[32 * 8], back[32 * 8];
+	for (int k = 0; k < 32 * 8; k++)
+		bits[k] = (uint8_t)(k * 37 + 11);
+	glf_pixel_store(&st, 0x0CF1, 1);                        /* GL_UNPACK_LSB_FIRST */
+	glf_pixel_store(&st, 0x0CF5, 8);                        /* GL_UNPACK_ALIGNMENT */
+	CHECK_EQ(glf_polygon_stipple_bytes(&st.unpack), 32 * 8);
+	glf_polygon_stipple(&st, bits);
+	CHECK_EQ(st.polygon_stipple[1] >> 31, (uint32_t)(bits[8] & 1));
+	CHECK_EQ(st.polygon_stipple[1] >> 24 & 1, (uint32_t)(bits[8] >> 7 & 1));
+	glf_pixel_store(&st, 0x0D01, 1);                        /* GL_PACK_LSB_FIRST */
+	glf_pixel_store(&st, 0x0D05, 8);
+	memset(back, 0, sizeof back);
+	glf_get_polygon_stipple(&st, back);
+	for (int j = 0; j < 32; j++)
+		CHECK(!memcmp(back + 8 * j, bits + 8 * j, 4));
+	glf_pixel_store(&st, 0x0CF1, 0);
+	glf_pixel_store(&st, 0x0CF5, 4);
+	glf_pixel_store(&st, 0x0D01, 0);
+	glf_pixel_store(&st, 0x0D05, 4);
+
+	/* logic ops: the mode, its errors, pushed and popped with the color buffer's bits */
+	double v[4];
+	CHECK_EQ(glf_get(&st, 0x0BF0, v), 1);                   /* GL_LOGIC_OP_MODE */
+	CHECK_EQ(v[0], GL_COPY);
+	glf_logic_op(&st, 0x1506);                              /* GL_XOR */
+	glf_logic_op(&st, 0x1510);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	glf_push_attrib(&st, GL_COLOR_BUFFER_BIT);
+	glf_logic_op(&st, GL_SET);
+	glf_enable(&st, GL_COLOR_LOGIC_OP, true);
+	glf_pop_attrib(&st);
+	CHECK_EQ(glf_get(&st, 0x0BF0, v), 1);
+	CHECK_EQ(v[0], 0x1506);
+	CHECK_EQ(glf_is_enabled(&st, GL_COLOR_LOGIC_OP), 0);
+	glf_enable(&st, GL_COLOR_LOGIC_OP, true);
+	CHECK_EQ(glf_raster_state(&st, &target)->blend, RASTER_BLEND_LOGIC);
+	CHECK_EQ(glf_raster_state(&st, &target)->logic_op, RASTER_LOGIC_XOR);
+	glf_logic_op(&st, GL_COPY);                             /* (copying: no blending) */
+	CHECK_EQ(glf_raster_state(&st, &target)->blend, RASTER_BLEND_NONE);
+	glf_enable(&st, GL_COLOR_LOGIC_OP, false);
+}
+
+/*
+ * The accumulation buffer: loaded, accumulated, scaled, moved, returned
+ * (clamped, through the color mask); its clear and the scissor box; a
+ * drawable without one; 8 bits' steps
+ */
+static void test_accum(void)
+{
+	start();
+	ortho();
+	glf_accum(&st, &target, GL_LOAD, 1);
+	CHECK_EQ(error(), GL_INVALID_OPERATION);
+	target.accum_bits = 16;
+	glf_accum(&st, &target, 0x0105, 1);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	const float a[4] = { 0.2f, 0.4f, 0.6f, 1 }, b[4] = { 0.6f, 0.2f, 0, 1 };
+	memcpy(st.clear_color, a, sizeof a);
+	glf_clear(&st, &target, GL_COLOR_BUFFER_BIT);
+	drawn();
+	glf_accum(&st, &target, GL_LOAD, 1);
+	memcpy(st.clear_color, b, sizeof b);
+	glf_clear(&st, &target, GL_COLOR_BUFFER_BIT);
+	drawn();
+	glf_accum(&st, &target, GL_ACCUM, 0.5f);               /* 0.5, 0.5, 0.6 */
+	glf_accum(&st, &target, GL_MULT, 0.5f);                /* 0.25, 0.25, 0.3 */
+	glf_accum(&st, &target, GL_ADD, 0.1f);                 /* 0.35, 0.35, 0.4 */
+	glf_accum(&st, &target, GL_RETURN, 2);                 /* 0.7, 0.7, 0.8 (alpha 1, clamped) */
+	drawn();
+	CHECK_EQ(pixel(10, 10), 0xFFB3B3CCu);
+	/* the clear value clamped, cleared within the scissor box, returned through the color mask */
+	glf_clear_accum(&st, 2, -0.25f, 0.5f, 0);
+	double v[4];
+	CHECK_EQ(glf_get(&st, 0x0B80, v), 4);                   /* GL_ACCUM_CLEAR_VALUE */
+	CHECK(v[0] == 1 && v[1] == -0.25 && v[2] == 0.5 && v[3] == 0);
+	glf_scissor(&st, 0, 0, 8, 8);
+	glf_enable(&st, GL_SCISSOR_TEST, true);
+	glf_clear(&st, &target, GL_ACCUM_BUFFER_BIT);
+	glf_enable(&st, GL_SCISSOR_TEST, false);
+	glf_color_mask(&st, true, true, false, true);
+	glf_accum(&st, &target, GL_RETURN, 1);
+	glf_color_mask(&st, true, true, true, true);
+	drawn();
+	CHECK_EQ(pixel(4, 4), 0x00FF00CCu);                     /* (red 1, green 0 (-0.25), blue kept, alpha 0) */
+	CHECK_EQ(pixel(10, 10), 0x995959CCu);                   /* (0.35, 0.35, (blue kept), 0.6 returned once) */
+	/* 8 bits: to the nearest of 127 steps */
+	target.accum_bits = 8;
+	free(st.accum);
+	st.accum = NULL;
+	glf_clear_accum(&st, 0.3f, 0.3f, 0.3f, 1);
+	glf_clear(&st, &target, GL_ACCUM_BUFFER_BIT);
+	CHECK_EQ(st.accum[0], (int16_t)(38.0f / 127 * 32767 + 0.5f));
+	target.accum_bits = 0;
+}
+
 void test_glfront(void)
 {
 	test_sincos();
@@ -1963,6 +2092,8 @@ void test_glfront(void)
 	test_copy_get_tex_image();
 	test_select_feedback();
 	test_evaluators();
+	test_stipple_logic();
+	test_accum();
 	surface_free(&surf);
 	glf_detach(&st, NULL);
 }

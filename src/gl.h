@@ -53,6 +53,8 @@ typedef struct __GLsync *GLsync;
 #define GL_STENCIL_TEST 0x0B90
 #define GL_DITHER 0x0BD0
 #define GL_BLEND 0x0BE2
+#define GL_COLOR_LOGIC_OP 0x0BF2
+#define GL_CLEAR 0x1500
 #define GL_SCISSOR_TEST 0x0C11
 #define GL_MULTISAMPLE 0x809D
 #define GL_DEPTH_CLAMP 0x864F
@@ -202,6 +204,7 @@ typedef struct __GLsync *GLsync;
 	X(void, BlendFuncSeparate, (GLenum srgb, GLenum drgb, GLenum salpha, GLenum dalpha)) \
 	X(void, BlendEquation, (GLenum mode)) \
 	X(void, BlendColor, (GLfloat r, GLfloat g, GLfloat b, GLfloat a)) \
+	X(void, LogicOp, (GLenum opcode)) \
 	X(void, PixelStorei, (GLenum pname, GLint param)) \
 	X(void, ReadPixels, (GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, \
 			     void *pixels)) \
@@ -275,6 +278,7 @@ typedef struct __GLsync *GLsync;
 	X(void, Uniform4f, (GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3)) \
 	X(void, Uniform1fv, (GLint location, GLsizei count, const GLfloat *value)) \
 	X(void, Uniform4fv, (GLint location, GLsizei count, const GLfloat *value)) \
+	X(void, Uniform1uiv, (GLint location, GLsizei count, const GLuint *value)) \
 	X(void, DrawArrays, (GLenum mode, GLint first, GLsizei count)) \
 	X(GLsync, FenceSync, (GLenum condition, GLbitfield flags)) \
 	X(GLenum, ClientWaitSync, (GLsync sync, GLbitfield flags, GLuint64 timeout)) \

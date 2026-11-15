@@ -90,13 +90,18 @@ struct surface_dest {
 	uint32_t base, row_bytes;
 	unsigned bits;
 	bool alpha;                     /* 32 bits a pixel: a-8-8-8 */
+	bool dither;                    /* 16 bits a pixel: dithered (else each component's top 5 bits) */
 	int left, top, right, bottom;
 	int x, y;
 	uint32_t region[2];
 	int region_x, region_y;
 };
 
-/* The surface's pixels [l, r) x [t, b) into the destination (after surface_finish()) */
+/*
+ * The surface's pixels [l, r) x [t, b) into the destination (after
+ * surface_finish()); dithered, by a 4 x 4 ordered dither by where in the
+ * destination they go
+ */
 void surface_present(const struct surface *s, struct mem *m, const struct surface_dest *d, int l, int t, int r,
 		     int b);
 

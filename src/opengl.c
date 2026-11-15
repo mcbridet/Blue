@@ -106,6 +106,8 @@ enum { AGL_NO_ERROR, AGL_BAD_ATTRIBUTE = 10000, AGL_BAD_PROPERTY, AGL_BAD_PIXELF
 #define AGL_RGB555_BIT 0x200u
 #define AGL_RGB888_BIT 0x4000u
 #define AGL_ARGB8888_BIT 0x8000u
+#define AGL_RGB161616_BIT 0x400000u
+#define AGL_ARGB16161616_BIT 0x800000u
 
 /* AGL's options for aglEnable(), as bits */
 enum { OPTION_SWAP_RECT, OPTION_BUFFER_RECT, OPTION_SWAP_LIMIT, OPTION_COLORMAP_TRACKING, OPTION_RASTERIZATION,
@@ -113,12 +115,19 @@ enum { OPTION_SWAP_RECT, OPTION_BUFFER_RECT, OPTION_SWAP_LIMIT, OPTION_COLORMAP_
 
 /* ---- identity ------------------------------------------------------------------- */
 
-/* As Apple's ATI renderer (see docs/opengl-plan.md, Identity) */
+/*
+ * As Apple's ATI renderer (see docs/opengl-plan.md, Identity); and as its
+ * generic software renderer, for pixel formats only it offered (those with
+ * an accumulation buffer), Blue drawing them the same way
+ */
 #define RENDERER_ID 0x00021000u
+#define GENERIC_ID 0x00020200u
 #define VIDEO_MEMORY (32u << 20)
 #define TEXTURE_MEMORY (32u << 20)
 static const char vendor[] = "ATI Technologies Inc.";
 static const char renderer[] = "Rage 128 OpenGL Engine";
+static const char generic_vendor[] = "Apple";
+static const char generic_renderer[] = "Generic";
 static const char version[] = "1.2 Blue";
 /* (Mac OS 9.2.2's engine's, in its order, but only those Blue does) */
 static const char extensions[] = "GL_APPLE_transform_hint GL_APPLE_packed_pixel GL_ARB_transpose_matrix "
@@ -147,7 +156,7 @@ static const char *const agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE] = {
  * calls write into (see "callouts").
  */
 #define DATA_MAGIC 0x7379474Cu          /* 'syGL' */
-#define DATA_VERSION 4u
+#define DATA_VERSION 5u
 enum { D_MAGIC = 0, D_VERSION = 4, D_CURRENT = OPENGL_DATA_CURRENT, D_RECORD = OPENGL_DATA_RECORD,
        D_RECORD_END = D_RECORD + 4, D_STRINGS = 20 };
 #define FORMATS 16
@@ -157,8 +166,13 @@ enum { D_MAGIC = 0, D_VERSION = 4, D_CURRENT = OPENGL_DATA_CURRENT, D_RECORD = O
 #define FORMAT_MAGIC 0x73795046u        /* 'syPF' */
 #define SCRATCH_SIZE 32u
 #define RENDERER_INFO_MAGIC 0x73795249u /* 'syRI' */
-/* A pixel format's words: magic, next, flags, depth, stencil and pixel sizes, its device (a list of one) */
-enum { PF_MAGIC = 0, PF_NEXT = 4, PF_FLAGS = 8, PF_DEPTH = 12, PF_STENCIL = 16, PF_PIXEL = 20, PF_DEVICE = 24 };
+/*
+ * A pixel format's words: magic, next, flags, depth, stencil and pixel
+ * sizes, its device (a list of one), its accumulation buffer's sizes (each
+ * component's, alpha's: the generic renderer's)
+ */
+enum { PF_MAGIC = 0, PF_NEXT = 4, PF_FLAGS = 8, PF_DEPTH = 12, PF_STENCIL = 16, PF_PIXEL = 20, PF_DEVICE = 24,
+       PF_ACCUM = 28 };
 #define PF_DOUBLE 0x01u
 #define PF_WINDOW 0x02u
 #define PF_FULLSCREEN 0x04u
@@ -166,11 +180,12 @@ enum { PF_MAGIC = 0, PF_NEXT = 4, PF_FLAGS = 8, PF_DEPTH = 12, PF_STENCIL = 16, 
 #define PF_NO_RECOVERY 0x10u
 #define PF_ALL_RENDERERS 0x20u
 #define PF_POLICY_MASK 0x1C0u           /* (minimum 0x40, maximum 0x80, closest 0x100) */
+#define PF_GENERIC 0x200u               /* (the generic renderer's) */
 
 static struct {
 	uint8_t data[1024];
 	size_t len;
-	uint32_t vendor, renderer, version, extensions;
+	uint32_t vendor, renderer, generic_vendor, generic_renderer, version, extensions;
 	uint32_t agl_error[AGL_ERRORS - AGL_BAD_ATTRIBUTE], no_error, unknown_error;
 	uint32_t contexts, formats, renderer_infos, record, scratch, end;      /* the zero-filled parts */
 } lib;
@@ -193,6 +208,8 @@ static void make_data(void)
 	lib.len = D_STRINGS;
 	lib.vendor = put_string(vendor);
 	lib.renderer = put_string(renderer);
+	lib.generic_vendor = put_string(generic_vendor);
+	lib.generic_renderer = put_string(generic_renderer);
 	lib.version = put_string(version);
 	lib.extensions = put_string(extensions);
 	lib.no_error = put_string("no error");
@@ -999,6 +1016,7 @@ static void show(struct opengl *o, struct opengl_context *x)
 	}
 	struct surface_dest d;
 	memset(&d, 0, sizeof d);
+	d.dither = glf_is_enabled(&x->st, GL_DITHER) > 0;
 	if (x->kind == DRAWABLE_OFFSCREEN) {
 		d.base = x->base;
 		d.row_bytes = x->row_bytes;
@@ -1093,7 +1111,7 @@ static void not_yet(struct opengl *o, unsigned fn)
 static struct gl_target target_of(struct opengl_context *x)
 {
 	return (struct gl_target){ x->has_surface ? &x->surface : NULL, x->width, x->height, x->depth_bits,
-				   x->pixel_size == 32 ? 8 : 0, x->stencil_bits };
+				   x->pixel_size == 32 ? 8 : 0, x->stencil_bits, x->accum_bits };
 }
 
 static float clampf(float v)
@@ -1188,6 +1206,8 @@ static unsigned gl_get(struct opengl_context *x, uint32_t pname, double *v)
 	case GL_ALPHA_BITS: v[0] = deep ? 8 : 0; return 1;
 	case GL_DEPTH_BITS: v[0] = x->depth_bits; return 1;
 	case GL_STENCIL_BITS: v[0] = x->stencil_bits; return 1;
+	case 0x0D58: case 0x0D59: case 0x0D5A: v[0] = x->accum_bits; return 1;  /* GL_ACCUM_RED_BITS... */
+	case 0x0D5B: v[0] = x->accum_alpha_bits; return 1;                      /* GL_ACCUM_ALPHA_BITS */
 	case 0x0B30: v[0] = x->list_mode; return 1;             /* GL_LIST_MODE */
 	case 0x0B33: v[0] = x->list_name; return 1;             /* GL_LIST_INDEX */
 	default: return 0;
@@ -1432,7 +1452,8 @@ static unsigned nargs_of(unsigned fn)
 static bool unpacks(unsigned fn)
 {
 	return fn == F_glTexImage1D || fn == F_glTexImage2D || fn == F_glTexSubImage1D || fn == F_glTexSubImage2D ||
-	       fn == F_glTexImage3D || fn == F_glTexSubImage3D || fn == F_glDrawPixels || fn == F_glBitmap;
+	       fn == F_glTexImage3D || fn == F_glTexSubImage3D || fn == F_glDrawPixels || fn == F_glBitmap ||
+	       fn == F_glPolygonStipple;
 }
 
 /* The bytes an element of glCallLists' list of names takes (0: not a type it takes) */
@@ -1479,7 +1500,7 @@ static size_t data_len(const struct opengl_context *x, unsigned fn, const union 
 		return 4 * pname_values(a[1].u);
 	case F_glTexGendv: return 8 * pname_values(a[1].u);
 	case F_glClipPlane: return 32;
-	case F_glPolygonStipple: return sizeof x->st.polygon_stipple;
+	case F_glPolygonStipple: return glf_polygon_stipple_bytes(ps);
 	case F_glTexImage1D: return glf_image_bytes(ps, a[5].u, a[6].u, a[3].i, 1);
 	case F_glTexImage2D: return glf_image_bytes(ps, a[6].u, a[7].u, a[3].i, a[4].i);
 	case F_glTexSubImage1D: return glf_image_bytes(ps, a[4].u, a[5].u, a[3].i, 1);
@@ -1854,8 +1875,8 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 	case F_glGetString: {
 		uint32_t base = data_of(o, x->inst);
 		switch (a[0].u) {
-		case GL_VENDOR: return base + lib.vendor;
-		case GL_RENDERER: return base + lib.renderer;
+		case GL_VENDOR: return base + (x->format & PF_GENERIC ? lib.generic_vendor : lib.vendor);
+		case GL_RENDERER: return base + (x->format & PF_GENERIC ? lib.generic_renderer : lib.renderer);
 		case GL_VERSION: return base + lib.version;
 		case GL_EXTENSIONS: return base + lib.extensions;
 		default:
@@ -2260,14 +2281,23 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 	case F_glPolygonOffset: glf_polygon_offset(st, a[0].f, a[1].f); return 0;
 	case F_glLineStipple: glf_line_stipple(st, a[0].i, (uint16_t)a[1].u); return 0;
 	case F_glPolygonStipple: {
-		const uint8_t *p = in_data(o, x, a[0].u, sizeof st->polygon_stipple);
+		const uint8_t *p = in_data(o, x, a[0].u, glf_polygon_stipple_bytes(&st->unpack));
 		if (p)
-			memcpy(st->polygon_stipple, p, sizeof st->polygon_stipple);
+			glf_polygon_stipple(st, p);
 		return 0;
 	}
-	case F_glGetPolygonStipple:
-		if (writable(m, a[0].u, sizeof st->polygon_stipple))
-			mem_load(m, a[0].u, st->polygon_stipple, sizeof st->polygon_stipple);
+	case F_glGetPolygonStipple: {
+		size_t bytes = glf_polygon_stipple_bytes(&st->pack);
+		if (writable(m, a[0].u, (uint32_t)bytes))
+			glf_get_polygon_stipple(st, mem_ptr(m, a[0].u));
+		return 0;
+	}
+	case F_glLogicOp: glf_logic_op(st, a[0].u); return 0;
+	case F_glClearAccum: glf_clear_accum(st, a[0].f, a[1].f, a[2].f, a[3].f); return 0;
+	case F_glAccum:
+		if (a[0].u == GL_ACCUM || a[0].u == GL_LOAD)
+			finish(o, x, false);
+		glf_accum(st, &t, a[0].u, a[1].f);
 		return 0;
 	case F_glStencilFunc: glf_stencil_func(st, a[0].u, a[1].i, a[2].u); return 0;
 	case F_glStencilOp: glf_stencil_op(st, a[0].u, a[1].u, a[2].u); return 0;
@@ -2516,26 +2546,35 @@ static uint32_t format_at(struct opengl *o, struct opengl_instance *in, uint32_t
 	return pf;
 }
 
+/*
+ * A renderer info aglQueryRendererInfo() gave: the first renderer's (ATI's)
+ * a slot, the next's (the generic renderer's) its second half, each its
+ * magic and the renderer (0, 1)
+ */
 static uint32_t renderer_info_at(struct opengl *o, struct opengl_instance *in, uint32_t ri)
 {
 	uint32_t first = data_of(o, in) + lib.renderer_infos;
-	if (ri < first || (ri - first) % RENDERER_INFO_SIZE || (ri - first) / RENDERER_INFO_SIZE >= RENDERER_INFOS ||
-	    mem_r32(o->mem, ri) != RENDERER_INFO_MAGIC)
+	if (ri < first || (ri - first) % (RENDERER_INFO_SIZE / 2) ||
+	    (ri - first) / RENDERER_INFO_SIZE >= RENDERER_INFOS || mem_r32(o->mem, ri) != RENDERER_INFO_MAGIC)
 		return 0;
 	return ri;
 }
 
 /*
- * aglChoosePixelFormat(): one renderer, accelerated, RGBA in the device's 16
- * or 32 bits, single or double buffered, depth to 32 bits, stencil to 8, no
- * accumulation, auxiliary or stereo buffers; no 8-bit devices.
+ * aglChoosePixelFormat(): RGBA in the device's 16 or 32 bits, single or
+ * double buffered, depth to 32 bits, stencil to 8, no auxiliary or stereo
+ * buffers; no 8-bit devices. ATI's renderer, accelerated, as Apple's had it
+ * (but offscreen too); or, for an accumulation buffer, which only Apple's
+ * generic software renderer offered (RGB or ARGB, 8 or 16 bits each), that
+ * one, unless an accelerated renderer (or ATI's) is asked for, or a full
+ * screen.
  */
 static uint32_t choose_pixel_format(struct opengl *o, struct opengl_instance *in, uint32_t devices, int32_t ndev,
 				    uint32_t attribs)
 {
 	struct mem *m = o->mem;
-	uint32_t flags = PF_WINDOW, depth = 0, stencil = 0, pixel = 0;
-	bool rgba = false;
+	uint32_t flags = PF_WINDOW, depth = 0, stencil = 0, pixel = 0, accum = 0, accum_alpha = 0, id = 0;
+	bool rgba = false, accelerated = false;
 	for (unsigned k = 0; k < 256; k++) {
 		if (!readable(m, attribs + 4 * k, 4)) {
 			agl_error(in, AGL_BAD_POINTER);
@@ -2571,20 +2610,29 @@ static uint32_t choose_pixel_format(struct opengl *o, struct opengl_instance *in
 		case AGL_CLOSEST_POLICY: flags |= 0x100; break;
 		case AGL_STEREO:
 			return 0;
-		case AGL_LEVEL: case AGL_AUX_BUFFERS: case AGL_ACCUM_RED_SIZE: case AGL_ACCUM_GREEN_SIZE:
-		case AGL_ACCUM_BLUE_SIZE: case AGL_ACCUM_ALPHA_SIZE: case AGL_SAMPLE_BUFFERS_ARB: case AGL_SAMPLES_ARB:
+		case AGL_LEVEL: case AGL_AUX_BUFFERS: case AGL_SAMPLE_BUFFERS_ARB: case AGL_SAMPLES_ARB:
 			if (v)
 				return 0;       /* (none of those) */
 			break;
+		case AGL_ACCUM_RED_SIZE: case AGL_ACCUM_GREEN_SIZE: case AGL_ACCUM_BLUE_SIZE:
+			accum = v > accum ? v : accum;
+			break;
+		case AGL_ACCUM_ALPHA_SIZE:
+			accum_alpha = v;
+			break;
 		case AGL_RENDERER_ID:
-			if (v != RENDERER_ID)
+			if (v != RENDERER_ID && v != GENERIC_ID)
 				return 0;
+			id = v;
+			break;
+		case AGL_ACCELERATED:
+			accelerated = true;
 			break;
 		case AGL_RED_SIZE: case AGL_GREEN_SIZE: case AGL_BLUE_SIZE: case AGL_ALPHA_SIZE:
 			if (v > 8)
 				return 0;
 			break;
-		case AGL_ACCELERATED: case AGL_SINGLE_RENDERER: case AGL_ROBUST: case AGL_BACKING_STORE: case AGL_MP_SAFE:
+		case AGL_SINGLE_RENDERER: case AGL_ROBUST: case AGL_BACKING_STORE: case AGL_MP_SAFE:
 		case AGL_MULTISCREEN: case AGL_VIRTUAL_SCREEN: case AGL_COMPLIANT:
 			break;
 		default:
@@ -2592,8 +2640,15 @@ static uint32_t choose_pixel_format(struct opengl *o, struct opengl_instance *in
 			return 0;
 		}
 	}
-	if (!rgba || depth > 32 || stencil > 8)
+	if (!rgba || depth > 32 || stencil > 8 || accum > 16 || accum_alpha > 16)
 		return 0;
+	if (accum || accum_alpha || id == GENERIC_ID) {
+		if (accelerated || id == RENDERER_ID || flags & PF_FULLSCREEN)
+			return 0;       /* (no such renderer) */
+		flags |= PF_GENERIC;
+		accum = accum > 8 || accum_alpha > 8 ? 16 : accum || accum_alpha ? 8 : 0;
+		accum_alpha = accum_alpha ? accum : 0;
+	}
 	/* the devices (none given: the main device) must all be 16 or 32 bits a pixel */
 	uint32_t device = 0;
 	if (devices && ndev > 0) {
@@ -2636,6 +2691,7 @@ static uint32_t choose_pixel_format(struct opengl *o, struct opengl_instance *in
 		mem_w32(m, pf + PF_STENCIL, stencil);
 		mem_w32(m, pf + PF_PIXEL, pixel);
 		mem_w32(m, pf + PF_DEVICE, device);
+		mem_w32(m, pf + PF_ACCUM, accum << 8 | accum_alpha);
 		return pf;
 	}
 	agl_error(in, AGL_BAD_ALLOC);
@@ -2645,16 +2701,20 @@ static uint32_t choose_pixel_format(struct opengl *o, struct opengl_instance *in
 /* aglDescribePixelFormat(): false for an attribute it doesn't know */
 static bool describe_pixel_format(const struct mem *m, uint32_t pf, uint32_t attrib, int32_t *v)
 {
-	uint32_t flags = mem_r32(m, pf + PF_FLAGS), pixel = mem_r32(m, pf + PF_PIXEL);
+	uint32_t flags = mem_r32(m, pf + PF_FLAGS), pixel = mem_r32(m, pf + PF_PIXEL), accum = mem_r32(m, pf + PF_ACCUM);
+	bool generic = flags & PF_GENERIC;
 	switch (attrib) {
 	case AGL_ALL_RENDERERS: *v = (flags & PF_ALL_RENDERERS) != 0; break;
 	case AGL_BUFFER_SIZE: case AGL_PIXEL_SIZE: *v = (int32_t)pixel; break;
-	case AGL_LEVEL: case AGL_STEREO: case AGL_AUX_BUFFERS: case AGL_ACCUM_RED_SIZE: case AGL_ACCUM_GREEN_SIZE:
-	case AGL_ACCUM_BLUE_SIZE: case AGL_ACCUM_ALPHA_SIZE: case AGL_SAMPLE_BUFFERS_ARB: case AGL_SAMPLES_ARB:
-	case AGL_ROBUST: case AGL_BACKING_STORE: case AGL_MP_SAFE: case AGL_MULTISCREEN: case AGL_VIRTUAL_SCREEN:
+	case AGL_ACCUM_RED_SIZE: case AGL_ACCUM_GREEN_SIZE: case AGL_ACCUM_BLUE_SIZE: *v = (int32_t)(accum >> 8); break;
+	case AGL_ACCUM_ALPHA_SIZE: *v = (int32_t)(accum & 0xFF); break;
+	case AGL_LEVEL: case AGL_STEREO: case AGL_AUX_BUFFERS: case AGL_SAMPLE_BUFFERS_ARB: case AGL_SAMPLES_ARB:
+	case AGL_VIRTUAL_SCREEN:
 		*v = 0;
 		break;
-	case AGL_RGBA: case AGL_ACCELERATED: case AGL_SINGLE_RENDERER: case AGL_COMPLIANT: *v = 1; break;
+	case AGL_ROBUST: case AGL_BACKING_STORE: case AGL_MP_SAFE: case AGL_MULTISCREEN: *v = generic; break;
+	case AGL_ACCELERATED: *v = !generic; break;
+	case AGL_RGBA: case AGL_SINGLE_RENDERER: case AGL_COMPLIANT: *v = 1; break;
 	case AGL_DOUBLEBUFFER: *v = (flags & PF_DOUBLE) != 0; break;
 	case AGL_RED_SIZE: case AGL_GREEN_SIZE: case AGL_BLUE_SIZE: *v = pixel == 32 ? 8 : 5; break;
 	case AGL_ALPHA_SIZE: *v = pixel == 32 ? 8 : 0; break;
@@ -2667,21 +2727,31 @@ static bool describe_pixel_format(const struct mem *m, uint32_t pf, uint32_t att
 	case AGL_FULLSCREEN: *v = (flags & PF_FULLSCREEN) != 0; break;
 	case AGL_WINDOW: *v = (flags & PF_WINDOW) != 0; break;
 	case AGL_NO_RECOVERY: *v = (flags & PF_NO_RECOVERY) != 0; break;
-	case AGL_RENDERER_ID: *v = (int32_t)RENDERER_ID; break;
+	case AGL_RENDERER_ID: *v = (int32_t)(generic ? GENERIC_ID : RENDERER_ID); break;
 	default: return false;
 	}
 	return true;
 }
 
-/* aglDescribeRenderer(): the one renderer there is */
-static bool describe_renderer(uint32_t prop, int32_t *v)
+/*
+ * aglDescribeRenderer(): ATI's (0), the generic one's (1): its flags,
+ * accumulation modes and stencil as Mac OS 9.2.2's gldGetRendererInfo()
+ * gives them (but for the auxiliary buffers, which Blue hasn't); its
+ * colors and depths as ATI's here
+ */
+static bool describe_renderer(unsigned renderer, uint32_t prop, int32_t *v)
 {
+	bool generic = renderer == 1;
 	switch (prop) {
-	case AGL_RENDERER_ID: *v = (int32_t)RENDERER_ID; break;
-	case AGL_OFFSCREEN: case AGL_FULLSCREEN: case AGL_WINDOW: case AGL_ACCELERATED: case AGL_COMPLIANT: *v = 1; break;
-	case AGL_ROBUST: case AGL_BACKING_STORE: case AGL_MP_SAFE: case AGL_MULTISCREEN: case AGL_MIN_LEVEL:
-	case AGL_MAX_LEVEL: case AGL_ACCUM_MODES: case AGL_MAX_AUX_BUFFERS:
+	case AGL_RENDERER_ID: *v = (int32_t)(generic ? GENERIC_ID : RENDERER_ID); break;
+	case AGL_OFFSCREEN: case AGL_WINDOW: case AGL_COMPLIANT: *v = 1; break;
+	case AGL_FULLSCREEN: case AGL_ACCELERATED: *v = !generic; break;
+	case AGL_ROBUST: case AGL_BACKING_STORE: case AGL_MP_SAFE: case AGL_MULTISCREEN: *v = generic; break;
+	case AGL_MIN_LEVEL: case AGL_MAX_LEVEL: case AGL_MAX_AUX_BUFFERS:
 		*v = 0;
+		break;
+	case AGL_ACCUM_MODES:
+		*v = generic ? AGL_RGB888_BIT | AGL_ARGB8888_BIT | AGL_RGB161616_BIT | AGL_ARGB16161616_BIT : 0;
 		break;
 	case AGL_BUFFER_MODES: *v = AGL_MONOSCOPIC_BIT | AGL_SINGLEBUFFER_BIT | AGL_DOUBLEBUFFER_BIT; break;
 	case AGL_COLOR_MODES: *v = AGL_RGB555_BIT | AGL_RGB888_BIT | AGL_ARGB8888_BIT; break;
@@ -2689,7 +2759,7 @@ static bool describe_renderer(uint32_t prop, int32_t *v)
 	case AGL_STENCIL_MODES: *v = AGL_0_BIT | AGL_8_BIT; break;
 	case AGL_VIDEO_MEMORY: *v = VIDEO_MEMORY; break;
 	case AGL_TEXTURE_MEMORY: *v = TEXTURE_MEMORY; break;
-	case AGL_RENDERER_COUNT: *v = 1; break;
+	case AGL_RENDERER_COUNT: *v = 2; break;
 	default: return false;
 	}
 	return true;
@@ -2715,6 +2785,8 @@ static struct opengl_context *new_context(struct opengl *o, struct opengl_instan
 	x->stencil_bits = mem_r32(m, pf + PF_STENCIL);
 	x->pixel_size = mem_r32(m, pf + PF_PIXEL);
 	x->device = mem_r32(m, pf + PF_DEVICE);
+	x->accum_bits = mem_r32(m, pf + PF_ACCUM) >> 8;
+	x->accum_alpha_bits = mem_r32(m, pf + PF_ACCUM) & 0xFF;
 	x->swap_interval = 0;
 	glf_init(&x->st);
 	if (!glf_attach(&x->st, share ? &share->st : NULL)) {
@@ -3128,30 +3200,33 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 		for (unsigned k = 0; k < RENDERER_INFOS; k++) {
 			uint32_t ri = first + k * RENDERER_INFO_SIZE;
 			if (mem_r32(m, ri) != RENDERER_INFO_MAGIC && writable(m, ri, RENDERER_INFO_SIZE)) {
-				mem_w32(m, ri, RENDERER_INFO_MAGIC);
+				const uint32_t words[4] = { RENDERER_INFO_MAGIC, 0, RENDERER_INFO_MAGIC, 1 };
+				for (unsigned w = 0; w < 4; w++)
+					mem_w32(m, ri + 4 * w, words[w]);
 				return ri;
 			}
 		}
 		agl_error(in, AGL_BAD_ALLOC);
 		return 0;
 	}
-	case F_aglDestroyRendererInfo:
+	case F_aglDestroyRendererInfo:          /* (the whole list) */
 		if (renderer_info_at(o, in, a[0].u))
-			put_word(m, a[0].u, 0);
+			mem_load(m, a[0].u - mem_r32(m, a[0].u + 4) * (RENDERER_INFO_SIZE / 2),
+				 (const uint8_t[RENDERER_INFO_SIZE]){ 0 }, RENDERER_INFO_SIZE);
 		else
 			agl_error(in, AGL_BAD_RENDINFO);
 		return 0;
 	case F_aglNextRendererInfo:
 		if (!renderer_info_at(o, in, a[0].u))
 			agl_error(in, AGL_BAD_RENDINFO);
-		return 0;
+		return renderer_info_at(o, in, a[0].u) && mem_r32(m, a[0].u + 4) == 0 ? a[0].u + RENDERER_INFO_SIZE / 2 : 0;
 	case F_aglDescribeRenderer: {
 		int32_t v;
 		if (!renderer_info_at(o, in, a[0].u)) {
 			agl_error(in, AGL_BAD_RENDINFO);
 			return 0;
 		}
-		if (!describe_renderer(a[1].u, &v)) {
+		if (!describe_renderer(mem_r32(m, a[0].u + 4), a[1].u, &v)) {
 			agl_error(in, AGL_BAD_PROPERTY);
 			return 0;
 		}

@@ -1,7 +1,8 @@
 /*
  * The guest's OpenGL libraries' host side, driven as the guest's calls
- * would drive it: pixel formats and renderer info, contexts with Apple's
- * dispatch table, drawables (a window's port, clipped to its regions; an
+ * would drive it: pixel formats and renderer info (ATI's renderer's and the
+ * generic one's), contexts with Apple's dispatch table, drawables (a
+ * window's port, clipped to its regions, dithered at 16 bits; an
  * offscreen buffer), clears and swaps, strings and errors, the dispatch
  * table's calls; OpenGLMemory's allocations; the fragments themselves.
  * OpenGLLibrary's own code, run by the processor (interpreted and by the
@@ -46,10 +47,11 @@
 #define LM_MAIN_DEVICE 0x08A4u
 
 /* AGL's and OpenGL's numbers */
-enum { AGL_NONE, AGL_RGBA = 4, AGL_DOUBLEBUFFER = 5, AGL_DEPTH_SIZE = 12, AGL_STENCIL_SIZE = 13, AGL_ACCUM_RED_SIZE = 14,
-       AGL_PIXEL_SIZE = 50, AGL_RENDERER_ID = 70, AGL_ACCELERATED = 73, AGL_VIDEO_MEMORY = 120,
+enum { AGL_NONE, AGL_RGBA = 4, AGL_DOUBLEBUFFER = 5, AGL_AUX_BUFFERS = 7, AGL_DEPTH_SIZE = 12, AGL_STENCIL_SIZE = 13,
+       AGL_ACCUM_RED_SIZE = 14, AGL_ACCUM_GREEN_SIZE, AGL_ACCUM_BLUE_SIZE, AGL_ACCUM_ALPHA_SIZE, AGL_PIXEL_SIZE = 50,
+       AGL_FULLSCREEN = 54, AGL_RENDERER_ID = 70, AGL_ACCELERATED = 73, AGL_ACCUM_MODES = 104, AGL_VIDEO_MEMORY = 120,
        AGL_SWAP_RECT = 200 };
-enum { AGL_BAD_ATTRIBUTE = 10000, AGL_BAD_CONTEXT = 10004, AGL_BAD_DRAWABLE = 10005 };
+enum { AGL_BAD_ATTRIBUTE = 10000, AGL_BAD_RENDINFO = 10003, AGL_BAD_CONTEXT = 10004, AGL_BAD_DRAWABLE = 10005 };
 #define GL_VIEWPORT 0x0BA2u
 
 static struct mem mem;
@@ -277,7 +279,7 @@ static void test_agl(void)
 	make_port(32);
 
 	/* pixel formats: what's asked for (or more), else none */
-	const uint32_t bad[] = { AGL_RGBA, AGL_ACCUM_RED_SIZE, 8, AGL_NONE };
+	const uint32_t bad[] = { AGL_RGBA, AGL_AUX_BUFFERS, 1, AGL_NONE };
 	put_attribs(bad, 4);
 	CHECK_EQ(CALL(aglChoosePixelFormat, 0, 0, ATTRIBS), 0);
 	const uint32_t unknown[] = { AGL_RGBA, 999, AGL_NONE };
@@ -301,8 +303,65 @@ static void test_agl(void)
 	CHECK(ri != 0);
 	CHECK_EQ(CALL(aglDescribeRenderer, ri, AGL_VIDEO_MEMORY, OUT), 1);
 	CHECK_EQ(mem_r32(&mem, OUT), 32u << 20);
-	CHECK_EQ(CALL(aglNextRendererInfo, ri), 0);
+	uint32_t next = CALL(aglNextRendererInfo, ri);         /* (the generic renderer) */
+	CHECK(next != 0);
+	CHECK_EQ(CALL(aglDescribeRenderer, next, AGL_RENDERER_ID, OUT), 1);
+	CHECK_EQ(mem_r32(&mem, OUT), 0x00020200);
+	CHECK_EQ(CALL(aglDescribeRenderer, next, AGL_ACCELERATED, OUT), 1);
+	CHECK_EQ(mem_r32(&mem, OUT), 0);
+	CHECK_EQ(CALL(aglDescribeRenderer, next, AGL_ACCUM_MODES, OUT), 1);
+	CHECK_EQ(mem_r32(&mem, OUT), 0x00C0C000);
+	CHECK_EQ(CALL(aglDescribeRenderer, ri, AGL_ACCUM_MODES, OUT), 1);
+	CHECK_EQ(mem_r32(&mem, OUT), 0);
+	CHECK_EQ(CALL(aglNextRendererInfo, next), 0);
 	CALL(aglDestroyRendererInfo, ri);
+	CHECK_EQ(CALL(aglDescribeRenderer, next, AGL_RENDERER_ID, OUT), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_RENDINFO);
+	/* an accumulation buffer: the generic renderer's, not accelerated (none if that's asked for) */
+	const uint32_t accum[] = { AGL_RGBA, AGL_ACCUM_RED_SIZE, 8, AGL_ACCUM_GREEN_SIZE, 8, AGL_ACCUM_BLUE_SIZE, 8,
+				   AGL_NONE };
+	put_attribs(accum, 8);
+	uint32_t apf = CALL(aglChoosePixelFormat, 0, 0, ATTRIBS);
+	CHECK(apf != 0);
+	CHECK_EQ(CALL(aglDescribePixelFormat, apf, AGL_RENDERER_ID, OUT), 1);
+	CHECK_EQ(mem_r32(&mem, OUT), 0x00020200);
+	CHECK_EQ(CALL(aglDescribePixelFormat, apf, AGL_ACCELERATED, OUT), 1);
+	CHECK_EQ(mem_r32(&mem, OUT), 0);
+	CHECK_EQ(CALL(aglDescribePixelFormat, apf, AGL_ACCUM_GREEN_SIZE, OUT), 1);
+	CHECK_EQ(mem_r32(&mem, OUT), 8);
+	CHECK_EQ(CALL(aglDescribePixelFormat, apf, AGL_ACCUM_ALPHA_SIZE, OUT), 1);
+	CHECK_EQ(mem_r32(&mem, OUT), 0);
+	CALL(aglDestroyPixelFormat, apf);
+	const uint32_t deep[] = { AGL_RGBA, AGL_ACCUM_RED_SIZE, 12, AGL_ACCUM_ALPHA_SIZE, 1, AGL_NONE };
+	put_attribs(deep, 6);
+	apf = CALL(aglChoosePixelFormat, 0, 0, ATTRIBS);
+	CHECK(apf != 0);
+	CHECK_EQ(CALL(aglDescribePixelFormat, apf, AGL_ACCUM_BLUE_SIZE, OUT), 1);
+	CHECK_EQ(mem_r32(&mem, OUT), 16);
+	CHECK_EQ(CALL(aglDescribePixelFormat, apf, AGL_ACCUM_ALPHA_SIZE, OUT), 1);
+	CHECK_EQ(mem_r32(&mem, OUT), 16);
+	/* (its contexts: the generic renderer's strings, OpenGL's version and extensions as ATI's) */
+	uint32_t actx = CALL(aglCreateContext, apf, 0);
+	CHECK(actx != 0);
+	CHECK_EQ(CALL(aglSetCurrentContext, actx), 1);
+	CHECK(!strcmp((const char *)mem_ptr(&mem, CALL(glGetString, 0x1F00)), "Apple"));
+	CHECK(!strcmp((const char *)mem_ptr(&mem, CALL(glGetString, 0x1F01)), "Generic"));
+	CHECK(!strcmp((const char *)mem_ptr(&mem, CALL(glGetString, 0x1F02)), "1.2 Blue"));
+	CALL(glGetIntegerv, 0x0D5A, OUT);                       /* GL_ACCUM_BLUE_BITS */
+	CHECK_EQ(mem_r32(&mem, OUT), 16);
+	CALL(glGetIntegerv, 0x0D5B, OUT);                       /* GL_ACCUM_ALPHA_BITS */
+	CHECK_EQ(mem_r32(&mem, OUT), 16);
+	CHECK_EQ(CALL(aglSetCurrentContext, 0), 1);
+	CHECK_EQ(CALL(aglDestroyContext, actx), 1);
+	CALL(aglDestroyPixelFormat, apf);
+	const uint32_t refused[][6] = { { AGL_RGBA, AGL_ACCUM_RED_SIZE, 8, AGL_ACCELERATED, AGL_NONE },
+					{ AGL_RGBA, AGL_ACCUM_RED_SIZE, 8, AGL_RENDERER_ID, 0x00021000, AGL_NONE },
+					{ AGL_RGBA, AGL_ACCUM_RED_SIZE, 24, AGL_NONE },
+					{ AGL_RGBA, AGL_ACCUM_RED_SIZE, 8, AGL_FULLSCREEN, AGL_NONE } };
+	for (unsigned k = 0; k < 4; k++) {
+		put_attribs(refused[k], 6);
+		CHECK_EQ(CALL(aglChoosePixelFormat, 0, 0, ATTRIBS), 0);
+	}
 	CALL(aglGetVersion, OUT, OUT + 4);
 	CHECK(mem_r32(&mem, OUT) == 1 && mem_r32(&mem, OUT + 4) == 1);
 
@@ -380,6 +439,24 @@ static void test_agl(void)
 	CALL(aglSwapBuffers, ctx);
 	CHECK_EQ(screen(5, 5, 16), 0x00F800);
 	CHECK_EQ(screen(15, 12, 16), 0);
+	/* dithered (GL_DITHER, on at first): 128 between 15 and 16 in 5 bits, 9 of a 4 x 4 block rounding up; or not */
+	CALL_F(glClearColor, 0.5, 0.5, 0.5, 1.0);
+	CALL(glClear, GL_COLOR_BUFFER_BIT);
+	for (int off = 0; off < 2; off++) {
+		CALL(aglSwapBuffers, ctx);
+		unsigned up = 0, down = 0;
+		for (int y = 4; y < 8; y++)
+			for (int x = 4; x < 8; x++) {
+				uint32_t c = screen(x, y, 16);
+				CHECK_EQ(c >> 16 & 0xFF, c >> 8 & 0xFF);
+				up += (c >> 19 & 31) == 16;
+				down += (c >> 19 & 31) == 15;
+			}
+		CHECK_EQ(up, off ? 16u : 9u);
+		CHECK_EQ(down, off ? 0u : 7u);
+		CALL(glDisable, GL_DITHER);
+	}
+	CALL(glEnable, GL_DITHER);
 
 	/* offscreen: rows of 32 bits a pixel with alpha */
 	CHECK_EQ(CALL(aglSetOffScreen, ctx, 4, 2, 32, OFFSCREEN), 1);
@@ -837,7 +914,7 @@ enum { ARR_MESH_POS, ARR_MESH_NORMAL, ARR_MESH_INDEX, ARR_SHORT_POS, ARR_UBYTE_C
        ARR_LIST_2BYTES, ARR_LIST_FLOAT, ARR_PIX_RGBA, ARR_PIX_RGB, ARR_PIX_LUM, ARR_MAP4, ARR_BITMAP, ARR_PIX_DEPTH,
        ARR_PIX_STENCIL, ARR_MAP_IDENTITY, ARR_VOLUME, ARR_SLICE, ARR_MIP, ARR_EVAL_CURVE, ARR_EVAL_COLORS,
        ARR_EVAL_ARC, ARR_EVAL_PATCH, ARR_EVAL_BENT, ARR_EVAL_PATCH_COLORS, ARR_EVAL_PATCH_TEX, ARR_EVAL_BUMPS,
-       ARR_EVAL_CYLINDER, ARR_EVAL_FLAT, ARR_EVAL_NORMALS, ARRAYS };
+       ARR_EVAL_CYLINDER, ARR_EVAL_FLAT, ARR_EVAL_NORMALS, ARR_STIPPLE, ARRAYS };
 #define MESH_X 9                /* (a mesh's vertices: a bent sheet, its normals) */
 #define MESH_Y 7
 #define MESH_INDICES ((MESH_X - 1) * (MESH_Y - 1) * 6)
@@ -1036,6 +1113,17 @@ static size_t array_bytes(unsigned k, bool big, uint8_t *out)
 		}
 		break;
 	}
+	case ARR_STIPPLE:                       /* (a polygon stipple: diagonal stripes, a block cut out) */
+		for (int j = 0; j < 32; j++)
+			for (int i = 0; i < 4; i++) {
+				uint32_t row = 0;
+				for (int b = 0; b < 8; b++) {
+					int x = 8 * i + b;
+					row = row << 1 | (((x + j) % 6 < 3) && !(x >= 8 && x < 16 && j >= 4 && j < 12));
+				}
+				PUT(GL_UNSIGNED_BYTE, row);
+			}
+		break;
 	case ARR_PIX_DEPTH:
 		for (int j = 0; j < 6; j++)
 			for (int i = 0; i < 8; i++)
@@ -1172,7 +1260,8 @@ static bool takes_array(const char *name)
 	return strstr(name, "Pointer") || !strcmp(name, "glInterleavedArrays") || !strcmp(name, "glDrawElements") ||
 	       !strcmp(name, "glDrawRangeElements") || !strcmp(name, "glCallLists") || !strcmp(name, "glDrawPixels") ||
 	       !strcmp(name, "glBitmap") || !strcmp(name, "glPixelMapfv") || !strcmp(name, "glTexImage3D") ||
-	       !strcmp(name, "glTexSubImage3D") || !strncmp(name, "glMap1", 6) || !strncmp(name, "glMap2", 6);
+	       !strcmp(name, "glTexSubImage3D") || !strncmp(name, "glMap1", 6) || !strncmp(name, "glMap2", 6) ||
+	       !strcmp(name, "glPolygonStipple");
 }
 
 /* A parameter vector's values (from a[first]): as doubles for glClipPlane, else floats */
@@ -1713,6 +1802,138 @@ static const struct op scene_eval_lit[] = {
 	{ NULL, { 0 } },
 };
 
+/*
+ * OpenGL 1.2's rest: logic ops over a gradient (its colors linear across the
+ * quad, so either diagonal splits it the same), blending on too (which
+ * they override), a line drawn twice by XOR (gone again)
+ */
+enum { GL_COLOR_LOGIC_OP_T = 0x0BF2, GL_AND_T = 0x1501, GL_XOR_T = 0x1506, GL_OR_T = 0x1507, GL_EQUIV_T = 0x1509,
+       GL_INVERT_T = 0x150A, GL_COPY_INVERTED_T = 0x150C, GL_NAND_T = 0x150E, GL_LINE_STIPPLE_T = 0x0B24,
+       GL_POLYGON_STIPPLE_T = 0x0B42, GL_POINT_SMOOTH_T = 0x0B10, GL_LINE_SMOOTH_T = 0x0B20 };
+#define LOGIC(op) { "glLogicOp", { op } }
+static const struct op scene_logicop[] = {
+	ORTHO, CLEAR(0.2, 0.4, 0.6),
+	BEGIN(GL_QUADS), C3(0.5, 0.2, 0.1), V2(2.2, 2.3), C3(0.9, 0.5, 0.2), V2(93.7, 2.3), C3(0.6, 0.6, 0.9),
+	V2(93.7, 69.6), C3(0.2, 0.3, 0.8), V2(2.2, 69.6), END,
+	EN(GL_COLOR_LOGIC_OP_T), EN(GL_BLEND), { "glBlendFunc", { GL_ONE, GL_ONE } },
+	LOGIC(GL_XOR_T), C3(0.5, 0.75, 0.25), QUAD2(5.3, 5.2, 30.6, 30.4),
+	LOGIC(GL_AND_T), C3(0.9, 0.3, 0.6), QUAD2(35.3, 5.2, 60.6, 30.4),
+	LOGIC(GL_OR_T), C3(0.1, 0.5, 0.2), QUAD2(65.3, 5.2, 90.6, 30.4),
+	LOGIC(GL_INVERT_T), QUAD2(5.3, 35.2, 30.6, 50.4),
+	LOGIC(GL_COPY_INVERTED_T), C3(0.2, 0.7, 0.9), QUAD2(35.3, 35.2, 60.6, 50.4),
+	LOGIC(GL_NAND_T), C3(0.6, 0.6, 0.1), QUAD2(65.3, 35.2, 90.6, 50.4),
+	LOGIC(GL_EQUIV_T), C3(0.3, 0.1, 0.8), QUAD2(5.3, 55.2, 45.6, 68.4),
+	LOGIC(GL_XOR_T), C3(1, 1, 1), BEGIN(GL_LINES), V2(50.3, 57.6), V2(91.6, 66.3), V2(50.3, 57.6), V2(91.6, 66.3), END,
+	BEGIN(GL_LINES), V2(50.3, 60.6), V2(91.6, 69.3), END,
+	DIS(GL_COLOR_LOGIC_OP_T), DIS(GL_BLEND),
+	{ NULL, { 0 } },
+};
+
+/*
+ * Stippled lines (a strip and a loop going on, separate ones starting
+ * again, wide ones), stippled polygons. (Mesa's stipple counter goes on
+ * from segment to segment of a strip by their lengths, not their
+ * fragments as OpenGL 1.2's 3.4.2 has it: dashes there may end a pixel
+ * later or sooner.)
+ */
+static const struct op scene_stipple[] = {
+	ORTHO, CLEAR(0.1, 0.1, 0.1),
+	EN(GL_LINE_STIPPLE_T), { "glLineStipple", { 2, 0x1C47 } }, C3(1, 1, 0),
+	BEGIN(GL_LINE_STRIP), V2(3.3, 3.6), V2(40.6, 5.7), V2(44.2, 30.6), V2(10.3, 25.7), END,
+	{ "glLineStipple", { 1, 0xF0F0 } }, C3(0, 1, 1),
+	BEGIN(GL_LINES), V2(3.3, 35.6), V2(44.6, 37.4), V2(3.3, 40.6), V2(44.6, 42.4), END,
+	{ "glLineWidth", { 3 } }, { "glLineStipple", { 3, 0xAAAA } }, C3(1, 0.5, 0),
+	BEGIN(GL_LINE_LOOP), V2(8.3, 48.6), V2(40.6, 50.7), V2(30.2, 68.4), END,
+	{ "glLineWidth", { 1 } }, DIS(GL_LINE_STIPPLE_T),
+	EN(GL_POLYGON_STIPPLE_T), { "glPolygonStipple", { ARR_STIPPLE } }, C3(0.3, 0.6, 1), QUAD2(50.3, 4.2, 92.6, 34.7),
+	BEGIN(GL_TRIANGLES), C3(1, 0, 0), V2(52.3, 40.2), C3(0, 1, 0), V2(92.6, 44.7), C3(0, 0, 1), V2(70.4, 69.3), END,
+	DIS(GL_POLYGON_STIPPLE_T),
+	{ NULL, { 0 } },
+};
+
+/*
+ * Lines by the diamond-exit rule (every way, ends in and out of diamonds),
+ * wide ones (2, 3, 5), points of sizes rounded (1, 2, 2.6, 4, 5)
+ */
+static const struct op scene_lines[] = {
+	ORTHO, CLEAR(0.1, 0.15, 0.1), { "glShadeModel", { GL_FLAT } },
+	BEGIN(GL_LINES), C3(1, 1, 1), V2(2.3, 2.6), V2(30.7, 9.2), C3(1, 0.5, 0), V2(30.4, 12.3), V2(2.2, 4.4),
+	C3(0, 1, 0), V2(4.6, 14.3), V2(9.2, 40.7), C3(0, 1, 1), V2(14.3, 40.6), V2(12.6, 14.2), C3(1, 0, 1), V2(20.4, 15.4),
+	V2(33.6, 28.7), C3(1, 1, 0), V2(35.3, 15.6), V2(22.8, 37.3), C3(0.5, 0.5, 1), V2(3.6, 44.4), V2(3.8, 44.6), END,
+	{ "glLineWidth", { 2 } }, BEGIN(GL_LINES), C3(1, 0.2, 0.2), V2(38.3, 3.3), V2(64.6, 12.4), END,
+	{ "glLineWidth", { 3 } }, BEGIN(GL_LINES), C3(0.2, 1, 0.2), V2(40.2, 18.3), V2(46.6, 40.4), END,
+	{ "glLineWidth", { 5 } }, BEGIN(GL_LINES), C3(0.3, 0.3, 1), V2(52.4, 22.7), V2(90.6, 34.3), END,
+	{ "glLineWidth", { 1 } },
+	{ "glPointSize", { 2 } }, BEGIN(GL_POINTS), C3(1, 1, 1), V2(70.3, 4.3), V2(76.5, 4.5), END,
+	{ "glPointSize", { 2.6 } }, BEGIN(GL_POINTS), C3(1, 1, 0), V2(82.2, 6.3), END,
+	{ "glPointSize", { 4 } }, BEGIN(GL_POINTS), C3(0, 1, 1), V2(88.7, 12.2), V2(70.2, 14.6), END,
+	{ "glPointSize", { 5 } }, BEGIN(GL_POINTS), C3(1, 0, 1), V2(80.3, 18.4), END,
+	{ "glPointSize", { 1 } }, BEGIN(GL_POINTS), C3(1, 0.5, 0.5), V2(66.3, 20.6), V2(67.6, 20.3), END,
+	{ "glShadeModel", { GL_SMOOTH } },
+	BEGIN(GL_LINE_LOOP), C3(1, 0, 0), V2(10.3, 50.6), C3(0, 1, 0), V2(60.4, 47.2), C3(0, 0, 1), V2(40.7, 68.3), END,
+	{ NULL, { 0 } },
+};
+
+/*
+ * Antialiased lines and points over what's there, blended by their
+ * coverage: the area of each pixel a rectangle or disk covers, where
+ * Mesa's llvmpipe ramps lines' alpha by distance and draws smooth points
+ * as round aliased ones
+ */
+static const struct op scene_smooth_lines[] = {
+	ORTHO, CLEAR(0.1, 0.1, 0.2), EN(GL_BLEND), { "glBlendFunc", { GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA } },
+	EN(GL_LINE_SMOOTH_T), C3(1, 1, 0.5),
+	BEGIN(GL_LINES), V2(3.3, 4.6), V2(60.7, 22.1), V2(4.2, 30.3), V2(30.6, 66.7), END,
+	{ "glLineWidth", { 2.5 } }, C3(0.5, 1, 1),
+	BEGIN(GL_LINES), V2(40.3, 66.6), V2(90.4, 40.2), END,
+	{ "glLineWidth", { 1 } }, DIS(GL_LINE_SMOOTH_T),
+	EN(GL_POINT_SMOOTH_T), { "glPointSize", { 7.5 } }, C3(1, 0.5, 0.5), BEGIN(GL_POINTS), V2(75.3, 12.7), END,
+	{ "glPointSize", { 3.2 } }, BEGIN(GL_POINTS), V2(85.6, 26.2), END,
+	{ "glPointSize", { 1 } }, DIS(GL_POINT_SMOOTH_T), DIS(GL_BLEND),
+	{ NULL, { 0 } },
+};
+
+/*
+ * Textured lines and points (nearest: magnified; linear: minified along a
+ * line, near half a texel a pixel, where a little moves the bilinear mix)
+ */
+static const struct op scene_texlines[] = {
+	ORTHO, CLEAR(0.2, 0.2, 0.3), { "glEnable", { GL_TEXTURE_2D } },
+	{ "glBindTexture", { 0x0DE1, 1 } }, TEX(1, 8, 8, IMAGE_CHECKER),
+	TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST), TEXP(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	{ "glTexEnvi", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE } },
+	{ "glLineWidth", { 3 } },
+	BEGIN(GL_LINES), TC(0.05, 0.3), V2(4.3, 6.6), TC(0.95, 0.4), V2(90.4, 10.3), TC(0.1, 0.1), V2(6.2, 20.4),
+	TC(0.9, 0.9), V2(60.7, 66.3), END,
+	{ "glLineWidth", { 1 } },
+	TEXP(GL_TEXTURE_MIN_FILTER, GL_LINEAR), TEXP(GL_TEXTURE_MAG_FILTER, GL_LINEAR),
+	BEGIN(GL_LINES), TC(0.02, 0.06), V2(20.3, 30.6), TC(3.97, 3.94), V2(88.6, 50.7), END,
+	TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST), TEXP(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	{ "glPointSize", { 6 } },
+	BEGIN(GL_POINTS), TC(0.2, 0.3), V2(70.3, 22.6), TC(0.7, 0.6), V2(80.6, 24.4), TC(0.6, 0.1), V2(86.2, 60.3), END,
+	{ "glPointSize", { 1 } }, { "glDisable", { GL_TEXTURE_2D } },
+	{ NULL, { 0 } },
+};
+
+/*
+ * The accumulation buffer (the generic renderer's: not Mesa's, which has
+ * none for framebuffer objects): two images averaged, scaled, moved, the
+ * result returned within a scissor box, cleared in part
+ */
+static const struct op scene_accum[] = {
+	ORTHO, CLEAR(0.1, 0.1, 0.1), { "glClearAccum", { 0.25, -0.5, 0.125, 1 } },
+	{ "glClear", { GL_ACCUM_BUFFER_BIT } },
+	BEGIN(GL_TRIANGLES), C3(1, 0, 0), V2(4.3, 4.6), C3(0, 1, 0), V2(80.4, 10.2), C3(0, 0, 1), V2(30.7, 66.3), END,
+	{ "glAccum", { GL_LOAD, 0.5 } },
+	CLEAR(0.1, 0.1, 0.1), C3(0.9, 0.9, 0.2), QUAD2(40.3, 20.6, 90.4, 60.2),
+	{ "glAccum", { GL_ACCUM, 0.5 } }, { "glAccum", { GL_MULT, 1.5 } }, { "glAccum", { GL_ADD, -0.1 } },
+	{ "glScissor", { 10, 8, 60, 50 } }, EN(GL_SCISSOR_TEST), { "glClearAccum", { 0.6, 0.2, 0.8, 1 } },
+	{ "glClear", { GL_ACCUM_BUFFER_BIT } }, { "glScissor", { 0, 0, SW, SH } },
+	CLEAR(0.3, 0.3, 0.3), { "glScissor", { 4, 2, 80, 64 } }, { "glColorMask", { 1, 1, 0, 1 } },
+	{ "glAccum", { GL_RETURN, 1.0 } }, { "glColorMask", { 1, 1, 1, 1 } }, DIS(GL_SCISSOR_TEST),
+	{ NULL, { 0 } },
+};
+
 static const struct {
 	const char *name;
 	const struct op *ops;
@@ -1726,7 +1947,9 @@ static const struct {
 	{ "texgen", scene_texgen, 4, 2 }, { "arrays", scene_arrays, 4, 2 }, { "stencil", scene_stencil, 4, 2 },
 	{ "offset", scene_offset, 4, 2 }, { "clip", scene_clip, 4, 2 }, { "lists", scene_lists, 4, 2 },
 	{ "pixels", scene_pixels, 4, 2 }, { "texture3d", scene_texture3d, 4, 2 }, { "glu", scene_glu, 40, 40 },
-	{ "eval", scene_eval, 0, 0 }, { "eval_lit", scene_eval_lit, 0, 0 },
+	{ "eval", scene_eval, 0, 0 }, { "eval_lit", scene_eval_lit, 0, 0 }, { "logicop", scene_logicop, 0, 0 },
+	{ "stipple", scene_stipple, 48, 48 }, { "lines", scene_lines, 4, 0 }, { "smoothlines", scene_smooth_lines, 400, 100 },
+	{ "texlines", scene_texlines, 64, 0 }, { "accum", scene_accum, 0, 0 },
 };
 #define SCENES (sizeof scenes / sizeof scenes[0])
 
@@ -1869,12 +2092,16 @@ static void our_invoke(const struct op *op)
 }
 
 /* A scene drawn through the library (its offscreen drawable read) */
+static bool scene_accum_buffer;         /* (our_scene()'s pixel format has an accumulation buffer) */
+
 static void our_scene(const struct op *ops, uint32_t *out)
 {
 	call_entry(OPENGL_ENTRY_INIT, NULL, 0, NULL, 0);
 	make_port(32);
-	const uint32_t attribs[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_DEPTH_SIZE, 24, AGL_STENCIL_SIZE, 8, AGL_NONE };
-	put_attribs(attribs, 7);
+	const uint32_t attribs[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_DEPTH_SIZE, 24, AGL_STENCIL_SIZE, 8,
+				     scene_accum_buffer ? AGL_ACCUM_RED_SIZE : AGL_NONE, 16, AGL_ACCUM_ALPHA_SIZE, 16,
+				     AGL_NONE };
+	put_attribs(attribs, 11);
 	uint32_t pf = CALL(aglChoosePixelFormat, 0, 0, ATTRIBS), ctx = CALL(aglCreateContext, pf, 0);
 	CALL(aglDestroyPixelFormat, pf);
 	CHECK_EQ(CALL(aglSetOffScreen, ctx, SW, SH, SW * 4, OFFSCREEN), 1);
@@ -2257,7 +2484,9 @@ static void test_scenes_listed(unsigned backend)
 		listed[n++] = (struct op){ "glEndList", { 0 } };
 		listed[n++] = (struct op){ "glCallList", { 99 } };
 		listed[n] = (struct op){ NULL, { 0 } };
+		scene_accum_buffer = scenes[k].ops == scene_accum;
 		our_scene(listed, img);
+		scene_accum_buffer = false;
 		unsigned most, d = differing(img, images[backend][k], 0, &most);
 		if (d)
 			printf("opengl: %s made into a list: %u pixels differ, by up to %u\n", scenes[k].name, d, most);
@@ -2268,7 +2497,9 @@ static void test_scenes_listed(unsigned backend)
 static void test_scenes(unsigned backend)
 {
 	for (unsigned k = 0; k < SCENES; k++) {
+		scene_accum_buffer = scenes[k].ops == scene_accum;
 		our_scene(scenes[k].ops, images[backend][k]);
+		scene_accum_buffer = false;
 		save(backend ? "gpu" : "soft", k, images[backend][k]);
 	}
 	test_scenes_listed(backend);
@@ -2522,6 +2753,10 @@ static void mesa_invoke(const struct op *op)
 		((void (*)(int32_t, int32_t, int32_t, int32_t, uint32_t))p)(I(0), I(1), I(2), I(3), U(4));
 	else if (!strcmp(sig, "Ip"))
 		((void (*)(uint32_t, const void *))p)(U(0), hp);
+	else if (!strcmp(sig, "p"))
+		((void (*)(const void *))p)(hp);
+	else if (!strcmp(sig, "iS"))
+		((void (*)(int32_t, uint16_t))p)(I(0), (uint16_t)a[1]);
 	else if (!strcmp(sig, "iIip"))
 		((void (*)(int32_t, uint32_t, int32_t, const void *))p)(I(0), U(1), I(2), hp);
 	else if (!strcmp(sig, "Iip"))
@@ -2679,6 +2914,8 @@ static void test_mesa(void)
 			printf("opengl: %s: no GLU to compare with (BLUE_TEST_GLU: Mesa's libGLU)\n", scenes[k].name);
 			continue;
 		}
+		if (scenes[k].ops == scene_accum)
+			continue;          /* (Mesa's framebuffer objects have no accumulation buffer) */
 		CHECK(mesa_scene(scenes[k].ops, ref));
 		save("mesa", k, ref);
 		for (unsigned w = 0; w < sizeof mesa_wrong / sizeof mesa_wrong[0]; w++) {
@@ -2867,7 +3104,7 @@ static uint32_t call_toolbox(unsigned entry, const uint32_t *w, unsigned nw)
 
 #define TOOLBOX(name, ...) call_toolbox((unsigned)opengl_entry(#name), (const uint32_t[]){ __VA_ARGS__ }, \
 					sizeof (uint32_t[]){ __VA_ARGS__ } / 4)
-enum { AGL_FULLSCREEN = 54, AGL_BAD_STATE = 10007, AGL_BAD_VALUE = 10008, AGL_BAD_FULLSCREEN = 10012,
+enum { AGL_BAD_STATE = 10007, AGL_BAD_VALUE = 10008, AGL_BAD_FULLSCREEN = 10012,
        AGL_BAD_ALLOC = 10016 };
 
 /*
@@ -3277,7 +3514,7 @@ static void run(struct gpu *gpu)
 	test_fragment();
 	test_agl();
 	test_memory();
-	CHECK_EQ(gl.gpu_frames, gpu ? 4 : 0);
+	CHECK_EQ(gl.gpu_frames, gpu ? 6 : 0);
 	test_recording(false);
 	test_recording(true);
 	test_lists();

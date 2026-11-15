@@ -41,6 +41,7 @@ struct opengl_context {
 	uint32_t guest;                 /* its AGLContext */
 	uint32_t format;                /* its pixel format's flags (PF_ in opengl.c) */
 	unsigned depth_bits, stencil_bits, pixel_size;
+	unsigned accum_bits, accum_alpha_bits;  /* (the accumulation buffer's: the generic renderer's) */
 	uint32_t device;                /* its pixel format's GDevice (a full screen's) */
 	/* the drawable */
 	int kind;                       /* (DRAWABLE_ in opengl.c) */
