@@ -115,15 +115,18 @@ Done:
   in place of the Driver Services timer. The restored 9.2.2 reaches the
   Finder in instruction time without a key. See Findings, "The display's
   interrupt".
-- **OpenGL** (Task 18; milestones 0 to 7 of docs/opengl-plan.md): the
+- **OpenGL** (Task 18; milestones 0 to 8 of docs/opengl-plan.md): the
   libraries, AGL and clears, checked by a test application in the guest;
   gl calls recorded in guest memory by the library's own code, and a
   fixed-function front end on the host drawing triangles (matrices,
-  clipping, culling, depth, blending), textures, client arrays, lighting,
-  fog, texture coordinate generation, clip planes, stencil, polygon offset
-  and modes, the attribute stacks, display lists, the raster position and
-  pixel rectangles, 3D textures, and OpenGLUtility on the host, checked
-  against Mesa's OpenGL. Unreal Tournament's OpenGL build plays on the GPU
+  clipping, culling, depth, blending, logic ops), points and lines by
+  OpenGL's rules (wide, antialiased, stippled, textured), textures, client
+  arrays, lighting, fog, texture coordinate generation, clip planes,
+  stencil, polygon offset, modes and stipple, the attribute stacks,
+  display lists, the raster position and pixel rectangles, 3D textures,
+  the accumulation buffer (as Apple's generic renderer's), 16-bit
+  drawables dithered, and OpenGLUtility on the host, checked against
+  Mesa's OpenGL. Unreal Tournament's OpenGL build plays on the GPU
   and in software, and so does Quake III Arena's demo; the installer
   offers the libraries, and on Mac OS 9 moves Apple's to Extensions
   (Disabled) while Blue's are there.
@@ -714,8 +717,27 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 18. OpenGL for Mac OS 9 games
 
-- **Status:** milestones 0 to 7 done (docs/opengl-plan.md has the plan,
-  its milestones and what's built). Milestone 7, performance: measured
+- **Status:** milestones 0 to 8 done (docs/opengl-plan.md has the plan,
+  its milestones and what's built). Milestone 8, the rest of OpenGL 1.2:
+  logic ops (OpenGL's own on the GPU); line stipple (the counter going on
+  along strips and loops, starting again for separate lines) and polygon
+  stipple (through the pixel store); points and lines by OpenGL's rules
+  (`raster_gl_fragments()`, shared by both backends: the diamond-exit
+  rule, wide ones as columns or rows, points as squares), antialiased (each
+  fragment's alpha times the pixel's area covered; the hints change
+  nothing, as with Apple's ATI renderer, which always asked RAVE's best
+  antialiasing) and textured (a line's level of detail its texels a pixel);
+  16-bit frames dithered by a 4 x 4 ordered matrix while `GL_DITHER` is on;
+  and the accumulation buffer, which on Mac OS 9.2.2 only Apple's generic
+  software renderer had: pixel formats asking for one are that renderer's
+  (ID 0x00020200, not accelerated, "Apple" "Generic"), drawn as ATI's.
+  Five more scenes against Mesa (logic ops exactly; the rest where
+  llvmpipe's stipple counter, smooth coverage and line texturing depart),
+  two in the test application (the same on macOS and Linux, the GPU
+  within 1). RAVE's pixels, the boots and, built with the library's old
+  data, the games' instruction-time runs are main's (but for Quake III's
+  16-bit frame's dither). Not done: GLU's tessellators and NURBS,
+  antialiased polygons, auxiliary buffers, color index. Milestone 7, performance: measured
   first (`BLUE_GL_PROFILE`: where each frame's host time goes), in real
   time on an M5 at 640 x 480. On the GPU, Quake III's demo and UT run at
   60 frames a second with 7-10 ms of each frame to spare (the guest 3-5
@@ -839,12 +861,9 @@ the kernel); 8 onwards as the boot progresses.
   game needs them: reading back asynchronously while the guest waits for
   its frame's turn, a vertex cache in `glDrawElements`. Open items: OpenGLUtility's
   tessellators and NURBS renderers keep their objects and properties but
-  draw nothing (until a program needs them); lines and points aren't
-  textured, and neither
-  stipple is drawn; lines are `raster.c`'s, a pixel a step, not OpenGL's
-  diamond-exit rule;
-  16-bit drawables take the top 5 bits of each component, not dithered
-  (`GL_DITHER` is on by default). (`raster.c`'s pixels on edges two
+  draw nothing (until a program needs them); antialiased polygons
+  (`GL_POLYGON_SMOOTH` is kept, not drawn), auxiliary buffers and color
+  index aren't offered. (`raster.c`'s pixels on edges two
   triangles share: fixed, see Findings, "Shared edges in the software
   rasterizer".)
 
@@ -986,6 +1005,30 @@ Facts later tasks need, added as they are found.
   2.5 across 32 pixels and 16 texels put many pixel centers on edges.
   The tests keep a margin now (a thousandth of a texel; an alpha's 0.5
   between pixel centers).
+- **Apple's renderers' info on Mac OS 9.2.2** (OpenGL, milestone 8,
+  disassembled): `gldGetRendererInfo` of the ATI renderer gives no
+  accumulation buffer, no stencil and no offscreen drawables (accelerated,
+  full screen, compliant); the generic software renderer's gives
+  accumulation buffers RGB 888, ARGB 8888, RGB 16-16-16 and ARGB
+  16-16-16-16, stencil 0 or 8, 4 auxiliary buffers, window, offscreen,
+  backing store, MP safe, robust, multiscreen and compliant, not
+  accelerated or full screen. Its `gldGetString` gives "Apple", "Generic",
+  "1.1" and an extension list ending in `GL_ARB_multitexture` (left out of
+  docs/opengl-plan.md before). ATI's `glrUpdatePointSettings` and
+  `glrUpdateLineSettings` set RAVE's `kQATag_Antialias` to
+  `glrAntiAliasHint(GL_NICEST)`, best, whenever smooth points or lines are
+  on, whatever the hint.
+- **Mesa's line stipple and smooth points and lines** (OpenGL, milestone
+  8; Mesa 25.2's llvmpipe): a strip's stipple counter goes on from segment
+  to segment by their lengths, not by the fragments drawn (OpenGL 1.2's
+  3.4.2), so its dashes may end a pixel sooner or later; smooth lines'
+  alpha is a ramp by distance from the line, and smooth points are drawn
+  as round aliased ones (alpha 1). Its aliased lines and points are
+  OpenGL's diamond-exit rule and squares exactly, but at one tie: where an
+  x-major line going up crosses a pixel row's edge exactly at a column's
+  center, it takes the row below, and OpenGL's perturbed endpoints the one
+  above. Blue follows
+  OpenGL 1.2 in each; the scenes compared with Mesa allow for them.
 - **S3TC and paletted textures on Mac OS 9.2.2** (OpenGL, milestone 6):
   the extension strings of 9.2.2's OpenGLEngine, OpenGLRendererATI and
   the software OpenGLRenderer have neither S3TC nor

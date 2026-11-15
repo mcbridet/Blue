@@ -829,13 +829,17 @@ invisible file at its top, `Icon\r`):
   fixed function, and it draws with the 3D engine's backend, on the GPU in
   real time and in software otherwise, into the context's window (clipped
   to its regions), the screen or an offscreen buffer, when it's swapped.
-  So far: AGL (one accelerated renderer, ATI's "Rage 128 OpenGL Engine" as
-  on Mac OS 9, its pixel formats and renderer info; contexts laid out as
-  Apple's, with their dispatch tables; drawables, swaps, swap and buffer
-  rectangles) and, of OpenGL, the matrices and their stacks, `glBegin` and
-  `glEnd`'s points, lines, triangles, quads and polygons with their colors,
-  transformed, clipped, culled, flat or smooth shaded, depth tested,
-  blended, alpha tested, masked and scissored in the viewport; textures
+  So far: AGL (ATI's accelerated "Rage 128 OpenGL Engine" as on Mac OS 9,
+  and, for pixel formats with an accumulation buffer, which only Apple's
+  software renderer offered, that one, "Generic", drawn the same way; their
+  pixel formats and renderer info; contexts laid out as Apple's, with their
+  dispatch tables; drawables, swaps, swap and buffer rectangles) and, of
+  OpenGL, the matrices and their stacks, `glBegin` and `glEnd`'s points,
+  lines, triangles, quads and polygons with their colors, transformed,
+  clipped, culled, flat or smooth shaded, depth tested, blended or by logic
+  ops, alpha tested, masked and scissored in the viewport; points and lines
+  by OpenGL's rules (wide, antialiased, stippled, textured), the polygon
+  stipple, the accumulation buffer, 16-bit drawables dithered; textures
   (objects, 1D and 2D images in every format and type, parameters, two
   units with their texture environments, the texture matrices);
   client arrays (`glDrawArrays`, `glDrawElements`, interleaved, compiled);
@@ -852,9 +856,10 @@ invisible file at its top, `Icon\r`):
   evaluators (`src/gleval.c`); `aglSetFullScreen` (the Display Manager
   switches the screen to the size asked for, and back when the drawable
   goes) and `aglUseFont` (QuickDraw draws the glyphs, as with Apple's).
-  Not yet: OpenGLUtility's tessellators and NURBS (they draw nothing); S3TC
-  and paletted textures aren't offered (nor were they by Apple's for a
-  Rage 128). An OpenGLLibrary installed by an older version of Blue is left
+  Not yet: OpenGLUtility's tessellators and NURBS (they draw nothing);
+  antialiased polygons (`GL_POLYGON_SMOOTH` is kept, not drawn), auxiliary
+  buffers and color index; S3TC and paletted textures aren't offered (nor
+  were they by Apple's for a Rage 128). An OpenGLLibrary installed by an older version of Blue is left
   alone, and Blue says to update it.
   Unreal Tournament's OpenGL build (on the UT CD, `Extras:OpenGL UT.sea`)
   and Quake III Arena's demo play with them, on the GPU and in software.
@@ -1515,7 +1520,10 @@ the stencil; `lists`: quadrics made into display lists through
 OpenGLUtility, called lit and as lines; `pixels`: an image zoomed, glyphs
 by `glBitmap`, a copy by `glCopyPixels`; `fullscreen`: `triangle` drawn
 on the whole screen, switched to 640 x 480 by `aglSetFullScreen`; `font`:
-lines of text in two fonts by `aglUseFont`'s lists) at the depth
+lines of text in two fonts by `aglUseFont`'s lists; `lines`: the polygon
+stipple, a logic op, stippled, wide, antialiased and textured lines and
+points; `accum`: a context of the generic renderer, its accumulation buffer
+blurring a turning bar) at the depth
 `BLUE_GL_TEST_DEPTH` sets (16 or 32), the same on every host (with the
 same time zone: the guest's clock is the host's local time). On Linux,
 `make test` draws scenes through the libraries and compares them with Mesa's

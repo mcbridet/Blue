@@ -16,14 +16,184 @@ Milestones 0 (the groundwork, shared with Glide), 1 (AGL and a clear), 2
 (a triangle), 3 (textures, and Unreal Tournament's OpenGL build), 4
 (arrays, fog, lighting and the rest of the common state), 5 (display
 lists, pixel paths, 3D textures, OpenGLUtility), 6 (completeness:
-selection and feedback, evaluators, `aglSetFullScreen`, `aglUseFont`) and
-7 (performance: measured, the rasterizer faster, frames shown at an even
-pace) are built; Quake III Arena's demo plays. S3TC and paletted textures
-are left out: Apple's Mac OS 9.2.2 doesn't offer them for a Rage 128.
-What's left is under "Not yet" in milestone 6. The user chose OpenGL
+selection and feedback, evaluators, `aglSetFullScreen`, `aglUseFont`), 7
+(performance: measured, the rasterizer faster, frames shown at an even
+pace) and 8 (the rest of OpenGL 1.2: logic ops, stipples, points and lines
+by OpenGL's rules, dithering, the accumulation buffer) are built; Quake
+III Arena's demo plays. S3TC and paletted textures are left out: Apple's
+Mac OS 9.2.2 doesn't offer them for a Rage 128. What's left is under "Not
+done" in milestone 8: OpenGLUtility's tessellators and NURBS, antialiased
+polygons, auxiliary buffers, color index (and the imaging subset's
+convolution, histogram and minmax, not planned). The user chose OpenGL
 before Glide, and accepted the proposed decisions below for now
 (replacing the libraries, recording in guest memory, fixed function in C
 on the host, frames read back into guest memory, a Rage 128's identity).
+
+Milestone 8:
+
+- **Logic ops** (`glLogicOp`, `GL_COLOR_LOGIC_OP`): the 16 operations on
+  the fragment's color bits and the target's, in place of blending while
+  on (OpenGL 1.2's 4.1.10), through the color mask; `GL_COPY` is drawn as
+  no blending. On the GPU, OpenGL's own logic op (macOS's OpenGL 4.1 on
+  Metal does it: checked on an M5, each operation's bytes as OpenGL has
+  them). `GL_INDEX_LOGIC_OP` is kept but means nothing: there's no color
+  index drawing (Apple's renderers offered RGBA on 16- and 32-bit screens,
+  and Blue no 8-bit ones). `GL_LOGIC_OP_MODE`, and `GL_COLOR_BUFFER_BIT`'s
+  push and pop, have the mode.
+- **Line stipple** (`glLineStipple`, `GL_LINE_STIPPLE`): fragment k of a
+  line is drawn if bit (s + k) / factor % 16 of the pattern is set; the
+  counter s goes on from segment to segment of a strip or loop (the
+  fragments drawn, OpenGL 1.2's 3.4.2) and starts again at each separate
+  line, each `glBegin`, and each polygon's outline (as feedback's
+  `GL_LINE_RESET_TOKEN`); wide lines stipple their columns or rows
+  together; smooth ones by where along the major axis a pixel's center is.
+- **Polygon stipple** (`glPolygonStipple`, `glGetPolygonStipple`,
+  `GL_POLYGON_STIPPLE`): 32 x 32 bits unpacked (and packed) through the
+  pixel store as `glBitmap`'s (lists keep the unpacking), a pixel drawn if
+  its bit, by window x and y from the window's bottom left, is set. On the
+  GPU a uniform of 32 words and a discard.
+- **Points and lines by OpenGL's rules** (OpenGL 1.2's 3.3 and 3.4;
+  `raster_gl_fragments()` in `src/raster.c`, which the GPU backend shares,
+  drawing each fragment as a pixel's square): aliased lines by the
+  diamond-exit rule (a pixel for each diamond the segment leaves, the last
+  if the end is outside it; ties broken as OpenGL's perturbed endpoints
+  break them), wide ones as columns (x major) or rows of the width
+  rounded, centered as 3.4.2 has it; points as squares of the size rounded,
+  centered on a pixel (odd) or a pixel corner (even); sizes and widths 1
+  to 64 (`GL_POINT_SIZE_RANGE`, `GL_LINE_WIDTH_RANGE`). Each fragment's
+  values are where along the line its center is. RAVE's lines and points
+  are drawn as before (a square of the width a pixel step), its pixels
+  unchanged. Against Mesa's llvmpipe (a probe of single lines and points:
+  ends inside and outside diamonds, on pixel edges, every direction, wide
+  ones, sizes 1 to 4): the same pixels, but at one tie: where an x-major
+  line going up crosses a pixel row's edge exactly at a column's center,
+  llvmpipe takes the row below, and OpenGL's perturbed endpoints (and
+  Blue) the row above.
+- **Antialiased points and lines** (`GL_POINT_SMOOTH`, `GL_LINE_SMOOTH`):
+  each fragment's alpha times its coverage, the area of the pixel that a
+  disk of the size (sampled 16 x 16 a pixel) or a rectangle of the width
+  along the line (exact: the pixel's square clipped to it) covers; with
+  blending, the usual antialiasing. The hints (`GL_POINT_SMOOTH_HINT`,
+  `GL_LINE_SMOOTH_HINT`) change nothing, as with Apple's ATI renderer:
+  9.2.2's (disassembled) sets RAVE's antialiasing to its best
+  (`kQATag_Antialias`, `kQAAntiAlias_Best`) for smooth points or lines
+  whatever the hint, and to off otherwise. Mesa's llvmpipe draws smooth
+  lines with alpha ramped by distance and smooth points as round aliased
+  ones, so its pixels differ there (below).
+- **Textured points and lines:** as triangles are, the coordinates of each
+  fragment where along the line it is (divided by their q, if a vertex's q
+  isn't 1); a line's level of detail is the texels along it a pixel (its ρ:
+  the texture's change from end to end over its length), points
+  magnified. On the GPU each fragment's square has its coordinates
+  changing across it as along the line, so the GPU's level of detail is
+  the same.
+- **Dithering** (`GL_DITHER`, on by default): a 16-bit drawable's frames
+  are dithered as they're written into the guest's memory, by a 4 x 4
+  ordered (Bayer) matrix by the pixel's place in the destination: each
+  component's 5 bits are v x 31 / 255 + (2t + 1) / 32 rounded down, t the
+  matrix's 0 to 15 (a gray of 128 gives 9 of 16 pixels 16 and 7 15). Off,
+  the top 5 bits as before. The Rage 128's own matrix couldn't be found
+  (its register reference isn't to hand); a 4 x 4 ordered dither is what
+  chips of its generation did. 32-bit drawables, and RAVE's frames, aren't
+  dithered. A table makes it cheap: a 640 x 480 frame's 16-bit pixels in
+  0.13 ms dithered, 0.05 ms not (an M5).
+- **The accumulation buffer, as the generic renderer's:** Apple's 9.2.2
+  renderers (their `gldGetRendererInfo`, disassembled; see "What Mac OS 9
+  ships") had it only in the generic software renderer (RGB 888, ARGB
+  8888, RGB 16-16-16, ARGB 16-16-16-16), ATI's none. So in Blue a pixel
+  format asking for one (`AGL_ACCUM_*_SIZE`) is the generic renderer's, as
+  on a Mac of the time: renderer ID 0x00020200, not accelerated (so games
+  that ask for `AGL_ACCELERATED`, ATI's renderer ID or a full screen don't
+  get one, as they didn't there), 8 or 16 bits a component (alpha only if
+  asked for). Its contexts say vendor "Apple" and renderer "Generic"
+  (Apple's strings) but Blue's version and extensions, since Blue draws
+  them as it draws ATI's, on the GPU when it's on. `aglQueryRendererInfo`
+  lists both, ATI's first (the order Apple's engine gave isn't known), each
+  described as 9.2.2's renderers describe themselves (the generic one:
+  window, offscreen, robust, backing store, MP safe, multiscreen,
+  compliant, not accelerated or full screen; accumulation modes as above)
+  but for what Blue doesn't have (auxiliary buffers) or draws more of (ATI's
+  stencil and offscreen drawables), their colors and depths as Blue's.
+  `glAccum` (`GL_ACCUM`, `GL_LOAD`, `GL_RETURN`, `GL_MULT`, `GL_ADD`),
+  `glClearAccum` and `glClear`'s `GL_ACCUM_BUFFER_BIT` work within the
+  scissor box, on a buffer on the host (each component in [-1, 1], to the
+  bits asked for), reading the frame's colors (its drawing done first);
+  `GL_RETURN` draws as a pixel rectangle through the color mask alone (as
+  4.2.4 has it). `GL_ACCUM_*_BITS`, `GL_ACCUM_CLEAR_VALUE` and
+  `GL_ACCUM_BUFFER_BIT`'s push and pop; without an accumulation buffer
+  `glAccum` is `GL_INVALID_OPERATION`.
+- **The library's data:** the generic renderer's strings moved it, so its
+  version is 5: one installed by an older Blue is left alone, with the
+  message to update it.
+- **Checked against Mesa** (`tests/test_opengl.c`, on Linux): five more
+  scenes, as milestone 4's table (pixels differing by more than 2 out of
+  6,912, and the most any differs by), and a sixth not against Mesa (its
+  framebuffer objects have no accumulation buffer):
+
+  | scene | GPU | Mesa | what differs |
+  |---|---|---|---|
+  | logicop (seven operations over a gradient, blending on too; a line drawn twice by XOR) | 0 (1) | 0 (1) | |
+  | stipple (a stippled strip, separate lines, a wide loop; stippled polygons) | 0 (1) | 34 (229) | dashes: Mesa's counter goes on by segments' lengths, not their fragments |
+  | lines (aliased lines every way, ends in and out of diamonds; widths 2, 3, 5; points 1 to 5) | 0 (1) | 3 (3) | a smooth-shaded loop's colors |
+  | smoothlines (antialiased lines 1 and 2.5 wide, points 7.5 and 3.2, blended) | 0 (1) | 278 (122) | llvmpipe's coverage (above) |
+  | texlines (textured lines 1 and 3 wide, nearest and minified linear; points 6 across) | 0 (2) | 51 (20) | the linear line's mix: half a texel a pixel |
+  | accum (two images averaged, scaled, moved; cleared and returned within scissor boxes, through a color mask) | 0 (0) | | |
+
+  `tests/test_raster.c`: lines and points as llvmpipe draws them (first
+  and last pixels, counts), the stipple's counter, coverage summing to the
+  disk's and rectangle's areas, each logic op's bits with and without the
+  color mask, the polygon stipple's rows; `tests/test_gpu.c`: all of those
+  on the GPU against `raster.c` (none off by more than 1);
+  `tests/test_glfront.c`: the stipple through `glBegin` (a strip going on,
+  separate lines starting again), the polygon stipple through the pixel
+  store and back, logic ops' state and errors, the accumulation buffer's
+  operations, clamping, scissor, color mask and 8 bits' steps;
+  `tests/test_opengl.c`: the generic renderer's pixel formats (and those
+  refused), renderer info, strings and bits, and a 16-bit window's dither
+  (and none, `GL_DITHER` off).
+- **The test application:** scenes `lines` (a smooth-shaded quad through a
+  polygon stipple and a quad over it by XOR, stippled lines, fans of lines
+  from a display list aliased and antialiased, points aliased and
+  antialiased, a wide line and points textured) and `accum` (a context of
+  the generic renderer, "Apple" and "Generic"; a turning bar blurred by
+  eight passes accumulated, a gradient loaded, scaled and a triangle
+  accumulated over it). On installed 8.5 in instruction time, at 32 and 16
+  bits: the same screenshots on macOS and Linux, and on the GPU (Metal)
+  within 1 (16 bits: one step of 5 bits, where a dither threshold falls
+  the other way). The older scenes at 32 bits are as they were but
+  `lists`, whose sphere of lines is drawn by OpenGL's rules now; at 16
+  bits all are dithered.
+- **RAVE, the boots:** the 20 random streams of RAVE calls give the same
+  hashes, the GPU's 6,000 frames of them are milestone 6's exactly, and
+  the 8.5 and 9.1 CDs boot to main's screenshots.
+- **Games:** Quake III's demo and UT play, but as in milestone 6 the
+  library's data moved, so in instruction time they play out otherwise
+  than main (Quake III 309,321 calls and 4,553 frames in 17 billion
+  instructions; UT's match 31,963 calls and 734 frames, in a busier part
+  of the map; the same on the GPU). Built with the old data (version 4,
+  without the generic renderer's strings), this milestone's Blue gives
+  main's runs exactly (305,955 calls and 4,497 frames; 24,490 and 1,542;
+  UT's eight screenshots, in software and on the GPU), and Quake III's
+  frame, which is 16-bit, differs only by its dither (with dithering
+  off, it's main's exactly). So the host's cost could be compared on the
+  same runs: that build and main's, alternately, in software with one
+  rasterizer thread, by the host's instructions retired (`time -l`), since
+  the machine's other work made times swing by 5-20% from run to run:
+  Quake III's demo 1,073.7-1,074.0 billion against main's 1,075.2-1,075.8
+  (its frames dithered now), UT's match 1,638.3-1,638.9 billion against
+  1,645.5-1,646.0; their cycles within the runs' noise. The rasterizer
+  alone (six of the RAVE streams, one thread): 94.4 billion instructions
+  against 94.9, and 2-4% fewer cycles. `BLUE_GL_PROFILE`, best of three
+  runs each, in milliseconds a frame: Quake III 4.14 main, 4.38 here
+  (waiting for the backend 2.81 and 2.97, presenting 0.19 and 0.23: the
+  dither), UT 22.66 and 21.94 (11.48 and 11.22), as the host's load rose
+  through the runs.
+- **Not done:** OpenGLUtility's tessellators and NURBS (their objects and
+  properties only: until a program needs them); antialiased polygons
+  (`GL_POLYGON_SMOOTH` is kept but not drawn); auxiliary buffers (the generic renderer had 4;
+  Blue's pixel formats refuse `AGL_AUX_BUFFERS`); color index (no index
+  pixel formats); the imaging subset's convolution, histogram and minmax
+  (not planned).
 
 Milestone 7:
 
@@ -949,11 +1119,24 @@ GLRendererIndex8D32, GLRendererRGB555A8D16 and GLRendererRGB555A8D32.
   Renderer IDs: `gldGetRendererInfo` stores 0x200 (Apple's) or 0x1000
   (ATI's) and the engine ORs in 0x20000, giving 0x00020200 (Apple's
   generic software renderer) and 0x00021000 (ATI).
-- **Apple's software renderer** reports vendor "Apple", renderer "Generic"
-  and the extensions `GL_ARB_texture_env_add GL_EXT_blend_color
-  GL_EXT_blend_minmax GL_EXT_blend_subtract GL_EXT_texture_env_add
-  GL_EXT_texture_lod_bias GL_EXT_abgr GL_EXT_bgra
-  GL_SGIS_texture_edge_clamp`.
+- **Apple's software renderer** reports vendor "Apple", renderer "Generic",
+  version "1.1" and the extensions `GL_ARB_texture_env_add
+  GL_EXT_blend_color GL_EXT_blend_minmax GL_EXT_blend_subtract
+  GL_EXT_texture_env_add GL_EXT_texture_lod_bias GL_EXT_abgr GL_EXT_bgra
+  GL_SGIS_texture_edge_clamp GL_ARB_multitexture` (9.2.2's
+  `gldGetString`, read again: the last one was left out here before). Its
+  `gldGetRendererInfo` (9.2.2): accumulation buffers RGB 888, ARGB 8888,
+  RGB 16-16-16 and ARGB 16-16-16-16; stencil none or 8 bits; 4 auxiliary
+  buffers; window, offscreen, backing store, MP safe, robust, multiscreen
+  and compliant, not accelerated or full screen; single and double
+  buffers (its color and depth modes come from a table it imports, not
+  read). The library maps the info's flags to properties as: window 0x1,
+  full screen 0x2, offscreen 0x4, backing store 0x8, MP safe 0x10, robust
+  0x40, accelerated 0x100, multiscreen 0x200, compliant 0x400.
+- **ATI's renderer info** (9.2.2's `gldGetRendererInfo`): no accumulation
+  buffer, no stencil, not offscreen; accelerated, full screen, compliant.
+  (Blue's ATI renderer goes beyond it, offering a stencil and offscreen
+  drawables, which it draws.)
 - **ATI's renderer draws through RAVE**: it imports 12 functions from
   "QuickDraw™ 3D Accelerator" and takes, of a device's RAVE engines, one
   with `kQAOptional_BoundToDevice` (optional-features bit 12) and vendor 1
@@ -1327,9 +1510,10 @@ call, and in CI on Linux, Mesa's compatibility profile serves as an
 oracle: the tests draw the same command streams through Blue's front end
 and through Mesa, and compare (`(i)` as a test, not as the product).
 
-What's not planned: the accumulation buffer and the imaging subset's
-convolution, histogram and minmax (they get `GL_INVALID_OPERATION`, and
-`GL_ARB_imaging` isn't advertised). (Evaluators weren't planned at first,
+What's not planned: the imaging subset's convolution, histogram and
+minmax (they get `GL_INVALID_OPERATION`, and `GL_ARB_imaging` isn't
+advertised). (The accumulation buffer wasn't planned either; milestone 8
+did it, on the host, as the generic renderer's.) (Evaluators weren't planned at first,
 and selection and feedback were to be simple; milestone 6 did both, from
 the front end's output.)
 
@@ -1346,7 +1530,9 @@ or 2048 (see Identity).
 - **Pixel formats and renderer info:** one renderer, accelerated, ID
   0x00021000 (as ATI's on 9.1), window, full-screen and offscreen
   drawables, RGBA in 16 and 32 bits, depth 16/24/32, 8-bit stencil, no
-  accumulation buffer, double or single buffering. `aglChoosePixelFormat`
+  accumulation buffer, double or single buffering. (As built, since
+  milestone 8: a second, the generic renderer, for pixel formats with an
+  accumulation buffer.) `aglChoosePixelFormat`
   honors the attributes and policies, and fails for 8-bit indexed devices
   (Apple's software renderer drew to those; games switch to thousands or
   millions of colors). `aglDescribeRenderer` answers video and texture
@@ -1424,7 +1610,10 @@ than a Rage 128 had.
 The alternative is "ATI Radeon OpenGL Engine" (2048 textures, more units),
 for later games that expect a Radeon; or honest Blue strings, which
 games of the time don't know. **The user decides.** Whatever is chosen,
-`GL_EXTENSIONS` describes what Blue really does.
+`GL_EXTENSIONS` describes what Blue really does. (As built: ATI's
+strings; and since milestone 8, for pixel formats with an accumulation
+buffer, Apple's generic renderer's vendor "Apple" and renderer "Generic",
+with Blue's version and extensions.)
 
 ### Targets
 
@@ -1521,6 +1710,11 @@ Shared pieces may already exist from Glide.
    back only what changed; transform in a vertex shader; bigger batches.
    The same checks, with Quake III's demo and UT as the game tests. (As
    done: measured first, then the costs measured fixed; see Status.)
+8. **The rest of OpenGL 1.2:** logic ops, line and polygon stipples,
+   textured lines and points, antialiased ones, lines by the diamond-exit
+   rule, dithering in 16-bit drawables, the accumulation buffer (as Apple's
+   9.2.2 renderers offered it). The same checks; RAVE's pixels and the
+   games' speed unchanged.
 
 ## Tests
 
@@ -1592,6 +1786,14 @@ Shared pieces may already exist from Glide.
   imports the Display Manager).
 - OpenGLUtility's tessellators and NURBS renderers keep their objects and
   properties but draw nothing: left until a program needs them.
+- In which order Apple's engine listed its renderers to
+  `aglQueryRendererInfo` and `aglNextRendererInfo` (Blue: ATI's, then the
+  generic one), and which a pixel format both could draw went to without
+  `AGL_ACCELERATED` (Blue: ATI's, unless it asks for an accumulation
+  buffer).
+- The Rage 128's dither (its matrix, and whether Apple's ATI renderer
+  turned it off for `glDisable(GL_DITHER)`): not found; Blue's is a 4 x 4
+  ordered dither.
 - Which folder Apple's engine searches for renderers (the `FindFolder`
   argument wasn't checked): only matters for option (b).
 - Whether to offer Apple's own OpenGL on 9.x later through the RAVE engine
