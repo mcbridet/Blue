@@ -477,6 +477,8 @@ struct machine {
 	struct install install;         /* ... and installing them (see tools_startup()) */
 	bool tools_offer;               /* ... which is offered in this run */
 	unsigned tools_disk, tools_part;        /* ... on this drive's partition */
+	uint16_t watched_trap;          /* the trap the idle hook stops at (see watch_trap()) */
+	bool synch_idle_seen;           /* ... it has stopped at _SynchIdleTime (Mac OS 8: see tools_idle()) */
 	struct gpu *gpu;                /* ... which draws with this, if the host can (see nk_boot()) */
 	/* SYSHM_PERF: the host's counters for this thread, printed every second */
 	bool perf_on;
@@ -1197,7 +1199,9 @@ static void pass_guest_time(struct machine *m, uint64_t ticks)
 #define SOUND_WAKE_NS 4000000u          /* ... and while sound plays (4 ms) */
 #define NET_WAKE_NS 4000000u            /* ... and with a host network (4 ms) */
 #define NET_POLL_NS 1000000u            /* the host network is serviced every millisecond while running */
-#define TRAP_SYNCH_IDLE_TIME 0xABF7u    /* the Process Manager's "nothing to run" call */
+#define TRAP_SYNCH_IDLE_TIME 0xABF7u    /* the Process Manager's "nothing to run" call (before Mac OS 9) */
+#define TRAP_IDLE_9 0xAAAAu             /* Mac OS 9's idle routine's call in its place, ... */
+#define TRAP_IDLE_9_SELECTOR 0x82F0u    /* ... with this in D0.W (see tools_idle()) */
 #define PPC_CRSET_CR1LT 0x4C842242u     /* crset cr1lt */
 #define PPC_LHA_R4_R24 0xA8980000u      /* lha r4,0(r24) */
 
@@ -1219,6 +1223,14 @@ static uint32_t recompiled_trap_entry(const struct machine *m)
 		    mem_r32(&m->mem, a - 4) == PPC_CRSET_CR1LT)
 			return a - 4;
 	return 0;
+}
+
+/* The idle hook stops where the emulator dispatches this trap (interpreted or recompiled) */
+static void watch_trap(struct machine *m, uint16_t trap)
+{
+	m->cpu.hook_pc = m->ci.la_dispatch_table + 8u * trap;
+	m->cpu.hook_match_value = trap;
+	m->watched_trap = trap;
 }
 
 /*
@@ -2916,17 +2928,29 @@ static void tools_show(struct machine *m)
 	}
 }
 
-/* At an idle call: true if the guest goes to the installer instead (see install_idle()) */
-static bool tools_idle(struct machine *m)
+/*
+ * At an idle call: true if the guest goes to the installer instead (see
+ * install_idle()). `at_trap` at the idle hook, while the trap it watches is
+ * being dispatched: _SynchIdleTime before Mac OS 9 (8.6 naps through
+ * Multiprocessing Services too); Mac OS 9's Process Manager idles without
+ * it, calling its idle routine (TRAP_IDLE_9 with TRAP_IDLE_9_SELECTOR in
+ * D0) and napping with MPDelayUntil, so there the hook watches that trap
+ * while the installer waits to go in.
+ */
+static bool tools_idle(struct machine *m, bool at_trap)
 {
 	if (m->install.phase == INSTALL_OFF || m->install.phase == INSTALL_DONE)
 		return false;
 	struct install_idle w = { .mem = &m->mem, .helper = &m->helper, .finder = finder_current(m), .tb = m->cpu.tb,
-				  .tb_hz = TIMEBASE_HZ, .drive = m->disk[m->tools_disk].part[m->tools_part].drive_num };
+				  .tb_hz = TIMEBASE_HZ, .drive = m->disk[m->tools_disk].part[m->tools_part].drive_num,
+				  .trap = at_trap ? m->watched_trap : 0 };
 	for (unsigned k = 0; k < m->disks; k++)
 		w.disk_bytes += m->disk[k].bytes_read + m->disk[k].bytes_written;
 	bool diverted = install_idle(&m->install, &w);
 	tools_show(m);
+	uint16_t trap = m->install.phase == INSTALL_INJECT && !m->synch_idle_seen ? TRAP_IDLE_9 : TRAP_SYNCH_IDLE_TIME;
+	if (trap != m->watched_trap)
+		watch_trap(m, trap);
 	return diverted;
 }
 
@@ -3267,6 +3291,7 @@ static const char *kcall_mp_dispatch(struct machine *m, uint32_t next_pc)
 	if (m->mp_kernel && yields && blue_running(m))
 		set_shifty(m, SHIFTY_YIELDED, SHIFTY_CLEARED);
 	if (cpu->gpr[0] == MP_DELAY_UNTIL && blue_running(m)) {
+		tools_idle(m, false);
 		blue_naps(m, (uint64_t)cpu->gpr[3] << 32 | cpu->gpr[4]);
 		cpu->gpr[3] = 0;                /* noErr */
 		cpu->pc = next_pc;
@@ -3371,8 +3396,10 @@ static const char *kernel_call(struct machine *m, unsigned n)
 			cpu->gpr[3] = 0xFFFFFFFFu;
 			break;
 		}
-		if (cpu->gpr[3] <= 7 && !(cpu->gpr[4] & cpu->cr))
+		if (cpu->gpr[3] <= 7 && !(cpu->gpr[4] & cpu->cr)) {
+			tools_idle(m, false);
 			blue_naps(m, UINT64_MAX);       /* until an interrupt: there's no processor state to lose */
+		}
 		cpu->gpr[3] = 0;
 		break;
 	case 6:     /* RTASDispatch: r3 = argument block; returns 0, or -1 if unusable */
@@ -3480,7 +3507,6 @@ static int start_machine(struct machine *m, const struct nk_boot_options *opt)
 	if (m->realtime || m->clock_mips)
 		m->cpu.tb_step = 0;     /* the host clock or the instruction count sets the timebase between chunks */
 	/* the emulator dispatches 68k opcode X through dispatch_table + 8 * X; see also recompiled_trap_entry() */
-	m->cpu.hook_pc = m->ci.la_dispatch_table + 8u * TRAP_SYNCH_IDLE_TIME;
 	m->cpu.mmio = getenv("SYSHM_DEVICE_EXITS") ? NULL : device_hook;      /* (for comparisons: each access exits) */
 	m->cpu.mmio_ctx = m;
 	uint32_t entry = recompiled_trap_entry(m);
@@ -3488,8 +3514,8 @@ static int start_machine(struct machine *m, const struct nk_boot_options *opt)
 	if (entry) {
 		m->cpu.hook_match_pc = entry;
 		m->cpu.hook_match_reg = 24;
-		m->cpu.hook_match_value = TRAP_SYNCH_IDLE_TIME;
 	}
+	watch_trap(m, TRAP_SYNCH_IDLE_TIME);
 	return 0;
 }
 
@@ -3727,6 +3753,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		}
 		if (sync) {
 			script_run(&m, &script);
+			if (m.install.phase == INSTALL_WAIT_FINDER && finder_current(&m))
+				install_finder(&m.install, cpu->tb);    /* (at idle calls it may well be another's turn) */
 			follow_window(&m);
 			cuda_poll(&m.cuda, cpu->tb / (TIMEBASE_HZ / 1000));
 			m.dev_dirty = true;
@@ -3840,8 +3868,13 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			why = host_call(&m, cpu->exit_insn & 0x03FFFFFFu);
 			break;
 		case PPC_EXIT_HOOK:
-			if (!tools_idle(&m))
-				blue_naps(&m, UINT64_MAX);
+			if (m.watched_trap == TRAP_SYNCH_IDLE_TIME) {
+				m.synch_idle_seen = true;
+				if (!tools_idle(&m, true))
+					blue_naps(&m, UINT64_MAX);
+			} else if ((uint16_t)cpu->gpr[8] == TRAP_IDLE_9_SELECTOR) {     /* (the emulator's d0) */
+				tools_idle(&m, true);
+			}
 			if (opt->realtime)
 				sync = true;    /* catch up with the host clock now */
 			break;

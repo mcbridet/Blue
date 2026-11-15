@@ -252,7 +252,7 @@ static void helper_main(struct helper *h, struct ndrv_call *c, struct clip *clip
 	if (!current(h, c)) {
 		h->old = true;
 		printf("enhancements: the guest's syshm Enhancements is older than this syshm (no clipboard): update it "
-		       "(syshm offers to, in a window), or install it again from the syshm Tools volume (--tools)\n");
+		       "(syshm offers to, in a window), or by hand from a volume made with \"syshm tools create\"\n");
 		fflush(stdout);
 	} else if (clip->enabled && !h->patched && patch(h, c, true)) {
 		h->patched = true;

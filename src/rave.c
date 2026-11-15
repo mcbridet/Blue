@@ -1450,8 +1450,8 @@ void rave_call(struct rave *r, struct ndrv_call *c)
 	if (c->entry == E_INIT) {
 		/* the fragment's initialization: QARegisterEngine(our getMethod) */
 		if (!engine_current(r, c)) {
-			printf("3d: the guest's syshm 3D Engine is older than this syshm: install it again from the "
-			       "syshm Tools volume (--tools) into Extensions, and restart\n");
+			printf("3d: the guest's syshm 3D Engine is older than this syshm: update it (syshm offers to, in a "
+			       "window), or by hand from a volume made with \"syshm tools create\" into Extensions\n");
 			fflush(stdout);
 		}
 		ndrv_set_state(c, 0, 0);

@@ -653,7 +653,9 @@ old copy's place, so an error (a full or locked disk) leaves nothing half
 written; a disabled copy is updated where it is and stays disabled.
 syshm Enhancements starts at once (an older one running is asked to quit
 first), and programs opened from then on find the 3D engine, without a
-restart. The outcome is shown and printed:
+restart. This works on Mac OS 8.5, 8.6 and 9.2.2 installed on disk images
+(9.1 by the same path; there was no installed 9.1 to try). The outcome is
+shown and printed:
 
 ```
 tools: installed syshm Enhancements and syshm 3D Engine in "Macintosh HD:System Folder:Extensions". syshm Enhancements is running. Programs opened from now on find the 3D engine.
@@ -665,12 +667,13 @@ answer instead (`tools install`, `tools later`), and that turns the check
 on. The startup disk is the partition the ROM file came from (with
 `--rom`, the first with boot blocks).
 
-They can still be installed by hand: `--tools` attaches a small read-only
-volume, "syshm Tools", holding them (`syshm tools create FILE` writes the
-same volume to a file):
+They can still be installed by hand: `syshm tools create FILE` writes a
+small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
+(read-only):
 
 - **syshm Enhancements**: drag it onto the System Folder (the Finder puts it in
-  Extensions) and restart. From then on, resizing the window changes the
+  Extensions) and restart (or let syshm install it). From then on, resizing
+  the window changes the
   screen's resolution to match once the window has stopped changing (while
   it's being dragged, the window scales the screen), and the Finder lays out
   the desktop again. A
@@ -684,9 +687,9 @@ same volume to a file):
   it), and it still switches modes until then: its data carries its
   version, as the 3D engine's does, so that syshm finds the older copy's
   data where it is, and says so. An `appe` only starts from Extensions, so
-  a CD's system can't run it; to try it there, `SYSHM_TOOLS_APPL=1` makes
-  the tools volume's copy an application the Finder opens with a
-  double-click.
+  a CD's system can't run it; to try it there, `SYSHM_TOOLS_APPL=1 syshm
+  tools create FILE` makes the volume's copy an application the Finder
+  opens with a double-click.
 - **Clipboard** (with syshm Enhancements, in a window in real time): text
   copied in Mac OS is on the host's clipboard, and text copied on the host
   is what Command-V pastes in Mac OS, in the front application, without
