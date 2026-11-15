@@ -426,6 +426,28 @@ static void check_fastmem(const struct jit *j)
 	free(text);
 }
 
+/* The JIT's exits of one kind ("interpreter", "kernel", "device", ...), from its statistics */
+static unsigned long jit_exits(const struct jit *j, const char *kind)
+{
+	char *text = NULL;
+	size_t size = 0, len = strlen(kind);
+	FILE *f = open_memstream(&text, &size);
+	jit_print_stats(j, f);
+	fclose(f);
+	unsigned long n = 0;
+	char *p = strstr(text, "exits: "), *end;
+	while (p && *p != '\n' && (p = strpbrk(p, "0123456789\n")) && *p != '\n') {
+		unsigned long v = strtoul(p, &end, 10);
+		if (*end == ' ' && !strncmp(end + 1, kind, len) && strchr(",\n", end[1 + len])) {
+			n = v;
+			break;
+		}
+		p = end;
+	}
+	free(text);
+	return n;
+}
+
 /* With rom_code, the code can't be written (as in ROM, where the JIT follows branches) */
 static void test_random_programs(unsigned programs, bool rom_code)
 {
@@ -966,6 +988,8 @@ static void test_quick_sc(void)
 				}
 			}
 		}
+		if (jit)
+			CHECK_EQ(jit_exits(s.cpu.jit, "interpreter"), 0);       /* (the JIT answered them itself) */
 		jit_free(s.cpu.jit);
 		mem_free(&s.mem);
 	}
@@ -1116,9 +1140,60 @@ static void test_kcalls(void)
 				}
 			}
 		}
+		if (jit)
+			CHECK_EQ(jit_exits(s.cpu.jit, "interpreter"), 0);       /* (the JIT made them itself) */
 		jit_free(s.cpu.jit);
 		mem_free(&s.mem);
 	}
+}
+
+/* A device whose every access the mmio hook takes */
+static int plain_device(void *ctx, struct ppc_cpu *cpu)
+{
+	struct device *d = ctx;
+	struct mmio_access a;
+	if (!mmio_decode(&d->bus, cpu, &a))
+		return PPC_MMIO_NO;
+	mmio_perform(&a, cpu);
+	d->accesses++;
+	return PPC_MMIO_DONE;
+}
+
+/*
+ * Device registers through the mmio hook, by both engines, in a loop: the
+ * JIT offers each access to the hook itself, at once without fastmem, or
+ * once its instruction has faulted (and the interpreter has taken that one)
+ */
+static void test_device_in_place(void)
+{
+	const uint32_t prog[] = {
+		LIS(3, IO_PAGE >> 16), LI(0, 40), MTCTR(0),
+		LWZ(4, 0x10, 3), STW(4, 0x20, 3), LHA(5, 0x12, 3), STH(5, 0x30, 3), LWZU(7, 4, 3), STWU(7, 4, 3),
+		ADDI(6, 6, 1), BDNZ(-28),
+		SC,
+	};
+	static struct side s[2];
+	enum ppc_exit e[2];
+	for (int jit = 0; jit < 2; jit++) {
+		setup(&s[jit], jit);
+		for (unsigned k = 0; k < sizeof prog / sizeof prog[0]; k++)
+			mem_w32(&s[jit].mem, CODE + 4 * k, prog[k]);
+		s[jit].cpu.mmio = plain_device;
+		s[jit].cpu.mmio_ctx = &s[jit].dev;
+		s[jit].cpu.pc = CODE;
+		e[jit] = ppc_run(&s[jit].cpu, 10000);
+	}
+	if (s[1].cpu.jit) {
+		CHECK_EQ(e[0], PPC_EXIT_SC);
+		CHECK(same(&s[0], &s[1], e[0], e[1]));
+		CHECK_EQ(s[0].dev.accesses, 240);
+		CHECK_EQ(s[1].dev.accesses, 240);
+		CHECK_EQ(s[0].dev.state, s[1].dev.state);
+		CHECK(jit_exits(s[1].cpu.jit, "interpreter") <= 6);     /* (each access instruction's fault) */
+		jit_free(s[1].cpu.jit);
+	}
+	mem_free(&s[0].mem);
+	mem_free(&s[1].mem);
 }
 
 /* ---- SYSHM_JIT_BENCH=1: speed, not a test ---- */
@@ -1258,6 +1333,7 @@ void test_jit(void)
 	}
 	test_quick_sc();
 	test_kcalls();
+	test_device_in_place();
 	test_hostcall_fprs();
 	test_random_programs(programs, false);
 	test_random_programs(programs / 2 + 1, true);

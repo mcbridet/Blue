@@ -158,7 +158,7 @@ struct jit {
 	const uint32_t *exit, *side_exit, *link, *link_branch, *lookup, *mmio_call, *settle;
 	bool sync_pending;              /* see icache_sync() */
 #else
-	const uint8_t *exit, *side_exit, *link, *link_branch, *lookup, *settle;
+	const uint8_t *exit, *side_exit, *link, *link_branch, *lookup, *mmio_call, *settle;
 	const uint8_t *k_sign, *k_abs, *k_one;  /* (16-byte constants: a double's sign, all but it, 1.0) */
 #endif
 };

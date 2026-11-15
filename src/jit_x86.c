@@ -124,6 +124,23 @@ struct slow_store {
 	bool update, swap;              /* rA is still to update (from eax); a byte-reversed store */
 	bool fp;                        /* the value is in XMM register s (stfs: its single's bits) */
 	unsigned ra, s;                 /* rA, and the host register holding the value */
+	bool io;                        /* one for the mmio hook, if not writable (see slow_ios()) */
+	uint32_t insn, pc;
+};
+
+#define MAX_SLOW_IOS 160u
+
+/*
+ * Out-of-line path of a load or store to a page that isn't readable or
+ * writable (a device's, perhaps), offered to the mmio hook (slow_ios())
+ */
+struct slow_io {
+	uint8_t *at;                    /* the rel32 field of the jump to it */
+	uint8_t *rejoin;                /* after the instruction */
+	unsigned k, bytes;
+	bool write, reload_ea;          /* (the store's update of rA, after rejoin, needs the EA in eax) */
+	uint32_t insn, pc;
+	struct cache_state before, after;
 };
 
 #define MAX_SLOW_FP MAX_BLOCK_INSNS
@@ -177,6 +194,8 @@ struct tx {
 	unsigned nbexits;
 	struct slow_store slow[MAX_SLOW_STORES];
 	unsigned nslow;
+	struct slow_io io[MAX_SLOW_IOS];
+	unsigned nio;
 	struct slow_fp fps[MAX_SLOW_FP];
 	unsigned nfps;
 	struct cache_state rc;
@@ -1063,6 +1082,31 @@ static bool fast_access(const struct tx *t)
 	return !pg || !(pg->slow[w / 64] >> (w % 64) & 1);
 }
 
+/* Whether its checked accesses have a path to the mmio hook (see slow_ios()) */
+static bool io_access(const struct tx *t)
+{
+	if (!t->j->fastmem)
+		return true;
+	const struct jit_page *pg = t->j->pages[t->pc >> MEM_PAGE_SHIFT];
+	unsigned w = (t->pc >> 2) & (PAGE_WORDS - 1);
+	return pg && pg->io[w / 64] >> (w % 64) & 1;
+}
+
+/*
+ * A JE (after a TEST of the page flags) to an out-of-line path for the
+ * mmio hook (see slow_ios()) for instruction k; NULL, and nothing emitted,
+ * if there's no room.
+ */
+static struct slow_io *add_io(struct tx *t, unsigned k, uint32_t insn, uint32_t pc, unsigned size, bool write,
+			      const struct cache_state *before)
+{
+	if (t->nio >= MAX_SLOW_IOS)
+		return NULL;
+	struct slow_io *io = &t->io[t->nio++];
+	*io = (struct slow_io){ x86_jcc(B, X86_E, NULL), NULL, k, 1u << size, write, false, insn, pc, *before, *before };
+	return io;
+}
+
 /* eax = (rA|0, or rA for update) + (rB or d) */
 static void effective_address(struct tx *t, bool update, bool indexed, unsigned ra, unsigned rb, int32_t d)
 {
@@ -1183,12 +1227,14 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 	if (!fast)
 		page_flags(t);
 	struct x86_mem m = x86_mx(fast ? R_MEM : T2, T0, 0, 0);
+	struct slow_io *io = NULL;
 	if (load) {
+		struct cache_state before = t->rc;              /* a fault leaves the registers as they are here */
 		if (!fast) {
 			x86_test_ri(B, 0, T1, size ? MEM_FAST_R : MEM_R);       /* (a byte can't run into the next page) */
-			exit_if(t, X86_E);
+			if (fp != LS_GPR || !io_access(t) || !(io = add_io(t, t->k, t->insn, t->pc, size, false, &before)))
+				exit_if(t, X86_E);
 		}
-		struct cache_state before = t->rc;              /* a fault leaves the registers as they are here */
 		unsigned v = fp ? T1 : wr(t, rd_);
 		if (fast)
 			add_site(t, &before);
@@ -1220,7 +1266,7 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 			x86_test_ri(B, 0, T1, MEM_FAST_W);
 			struct slow_store *ss = &t->slow[t->nslow++];
 			*ss = (struct slow_store){ x86_jcc(B, X86_E, NULL), NULL, t->k, size, t->rc, update, swap, fp != LS_GPR,
-						   ra, s };
+						   ra, s, fp == LS_GPR && io_access(t), t->insn, t->pc };
 			store_value(t, size, swap, fp != LS_GPR, s, m);
 			ss->rejoin = t->x.p;
 		} else {
@@ -1232,18 +1278,24 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 	}
 	if (update)
 		x86_mov_rr(B, 0, wr(t, ra), T0);
+	if (io) {
+		io->rejoin = t->x.p;
+		io->after = t->rc;
+		t->fp_mode_ok = false;          /* (the hook might switch contexts, change registers) */
+		t->nstored = 0;
+	}
 }
 
 /*
  * Stores that MEM_FAST_W (in ecx) turned away. Unless the page is writable
- * and the store stays within it, the interpreter executes the instruction
- * (device registers among them). Then, if the page holds no translated
- * code, or the word stored to isn't one that code was translated from (the
- * page's bitmap says), the store just happens. Otherwise a host function
- * stores it, invalidating the blocks translated from those bytes; the
- * registers in caller-saved host registers are reloaded afterwards, and if
- * any code changed, the instruction completes (rA) and the block is left
- * after it.
+ * and the store stays within it, the mmio hook may do it (slow_ios()), or
+ * the interpreter executes the instruction. Then, if the page holds no
+ * translated code, or the word stored to isn't one that code was
+ * translated from (the page's bitmap says), the store just happens.
+ * Otherwise a host function stores it, invalidating the blocks translated
+ * from those bytes; the registers in caller-saved host registers are
+ * reloaded afterwards, and if any code changed, the instruction completes
+ * (rA) and the block is left after it.
  */
 static void slow_stores(struct tx *t)
 {
@@ -1254,7 +1306,13 @@ static void slow_stores(struct tx *t)
 		t->k = ss->k;
 		t->rc = ss->cs;
 		x86_test_ri(B, 0, T1, MEM_W);
-		exit_if(t, X86_E);
+		struct slow_io *io = NULL;
+		if (ss->io && (io = add_io(t, ss->k, ss->insn, ss->pc, ss->size, true, &ss->cs))) {
+			io->rejoin = ss->rejoin;
+			io->reload_ea = ss->update;
+		} else {
+			exit_if(t, X86_E);
+		}
 		if (bytes > 1) {                                        /* within the page? */
 			x86_mov_rr(B, 0, T2, T0);
 			x86_alu_ri(B, X86_AND, 0, T2, MEM_PAGE_SIZE - 1);
@@ -1332,6 +1390,48 @@ static void slow_stores(struct tx *t)
 		x86_load(B, 8, false, T2, ST(membase));
 		store_value(t, ss->size, ss->swap, ss->fp, ss->s, x86_mx(T2, T0, 0, 0));
 		x86_jmp(B, ss->rejoin);
+	}
+}
+
+/*
+ * Loads and stores (to and from GPRs) that page flags turned away: the
+ * page isn't readable, or writable. A host function (mmio() in jit.c)
+ * offers the access to the mmio hook, as the interpreter would, with
+ * everything written back; then all registers are reloaded, as the hook
+ * may have changed any. If it didn't take it, the interpreter executes the
+ * instruction; if it did, the block goes on after it, or leaves there (as
+ * mmio() says: for the kernel, or because code changed).
+ */
+static void slow_ios(struct tx *t)
+{
+	for (unsigned s = 0; s < t->nio && !t->x.overflow; s++) {
+		struct slow_io *io = &t->io[s];
+		land(t, io->at);
+		t->k = io->k;
+		rc_store(t, &io->before);
+		x86_mov_rr(B, 0, X86_RCX, T0);                          /* mmio(cpu, insn, pc, EA, access, left) */
+		x86_mov_ri(B, X86_RSI, io->insn);
+		x86_mov_ri(B, X86_RDX, io->pc);
+		x86_mov_ri(B, X86_R8, io->bytes | (unsigned)io->write << 8);
+		x86_lea(B, 1, X86_R9, x86_m(R_BUDGET, -(int32_t)io->k));       /* (instructions left, this one included) */
+		x86_call(B, t->j->mmio_call);
+		rc_reset(t);                                            /* (all written back) */
+		x86_test_rr(B, 0, T0, T0);                              /* PPC_MMIO_NO: the interpreter */
+		exit_if(t, X86_E);
+		x86_alu_ri(B, X86_CMP, 0, T0, PPC_MMIO_DONE);
+		uint8_t *stop = fwd(t, X86_NE);
+		for (unsigned c = 0; c < NCACHE; c++)
+			if (io->after.guest[c] >= 0)
+				ld32(t, cache_reg[c], guest_off((unsigned)io->after.guest[c]));
+		rc_fp_load(t, &io->after);
+		if (io->reload_ea)
+			ld32(t, T0, OFF(fault_addr));
+		x86_jmp(B, io->rejoin);
+		land(t, stop);
+		budget_sub(t, io->k + 1);
+		x86_store_imm(B, 4, x86_m(R_CPU, OFF(pc)), io->pc + 4);
+		x86_load(B, 4, false, T0, ST(mmio_exit));
+		x86_jmp(B, t->j->exit);
 	}
 }
 
@@ -2468,6 +2568,95 @@ static int insn19(struct tx *t, uint32_t i)
 	}
 }
 
+/*
+ * An instruction that only leaves for the kernel (an unconditional trap, a
+ * system call, a host call): straight out, with pc and exit_insn as the
+ * interpreter would leave them (the instruction not retired).
+ */
+static int kernel_exit(struct tx *t, uint32_t insn, unsigned kind)
+{
+	rc_flush(t);
+	x86_store_imm(B, 4, x86_m(R_CPU, OFF(pc)), t->pc);
+	x86_store_imm(B, 4, x86_m(R_CPU, OFF(exit_insn)), insn);
+	budget_sub(t, t->k);
+	x86_mov_ri(B, T0, kind);
+	x86_jmp(B, t->j->exit);
+	return EXITED;
+}
+
+/*
+ * sc: NanoKernel 2's quick calls (r0 -1 and -2) are answered here while the
+ * kernel lets them be (see ppc.h), retiring nothing (the budget gets the
+ * instruction back); otherwise the kernel takes it.
+ */
+static int system_call(struct tx *t, uint32_t insn)
+{
+	unsigned r0 = rd(t, 0), xer = rd(t, G_XER);
+	struct cache_state at = t->rc;
+	x86_lea(B, 0, T0, x86_m(r0, 2));                        /* -2, -1: 0, 1 */
+	x86_alu_ri(B, X86_CMP, 0, T0, 1);
+	uint8_t *other = fwd(t, X86_A);
+	time_base(t);
+	x86_alu_rm(B, X86_CMP, 1, T0, x86_m(R_CPU, OFF(sc_until)));
+	uint8_t *quick = fwd(t, X86_B);
+	land(t, other);
+	kernel_exit(t, insn, EXIT_SC);
+	t->rc = at;
+	land(t, quick);
+	x86_load(B, 4, false, T2, x86_m(R_CPU, OFF(sc_blue)));
+	x86_mov_ri(B, T0, CR_EQ);                               /* CR0: GT if sc_blue isn't 0, else EQ; SO */
+	x86_mov_ri(B, T1, CR_GT);
+	x86_test_rr(B, 0, T2, T2);
+	x86_cmov(B, X86_NE, 0, T0, T1);
+	x86_mov_rr(B, 0, T1, xer);
+	x86_shift_ri(B, X86_SHR, 0, T1, 31);
+	x86_alu_rr(B, X86_OR, 0, T0, T1);
+	x86_shift_ri(B, X86_SHL, 0, T0, 28);
+	unsigned cr = rw(t, G_CR);
+	x86_alu_ri(B, X86_AND, 0, cr, 0x0FFFFFFF);
+	x86_alu_rr(B, X86_OR, 0, cr, T0);
+	x86_load(B, 4, false, T0, x86_m(R_CPU, OFF(sc_word)));  /* r0 = sc_blue for -1, sc_word for -2 */
+	x86_alu_ri(B, X86_CMP, 0, r0, -1);
+	x86_cmov(B, X86_E, 0, T0, T2);
+	x86_mov_rr(B, 0, wr(t, 0), T0);
+	x86_store_imm(B, 4, x86_m(R_CPU, OFF(exit_insn)), insn);
+	x86_alu_ri(B, X86_ADD, 1, R_BUDGET, 1);
+	return EMITTED;
+}
+
+/*
+ * A kernel call (twi 31,r31,n): while the kernel lets it (see ppc.h), its
+ * function makes the call in place, and the block is left for wherever
+ * that leads, retiring nothing; not as a branch (no stop at the hook).
+ * Otherwise, or if the function declines, the kernel takes it.
+ */
+static int kernel_call(struct tx *t, uint32_t insn)
+{
+	rc_flush(t);
+	time_base(t);
+	x86_alu_rm(B, X86_CMP, 1, T0, x86_m(R_CPU, OFF(kcall_until)));
+	uint8_t *late = fwd(t, X86_AE);
+	fixed_store(t, NFIXED);
+	x86_store_imm(B, 4, x86_m(R_CPU, OFF(pc)), t->pc);
+	x86_mov_rr(B, 1, X86_RDI, R_CPU);
+	x86_mov_ri(B, X86_RSI, insn & 0xFFFF);
+	x86_call_m(B, ST(kcall));
+	fixed_load(t, NFIXED);
+	x86_test_ri(B, 0, X86_RAX, 0xFF);
+	uint8_t *declined = fwd(t, X86_E);
+	rc_reset(t);
+	ld32(t, T0, OFF(pc));
+	budget_sub(t, t->k);
+	x86_alu_rm(B, X86_CMP, 0, T0, ST(hook));
+	uint8_t *other = fwd(t, X86_NE);
+	x86_jmp(B, t->j->miss_exit);
+	land(t, other);
+	lookup_jump(t);
+	land(t, late);
+	land(t, declined);
+	return kernel_exit(t, insn, EXIT_TRAP);
+}
+
 static int insn(struct tx *t, uint32_t i)
 {
 	unsigned op = i >> 26, rd_ = (i >> 21) & 31, ra = (i >> 16) & 31;
@@ -2475,9 +2664,14 @@ static int insn(struct tx *t, uint32_t i)
 	uint32_t uimm = i & 0xFFFF;
 
 	switch (op) {
-	case 3:                                 /* twi, host calls, sc: the interpreter (which may make them in place) */
-	case 6:
-	case 17:
+	case 3:                                 /* twi: unless it always traps, the interpreter tests */
+		if (rd_ == 31 && ra == 31)
+			return kernel_call(t, i);
+		return rd_ == 31 ? kernel_exit(t, i, EXIT_TRAP) : STOPPED;
+	case 6:                                 /* host call */
+		return kernel_exit(t, i, EXIT_HOSTCALL);
+	case 17:                                /* sc */
+		return system_call(t, i);
 	case 4:                                 /* AltiVec */
 		return STOPPED;
 	case 7: {                                                       /* mulli */
@@ -2678,6 +2872,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	t.nlinks = 0;
 	t.nbexits = 0;
 	t.nslow = 0;
+	t.nio = 0;
 	t.nfps = 0;
 	t.fp_mode_ok = false;
 	t.nstored = 0;
@@ -2741,6 +2936,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 
 	rc_reset(&t);                   /* (what follows is out of line) */
 	slow_stores(&t);
+	slow_ios(&t);
 	slow_fps(&t);
 	branch_exits(&t);
 	rc_reset(&t);
@@ -2986,9 +3182,19 @@ static void build_stubs(struct jit *j)
 	x86_mov_ri(B, T0, EXIT_LINK);
 	x86_jmp(B, j->exit);
 
+	/* mmio() for slow_ios(), called with its arguments from rsi on set, cached registers written back */
+	j->mmio_call = t->x.p;
+	fixed_store(t, NFIXED);
+	x86_alu_ri(B, X86_SUB, 1, X86_RSP, 8);                 /* (rsp 16-byte aligned again) */
+	x86_mov_rr(B, 1, X86_RDI, R_CPU);
+	x86_call_m(B, ST(mmio));
+	x86_alu_ri(B, X86_ADD, 1, X86_RSP, 8);
+	fixed_load(t, NFIXED);
+	x86_ret(B);
+
 	j->settle = t->x.p;
 	build_settle(t);
-	while ((uintptr_t)t->x.p & 4095)        /* (the benchmark's blocks where they were: see the plan's findings) */
+	while ((uintptr_t)t->x.p & 4095)        /* (the blocks area at a 4 KB boundary: see the plan's findings) */
 		x86_int3(B);
 
 	j->blocks_start = j->code_free = t->x.p;
@@ -3123,8 +3329,9 @@ unsigned arch_marks(const struct jit *j, struct jit_mark marks[8])
 	marks[3] = (struct jit_mark){ "hook", j->hook_exit };
 	marks[4] = (struct jit_mark){ "miss", j->miss_exit };
 	marks[5] = (struct jit_mark){ "link", j->link_branch };
-	marks[6] = (struct jit_mark){ "settle", j->settle };
-	return 7;
+	marks[6] = (struct jit_mark){ "mmio", j->mmio_call };
+	marks[7] = (struct jit_mark){ "settle", j->settle };
+	return 8;
 }
 
 #endif
