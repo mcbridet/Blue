@@ -113,7 +113,8 @@ Milestone 3:
   checked the same as Mesa's. In "texture", three pixels whose centers are
   exactly on the diagonal two triangles share are drawn by neither in
   `raster.c` (its edge functions are floats, and both triangles' come out
-  just negative there); the GPU and Mesa draw them.
+  just negative there); the GPU and Mesa draw them. (Since fixed: exact
+  edge functions, see Findings in plan.md; none differ now.)
 - **Tests:** `tests/test_glfront.c` (every format and type unpacked, the
   pixel stores, objects and their errors, completeness, the backend's copy
   made, shared and retired, each environment mode for each base format
@@ -124,8 +125,8 @@ Milestone 3:
   Extensions (Disabled) and back, one that can't move).
 - Not yet: texture borders, `glCopyTexImage*`, `glDrawPixels`, lighting,
   fog, vertex arrays (milestones 4 and 5); 16-bit drawables dithered;
-  lines by OpenGL's diamond-exit rule; and the shared-edge pixels above,
-  which fixing in `raster.c` would change RAVE's pixels at such ties.
+  lines by OpenGL's diamond-exit rule; and the shared-edge pixels above
+  (since fixed).
 
 Milestone 2:
 

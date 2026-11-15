@@ -1,8 +1,8 @@
 /*
- * The 3D engine's rasterizer: coverage (the top-left rule), depth testing,
- * texture orientation, and drawing recorded commands on helper threads,
- * at once or in background batches, which must give exactly the pixels of
- * drawing them one at a time.
+ * The 3D engine's rasterizer: coverage (the top-left rule, exact on edges
+ * triangles share), depth testing, texture orientation, and drawing
+ * recorded commands on helper threads, at once or in background batches,
+ * which must give exactly the pixels of drawing them one at a time.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -80,6 +80,53 @@ static void test_coverage(void)
 		for (int x = 0; x < W; x++) {
 			unsigned red = color_a[y * W + x] >> 16 & 255;
 			wrong += red != (x >= 2 && x < 12 && y >= 3 && y < 13);
+		}
+	CHECK_EQ(wrong, 0);
+}
+
+/*
+ * A mesh of triangles sharing edges, many of them through pixels' centers
+ * (vertices at .3, .5, a third...), wound either way: each pixel inside is
+ * covered exactly once (no cracks, no pixel drawn twice)
+ */
+static void test_shared_edges(void)
+{
+	struct raster_target t = target(color_a, depth_a);
+	raster_clear(&t, 0, 0, W, H, true, 0, true, 1);
+	struct raster_state s = plain();
+	s.blend = RASTER_BLEND_FACTORS;
+	s.blend_src = RASTER_F_ONE;
+	s.blend_dst = RASTER_F_ONE;
+	float one = 1.0f / 255;
+	enum { NX = 10, NY = 8 };
+	static const float offsets[] = { 0, 0.3f, 0.5f, -0.5f, 1.0f / 3, 0.25f, -0.2f, 0.7f, -1.0f / 3 };
+	struct raster_vertex v[NY + 1][NX + 1];
+	unsigned pick = 0;
+	for (int j = 0; j <= NY; j++)
+		for (int i = 0; i <= NX; i++) {
+			float x = 2 + 6.0f * (float)i, y = 3 + 5.0f * (float)j;
+			if (i > 0 && i < NX && j > 0 && j < NY) {       /* (the outside stays a rectangle) */
+				x += offsets[pick++ % 9];
+				y += offsets[(pick += 4) % 9];
+			}
+			v[j][i] = vertex(x, y, 0, one, 0, 0);
+		}
+	for (int j = 0; j < NY; j++)
+		for (int i = 0; i < NX; i++) {
+			const struct raster_vertex *a = &v[j][i], *b = &v[j][i + 1], *c = &v[j + 1][i + 1], *d = &v[j + 1][i];
+			if ((i + j) & 1) {
+				raster_triangle(&t, &s, a, b, c, false);
+				raster_triangle(&t, &s, c, d, a, false);
+			} else {
+				raster_triangle(&t, &s, b, a, d, false);        /* (the other diagonal, the other way round) */
+				raster_triangle(&t, &s, b, d, c, false);
+			}
+		}
+	unsigned wrong = 0;
+	for (int y = 0; y < H; y++)
+		for (int x = 0; x < W; x++) {
+			unsigned red = color_a[y * W + x] >> 16 & 255;
+			wrong += red != (x >= 2 && x < 2 + 6 * NX && y >= 3 && y < 3 + 5 * NY);
 		}
 	CHECK_EQ(wrong, 0);
 }
@@ -398,6 +445,7 @@ static void test_fragments(void)
 void test_raster(void)
 {
 	test_coverage();
+	test_shared_edges();
 	test_depth();
 	test_texture();
 	test_threads();

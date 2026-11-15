@@ -758,11 +758,9 @@ the kernel); 8 onwards as the boot progresses.
   common state; Quake III Arena, if the user has it). Open items: lines
   are `raster.c`'s, a pixel a step, not OpenGL's diamond-exit rule;
   16-bit drawables take the top 5 bits of each component, not dithered
-  (`GL_DITHER` is on by default); `raster.c` leaves out a pixel whose center is
-  exactly on an edge two triangles share (its edge functions are floats,
-  and both come out just negative there: 3 pixels in the "texture" scene,
-  which the GPU and Mesa draw), and fixing that would change RAVE's
-  software pixels at such ties.
+  (`GL_DITHER` is on by default). (`raster.c`'s pixels on edges two
+  triangles share: fixed, see Findings, "Shared edges in the software
+  rasterizer".)
 
 ## Findings
 
@@ -779,6 +777,32 @@ Facts later tasks need, added as they are found.
   in the environment, as CI does. Apple's OpenGL driver: setting the blend
   equation for every draw call, even to the same value, cut a test of many
   small draws to a fifth of its frame rate.
+- **Shared edges in the software rasterizer** (OpenGL, after milestone 3):
+  `raster.c`'s edge functions were floats, with the top-left rule on top;
+  at a pixel center exactly on an edge two triangles share, rounding could
+  leave both just below zero, so neither drew it (3 pixels on a quad's
+  diagonal in a textured scene, which the GPU and Mesa drew), and near
+  such edges which triangle got a pixel was rounding's choice. Now the
+  vertices snap to 1/256 of a pixel, as GPUs and Mesa snap them, and the
+  edge functions are 64-bit integers there, with the top-left rule as a
+  bias of 1 (vertices beyond 2^21 pixels aren't drawn); each row's span
+  comes out exactly by integer division, so pixels aren't tested one by
+  one. Coverage now matches Mesa's in every scene `tests/test_opengl.c`
+  compares (the pixels one covers and the other doesn't went from 1, 11,
+  11 and 3 to none), and Metal's in them; `test_shared_edges` in
+  `tests/test_raster.c` checks a mesh with edges through pixel centers
+  (4 pixels wrong with the old code). RAVE's software pixels changed only
+  at edges: in the 20 random streams (6,000 frames, 36.8 million pixels)
+  13,047 pixels, at most 31 in a frame (of the rasterizer's changes before
+  overdraw, all were within 1/256 of a pixel of an edge, 13% within
+  10^-4: ties the floats decided by noise; the rest moved by snapping); in
+  Unreal Tournament's intro in software, at most 19 pixels of 786,432 in
+  each of eight frames at fixed instruction counts. Interpolation still starts a pixel
+  before each row's span, where the float estimate started, so pixels
+  covered as before round as before (starting at the span instead changed
+  8,000 more in the streams by rounding, most in slivers whose gradients
+  are huge). It's faster: 5-27% on 3,000 60-pixel triangles, 12-27% on
+  100,000 4-pixel ones. The GPU's pixels are unchanged.
 
 - **CD audio, Apple's CD-ROM driver** (Technical Note DV22, "CD-ROM Driver
   Calls", developer.apple.com/library/archive/technotes/dv/dv_22.html):

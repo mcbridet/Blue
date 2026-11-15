@@ -751,12 +751,14 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
     and each frame is read back into the context's device in guest memory as
     before. The first context says which (`3d: drawing with OpenGL 4.1
     Metal - 91.7 (Apple M5)`). The pixels are those of the software
-    rasterizer but for rounding at triangle edges and in filtering, and
-    mipmapping, which is per pixel (trilinear with the Best texture filter,
+    rasterizer but for rounding in filtering (and at the odd triangle edge),
+    and mipmapping, which is per pixel (trilinear with the Best texture filter,
     with anisotropic filtering where there is some). If OpenGL fails, the
     engine says so and goes on in software.
   - Otherwise, a software rasterizer (`src/raster.c`) draws it in bands of
-    rows on helper threads; the pixels are always the same, however many
+    rows on helper threads (with vertices snapped to 1/256 of a pixel, as
+    GPUs snap them, and exact edges: triangles sharing an edge leave no
+    gap and draw no pixel twice); the pixels are always the same, however many
     threads draw them, and it's built without the fused multiply-adds
     compilers use on some hosts (Apple silicon's), so instruction-time runs
     stay the same on every host. `SYSHM_RASTER_THREADS` sets the number

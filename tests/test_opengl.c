@@ -792,26 +792,27 @@ static const struct op scene_multitexture[] = {
 
 /*
  * Against Mesa's: pixels that may differ by more than 2, and that one draws
- * on and the other doesn't. Those are where a pixel's center is on an edge
- * (where the floor's edges are a third of a pixel down every pixel across,
- * say) or a fragment's alpha is the alpha test's reference, which each
- * decides by its own rounding (raster.c's float edge functions can leave
- * out a pixel whose center is exactly on two triangles' shared edge: a few
- * in "texture"); in "smooth", Mesa corrects colors for perspective and ours
- * are linear in screen space (see glfront.h), most of all on the floor that
- * goes from the near plane to the far distance; and in "clamp", GL_CLAMP
- * past the texture's edges is Mesa's blend with the border color, and
- * clamping to the edge texels in ours (see glfront.h; checked the same
- * where the coordinates are within the texture, test_mesa()).
+ * on and the other doesn't. Both snap vertices to 1/256 of a pixel and give
+ * a pixel whose center is on an edge to the same side (none differ so in
+ * Mesa 25.2), but the transforms round each their own way, and a center on
+ * an edge (the floor's edges are a third of a pixel down every pixel across)
+ * may go to the triangle on either side; a fragment's alpha at the alpha
+ * test's reference is decided by each's rounding too. In "smooth", Mesa
+ * corrects colors for perspective and ours are linear in screen space (see
+ * glfront.h), most of all on the floor that goes from the near plane to the
+ * far distance; and in "clamp", GL_CLAMP past the texture's edges is Mesa's
+ * blend with the border color, and clamping to the edge texels in ours (see
+ * glfront.h; checked the same where the coordinates are within the
+ * texture, test_mesa()).
  */
 static const struct {
 	const char *name;
 	const struct op *ops;
 	unsigned allowed, edges;
 } scenes[] = {
-	{ "gradient", scene_gradient, 0, 0 }, { "depth", scene_depth, 2, 2 }, { "flat", scene_flat, 12, 12 },
-	{ "smooth", scene_smooth, SW * SH / 2, 12 }, { "primitives", scene_primitives, 0, 0 },
-	{ "blend", scene_blend, 4, 4 }, { "texture", scene_texture, 4, 4 }, { "clamp", scene_clamp, SW * SH, 0 },
+	{ "gradient", scene_gradient, 0, 0 }, { "depth", scene_depth, 2, 2 }, { "flat", scene_flat, 2, 2 },
+	{ "smooth", scene_smooth, SW * SH / 2, 2 }, { "primitives", scene_primitives, 0, 0 },
+	{ "blend", scene_blend, 4, 4 }, { "texture", scene_texture, 2, 2 }, { "clamp", scene_clamp, SW * SH, 0 },
 	{ "edge", scene_edge, 0, 0 }, { "multitexture", scene_multitexture, 0, 0 },
 };
 #define SCENES (sizeof scenes / sizeof scenes[0])
