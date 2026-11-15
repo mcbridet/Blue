@@ -17,6 +17,7 @@
 /* Four channels at once (each its own IEEE operation, as one at a time would be) */
 typedef float vec4 __attribute__((vector_size(16)));
 typedef int32_t vec4i __attribute__((vector_size(16)));
+typedef uint8_t vec4b __attribute__((vector_size(4)));
 
 /*
  * The values interpolated across a primitive: depth, 1/w, the fog
@@ -255,16 +256,33 @@ static inline bool alpha_pass(unsigned f, float a, float ref)
 	}
 }
 
+/* A pixel's a, r, g and b, 0 to 1 (each byte converted as a whole vector) */
 static inline vec4 unpack(uint32_t p)
 {
-	return (vec4){ (float)(p >> 24), (float)(p >> 16 & 255), (float)(p >> 8 & 255), (float)(p & 255) } *
-	       (1.0f / 255);
+	vec4b b;
+	memcpy(&b, &p, sizeof b);
+	vec4 f = __builtin_convertvector(b, vec4);
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	f = __builtin_shufflevector(f, f, 3, 2, 1, 0);
+#endif
+	return f * (1.0f / 255);
 }
 
+/*
+ * Each of a, r, g, b clamped to 0..1 (NaN stays), times 255, plus 0.5, made
+ * a whole number toward 0 (NaN: 0, as a conversion one at a time gives it on
+ * the hosts syshm runs on), as a pixel
+ */
 static inline uint32_t pack(const float c[4])
 {
-	return (uint32_t)(clamp01(c[0]) * 255 + 0.5f) << 24 | (uint32_t)(clamp01(c[1]) * 255 + 0.5f) << 16 |
-	       (uint32_t)(clamp01(c[2]) * 255 + 0.5f) << 8 | (uint32_t)(clamp01(c[3]) * 255 + 0.5f);
+	vec4 v;
+	memcpy(&v, c, sizeof v);
+	vec4i below = v < 0.0f, above = v > 1.0f;
+	v = (vec4)(((vec4i)v & ~(below | above)) | ((vec4i)(vec4){ 1, 1, 1, 1 } & above));
+	v = v * 255.0f + 0.5f;
+	v = (vec4)((vec4i)v & (v == v));
+	vec4i u = __builtin_convertvector(v, vec4i);
+	return (uint32_t)u[0] << 24 | (uint32_t)u[1] << 16 | (uint32_t)u[2] << 8 | (uint32_t)u[3];
 }
 
 /* ---- texture sampling ------------------------------------------------------- */
@@ -297,17 +315,22 @@ static void sampler_init(struct sampler *sm, const struct raster_unit *u, unsign
 	sm->bilinear = bilinear;
 }
 
-/* A texel coordinate from a scaled float one (NaN and huge values come out in range too) */
-static ALWAYS_INLINE int texel(float f, int n, bool clamp, bool pow2)
+/* A whole texel coordinate clamped or wrapped into [0, n) */
+static ALWAYS_INLINE int texel_wrap(int i, int n, bool clamp, bool pow2)
 {
-	f = fminf(fmaxf(f, -1e9f), 1e9f);
-	int i = (int)floorf(f);
 	if (clamp)
 		return i < 0 ? 0 : i >= n ? n - 1 : i;
 	if (pow2)
 		return i & (n - 1);
 	i %= n;
 	return i < 0 ? i + n : i;
+}
+
+/* A texel coordinate from a scaled float one (NaN and huge values come out in range too) */
+static ALWAYS_INLINE int texel(float f, int n, bool clamp, bool pow2)
+{
+	f = fminf(fmaxf(f, -1e9f), 1e9f);
+	return texel_wrap((int)floorf(f), n, clamp, pow2);
 }
 
 static ALWAYS_INLINE vec4 sample(const struct sampler *sm, float u, float v)
@@ -319,8 +342,20 @@ static ALWAYS_INLINE vec4 sample(const struct sampler *sm, float u, float v)
 	}
 	float fx = fminf(fmaxf(u * sm->fw - 0.5f, -1e9f), 1e9f), fy = fminf(fmaxf(v * sm->fh - 0.5f, -1e9f), 1e9f);
 	float x0f = floorf(fx), y0f = floorf(fy), ax = fx - x0f, ay = fy - y0f;
-	int xa = texel(x0f, sm->w, sm->clamp_u, sm->pow2_u), xb = texel(x0f + 1, sm->w, sm->clamp_u, sm->pow2_u);
-	int ya = texel(y0f, sm->h, sm->clamp_v, sm->pow2_v), yb = texel(y0f + 1, sm->h, sm->clamp_v, sm->pow2_v);
+	int xa, xb, ya, yb;
+	if (fabsf(x0f) < 16777216.0f && fabsf(y0f) < 16777216.0f) {
+		/* (whole numbers, and the next ones exactly: texel()'s clamping and floor change nothing) */
+		int x = (int)x0f, y = (int)y0f;
+		xa = texel_wrap(x, sm->w, sm->clamp_u, sm->pow2_u);
+		xb = texel_wrap(x + 1, sm->w, sm->clamp_u, sm->pow2_u);
+		ya = texel_wrap(y, sm->h, sm->clamp_v, sm->pow2_v);
+		yb = texel_wrap(y + 1, sm->h, sm->clamp_v, sm->pow2_v);
+	} else {
+		xa = texel(x0f, sm->w, sm->clamp_u, sm->pow2_u);
+		xb = texel(x0f + 1, sm->w, sm->clamp_u, sm->pow2_u);
+		ya = texel(y0f, sm->h, sm->clamp_v, sm->pow2_v);
+		yb = texel(y0f + 1, sm->h, sm->clamp_v, sm->pow2_v);
+	}
 	vec4 c00 = unpack(sm->p[(size_t)ya * (size_t)sm->w + (size_t)xa]);
 	vec4 c10 = unpack(sm->p[(size_t)ya * (size_t)sm->w + (size_t)xb]);
 	vec4 c01 = unpack(sm->p[(size_t)yb * (size_t)sm->w + (size_t)xa]);
@@ -497,48 +532,57 @@ static ALWAYS_INLINE void stages(const struct raster_state *s, const struct shad
 	memcpy(c, &src[RASTER_PREVIOUS], sizeof *src);
 }
 
-/* An OpenGL-style blend factor for each of a, r, g, b */
-static void blend_factor(unsigned f, const float src[4], const float dst[4], const float constant[4], float out[4])
+static ALWAYS_INLINE vec4 splat(float x)
 {
-	for (int k = 0; k < 4; k++) {
-		float v;
-		switch (f) {
-		case RASTER_F_ZERO: v = 0; break;
-		case RASTER_F_ONE: v = 1; break;
-		case RASTER_F_SRC_COLOR: v = src[k]; break;
-		case RASTER_F_ONE_MINUS_SRC_COLOR: v = 1 - src[k]; break;
-		case RASTER_F_SRC_ALPHA: v = src[0]; break;
-		case RASTER_F_ONE_MINUS_SRC_ALPHA: v = 1 - src[0]; break;
-		case RASTER_F_DST_ALPHA: v = dst[0]; break;
-		case RASTER_F_ONE_MINUS_DST_ALPHA: v = 1 - dst[0]; break;
-		case RASTER_F_DST_COLOR: v = dst[k]; break;
-		case RASTER_F_ONE_MINUS_DST_COLOR: v = 1 - dst[k]; break;
-		case RASTER_F_CONSTANT_COLOR: v = constant[k]; break;
-		case RASTER_F_ONE_MINUS_CONSTANT_COLOR: v = 1 - constant[k]; break;
-		case RASTER_F_CONSTANT_ALPHA: v = constant[0]; break;
-		case RASTER_F_ONE_MINUS_CONSTANT_ALPHA: v = 1 - constant[0]; break;
-		default: v = k ? fminf(src[0], 1 - dst[0]) : 1; break;  /* source alpha saturate */
-		}
-		out[k] = v;
+	return (vec4){ x, x, x, x };
+}
+
+/* An OpenGL-style blend factor for each of a, r, g, b */
+static ALWAYS_INLINE vec4 blend_factor(unsigned f, vec4 src, vec4 dst, vec4 constant)
+{
+	switch (f) {
+	case RASTER_F_ZERO: return splat(0);
+	case RASTER_F_ONE: return splat(1);
+	case RASTER_F_SRC_COLOR: return src;
+	case RASTER_F_ONE_MINUS_SRC_COLOR: return 1.0f - src;
+	case RASTER_F_SRC_ALPHA: return splat(src[0]);
+	case RASTER_F_ONE_MINUS_SRC_ALPHA: return splat(1 - src[0]);
+	case RASTER_F_DST_ALPHA: return splat(dst[0]);
+	case RASTER_F_ONE_MINUS_DST_ALPHA: return splat(1 - dst[0]);
+	case RASTER_F_DST_COLOR: return dst;
+	case RASTER_F_ONE_MINUS_DST_COLOR: return 1.0f - dst;
+	case RASTER_F_CONSTANT_COLOR: return constant;
+	case RASTER_F_ONE_MINUS_CONSTANT_COLOR: return 1.0f - constant;
+	case RASTER_F_CONSTANT_ALPHA: return splat(constant[0]);
+	case RASTER_F_ONE_MINUS_CONSTANT_ALPHA: return splat(1 - constant[0]);
+	default: {                              /* source alpha saturate */
+		float v = fminf(src[0], 1 - dst[0]);
+		return (vec4){ 1, v, v, v };
+	}
 	}
 }
 
-static void blend_factors(const struct raster_state *s, float c[4], uint32_t dst)
+static ALWAYS_INLINE void blend_factors(const struct raster_state *s, float c[4], const uint32_t *dst)
 {
-	float d[4], sf[4], df[4];
-	vec4 dv = unpack(dst);
-	memcpy(d, &dv, sizeof d);
+	/*
+	 * (one and zero, added: the color as it is, but -0 for +0, which packs
+	 * the same; the target not read)
+	 */
+	if (s->blend_src == RASTER_F_ONE && s->blend_dst == RASTER_F_ZERO && s->blend_eq == RASTER_EQ_ADD)
+		return;
+	vec4 d = unpack(*dst), cv;
 	if (s->blend_eq == RASTER_EQ_MIN || s->blend_eq == RASTER_EQ_MAX) {
 		for (int k = 0; k < 4; k++)
 			c[k] = s->blend_eq == RASTER_EQ_MIN ? fminf(c[k], d[k]) : fmaxf(c[k], d[k]);
 		return;
 	}
-	blend_factor(s->blend_src, c, d, s->blend_color, sf);
-	blend_factor(s->blend_dst, c, d, s->blend_color, df);
-	for (int k = 0; k < 4; k++)
-		c[k] = s->blend_eq == RASTER_EQ_SUBTRACT ? c[k] * sf[k] - d[k] * df[k] :
-		       s->blend_eq == RASTER_EQ_REVERSE_SUBTRACT ? d[k] * df[k] - c[k] * sf[k] :
-		       c[k] * sf[k] + d[k] * df[k];
+	memcpy(&cv, c, sizeof cv);
+	vec4 constant;
+	memcpy(&constant, s->blend_color, sizeof constant);
+	vec4 sf = blend_factor(s->blend_src, cv, d, constant), df = blend_factor(s->blend_dst, cv, d, constant);
+	cv = s->blend_eq == RASTER_EQ_SUBTRACT ? cv * sf - d * df :
+	     s->blend_eq == RASTER_EQ_REVERSE_SUBTRACT ? d * df - cv * sf : cv * sf + d * df;
+	memcpy(c, &cv, sizeof cv);
 }
 
 /* Compile-time variants of the pixel loop */
@@ -594,7 +638,7 @@ static ALWAYS_INLINE void put(struct raster_target *t, const struct raster_state
 	if (s->z_write && s->z_func != RASTER_Z_NONE && (c[0] > 0 || s->all_fragments))
 		t->depth[i] = depth;
 	if (s->blend == RASTER_BLEND_FACTORS) {
-		blend_factors(s, c, t->color[i]);
+		blend_factors(s, c, &t->color[i]);
 	} else if (s->blend != RASTER_BLEND_NONE && c[0] < 1) {
 		vec4 d = unpack(t->color[i]);
 		float as = clamp01(c[0]);
