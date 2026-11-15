@@ -3012,7 +3012,11 @@ static bool tools_idle(struct machine *m, bool at_trap)
  * goes no further until then: see frame_wait()); in instruction time guest
  * time moves on as if it had waited, as for disk transfers. OpenGL's
  * frames for the screen (aglSwapBuffers to a window's or the screen's port)
- * are paced the same way, each context its own source after RAVE's.
+ * are paced the same way, each context its own source after RAVE's. In
+ * real time the window shows each such frame when it's due, so they come
+ * at an even pace there (rather than as the window's own updates happen to
+ * fall, which run a little slower than 60 a second: now and then one would
+ * show a frame twice and the next skip one).
  */
 #define RAVE_DEVICE_GDEVICE 1u          /* (kQADeviceGDevice: a context drawing to a screen) */
 #define RAVE_RENDER_START 13u           /* (kQARenderStart: the draw method) */
@@ -3034,6 +3038,8 @@ static uint64_t guest_now(const struct machine *m)
 static bool frame_paced(struct machine *m, unsigned source, uint32_t id)
 {
 	uint64_t now = guest_now(m), shown = video_frame_shown(&m->video, source, id, now);
+	if (m->realtime && m->display)
+		m->next_frame_ns = host_ns_at(m, shown, TIMEBASE_HZ);
 	if (shown == now)
 		return false;
 	if (!m->realtime) {
