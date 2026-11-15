@@ -115,7 +115,9 @@ Done:
   in place of the Driver Services timer. The restored 9.2.2 reaches the
   Finder in instruction time without a key. See Findings, "The display's
   interrupt".
-- **OpenGL's groundwork** (Task 18; milestone 0 of docs/opengl-plan.md):
+- **OpenGL** (Task 18; milestones 0 and 1 of docs/opengl-plan.md): the
+  libraries, AGL and clears, checked by a test application in the guest.
+  The groundwork (milestone 0):
   the 3D backend's texture units and stages, blend equations and color
   masks, with RAVE drawing through them, pixels unchanged; the software
   rasterizer without fused multiply-adds; the fragment builder's many
@@ -691,8 +693,14 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 18. OpenGL for Mac OS 9 games
 
-- **Status:** milestone 0 done (docs/opengl-plan.md has the plan, its
-  milestones and what's built). syshm's own OpenGLLibrary, OpenGLMemory and
+- **Status:** milestones 0 and 1 done (docs/opengl-plan.md has the plan,
+  its milestones and what's built). Milestone 1: the three libraries
+  (`src/opengl.c`, from the table `tools/gltable.py` made of Apple's),
+  AGL, contexts laid out as Apple's with their dispatch tables, swaps into
+  a window's port clipped to its regions (`src/surface.c`), clears; a test
+  application of syshm's own (`src/gltest.c`) whose window, cleared through
+  the guest's OpenGL on installed 8.5 and 8.6, gives the same screenshot on
+  macOS and Linux, in software and on the GPU. Milestone 0: syshm's own OpenGLLibrary, OpenGLMemory and
   OpenGLUtility, recording calls in guest memory, with OpenGL's fixed
   function in C on the host, drawn by `raster.c` and `gpu.c`. Done: the
   3D backend's richer vertices and states (three colors, a fog coordinate,
@@ -715,7 +723,8 @@ the kernel); 8 onwards as the boot progresses.
   on macOS (with the next item) and Linux; on the GPU, 4 frames differ,
   each in one pixel's channel by one step. The 8.5 and 9.1 CDs boot to the same screenshots as
   main's.
-- **Next:** milestone 1, AGL and a clear.
+- **Next:** milestone 2, a triangle (recording, matrices, the front end's
+  transform and clipping).
 
 ## Findings
 

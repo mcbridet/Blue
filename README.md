@@ -760,6 +760,21 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
   Mesa's llvmpipe included. `SYSHM_RAVE_FPS=1` prints the frame rate every
   second, and `SYSHM_LOG_RAVE=1` logs every call. docs/gpu-plan.md
   describes the GPU backend in full.
+- **syshm OpenGL Library, Memory and Utility** (under way; on the volume,
+  not offered by the installer yet: docs/opengl-plan.md): Mac OS 9's
+  OpenGL libraries, as syshm's own, under Apple's fragment names
+  (OpenGLLibrary, OpenGLMemory, OpenGLUtility) with Apple's exports, put
+  in Extensions (on 8.5 and 8.6, which have no OpenGL of their own). Their
+  calls are host calls (`src/opengl.c`), and they draw with the 3D
+  engine's backend, on the GPU in real time and in software otherwise,
+  into the context's window (clipped to its regions), the screen or an
+  offscreen buffer, when it's swapped. So far: AGL (one accelerated
+  renderer, ATI's "Rage 128 OpenGL Engine" as on Mac OS 9, its pixel
+  formats and renderer info; contexts laid out as Apple's, with their
+  dispatch tables; drawables, swaps, swap and buffer rectangles) and, of
+  OpenGL, clears (with the scissor box and masks), the viewport, strings,
+  errors and some queries; OpenGLMemory's allocations. `SYSHM_LOG_GL=1`
+  logs every call.
 
 Like the drivers, these are generated code fragments whose logic runs in
 syshm through host calls (`src/tools.c`). Bugdom's setup, for the record:
@@ -1327,6 +1342,18 @@ make test       # unit tests; the ROM test uses ./MOS.rom or $SYSHM_TEST_ROM if 
 SYSHM_JIT_PROGRAMS=200000 build/syshm-tests jit    # longer JIT-vs-interpreter fuzzing
 ```
 
+The guest's OpenGL is checked in the guest too, by a test application of
+syshm's own, "syshm GL Test" (`src/gltest.c`: its logic is C in syshm
+calling the guest's OpenGLLibrary through the Code Fragment Manager's
+linking, as a game would). `SYSHM_TOOLS_GL_TEST=1 build/syshm tools create
+FILE` puts it on the tools volume; with the OpenGL libraries in a disk
+image's Extensions folder and it in Startup Items (hfsutils' `hcopy -m`
+copies them), a run in instruction time shows its window with the scene
+`SYSHM_GL_TEST_SCENE` names (`clear`: a clear, and a scissored one) at the
+depth `SYSHM_GL_TEST_DEPTH` sets (16 or 32), the same on every host.
+`tools/gltable.py` made `src/opengl_table.h`, the libraries' functions,
+from Apple's (Mac OS 9.2.2's) and the macOS SDK's OpenGL headers.
+
 CI (`.github/workflows/ci.yml`) builds and tests on Linux and macOS, each on
 x86_64 and AArch64, with warnings as errors; on AArch64 (Linux and macOS)
 it also fuzzes the JIT with 100,000 programs, and on Linux the GPU backend
@@ -1487,14 +1514,17 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           reader: the startup disk's ROM file), share.c (shared folder),
           rsrc.c (resource forks), tools.c (guest tools), install.c
           (installing them from inside Mac OS), clip.c (the clipboard they
-          share with the host), rave.c (3D engine) + raster.c + gpu.c + gl.c
-          (the 3D backend: software and OpenGL), display.c (SDL2
+          share with the host), rave.c (3D engine), opengl.c +
+          opengl_table.h (the guest's OpenGL libraries), gltest.c (their test
+          application), surface.c + raster.c + gpu.c + gl.c (the 3D backend:
+          drawing, in software and with OpenGL, and presenting), display.c (SDL2
           window), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), main.c
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
-          devtree.py (device-tree copy dumper), disasm.py (disassembler)
+          devtree.py (device-tree copy dumper), disasm.py (disassembler),
+          gltable.py (the OpenGL libraries' functions, from Apple's)
 docs/     gpu-plan.md (the 3D engine's OpenGL backend), opengl-plan.md and
           glide-plan.md (Mac OS 9's OpenGL, under way, and 3dfx Glide),
           nk2-reference.md (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2

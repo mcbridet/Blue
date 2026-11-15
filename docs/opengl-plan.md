@@ -12,11 +12,91 @@ It should come first (see Order).
 
 ## Status
 
-Milestone 0, the groundwork (shared with Glide), is built; milestones 1 to
-6 are to do. The user chose OpenGL before Glide, and accepted the proposed
-decisions below for now (replacing the libraries, recording in guest
-memory, fixed function in C on the host, frames read back into guest
-memory, a Rage 128's identity).
+Milestones 0 (the groundwork, shared with Glide) and 1 (AGL and a clear)
+are built; milestones 2 to 6 are to do. The user chose OpenGL before
+Glide, and accepted the proposed decisions below for now (replacing the
+libraries, recording in guest memory, fixed function in C on the host,
+frames read back into guest memory, a Rage 128's identity).
+
+Milestone 1:
+
+- **The libraries** (`src/opengl.c`, `src/opengl_table.h`): OpenGLLibrary
+  (440 gl and 33 agl functions, and `glc_cc`), OpenGLMemory (25) and
+  OpenGLUtility (51), with Apple's fragment names, exports and versions
+  (current 1, oldest compatible 0), each export a host-call stub so far
+  (recording comes with milestone 2). `tools/gltable.py` made the table
+  from Mac OS 9.2.2's libraries (the exports, and the dispatch table's
+  offset each gl wrapper calls through, read from its code) and the macOS
+  SDK's headers (signatures; AGL's and OpenGLMemory's, which macOS lacks,
+  are in the script). They're on the tools volume as "syshm OpenGL
+  Library", "... Memory" and "... Utility" (type `shlb`, creator `syGL`);
+  the installer doesn't offer them yet. Each process gets its own
+  instance of OpenGLLibrary's data, which has its contexts, pixel formats
+  and renderer infos (zero-filled), and the strings it hands out; its
+  initialization and termination routines start and end the instance on
+  the host. Unimplemented functions do nothing, and say so once.
+- **The dispatch table** (verified): Mac OS 9.2.2's wrappers each call
+  through the slot at a fixed offset of the context (`glc_cc` points at it,
+  its first word is passed first): 441 slots from +0x4 to +0x6E4, in the
+  order of Mac OS X's `GLIFunctionDispatch` (`gliDispatch.h`) but for
+  +0x544, `blend_func_separate` there, which Mac OS 9 doesn't export, and
+  +0x650 and +0x654, which are `glBlendColor` and `glBlendEquation` rather
+  than Mac OS X's vertex array range functions. syshm's contexts are laid
+  out so (their handle is their own address), and each slot calls the gl
+  function with the handle first.
+- **AGL:** one renderer (ID 0x00021000, accelerated, 32 MB of video and
+  texture memory, window, full-screen and offscreen drawables, single and
+  double buffers, depth 16/24/32, stencil 8 (not drawn yet), RGB 555 and
+  888); `aglChoosePixelFormat` takes RGBA formats on 16- or 32-bit devices
+  (the main device if none are given) and refuses accumulation, auxiliary,
+  stereo and multisample buffers, other renderer IDs, and 8-bit screens;
+  formats and renderer infos describe themselves; contexts, the current
+  one (`glc_cc`), `aglCopyContext` (all state), drawables (a color port:
+  its `portRect`, or with `AGL_BUFFER_RECT` that rectangle; an offscreen
+  buffer), `aglUpdateContext`, `aglSwapBuffers`, swap rectangles, the swap
+  interval kept; `aglGetVersion` 1.1 and Apple's error strings, as Mac OS
+  9.2.2's. Not yet: `aglSetFullScreen`, `aglUseFont`.
+- **Drawing and presenting** (`src/surface.c`): a context's buffers are a
+  3D backend surface, drawn by the GPU or `raster.c` as RAVE's are; a swap
+  (or `glFlush` and `glFinish` single-buffered) draws what's recorded and
+  copies it into the port's pixmap (16 or 32 bits), clipped to the port's
+  `visRgn` and `clipRgn` themselves (QuickDraw's region format is walked
+  row by row), or into the offscreen buffer (alpha kept).
+- **OpenGL so far:** `glClear` (color and depth, within the scissor box,
+  with the color and depth masks), `glClearColor`, `glClearDepth`,
+  `glViewport` and `glScissor` (set to the drawable's size when first
+  attached), `glEnable`/`glDisable`/`glIsEnabled` (the scissor test),
+  `glColorMask`, `glDepthMask`, `glGetString` (vendor "ATI Technologies
+  Inc.", renderer "Rage 128 OpenGL Engine", version "1.2 syshm", no
+  extensions yet), `glGetError`, `glGet*` for those and a few limits,
+  `glFlush`, `glFinish`. OpenGLMemory: `glmMalloc` and the rest through
+  `NewPtr`, `NewPtrClear`, `GetPtrSize` and `DisposePtr`; the fills and
+  copies on the host; modes and settings accepted. OpenGLUtility: nothing
+  yet.
+- **The test application** (`src/gltest.c`, "syshm GL Test", on the tools
+  volume with `SYSHM_TOOLS_GL_TEST=1`): logic in C on the host making
+  callouts through its imports (InterfaceLib's, OpenGLLibrary's), so the
+  Code Fragment Manager links it to the libraries as a game. It sets the
+  screen's depth, opens a 320x240 window, makes a double-buffered context
+  in it, prints the strings, and draws its scene at once and at each
+  update event. Scene `clear`: the window cleared to (0.25, 0.5, 0.75),
+  and a 100x60 orange rectangle 20 pixels in from the bottom left
+  (scissored). Checked on installed 8.5 and 8.6 (libraries in Extensions,
+  the application in Startup Items, put there with hfsutils on APFS
+  clones), in instruction time: the window's pixels exact (0x4080BF and
+  0xFF8000 at 32 bits; at 16 bits their 5-bit forms), the screenshot the
+  same in two runs, with `SYSHM_GPU=1`, and on Linux (Mesa) as on macOS.
+- **Tests:** `tests/test_opengl.c` (the fragments; AGL's formats, renderer
+  info, errors and strings; a context's layout; a clear and a scissored
+  one swapped into a window's port through a `clipRgn` with a hole, at 32
+  and 16 bits, with a swap rectangle, and into an offscreen buffer; calls
+  through the dispatch table; OpenGLMemory's callouts), in software and on
+  the GPU; the builder's TVector relocations in runs of at most 512
+  (`tests/test_tools.c`).
+- Not checked yet: Mac OS 9.x, where Apple's same-named libraries are in
+  Extensions too (the user's 9.2.2 image was in use).
+
+Milestone 0:
 
 - **The 3D backend** (`src/raster.h`, `src/raster.c`, `src/gpu.c`):
   vertices carry three colors (the primary one; OpenGL's secondary color,
@@ -395,9 +475,8 @@ passes the handler f1-f13 too.
 
 **Contexts:** `aglCreateContext` returns a pointer to a structure laid out
 as Apple's: word 0 a handle, then TVector pointers at Apple's offsets
-(+0x4 to at least +0x6D8; the eight stack-argument functions' offsets are
-still to read from Apple's code), whose entries take that handle first
-(generated variants of the same stubs). `glc_cc` is exported as Apple's
+(+0x4 to +0x6E4: see Status, milestone 1), whose entries take that handle
+first (generated variants of the same stubs). `glc_cc` is exported as Apple's
 is. Programs that call through the table then work too, at little cost.
 
 **Per-process data:** like any `shlb` with process-shared data, each
