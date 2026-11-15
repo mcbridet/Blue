@@ -12,43 +12,59 @@ sharing everything that isn't about the host's instructions.
 
 The x86-64 JIT is complete: milestone 5 (performance) done.
 
-- **Measured as real x86 processors would run it**: the host instructions
-  each guest instruction costs, counted exactly by QEMU (user mode, a TCG
-  plugin counting every instruction executed) for the Linux x86_64 build,
-  and the same for the AArch64 build under `qemu-aarch64` (its 8.5 count,
-  23.9 billion, is within 4% of the M5's own counters, 24.7 billion, which
-  take in the process's other threads). A map from each translated block (each guest
-  instruction's host code and kind) and an interpreted run's guest
-  instructions by kind divide the count by guest instruction, kind,
+- **Measured**: on a real x86 processor (an AMD Ryzen Threadripper PRO
+  9975WX, Zen 5, CachyOS Linux, the user's: build, tests, fuzzing,
+  timings, the processor's counters), and by QEMU, which counts exactly
+  the instructions an x86 processor would run (user mode, a TCG plugin;
+  the same for the AArch64 build under `qemu-aarch64`, whose 8.5 count,
+  23.9 billion, is within 4% of the M5's own counters, 24.7 billion with
+  the process's other threads). A map from each translated block (each
+  guest instruction's host code and kind) and an interpreted run's guest
+  instructions by kind divide QEMU's count by guest instruction, kind,
   out-of-line code, stubs and syshm's functions (Findings: the method).
-- **What changed** (each where the counts said): CR fields from CMOVs of
-  constants in memory, XER's SO tested out of line, CA from SBB, OV out
-  of line on JO (`addco.`, 96 million times in the 8.5 boot, 28 → 17);
-  D-form accesses `[r15 + rA + d]` with no EA computed; `rlwimi` of a byte
-  or halfword by a partial-register MOV or AND, MOVZX, LEA; the block
-  table's first level biased per page so lookups don't mask; exits to a
-  block that exists linked when translated; r29 in a host register (r14,
-  the budget moving to memory); the context switch's register copies
-  unrolled on x86 (GCC kept them loops: `nk.c`).
-- **Host instructions per guest instruction**, the CD boots in
-  instruction time (Linux; libraries mostly QEMU's counting of `rep
-  movsb`, Findings):
+  Instruction counts steered; the real processor's times decided.
+- **What changed**: CR fields from CMOVs of constants in memory, XER's SO
+  tested out of line, CA from SBB, OV out of line on JO (`addco.`, 96
+  million times in the 8.5 boot, 28 → 17 instructions); D-form accesses
+  `[r15 + rA + d]` with no EA computed; `rlwimi` of a byte or halfword by
+  a partial-register MOV or AND, MOVZX, LEA; the block table's first level
+  biased per page so lookups don't mask; exits to a block that exists
+  linked when translated; the context switch's register copies unrolled
+  on x86 (GCC kept them loops: `nk.c`). Tried and reverted: r29 in a
+  host register with the budget in memory (Findings).
+- **On the Zen 5** (Linux, gcc, medians of 5; the same boots end exactly
+  as on AArch64, logs and screenshots, with and without fastmem):
+
+  | | 8.5 | 9.1 | 9.2.2 |
+  |---|---|---|---|
+  | interpreter | 14.71 s | 14.49 s | 10.22 s |
+  | JIT, milestone 4 | 1.597 s | 1.839 s | 1.682 s |
+  | JIT, now | 1.460 s | 1.543 s | 1.511 s |
+  | cycles per guest instruction, milestone 4 → now | 2.12 → 1.85 | 2.40 → 2.01 | 2.89 → 2.62 |
+  | instructions per guest instruction, milestone 4 → now | 7.25 → 6.02 | 8.56 → 6.98 | 7.46 → 6.24 |
+
+  The JIT is 10.1, 9.4 and 6.8 times the interpreter (clang's builds:
+  1.475, 1.587 and 1.533 s, against 16.0, 15.5 and 10.9). The benchmark
+  (guest instructions a second, millions): dispatch 1,077, integer 8,266,
+  copy 10,645, FP 1,631, against the interpreter's 358, 480, 767 and 206.
+- **Host instructions per guest instruction** (QEMU, Linux; libraries
+  mostly QEMU's counting of `rep movsb`, Findings):
 
   | | 8.5 | 9.1 | 9.2.2 |
   |---|---|---|---|
   | x86, milestone 4 | 7.53 (translated 5.53, syshm 1.85) | 8.79 (5.30, 3.42) | 7.65 (5.56, 2.01) |
-  | x86, now | 6.24 (4.50, 1.59) | 7.09 (4.42, 2.59) | 6.28 (4.53, 1.67) |
+  | x86, now | 6.30 (4.57, 1.59) | 7.21 (4.54, 2.59) | 6.43 (4.68, 1.67) |
   | AArch64 | 5.98 (4.51, 1.46) | 6.91 (4.47, 2.44) | 5.84 (4.27, 1.56) |
 
-  x86 against AArch64: 1.26, 1.27 and 1.31 before, 1.04, 1.03 and 1.08
+  x86 against AArch64: 1.26, 1.27 and 1.31 before, 1.05, 1.04 and 1.10
   now (the plan's aim: 1.3). By kind, 8.5's boot (host instructions per
   guest instruction of that kind, x86 before → now, AArch64): ALU 6.93 →
-  4.64 (4.15), rotates 4.53 → 3.46 (2.22), compares 10.75 → 8.08 (8.78),
-  `bclr`/`bcctr` 13.07 → 11.14 (9.92), loads 2.94 → 2.28 (3.71), stores
-  3.97 → 3.51 (4.25), `bc` 2.17 (1.19: test and jump, which x86 fuses
+  4.70 (4.15), rotates 4.53 → 3.79 (2.22), compares 10.75 → 8.09 (8.78),
+  `bclr`/`bcctr` 13.07 → 11.38 (9.92), loads 2.94 → 2.31 (3.71), stores
+  3.97 → 3.51 (4.25), `bc` 2.18 (1.19: test and jump, which x86 fuses
   into one operation). What's left is mostly `rlwimi` (AArch64's BFI is
   one instruction), the inline lookup and the guest registers in memory
-  (x86 has six fixed, AArch64 eight).
+  (x86 has five fixed, AArch64 eight).
 - **Fastmem off** (a commit of its own, both translators): a load from a
   readable page below an unreadable one no longer goes to the
   interpreter. With `SYSHM_JIT_FASTMEM=0` the 9.1 and 9.2.2 boots' exits
@@ -60,10 +76,13 @@ The x86-64 JIT is complete: milestone 5 (performance) done.
 - **AArch64's byte-reversed device accesses**: 198, 461 and 594 exits in
   the three boots (0.4-1.9% of their interpreter exits) and 186 in Unreal
   Tournament's 30 billion instructions: left as they are.
-- **Under Rosetta**, writes to code that has run (a new block, a link,
-  an invalidation) take 29-32% of a boot (the profiler's samples on those
-  stores); linking at translation time cut the links' share from 14% to
-  5%. Real processors don't pay it.
+- **Under Rosetta** on the M5 (medians of 5): the 8.5, 9.1 and 9.2.2 boots
+  take 5.47, 4.11 and 3.99 s (milestone 4: 5.91, 4.47 and 4.45;
+  interpreted: 21.2, 21.0 and 17.3), against AArch64's 1.00, 1.38 and
+  1.39 natively (interpreted: 14.1, 14.1 and 12.8). Writes to code that
+  has run (a new block, a link, an invalidation) take about 30% of that
+  (the profiler's samples on those stores); linking at translation time
+  cut the links' share from 14% to 5%. Real processors don't pay it.
 
 Milestone 4 done (the rest):
 
@@ -422,8 +441,9 @@ alternating runs before and after: the 8.5 CD to 4 billion, the 9.1 and
 | Host | Role |
 |---|---|
 | rbx | `struct ppc_cpu *` (callee-saved) |
+| r14 | instructions left in the budget (callee-saved) |
 | r15 | fastmem view base, guest address 0 (callee-saved) |
-| rbp, r12, r13, r14 | fixed guest registers CR, r24, r3, r29 (callee-saved) |
+| rbp, r12, r13 | fixed guest registers CR, r24, r3 (callee-saved) |
 | r10, r11 | fixed guest registers r4, LR (written back around calls into C) |
 | rsi, rdi, r8, r9 | register cache: four LRU slots, as on AArch64 |
 | rax, rcx, rdx | scratch (and division's, MULX's implicit operands) |
@@ -441,12 +461,13 @@ Notes on the table:
   keeps `jit_state` out of the 16 KB host pages where Rosetta would
   retranslate code after each write.
 - **The fixed guest registers** are the five most used in the counts
-  above, and r29 (milestone 5): the guest register translated code loaded
-  and stored most often in the 9.1 and 9.2.2 boots (0.12 and 0.15 times
-  per guest instruction), the 68k emulator's. The budget (instructions
-  left) gave up r14 for it: it lives in `jit_state.remaining`, which block
-  entries, exits and the time base use as a memory operand, in as many
-  instructions. The cache catches reuse within a block.
+  above. The cache catches reuse within a block. Milestone 5 tried r29
+  as a sixth (the guest register translated code loads and stores most in
+  the 9.1 and 9.2.2 boots, 0.12 and 0.15 times per guest instruction),
+  with the budget moved to memory for r14: fewer instructions, but slower
+  on a real processor (Findings), so it was reverted. r29 in a cache
+  slot's register instead leaves three slots, too few for instructions
+  that need four registers at once.
 - **Upper halves are kept zero.** 32-bit operations zero-extend on x86, so
   a guest value is always usable as a 64-bit index.
 
@@ -546,8 +567,7 @@ Notes on the table:
   write protection to switch.
 - **No cache maintenance**: x86 keeps instruction fetch coherent with the
   same thread's stores, so `arch_sync()` does nothing.
-- **Block entry**: `cmp qword [rip + remaining], imm32` and `jb` to the
-  budget stub.
+- **Block entry**: `cmp r14, imm32` (7 bytes) and `jb` to the budget stub.
   The 8-byte block pointer stays in front of the code, aligned so the
   code starts on 16 bytes (milestone 5 measures whether that helps).
 - **Links**: `jmp rel32`, straight to the block at the target if it
@@ -753,6 +773,24 @@ candidate if profiles ask for it.
   with the next page unreadable). Fixed in milestone 5 (`slow_loads()`
   in both translators; on AArch64 only without fastmem, so that its code
   with fastmem stays as it was).
+- **On a real x86 processor, fewer instructions weren't always faster**:
+  r29 in r14, with the budget moved to `jit_state.remaining` (block
+  entries comparing it in memory, exits subtracting from it there), cut
+  0.07-0.15 host instructions per guest instruction from the boots, but
+  on the Zen 5 the 8.5, 9.1 and 9.2.2 boots took 1.469, 1.594 and 1.549 s
+  with it against 1.436, 1.533 and 1.485 s without, and the benchmark's
+  integer and copy loops ran 7% and 18% slower: each block's exit and
+  the next block's entry depend on each other through a store and a load.
+  Reverted. Rosetta had shown no difference.
+- **Where the Zen 5's cycles go** (its counters, per guest instruction,
+  read by a measuring build): the 8.5 boot 1.85 cycles, 0.36 of them with
+  the front end stalled, 0.0052 branch misses, 0.051 L1 instruction-cache
+  misses; 9.2.2's 2.62 cycles, 0.89 stalled in the front end, 0.0175
+  branch misses (the 68k emulator's dispatch through `bctr`, returns
+  through `blr`), 0.065 instruction-cache misses. Translated code takes
+  71% (8.5) and 81% (9.2.2) of the profiler's samples. What would help
+  next is in the front end: returns predicted (a shadow return stack for
+  `bl`/`blr`), fewer bytes of code per guest instruction.
 - **Counting host instructions without the host**: QEMU's user mode
   with a TCG plugin that counts each translated block's executions (and
   so every instruction's) gives the instructions an x86 processor would
@@ -854,8 +892,8 @@ statistics (the JIT's own line aside).
 
    Kernel and device exit counts as AArch64's.
 5. **Performance**, by measurement (done; Status), the list as planned:
-   - register assignment: r29 the sixth fixed register, the budget in
-     memory;
+   - register assignment: r29 as a sixth fixed register, the budget in
+     memory: tried, and reverted on the real processor's times;
    - compare-and-branch fusion and a lazy CR0: not needed once a CR field
      took eight instructions (AArch64's count); a branch's `test` and jump
      fuse in the processor anyway;
@@ -865,7 +903,7 @@ statistics (the JIT's own line aside).
      counts can't say more, real hardware could;
    - memory operands for read-once guest registers: not done; what
      translated code loads and stores is mostly registers used again in
-     the next block (r29, r27, XER, r1), which r29's register addressed;
+     the next block (r29, r27, XER, r1);
    - native `lswx`/`stswx`: not needed (0.01-0.02% of the boots'
      instructions);
    - the 68k emulator's dispatch jump: the inline lookup no longer masks
@@ -876,7 +914,7 @@ statistics (the JIT's own line aside).
      the boots run almost no FP (0.1% of instructions).
 
    The aim was host instructions per guest instruction within about 1.3
-   times AArch64's: 1.03-1.08 in the CD boots.
+   times AArch64's: 1.04-1.10 in the CD boots.
 
 ## Tests
 

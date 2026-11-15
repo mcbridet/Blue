@@ -1011,16 +1011,18 @@ software (on 8.6, an M5 Mac).
     instructions call the interpreter from inside the block, as on
     AArch64. It needs x86-64-v3 (AVX2, FMA3,
     BMI1/2, LZCNT, MOVBE; other processors interpret, and syshm says
-    what's missing). Six guest registers live in host registers (CR, LR,
-    r3, r4, r24, r29) and four more are cached within a block. Its code
-    takes about as many host instructions per guest instruction as
-    AArch64's: in the CD boots, everything included, 1.03-1.08 times
-    AArch64's (counted by QEMU; docs/x86-jit-plan.md). Under Rosetta 2,
+    what's missing). Five guest registers live in host registers (CR, LR,
+    r3, r4, r24) and four more are cached within a block. Its code takes
+    about as many host instructions per guest instruction as AArch64's:
+    in the CD boots, everything included, 1.04-1.10 times AArch64's
+    (counted by QEMU; docs/x86-jit-plan.md). On an AMD Zen 5 (Linux) the
+    8.5, 9.1 and 9.2.2 CD boots take 1.46, 1.54 and 1.51 s (interpreted:
+    14.7, 14.5 and 10.2 s). Under Rosetta 2,
     `ROSETTA_ADVERTISE_AVX=1` in the environment has it offer x86-64-v3.
     The 8.5, 9.1 and 9.2.2 CD boots in instruction time end exactly as on
     AArch64, and so do an installed 9.2.2's start and Unreal Tournament's
     intro on 8.6; under Rosetta on an M5 the 8.5 CD's 4 billion
-    instructions take about 6 s (interpreted: 24 s), about 30% of it in
+    instructions take about 5.5 s (interpreted: 21 s), about 30% of it in
     Rosetta's handling of syshm's writes to code that has run (new blocks,
     links: about 13 µs each), a cost x86 processors don't have.
   - `SYSHM_JIT_PROFILE=1` samples where host time goes (translated blocks
