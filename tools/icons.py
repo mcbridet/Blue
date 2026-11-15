@@ -14,8 +14,8 @@ finder  The Finder icons of the guest tools and their volume in Mac OS,
         pixel art in art/finder-icons.txt, to src/finder_icons.inc (each
         icon's ICN#, icl8, icl4, ics#, ics8 and ics4 resources) and a
         preview, art/finder-icons.png.
-site    site/favicon.svg (the master's stack) and site/og-image.png
-        (1200 x 630).
+site    The master's stack as site/favicon.svg and site/index.html's logo
+        (#i-logo), and site/og-image.png (1200 x 630).
 
 CHROME names the browser (else Chrome, Chrome Canary or Chromium where they
 usually are, or on the PATH).
@@ -419,15 +419,33 @@ def make_finder(tmp):
 
 # ---- the site ------------------------------------------------------------------
 
-def stack_svg():
-    """The master's stack alone, in its own 32-unit space"""
+def stack_parts():
+    """The master's stack alone, in its own 32-unit space: its gradients, and its paths"""
     svg = master()
-    defs = re.search(r'<defs>.*?</defs>', svg, re.S).group(0)
+    defs = re.search(r'<defs>(.*?)</defs>', svg, re.S).group(1)
     defs = re.sub(r'\s*<filter.*?</filter>', '', defs, flags=re.S)
     defs = re.sub(r'\s*<linearGradient id="tile-.*?</linearGradient>', '', defs, flags=re.S)
-    g = re.search(r'<g id="stack"[^>]*>(.*?)</g>', svg, re.S).group(1)
-    return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">\n  ' + defs + '\n'
-            '  <g stroke="#0b2e38" stroke-linejoin="round">' + g.rstrip() + '\n  </g>\n</svg>\n')
+    paths = re.search(r'<g id="stack"[^>]*>(.*?)</g>', svg, re.S).group(1)
+    return defs.strip('\n'), paths.strip('\n')
+
+
+def indent(text, by):
+    lines = [line.rstrip() for line in text.split('\n') if line.strip()]
+    least = min(len(line) - len(line.lstrip()) for line in lines)
+    return '\n'.join(by + line[least:] for line in lines)
+
+
+def stack_svg():
+    defs, paths = stack_parts()
+    return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">\n  <defs>\n' + indent(defs, '    ') +
+            '\n  </defs>\n  <g stroke="#0b2e38" stroke-linejoin="round">\n' + indent(paths, '    ') + '\n  </g>\n</svg>\n')
+
+
+def stack_symbol():
+    """... as index.html's #i-logo"""
+    defs, paths = stack_parts()
+    return ('<symbol id="i-logo" viewBox="0 0 32 32">\n    <defs>\n' + indent(defs, '      ') + '\n    </defs>\n'
+            '    <g stroke="#0b2e38" stroke-linejoin="round">\n' + indent(paths, '      ') + '\n    </g>\n  </symbol>')
 
 
 def make_site(tmp):
@@ -435,6 +453,14 @@ def make_site(tmp):
     with open(favicon, 'w') as f:
         f.write(stack_svg())
     print('icons:', os.path.relpath(favicon, ROOT))
+    index = os.path.join(ROOT, 'site', 'index.html')
+    with open(index) as f:
+        html = f.read()
+    html, n = re.subn(r'<symbol id="i-logo".*?</symbol>', lambda m: stack_symbol(), html, count=1, flags=re.S)
+    assert n == 1, 'index.html: no #i-logo'
+    with open(index, 'w') as f:
+        f.write(html)
+    print('icons:', os.path.relpath(index, ROOT), '(#i-logo)')
     svg = master()
     card = ('<div style="width:1200px;height:630px;position:relative;overflow:hidden;'
             'background:#0095b6 linear-gradient(160deg,#36b4cf 0%,#0095b6 55%,#007894 100%);'

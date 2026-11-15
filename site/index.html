@@ -3,11 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>syshm: classic Mac OS on a native kernel</title>
+<title>Blue: classic Mac OS on a native kernel</title>
 <meta name="description" content="Run classic Mac OS on arbitrary hardware by replacing the bottom of the OS instead of emulating a whole Power Mac. For macOS and Linux, on AArch64 (Apple silicon) and x86_64.">
 <meta property="og:type" content="website">
-<meta property="og:title" content="syshm">
+<meta property="og:url" content="__SITE__/">
+<meta property="og:title" content="Blue">
 <meta property="og:description" content="Run classic Mac OS on arbitrary hardware by replacing the bottom of the OS instead of emulating a whole Power Mac. For macOS and Linux, on AArch64 (Apple silicon) and x86_64.">
+<meta property="og:image" content="__SITE__/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Blue's mark, three slabs in white and Bondi Blue, beside the words Blue: Classic Mac OS on a native kernel">
+<meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#dddddd">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
@@ -18,16 +24,36 @@
 
 <svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
   <symbol id="i-logo" viewBox="0 0 32 32">
-    <g stroke="#000" stroke-linejoin="round">
-      <path d="M16 15 29 21.5 16 28 3 21.5Z" fill="#6666cc"/>
-      <path d="M3 21.5 16 28V31L3 24.5Z" fill="#4d4daa"/>
-      <path d="M16 28 29 21.5V24.5L16 31Z" fill="#333388"/>
-      <path d="M16 9 29 15.5 16 22 3 15.5Z" fill="#ccccff"/>
-      <path d="M3 15.5 16 22V25L3 18.5Z" fill="#9999dd"/>
-      <path d="M16 22 29 15.5V18.5L16 25Z" fill="#7777bb"/>
-      <path d="M16 3 29 9.5 16 16 3 9.5Z" fill="#fff"/>
-      <path d="M3 9.5 16 16V19L3 12.5Z" fill="#ccc"/>
-      <path d="M16 16 29 9.5V12.5L16 19Z" fill="#999"/>
+    <defs>
+      <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#ffffff" stop-opacity=".7"/>
+        <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+      </linearGradient>
+      <linearGradient id="bondi-top" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#33b5d1"/>
+        <stop offset="1" stop-color="#0095b6"/>
+      </linearGradient>
+      <linearGradient id="ice-top" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#c4ecf4"/>
+        <stop offset="1" stop-color="#8cd2e1"/>
+      </linearGradient>
+      <linearGradient id="white-top" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#ffffff"/>
+        <stop offset="1" stop-color="#ececec"/>
+      </linearGradient>
+    </defs>
+    <g stroke="#0b2e38" stroke-linejoin="round">
+      <path d="M16 15 29 21.5 16 28 3 21.5Z" fill="url(#bondi-top)"/>
+      <path d="M16 16.4 26.2 21.5 16 26.6 5.8 21.5Z" fill="url(#gloss)" stroke="none" opacity=".5"/>
+      <path d="M3 21.5 16 28V31L3 24.5Z" fill="#00728c"/>
+      <path d="M16 28 29 21.5V24.5L16 31Z" fill="#00566a"/>
+      <path d="M16 9 29 15.5 16 22 3 15.5Z" fill="url(#ice-top)" fill-opacity=".92"/>
+      <path d="M16 10.4 26.2 15.5 16 20.6 5.8 15.5Z" fill="url(#gloss)" stroke="none" opacity=".6"/>
+      <path d="M3 15.5 16 22V25L3 18.5Z" fill="#4fb6cc" fill-opacity=".92"/>
+      <path d="M16 22 29 15.5V18.5L16 25Z" fill="#2c94ab" fill-opacity=".92"/>
+      <path d="M16 3 29 9.5 16 16 3 9.5Z" fill="url(#white-top)"/>
+      <path d="M3 9.5 16 16V19L3 12.5Z" fill="#d6d6d6"/>
+      <path d="M16 16 29 9.5V12.5L16 19Z" fill="#a9a9a9"/>
     </g>
   </symbol>
   <symbol id="i-hd" viewBox="0 0 32 32">
@@ -77,7 +103,7 @@
       <path d="M2.5 7.5h9l2 2h16v4h-27Z" fill="#9999dd"/>
       <rect x="2.5" y="12.5" width="27" height="15" fill="#ccccff"/>
       <rect x="11.5" y="15.5" width="9" height="8" fill="#ddd"/>
-      <rect x="13.5" y="17.5" width="5" height="4" fill="#6066a8"/>
+      <rect x="13.5" y="17.5" width="5" height="4" fill="#0089a8"/>
     </g>
   </symbol>
   <symbol id="i-box" viewBox="0 0 32 32">
@@ -90,14 +116,14 @@
   <symbol id="i-monitor" viewBox="0 0 32 32">
     <g stroke="#000" stroke-linejoin="round">
       <rect x="3.5" y="4.5" width="25" height="18" rx="1" fill="#ddd"/>
-      <rect x="6.5" y="7.5" width="19" height="12" fill="#6666cc"/>
+      <rect x="6.5" y="7.5" width="19" height="12" fill="#0095b6"/>
       <path d="M12.5 22.5h7l1.5 4h-10Z" fill="#bbb"/>
       <rect x="8.5" y="26.5" width="15" height="2" fill="#ddd"/>
     </g>
   </symbol>
   <symbol id="i-cd" viewBox="0 0 32 32">
-    <circle cx="16" cy="16" r="12.5" fill="#e6e6f2" stroke="#000"/>
-    <circle cx="16" cy="16" r="8" fill="none" stroke="#b8b8d8"/>
+    <circle cx="16" cy="16" r="12.5" fill="#e4f2f5" stroke="#000"/>
+    <circle cx="16" cy="16" r="8" fill="none" stroke="#a9d3dd"/>
     <circle cx="16" cy="16" r="3.5" fill="#fff" stroke="#000"/>
   </symbol>
   <symbol id="i-mouse" viewBox="0 0 32 32">
@@ -121,7 +147,7 @@
       <div class="splash-inner">
         <svg class="splash-logo" aria-hidden="true"><use href="#i-logo"/></svg>
         <p class="splash-welcome">Welcome to</p>
-        <h1 id="hero-title">syshm</h1>
+        <h1 id="hero-title">Blue</h1>
         <p class="tagline">Run classic Mac OS on arbitrary hardware by replacing the bottom of the OS instead of emulating a whole Power Mac.</p>
         <p class="platforms">For macOS and Linux, on AArch64 (Apple silicon) and x86_64.</p>
       </div>
@@ -143,8 +169,8 @@
       <div class="window-body">
         <div class="doc how">
           <p>On a real Power Mac only the NanoKernel runs in supervisor mode. The 68k emulator, the Toolbox, applications and drivers all run in PowerPC user mode and reach the kernel through a small interface.</p>
-          <p>syshm runs all of that Apple code unmodified, as the guest, and supplies everything below the interface as an ordinary program on the host.</p>
-          <p>Where Mac OS looks to the machine for drivers, syshm puts its own in the device tree, as a Mac’s firmware would. They’re thin: the work is done on the host. The system helpers work the same way. Once the Finder is up, syshm offers to install them: guest enhancements that make the screen follow the window and share the clipboard, a 3D engine, and OpenGL.</p>
+          <p>Blue runs all of that Apple code unmodified, as the guest, and supplies everything below the interface as an ordinary program on the host.</p>
+          <p>Where Mac OS looks to the machine for drivers, Blue puts its own in the device tree, as a Mac’s firmware would. They’re thin: the work is done on the host. The system helpers work the same way. Once the Finder is up, Blue offers to install them: guest enhancements that make the screen follow the window and share the clipboard, a 3D engine, and OpenGL.</p>
           <figure class="arch">
             <div class="zone guest">
               <p class="zone-label">Guest</p>
@@ -157,12 +183,12 @@
                 </div>
                 <p class="abox-foot">Apple code, unmodified, in PowerPC user mode</p>
               </div>
-              <div class="abox syshm guest-syshm">
+              <div class="abox blue guest-blue">
                 <p class="abox-title">Drivers</p>
                 <span class="part">Display, disks, CDs and floppies, Ethernet</span>
                 <p class="abox-foot">Built in, in the device tree</p>
               </div>
-              <div class="abox syshm guest-syshm">
+              <div class="abox blue guest-blue">
                 <p class="abox-title">System helpers</p>
                 <span class="part">Guest enhancements, 3D engine, OpenGL</span>
                 <p class="abox-foot">Offered once the Finder is up, installed in Extensions</p>
@@ -177,14 +203,14 @@
               <div class="iface-part">
                 <span class="iface-arrow" aria-hidden="true">⇄</span>
                 <p class="iface-title">Host calls</p>
-                <p>from syshm’s drivers and helpers</p>
+                <p>from Blue’s drivers and helpers</p>
               </div>
             </div>
             <div class="zone host">
               <p class="zone-label">Host</p>
               <div class="host-row">
-                <div class="abox syshm">
-                  <p class="abox-title">syshm</p>
+                <div class="abox blue">
+                  <p class="abox-title">Blue</p>
                   <span class="part svc"><strong>CPU</strong> PowerPC JIT and interpreter</span>
                   <span class="part svc"><strong>Kernel</strong> Memory, interrupts, Multiprocessing Services</span>
                   <span class="part svc"><strong>Devices</strong> An iMac’s: ADB, timers, display interrupt, sound, Ethernet, USB, NVRAM</span>
@@ -256,7 +282,7 @@
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-cube"/></svg>OpenGL</span>
-          <span class="notes">Working, through syshm’s own OpenGL libraries, drawn the same way.</span>
+          <span class="notes">Working, through Blue’s own OpenGL libraries, drawn the same way.</span>
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-chip"/></svg>CPU</span>
@@ -280,25 +306,25 @@
     <div class="window-content">
       <div class="window-body">
         <div class="doc">
-          <p>syshm doesn’t include any Apple software. You’ll need an image of a Mac OS CD from 8.5 to 9.2.2. syshm starts the “Mac OS ROM” file from the CD or the installed disk, as an iMac’s firmware does.</p>
+          <p>Blue doesn’t include any Apple software. You’ll need an image of a Mac OS CD from 8.5 to 9.2.2. Blue starts the “Mac OS ROM” file from the CD or the installed disk, as an iMac’s firmware does.</p>
 
           <h3>Download</h3>
           <div class="downloads">
-            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/syshm-macos-aarch64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>macOS<small>Apple silicon</small></span></a>
-            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/syshm-macos-x86_64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>macOS<small>Intel (x86_64)</small></span></a>
-            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/syshm-linux-aarch64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Linux<small>AArch64</small></span></a>
-            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/syshm-linux-x86_64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Linux<small>x86_64</small></span></a>
+            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/blue-macos-aarch64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>macOS<small>Apple silicon</small></span></a>
+            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/blue-macos-x86_64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>macOS<small>Intel (x86_64)</small></span></a>
+            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/blue-linux-aarch64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Linux<small>AArch64</small></span></a>
+            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/blue-linux-x86_64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Linux<small>x86_64</small></span></a>
           </div>
           <p class="fineprint">Or build it with <code>make</code>. SDL2 (window and sound) and libslirp (networking) are used if they’re installed. The JIT runs on AArch64 and on x86_64 processors with x86-64-v3 (Intel’s Haswell and AMD’s Excavator on), on macOS and Linux alike; older x86_64 processors interpret.</p>
 
           <h3>Install Mac OS</h3>
-<pre class="code">./syshm disk create hd.img 2G "Macintosh HD"
-./syshm boot --disk hd.img --cdrom 85.iso --window --nvram syshm.nvram</pre>
+<pre class="code">./blue disk create hd.img 2G "Macintosh HD"
+./blue boot --disk hd.img --cdrom 85.iso --window --nvram blue.nvram</pre>
           <p>In the installer’s Options, turn off “Update Apple Hard Disk Drivers”. A 9.2.2 CD that restores an image with Apple Software Restore instead needs the new disk chosen as its destination.</p>
 
           <h3>Start up</h3>
-<pre class="code">./syshm boot --disk hd.img --window --nvram syshm.nvram</pre>
-          <p>In the window, once the Finder is up, syshm offers to install its guest tools: guest enhancements that make the screen follow the window and share the clipboard, the 3D engine, and OpenGL. Add <code>--cdrom-drive</code> or <code>--floppy-drive</code> for an empty drive, and drop a CD or floppy image on the window to put it in; <code>--share DIR</code> shows a folder of yours as a disk in Mac OS. The <a href="https://github.com/__REPO__#readme">README</a> has the rest.</p>
+<pre class="code">./blue boot --disk hd.img --window --nvram blue.nvram</pre>
+          <p>In the window, once the Finder is up, Blue offers to install its guest tools: guest enhancements that make the screen follow the window and share the clipboard, the 3D engine, and OpenGL. Add <code>--cdrom-drive</code> or <code>--floppy-drive</code> for an empty drive, and drop a CD or floppy image on the window to put it in; <code>--share DIR</code> shows a folder of yours as a disk in Mac OS. The <a href="https://github.com/__REPO__#readme">README</a> has the rest.</p>
         </div>
       </div>
     </div>
@@ -314,7 +340,7 @@
       <li><a href="https://github.com/__REPO__#readme">Read Me</a></li>
       <li><a href="https://github.com/__REPO__/issues">Issues</a></li>
     </ul>
-    <p class="legal">syshm is not affiliated with Apple. Mac OS, Macintosh, Power Mac and QuickDraw are trademarks of Apple Inc.</p>
+    <p class="legal">Blue is not affiliated with Apple. Mac OS, Macintosh, Power Mac and QuickDraw are trademarks of Apple Inc.</p>
   </div>
 </footer>
 </body>

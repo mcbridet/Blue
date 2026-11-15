@@ -1,7 +1,7 @@
-/* syshm: a Mac OS 8 Platinum desktop */
+/* Blue: a Mac OS 8 Platinum desktop, in Bondi Blue */
 
 :root {
-  --desk: #6066a8;
+  --desk: #0089a8;
   --plat: #dddddd;
   --plat-light: #eeeeee;
   --plat-mid: #bbbbbb;
@@ -9,10 +9,11 @@
   --plat-darker: #777777;
   --text: #111111;
   --muted: #4a4a4a;
-  --accent: #6666cc;
-  --accent-light: #ccccff;
-  --highlight: #33339a;
-  --link: #1a1aa6;
+  --accent: #0095b6;
+  --accent-light: #c4ecf4;
+  --highlight: #00566a;
+  --link: #005f78;
+  --link-visited: #4a3f86;
   --chrome: "Charcoal", "Chicago", "ChicagoFLF", "Geneva", "Lucida Grande", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   --text-font: "Geneva", "Lucida Grande", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   --mono: "Monaco", "Menlo", "Consolas", "DejaVu Sans Mono", monospace;
@@ -42,7 +43,7 @@ body {
 }
 
 a { color: var(--link); }
-a:visited { color: #551a8b; }
+a:visited { color: var(--link-visited); }
 
 code {
   font: .88em var(--mono);
@@ -56,6 +57,8 @@ code {
   outline: 2px solid var(--highlight);
   outline-offset: 2px;
 }
+
+::selection { background: var(--accent-light); }
 
 .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 
@@ -326,8 +329,8 @@ code {
 }
 
 .abox.apple { background: linear-gradient(#fafafa, #e2e2e2); }
-.abox.syshm { background: linear-gradient(#d6d6fa, #b4b4ec); }
-.abox.guest-syshm { background: linear-gradient(#e6e6fc, #cfcff5); }    /* (syshm's, in the guest) */
+.abox.blue { background: linear-gradient(#bfe7f0, #8dd0e0); }
+.abox.guest-blue { background: linear-gradient(#e0f4f8, #c1e6ee); }      /* (Blue's, in the guest) */
 .abox.os { background: linear-gradient(#6a6a6a, #474747); color: #fff; }
 .abox.os .part { background: rgba(255, 255, 255, .12); border-color: rgba(255, 255, 255, .4); }
 

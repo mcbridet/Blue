@@ -24,13 +24,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Links in site/ say __REPO__ for owner/name, so the page works from any fork
+      - id: pages
+        uses: actions/configure-pages@v6
+
+      # Links in site/ say __REPO__ for owner/name, and __SITE__ for the site's own address
+      # (link previews want absolute URLs), so the page works from any fork
       - name: Prepare site
+        env:
+          SITE: ${{ steps.pages.outputs.base_url }}
         run: |
           cp -R site _site
-          sed -i "s|__REPO__|${GITHUB_REPOSITORY}|g" _site/*.html
-
-      - uses: actions/configure-pages@v6
+          sed -i -e "s|__REPO__|${GITHUB_REPOSITORY}|g" -e "s|__SITE__|${SITE%/}|g" _site/*.html
 
       - uses: actions/upload-pages-artifact@v5
         with:
