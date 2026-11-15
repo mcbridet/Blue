@@ -129,6 +129,18 @@ struct slow_store {
 };
 
 #define MAX_SLOW_IOS 160u
+#define MAX_SLOW_LOADS 160u
+
+/* Out-of-line path of a load that MEM_FAST_R turned away, for the page's flags alone (see slow_loads()) */
+struct slow_load {
+	uint8_t *at;                    /* the rel32 field of the jump to it */
+	uint8_t *back;                  /* right after that jump */
+	uint8_t *rejoin;                /* after the instruction (for the mmio hook's path) */
+	unsigned k, size;
+	bool io;
+	uint32_t insn, pc;
+	struct cache_state cs, after;
+};
 #define MAX_OOL (2 * MAX_BLOCK_INSNS)
 
 /* Out-of-line code for an instruction's rare outcome, rejoining right after the jump to it (see ools()) */
@@ -207,6 +219,8 @@ struct tx {
 	unsigned nslow;
 	struct slow_io io[MAX_SLOW_IOS];
 	unsigned nio;
+	struct slow_load sld[MAX_SLOW_LOADS];
+	unsigned nsld;
 	struct ool ool[MAX_OOL];
 	unsigned nool;
 	struct slow_fp fps[MAX_SLOW_FP];
@@ -1322,12 +1336,19 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 		m = x86_mx(fast ? R_MEM : T2, T0, 0, 0);
 	}
 	struct slow_io *io = NULL;
+	struct slow_load *sld = NULL;
 	if (load) {
 		struct cache_state before = t->rc;              /* a fault leaves the registers as they are here */
 		if (!fast) {
 			x86_test_ri(B, 0, T1, size ? MEM_FAST_R : MEM_R);       /* (a byte can't run into the next page) */
-			if (fp != LS_GPR || !io_access(t) || !(io = add_io(t, t->k, t->insn, t->pc, size, false, &before)))
+			if (size && t->nsld < MAX_SLOW_LOADS) {
+				sld = &t->sld[t->nsld++];
+				*sld = (struct slow_load){ x86_jcc(B, X86_E, NULL), t->x.p, NULL, t->k, size,
+							   fp == LS_GPR && io_access(t), t->insn, t->pc, before, before };
+			} else if (fp != LS_GPR || !io_access(t) ||
+				   !(io = add_io(t, t->k, t->insn, t->pc, size, false, &before))) {
 				exit_if(t, X86_E);
+			}
 		}
 		unsigned v = fp ? T1 : wr(t, rd_);
 		if (fast)
@@ -1375,8 +1396,43 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 	if (io) {
 		io->rejoin = t->x.p;
 		io->after = t->rc;
+	}
+	if (sld) {
+		sld->rejoin = t->x.p;
+		sld->after = t->rc;
+	}
+	if (io || (sld && sld->io)) {
 		t->fp_mode_ok = false;          /* (the hook might switch contexts, change registers) */
 		t->nstored = 0;
+	}
+}
+
+/*
+ * Loads that MEM_FAST_R turned away: it says this page and the next are
+ * readable, for an access that might run into the next. One that stays
+ * within a readable page goes back and loads; otherwise the mmio hook may
+ * do it (slow_ios()), or the interpreter executes the instruction.
+ */
+static void slow_loads(struct tx *t)
+{
+	for (unsigned s = 0; s < t->nsld && !t->x.overflow; s++) {
+		struct slow_load *sl = &t->sld[s];
+		land(t, sl->at);
+		t->k = sl->k;
+		t->rc = sl->cs;
+		x86_test_ri(B, 0, T1, MEM_R);
+		struct slow_io *io = NULL;
+		if (sl->io && (io = add_io(t, sl->k, sl->insn, sl->pc, sl->size, false, &sl->cs))) {
+			io->rejoin = sl->rejoin;
+			io->after = sl->after;
+		} else {
+			exit_if(t, X86_E);
+		}
+		x86_mov_rr(B, 0, T1, T0);
+		x86_alu_ri(B, X86_AND, 0, T1, MEM_PAGE_SIZE - 1);
+		x86_alu_ri(B, X86_CMP, 0, T1, (int32_t)(MEM_PAGE_SIZE - (1u << sl->size)));
+		exit_if(t, X86_A);
+		x86_jmp(B, sl->back);
 	}
 }
 
@@ -2964,6 +3020,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	t.nbexits = 0;
 	t.nslow = 0;
 	t.nio = 0;
+	t.nsld = 0;
 	t.nool = 0;
 	t.nfps = 0;
 	t.fp_mode_ok = false;
@@ -3028,6 +3085,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 
 	rc_reset(&t);                   /* (what follows is out of line) */
 	slow_stores(&t);
+	slow_loads(&t);
 	slow_ios(&t);
 	slow_fps(&t);
 	branch_exits(&t);
