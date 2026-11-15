@@ -3,9 +3,11 @@
 #include <math.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "gl.h"
 
@@ -225,6 +227,8 @@ struct gpu {
 	bool failed;
 	char why[256];
 	char renderer[300];
+	/* host time in drawing jobs and reading back, textures made (their texels' bytes): for profiling */
+	_Atomic uint64_t draw_ns, read_ns, uploads, upload_bytes;
 	/* the job in hand (one at a time) */
 	bool busy;
 	enum job job;
@@ -521,7 +525,9 @@ static GLuint texture_of(struct gpu *g, const struct raster_texture *ct)
 		levels++;
 	gl->TexParameteri(target, GL_TEXTURE_BASE_LEVEL, 0);
 	gl->TexParameteri(target, GL_TEXTURE_MAX_LEVEL, (GLint)levels - 1);
+	atomic_fetch_add(&g->uploads, 1);
 	for (unsigned l = 0; l < levels; l++) {
+		atomic_fetch_add(&g->upload_bytes, 4ull * t->width[l] * t->height[l] * (t->depth[l] ? t->depth[l] : 1));
 		if (t->depth[0])
 			gl->TexImage3D(GL_TEXTURE_3D, (GLint)l, GL_RGBA8, (GLsizei)t->width[l], (GLsizei)t->height[l],
 				       (GLsizei)t->depth[l], 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, t->texels[l]);
@@ -1315,6 +1321,8 @@ static void run_job(struct gpu *g)
 		return;
 	}
 	bool ok = true;
+	struct timespec t0, t1;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
 	switch (g->job) {
 	case JOB_TARGET_NEW:
 		ok = new_target(g, g->target);
@@ -1334,6 +1342,12 @@ static void run_job(struct gpu *g)
 	default:
 		break;
 	}
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	uint64_t ns = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000u + (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
+	if (g->job == JOB_DRAW)
+		atomic_fetch_add(&g->draw_ns, ns);
+	else if (g->job == JOB_READ)
+		atomic_fetch_add(&g->read_ns, ns);
 	GLenum err = gl->GetError();
 	if (!ok || err != GL_NO_ERROR) {
 		fprintf(stderr, "gpu: %s failed (GL error 0x%x)\n", job_names[g->job], err);
@@ -1518,6 +1532,17 @@ void gpu_wait(struct gpu *g)
 {
 	if (g)
 		wait_idle(g);
+}
+
+void gpu_times(struct gpu *g, uint64_t *draw_ns, uint64_t *read_ns, uint64_t *uploads, uint64_t *upload_bytes)
+{
+	*draw_ns = *read_ns = *uploads = *upload_bytes = 0;
+	if (!g)
+		return;
+	*draw_ns = atomic_load(&g->draw_ns);
+	*read_ns = atomic_load(&g->read_ns);
+	*uploads = atomic_load(&g->uploads);
+	*upload_bytes = atomic_load(&g->upload_bytes);
 }
 
 bool gpu_read(struct gpu *g, struct gpu_target *t, uint32_t *color)

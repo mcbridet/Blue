@@ -1472,6 +1472,7 @@ static void nap(struct machine *m, uint64_t deadline, bool idle)
 	}
 	uint64_t slept = host_ns() - now;
 	m->idle_ns += slept;
+	m->opengl.prof_nap += slept;
 	m->naps++;
 	if (slept > until - now) {
 		m->nap_over_ns += slept - (until - now);
@@ -1841,6 +1842,8 @@ static void display_frame(struct machine *m, uint64_t now)
 	unsigned rows = rb * h > m->video.fb_size ? (unsigned)(m->video.fb_size / rb) : h;
 	const uint8_t *fb = mem_ptr(&m->mem, m->video.fb_base);
 	status_lights(m, now, false);   /* (drawn with the screen, if that's drawn) */
+	if (m->opengl.prof)
+		fprintf(m->opengl.prof, "d %llu\n", (unsigned long long)now);
 	struct video_rows bands[DISPLAY_BANDS];
 	unsigned n;
 	if (m->redraw || w != m->shown_w || h != m->shown_h || bpp != m->shown_bpp ||
@@ -3067,7 +3070,9 @@ static const char *frame_wait(struct machine *m)
 		m->frame_due = 0;
 		m->cpu.pc += 4;         /* (its results have been in place since it ended the frame) */
 	} else {
+		uint64_t t0 = host_ns();
 		blue_naps(m, m->frame_due, false);
+		m->opengl.prof_pace += host_ns() - t0;
 	}
 	return NULL;
 }

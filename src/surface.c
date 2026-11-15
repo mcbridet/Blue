@@ -1,7 +1,9 @@
 #include "surface.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "be.h"
 
@@ -56,7 +58,22 @@ void surface_free(struct surface *s)
 	memset(s, 0, sizeof *s);
 }
 
-/* A batch drawn in the background, by the surface's backend */
+static _Atomic uint64_t waited_ns, read_ns;
+
+static uint64_t now_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+
+void surface_times(uint64_t *wait, uint64_t *read)
+{
+	*wait = atomic_load(&waited_ns);
+	*read = atomic_load(&read_ns);
+}
+
+/* A batch drawn in the background, by the surface's backend (which may first finish the one before) */
 static void draw_batch(struct surface *s, const struct surface_batch *b)
 {
 	if (!b->ncmds)
@@ -89,7 +106,9 @@ struct raster_cmd *surface_cmd(struct surface *s, const struct raster_state *sta
 {
 	struct surface_batch *b = &s->batch[s->rec];
 	if (b->ncmds >= SURFACE_BATCH) {
+		uint64_t t0 = now_ns();
 		draw_batch(s, b);
+		atomic_fetch_add(&waited_ns, now_ns() - t0);
 		s->rec ^= 1;
 		b = &s->batch[s->rec];
 		b->ncmds = 0;           /* (drawing this one was waited for before the other started) */
@@ -125,15 +144,20 @@ bool surface_busy(const struct surface *s)
 
 bool surface_finish(struct surface *s)
 {
+	uint64_t t0 = now_ns();
 	draw_batch(s, &s->batch[s->rec]);
 	surface_wait(s);
+	uint64_t t1 = now_ns();
+	atomic_fetch_add(&waited_ns, t1 - t0);
 	for (int k = 0; k < 2; k++) {
 		s->batch[k].ncmds = 0;
 		s->batch[k].nstates = 0;
 	}
 	if (!s->gpu)
 		return true;
-	if (gpu_read(s->gpu, s->gpu_target, s->target.color))
+	bool read = gpu_read(s->gpu, s->gpu_target, s->target.color);
+	atomic_fetch_add(&read_ns, now_ns() - t1);
+	if (read)
 		return true;
 	surface_lose_gpu(s);
 	return false;

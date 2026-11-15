@@ -68,6 +68,13 @@ bool surface_read_depth(struct surface *s);
 /* Waits for drawing in the background (textures it uses may then go) */
 void surface_wait(struct surface *s);
 
+/*
+ * The host time (ns) every surface's caller has spent waiting for its
+ * backend (to take a batch, or to finish), and reading frames back from the
+ * GPU, so far: for profiling (see opengl.h's SYSHM_GL_PROFILE)
+ */
+void surface_times(uint64_t *wait_ns, uint64_t *read_ns);
+
 /* The GPU's copy given up: the surface is drawn in software from now on (its pixels as they were last read) */
 void surface_lose_gpu(struct surface *s);
 

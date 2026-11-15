@@ -21,6 +21,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "glfront.h"
 #include "gpu.h"
@@ -55,6 +56,7 @@ struct opengl_context {
 	int32_t swap_rect[4], buffer_rect[4], swap_interval;
 	struct gl_state st;
 	unsigned long frames;
+	unsigned long prof_primitives;  /* (st.primitives at its last frame profiled) */
 	/* a display list being made (glNewList; name 0: none): its mode, its entries so far (see opengl.c) */
 	uint32_t list_name, list_mode;
 	uint8_t *list;
@@ -104,6 +106,21 @@ struct opengl {
 	bool fs_saved;
 	uint32_t fs_mode, fs_depth, fs_device, fs_toc, fs_context;
 	bool told_stale;
+	/*
+	 * SYSHM_GL_PROFILE=FILE: a line for each frame shown on the screen,
+	 * with the host time since the one before and where it went (see
+	 * opengl.c's "profile"): in the libraries' host calls (but for what
+	 * follows), waiting for the 3D backend, reading back, writing the frame
+	 * to guest memory; napping until a paced frame's due and napping at all
+	 * (nk.c adds those, and a line for each update of the window); the
+	 * calls, records and primitives; the GPU thread's time drawing and
+	 * reading back, and the textures it made
+	 */
+	FILE *prof;
+	uint64_t prof_last, prof_calls_ns, prof_wait, prof_read, prof_present, prof_pace, prof_nap;
+	unsigned long prof_calls, prof_records;
+	uint64_t prof_call_start, prof_wait_mark, prof_read_mark;      /* (where the counting's got to) */
+	uint64_t prof_gpu_mark[4];      /* (gpu_times()'s at the last frame) */
 	bool gpu_asked;
 	struct opengl_instance inst[OPENGL_INSTANCES];
 	bool log;                       /* SYSHM_LOG_GL: every call */

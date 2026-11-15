@@ -633,6 +633,13 @@ int opengl_entry(const char *name)
 	return -1;
 }
 
+static uint64_t now_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+
 void opengl_init(struct opengl *o, struct mem *mem)
 {
 	static uint8_t scratch[OPENGL_LIBRARY_MAX];
@@ -641,6 +648,12 @@ void opengl_init(struct opengl *o, struct mem *mem)
 	opengl_build_library(scratch, sizeof scratch, &o->library);
 	opengl_build_memory(scratch, sizeof scratch, &o->memory);
 	opengl_build_utility(scratch, sizeof scratch, &o->utility);
+	const char *prof = getenv("SYSHM_GL_PROFILE");
+	if (prof && (o->prof = fopen(prof, "w")) != NULL)
+		fprintf(o->prof, "# start %llu\n# host ns at the frame; then since the one before: ns in all, in the "
+			"libraries' calls, waiting for the backend, reading back, presenting, napping paced, napping; "
+			"calls, records, primitives; the GPU thread's ns drawing and reading back, textures it made, "
+			"their bytes (\"d NS\": the window updated)\n", (unsigned long long)now_ns());
 }
 
 /* ---- guest memory ---------------------------------------------------------------- */
@@ -747,6 +760,9 @@ void opengl_free(struct opengl *o)
 	for (unsigned k = 0; k < OPENGL_INSTANCES; k++)
 		if (o->inst[k].toc)
 			free_instance(o, &o->inst[k]);
+	if (o->prof)
+		fclose(o->prof);
+	o->prof = NULL;
 }
 
 /* The context whose AGLContext this is (in this instance), or NULL */
@@ -901,6 +917,46 @@ static bool fit_drawable(struct opengl *o, struct opengl_context *x)
 	return true;
 }
 
+/* ---- profile (SYSHM_GL_PROFILE) --------------------------------------------------------- */
+
+/* The time in a call so far, and the surfaces' waiting and reading back since last counted */
+static void profile_count(struct opengl *o, uint64_t now)
+{
+	uint64_t wait, read;
+	surface_times(&wait, &read);
+	o->prof_wait += wait - o->prof_wait_mark;
+	o->prof_read += read - o->prof_read_mark;
+	o->prof_wait_mark = wait;
+	o->prof_read_mark = read;
+	if (o->prof_call_start) {
+		o->prof_calls_ns += now - o->prof_call_start;
+		o->prof_call_start = now;
+	}
+}
+
+/* A frame shown on the screen: its line, and the counting starts again */
+static void profile_frame(struct opengl *o, struct opengl_context *x)
+{
+	uint64_t now = now_ns();
+	profile_count(o, now);
+	uint64_t gpu[4];
+	gpu_times(x->surface.gpu, &gpu[0], &gpu[1], &gpu[2], &gpu[3]);
+	if (o->prof_last)
+		fprintf(o->prof, "%llu %llu %llu %llu %llu %llu %llu %llu %lu %lu %lu %llu %llu %llu %llu\n",
+			(unsigned long long)now, (unsigned long long)(now - o->prof_last),
+			(unsigned long long)o->prof_calls_ns, (unsigned long long)o->prof_wait,
+			(unsigned long long)o->prof_read, (unsigned long long)o->prof_present,
+			(unsigned long long)o->prof_pace, (unsigned long long)o->prof_nap, o->prof_calls,
+			o->prof_records, x->st.primitives - x->prof_primitives,
+			(unsigned long long)(gpu[0] - o->prof_gpu_mark[0]), (unsigned long long)(gpu[1] - o->prof_gpu_mark[1]),
+			(unsigned long long)(gpu[2] - o->prof_gpu_mark[2]), (unsigned long long)(gpu[3] - o->prof_gpu_mark[3]));
+	memcpy(o->prof_gpu_mark, gpu, sizeof gpu);
+	o->prof_last = now;
+	o->prof_calls_ns = o->prof_wait = o->prof_read = o->prof_present = o->prof_pace = o->prof_nap = 0;
+	o->prof_calls = o->prof_records = 0;
+	x->prof_primitives = x->st.primitives;
+}
+
 /* The frame drawn so far, into the drawable (but for the swap rectangle's outside) */
 static void show(struct opengl *o, struct opengl_context *x)
 {
@@ -969,7 +1025,10 @@ static void show(struct opengl *o, struct opengl_context *x)
 		d.region_x = x->origin_x;
 		d.region_y = x->origin_y;
 	}
+	uint64_t t2 = o->prof ? now_ns() : 0;
 	surface_present(&x->surface, o->mem, &d, l, t, r, b);
+	if (o->prof)
+		o->prof_present += now_ns() - t2;
 }
 
 /* ---- arguments ------------------------------------------------------------------------ */
@@ -3237,6 +3296,8 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 		show(o, x);
 		/* (for the screen: paced by its refresh, see nk.c) */
 		if (x->kind == DRAWABLE_PORT || x->kind == DRAWABLE_FULL_SCREEN) {
+			if (o->prof)
+				profile_frame(o, x);
 			o->shown = 1 + (unsigned)(in - o->inst) * OPENGL_CONTEXTS + (unsigned)(x - in->ctx);
 			o->shown_id = x->guest;
 		}
@@ -3311,7 +3372,24 @@ static bool library_current(struct opengl *o, const struct opengl_instance *in)
 	       mem_r32(o->mem, data + D_VERSION) == DATA_VERSION;
 }
 
+static void library_call(struct opengl *o, struct ndrv_call *c);
+
 void opengl_library_call(struct opengl *o, struct ndrv_call *c)
+{
+	if (!o->prof) {
+		library_call(o, c);
+		return;
+	}
+	unsigned long recorded = o->recorded;
+	o->prof_call_start = now_ns();
+	library_call(o, c);
+	profile_count(o, now_ns());
+	o->prof_call_start = 0;
+	o->prof_calls++;
+	o->prof_records += o->recorded - recorded;
+}
+
+static void library_call(struct opengl *o, struct ndrv_call *c)
 {
 	o->calls++;
 	o->shown = 0;
@@ -3526,7 +3604,22 @@ uint32_t opengl_gl_given(struct opengl *o, struct opengl_context *x, unsigned fn
 }
 
 /* OpenGLUtility (glu.c): to the context current in the process (its OpenGLLibrary's instance's glc_cc) */
+static void utility_call(struct opengl *o, struct ndrv_call *c);
+
 void opengl_utility_call(struct opengl *o, struct ndrv_call *c)
+{
+	if (!o->prof) {
+		utility_call(o, c);
+		return;
+	}
+	o->prof_call_start = now_ns();
+	utility_call(o, c);
+	profile_count(o, now_ns());
+	o->prof_call_start = 0;
+	o->prof_calls++;
+}
+
+static void utility_call(struct opengl *o, struct ndrv_call *c)
 {
 	uint32_t cc = ndrv_import(c, &o->utility, GLU_IMPORT_CURRENT);
 	struct opengl_instance *in = cc > D_CURRENT + o->library.extra ?

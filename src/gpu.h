@@ -70,6 +70,13 @@ bool gpu_read(struct gpu *g, struct gpu_target *t, uint32_t *color);
  */
 bool gpu_read_depth(struct gpu *g, struct gpu_target *t, float *depth, uint8_t *stencil);
 
+/*
+ * The GPU thread's host time in drawing jobs and in reading back so far,
+ * and the textures it's made and their texels' bytes: for profiling (NULL
+ * g: 0s)
+ */
+void gpu_times(struct gpu *g, uint64_t *draw_ns, uint64_t *read_ns, uint64_t *uploads, uint64_t *upload_bytes);
+
 /* Forgets a texture's GPU copy (tex->gpu), before raster.c's copy is freed */
 void gpu_texture_free(struct gpu *g, struct raster_texture *tex);
 
