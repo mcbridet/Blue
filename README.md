@@ -1004,7 +1004,7 @@ software (on 8.6, an M5 Mac).
     `ROSETTA_ADVERTISE_AVX=1` in the environment has it offer x86-64-v3.
     The 8.5, 9.1 and 9.2.2 CD boots in instruction time end exactly as on
     AArch64; under Rosetta on an M5 the 8.5 CD's 4 billion instructions
-    take 6.3 s (interpreted: 24 s).
+    take 5.9 s (interpreted: 24 s).
   - `SYSHM_JIT_PROFILE=1` samples where host time goes (translated blocks
     by guest address, stubs, C functions) and prints it at the end;
     `SYSHM_JIT_PROFILE=FROM:TO` samples only from instruction FROM to TO.

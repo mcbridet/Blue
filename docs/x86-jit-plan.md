@@ -32,19 +32,23 @@ Milestone 3 done (floating point):
   `lfs`/`lfd`/`stfs`/`stfd` in every form; `lfd` of two words just stored
   with `stw` put together from the registers. Anything else goes out of
   line to the interpreter.
-- **Checks**: the fuzzer passes 450,000 programs under Rosetta (100,000
+- **Checks**: the fuzzer passes 400,000 programs under Rosetta (100,000
   with `SYSHM_JIT_FASTMEM=0`) and 30,000 under QEMU; all of `make test` on
   macOS and Linux, both architectures. The three CD boots end exactly as
-  on AArch64 under Rosetta, and the 8.5 CD under QEMU. AArch64's
-  generated code is byte for byte as before.
+  on AArch64 under Rosetta (with `SYSHM_JIT_FASTMEM=0` too), and the 8.5
+  CD under QEMU. AArch64's generated code is byte for byte as before.
 - **Speed** under Rosetta on the M5, milestone 2's build against this
-  one, alternating (medians of 4): the 8.5 CD 5.9 → 5.9 s, 9.1's 4.7 →
-  4.5 s, 9.2.2's 4.5 → 4.4 s. The boots hardly use FP: their time goes to
-  the interpreter, which they leave the JIT for 4 to 13 million times
-  (kernel calls and device registers: milestone 4). The benchmark's FP
-  loop: 98 → 900 million instructions a second (AArch64's JIT natively:
-  1,680); its integer and copy loops are as before (7,200-7,900 and
-  10,500), once blocks start where they did (Findings).
+  one, alternating (medians of 5): the 8.5 CD 5.8 → 5.9 s, 9.1's 4.6 →
+  4.25 s, 9.2.2's 4.5 → 4.5 s. The boots change little: FP is a small part
+  of them, and they still leave the JIT for the interpreter 4 to 13
+  million times (kernel calls and device registers, which AArch64 makes in
+  place: milestone 4). The benchmark's FP
+  loop: 95 → 895 million instructions a second (AArch64's JIT natively:
+  1,680; the code follows AArch64's instruction for instruction, so the
+  gap is most likely Rosetta's cost for scalar AVX, while x86's integer
+  loop runs as fast as AArch64's); the dispatch, integer and copy loops
+  are as before (830, 7,000-8,000 and 10,500), once blocks start clear of
+  a 4 KB boundary (Findings).
 
 Milestone 2 done (memory):
 
