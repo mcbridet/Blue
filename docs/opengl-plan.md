@@ -13,11 +13,121 @@ It should come first (see Order).
 ## Status
 
 Milestones 0 (the groundwork, shared with Glide), 1 (AGL and a clear), 2
-(a triangle) and 3 (textures, and Unreal Tournament's OpenGL build) are
-built; milestones 4 to 6 are to do. The user chose OpenGL before Glide,
-and accepted the proposed decisions below for now (replacing the
-libraries, recording in guest memory, fixed function in C on the host,
-frames read back into guest memory, a Rage 128's identity).
+(a triangle), 3 (textures, and Unreal Tournament's OpenGL build) and 4
+(arrays, fog, lighting and the rest of the common state) are built;
+milestones 5 and 6 are to do. The user chose OpenGL before Glide, and
+accepted the proposed decisions below for now (replacing the libraries,
+recording in guest memory, fixed function in C on the host, frames read
+back into guest memory, a Rage 128's identity).
+
+Milestone 4:
+
+- **Lighting** (`src/gllight.c`), per vertex in eye coordinates, as
+  OpenGL 1.2's 2.13.1 has it (the Rage 128 had no transform engine: its
+  OpenGL lit on the processor too): 8 lights (directional and positional,
+  attenuated, spots), front and back materials, the light model's ambient
+  color, local viewer, two sides and separate specular (the secondary
+  color added after texturing, as a stage of the backend's), the color
+  material, normals by the modelview's inverse transpose with
+  `GL_NORMALIZE` and `GL_RESCALE_NORMAL`. Powers are libm's in doubles,
+  rounded to floats; the spot's cosine is the front end's own. Positions
+  and spot directions are kept in eye coordinates as they were given.
+- **Fog** (linear, exp, exp2) by the eye-space |z| of each vertex, divided
+  by w and interpolated, the factor per pixel (the backend's). Mac OS 9 has
+  no fog coordinates: its OpenGLLibrary exports no `glFogCoord` (nor
+  `glFogCoordPointer`), and Apple's engine lists no `GL_EXT_fog_coord`, so
+  `GL_FOG_COORDINATE_SOURCE` is an invalid enum here as there.
+- **Texture coordinate generation:** object and eye linear (eye planes
+  as given, in eye coordinates), the sphere map, and
+  `GL_NV_texgen_reflection`'s normal and reflection maps, before the
+  texture matrix. **User clip planes** (6): distances in eye coordinates,
+  clipped exactly (not through the guard band).
+- **Client arrays** (`src/glarray.c`): vertex, normal, color, secondary
+  color, edge flag, index and both units' texture coordinates, of every
+  type OpenGL 1.2 takes for each (big-endian in the program's memory;
+  colors and normals normalized as table 2.6 says), `glInterleavedArrays`'
+  14 formats, `glArrayElement`, `glDrawArrays`, `glDrawElements` and
+  `glDrawRangeElements` (indices of 1, 2 or 4 bytes), compiled arrays
+  (`glLockArraysEXT`: the same arrays). They're drawn as `glArrayElement`
+  between `glBegin` and `glEnd` would be. `opengl.c` checks the bytes the
+  elements take before the front end reads them (indices are the
+  program's, so an element outside them leaves its attribute alone, never
+  reading past what was checked).
+- **Stencil** in both backends: `raster.c` keeps a stencil buffer (each
+  surface has one) and, with the test on, takes a fragment through
+  OpenGL's order (alpha test, stencil, depth, then the operation for
+  each outcome: keep, zero, replace, increment and decrement, saturating
+  or wrapping as `GL_EXT_stencil_wrap`'s, invert), with the value and
+  write masks; clears of it. RAVE's states never have it, and its path is
+  as it was (the same pixels; within 2.5% of the time on 3,000 60-pixel
+  triangles, and none slower on 100,000 small ones). `gpu.c`'s targets
+  are `GL_DEPTH32F_STENCIL8` now, with stencil state per batch (RAVE's GPU
+  frames in the random streams are the same bytes).
+- **Polygon offset** (fill, line, point: the polygon's largest depth slope
+  times the factor plus the units times the drawable's depth resolution,
+  16 or 24 bits) and **polygon modes** (points and lines for each face:
+  the polygon's edges, not the diagonals its triangles share, edge flags
+  honored, edges clipping made not drawn; a `GL_POLYGON`'s closing edge at
+  `glEnd`), done in the front end.
+- **`glPushAttrib` and `glPopAttrib`** (`src/glattrib.c`, 16 deep), every
+  group of OpenGL 1.2's tables (texture bindings and the bound textures'
+  parameters put back through `glBindTexture` and `glTexParameter`);
+  `glPushClientAttrib` and `glPopClientAttrib` (the pixel stores, the
+  arrays).
+- **Queries:** `glGet*` for all the state above and the rest of OpenGL
+  1.2's that's kept (hints, stipples, limits; the raster position and
+  pixel transfers as they start, until milestone 5), `glGetLight`,
+  `glGetMaterial`, `glGetTexGen`, `glGetClipPlane`, `glGetPointerv`,
+  `glGetPolygonStipple`, `glIsEnabled` of the arrays.
+- **Extensions:** now also `GL_APPLE_transform_hint` (the hint, taken),
+  `GL_EXT_rescale_normal`, `GL_NV_texgen_reflection` and
+  `GL_EXT_compiled_vertex_array`, in Apple's order.
+- **Checked against Mesa** (`tests/test_opengl.c`, on Linux), eight more
+  scenes through the libraries (vectors and arrays in guest memory). Pixels
+  differing by more than 2 out of 6,912, and the most any differs by (GPU:
+  `gpu.c` on llvmpipe; on Metal none differ by more than 1):
+
+  | scene | GPU | Mesa |
+  |---|---|---|
+  | lighting (three kinds of light, local viewer, two sides, color material, normals rescaled) | 0 (0) | 15 (3): the back face |
+  | specular (separate, over a texture; then single) | 0 (1) | 0 (1) |
+  | fog (each mode, in perspective) | 0 (0) | 0 (1) |
+  | texgen (object, eye, sphere, reflection) | 0 (1) | 0 (1) |
+  | arrays (each type, interleaved, each index type, `glArrayElement`, a secondary color, locked) | 0 (2) | 0 (2) |
+  | stencil (a shape, counting, invert with a write mask, after the alpha test, depth failing) | 0 (1) | 0 (1) |
+  | offset (decals forward and back, on a floor and a wall) | 0 (1) | 0 (1) |
+  | clip (two planes given under a rotation) | 0 (0) | 0 (1) |
+
+  None differ in what's covered. (The lighting scenes are orthographic:
+  in perspective Mesa's colors are corrected for it and ours are linear in
+  screen space, as "smooth" shows.)
+- **The test application:** scene `lit`: in perspective, a bump on a floor
+  drawn by `glDrawElements` from vertex and normal arrays in its data, lit
+  (a light's and the material's vectors through `glLightfv` and
+  `glMaterialfv`), shiny, fogged; then a quad drawn only where a triangle
+  was put in the stencil. On installed 8.5 in instruction time: the same
+  screenshot on macOS and Linux; on the GPU (Metal), 44 pixels differ, by
+  1. `clear`'s and `triangle`'s screenshots are as they were (the pixel
+  format now asks for 8 stencil bits).
+- **Tests:** `tests/test_glfront.c` (lighting's values for each kind of
+  light, two sides, separate specular, the color material and the errors;
+  each texture coordinate generation; clip planes and fog; polygon modes'
+  lines and points, offset's depths; the stencil's raster state and
+  clears; both attribute stacks; arrays' types, indices, bounds,
+  interleaved formats and errors; queries), `tests/test_raster.c` (each
+  stencil operation, the masks, the order of the tests, clears).
+- **Unreal Tournament's OpenGL build** still plays (in instruction time
+  the same calls and frames as before this milestone, about as fast).
+- **Done when:** the plan said Quake III Arena plays, if the user has it;
+  the user's media have no Quake III (the Quake CD is the PC one), so the
+  milestone was checked by the scenes against Mesa, the test application
+  in the guest and Unreal Tournament.
+- Not yet: display lists, the raster position and pixel paths
+  (`glBitmap`, `glDrawPixels`, `glCopyPixels`, `glCopyTexImage`), 3D
+  textures, selection and feedback, evaluators, `aglUseFont`,
+  OpenGLUtility (milestone 5); line and polygon stipples are kept but not
+  drawn; lines and points aren't textured; smooth points and lines are
+  drawn as aliased ones; logic ops.
 
 Milestone 3:
 

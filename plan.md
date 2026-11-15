@@ -115,12 +115,13 @@ Done:
   in place of the Driver Services timer. The restored 9.2.2 reaches the
   Finder in instruction time without a key. See Findings, "The display's
   interrupt".
-- **OpenGL** (Task 18; milestones 0 to 3 of docs/opengl-plan.md): the
+- **OpenGL** (Task 18; milestones 0 to 4 of docs/opengl-plan.md): the
   libraries, AGL and clears, checked by a test application in the guest;
   gl calls recorded in guest memory by the library's own code, and a
   fixed-function front end on the host drawing triangles (matrices,
-  clipping, culling, depth, blending) and textures, checked against Mesa's
-  OpenGL. Unreal Tournament's OpenGL build plays on the GPU and in
+  clipping, culling, depth, blending), textures, client arrays, lighting,
+  fog, texture coordinate generation, clip planes, stencil, polygon offset
+  and modes, the attribute stacks, checked against Mesa's OpenGL. Unreal Tournament's OpenGL build plays on the GPU and in
   software; the installer offers the libraries, and on Mac OS 9 moves
   Apple's to Extensions (Disabled) while syshm's are there.
   The groundwork (milestone 0):
@@ -699,8 +700,19 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 18. OpenGL for Mac OS 9 games
 
-- **Status:** milestones 0 to 3 done (docs/opengl-plan.md has the plan,
-  its milestones and what's built). Milestone 3: textures (`src/gltex.c`:
+- **Status:** milestones 0 to 4 done (docs/opengl-plan.md has the plan,
+  its milestones and what's built). Milestone 4: client arrays of every
+  type (interleaved, `glDrawElements`, `glDrawRangeElements`, compiled
+  arrays), lighting (8 lights, two sides, separate specular, the color
+  material, normalizing and rescaling), fog, texture coordinate generation
+  (with `GL_NV_texgen_reflection`'s), user clip planes, stencil in both
+  backends (RAVE's pixels and speed unchanged), polygon offset and modes,
+  `glPushAttrib` and `glPushClientAttrib`, `glGet*` for all of it; eight
+  scenes against Mesa differ by 2 at most but in one face lit from behind
+  (by 3), and the test application's lit, fogged, stenciled scene is the
+  same screenshot on macOS and Linux. The user has no Quake III (the
+  plan's check), so the scenes and Unreal Tournament were the checks. Mac
+  OS 9's OpenGLLibrary has no fog coordinates. Milestone 3: textures (`src/gltex.c`:
   objects shared between contexts made to share, 1D and 2D images and
   subimages in every format and type, parameters, completeness, two units
   with their environments as the backend's stages, the texture matrices),
@@ -754,9 +766,11 @@ the kernel); 8 onwards as the boot progresses.
   on macOS (with the next item) and Linux; on the GPU, 4 frames differ,
   each in one pixel's channel by one step. The 8.5 and 9.1 CDs boot to the same screenshots as
   main's.
-- **Next:** milestone 4 (vertex arrays, fog, lighting, the rest of the
-  common state; Quake III Arena, if the user has it). Open items: lines
-  are `raster.c`'s, a pixel a step, not OpenGL's diamond-exit rule;
+- **Next:** milestone 5 (display lists, the raster position and pixel
+  paths, 3D textures, selection and feedback, `aglUseFont`, OpenGLUtility
+  on the host). Open items: lines and points aren't textured, and neither
+  stipple is drawn; lines are `raster.c`'s, a pixel a step, not OpenGL's
+  diamond-exit rule;
   16-bit drawables take the top 5 bits of each component, not dithered
   (`GL_DITHER` is on by default). (`raster.c`'s pixels on edges two
   triangles share: fixed, see Findings, "Shared edges in the software
@@ -803,6 +817,13 @@ Facts later tasks need, added as they are found.
   8,000 more in the streams by rounding, most in slivers whose gradients
   are huge). It's faster: 5-27% on 3,000 60-pixel triangles, 12-27% on
   100,000 4-pixel ones. The GPU's pixels are unchanged.
+- **No fog coordinates on Mac OS 9** (OpenGL, milestone 4): Mac OS 9.2.2's
+  OpenGLLibrary exports `glSecondaryColor*EXT` and
+  `glSecondaryColorPointerEXT`, but no `glFogCoord*` or
+  `glFogCoordPointerEXT`, and its engine lists neither
+  `GL_EXT_fog_coord` nor `GL_EXT_secondary_color` (the secondary color is
+  there for separate specular and `GL_COLOR_SUM_EXT`). Fog goes by the
+  eye-space depth alone, and `GL_FOG_COORDINATE_SOURCE` is an invalid enum.
 
 - **CD audio, Apple's CD-ROM driver** (Technical Note DV22, "CD-ROM Driver
   Calls", developer.apple.com/library/archive/technotes/dv/dv_22.html):

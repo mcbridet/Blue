@@ -767,7 +767,8 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
   The rasterizer and the GPU take what Mac OS 9's OpenGL will need too
   (docs/opengl-plan.md): two texture units combined in stages as OpenGL's
   texture environments combine them, blend equations, color masks, fog by
-  a fog coordinate; RAVE's texture operations are such stages.
+  a fog coordinate, a stencil buffer and its test; RAVE's texture
+  operations are such stages.
 
   `--no-gpu` (or `SYSHM_GPU=0`) draws in software in real time too;
   `SYSHM_GPU=1` draws with OpenGL in any run, a software renderer such as
@@ -808,9 +809,14 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
   blended, alpha tested, masked and scissored in the viewport; textures
   (objects, 1D and 2D images in every format and type, parameters, two
   units with their texture environments, the texture matrices);
-  `glReadPixels`; clears, strings, errors and queries; OpenGLMemory's
-  allocations. Not yet: lighting, fog, vertex arrays, display lists,
-  OpenGLUtility. Unreal Tournament's OpenGL build (on the UT CD,
+  client arrays (`glDrawArrays`, `glDrawElements`, interleaved, compiled);
+  lighting (`src/gllight.c`: 8 lights, materials, two sides, separate
+  specular), fog, generated texture coordinates, user clip planes,
+  stencil, polygon offset and modes, the attribute stacks
+  (`src/glarray.c`, `src/glattrib.c`); `glReadPixels`; clears, strings,
+  errors and queries; OpenGLMemory's allocations. Not yet: display lists,
+  the raster position and pixel paths, OpenGLUtility. Unreal Tournament's
+  OpenGL build (on the UT CD,
   `Extras:OpenGL UT.sea`) plays with them, on the GPU and in software.
   Swaps to the screen or a window are paced as the 3D engine's frames are
   (above). `SYSHM_GL_FPS=1` prints the frame rate every second, and
@@ -1366,9 +1372,10 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 ## Next steps
 
 1. 3D: OpenGL with Mac OS 9, then Glide: docs/opengl-plan.md (what Mac OS
-   9.1's OpenGL is and what games link to, the design; under way: textures
-   are done and Unreal Tournament's OpenGL build plays; vertex arrays, fog
-   and lighting are next) and docs/glide-plan.md. (The
+   9.1's OpenGL is and what games link to, the design; under way: textures,
+   arrays, lighting, fog and stencil are done and Unreal Tournament's OpenGL
+   build plays; display lists and pixel paths are next) and
+   docs/glide-plan.md. (The
    RAVE engine draws with the host's GPU; what's left there, such as
    reading back less of each frame, is in docs/gpu-plan.md.)
 2. Networking: host ports forwarded to the guest (so it can serve).
@@ -1412,7 +1419,8 @@ image's Extensions folder and it in Startup Items (hfsutils' `hcopy -m`
 copies them), a run in instruction time shows its window with the scene
 `SYSHM_GL_TEST_SCENE` names (`clear`: a clear, and a scissored one;
 `triangle`: in perspective, a floor cut by the near plane, a triangle and a
-quad crossing in depth, a flat-shaded fan) at the depth
+quad crossing in depth, a flat-shaded fan; `lit`: a bump drawn from vertex
+and normal arrays, lit, fogged, and a quad drawn through the stencil) at the depth
 `SYSHM_GL_TEST_DEPTH` sets (16 or 32), the same on every host. On Linux,
 `make test` draws scenes through the libraries and compares them with Mesa's
 own OpenGL (its compatibility profile, which still has `glBegin`):
@@ -1588,8 +1596,10 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           rsrc.c (resource forks), tools.c (guest tools), install.c
           (installing them from inside Mac OS), clip.c (the clipboard they
           share with the host), rave.c (3D engine), opengl.c +
-          opengl_table.h (the guest's OpenGL libraries), glfront.c + gltex.c (their
-          fixed-function front end; gltex.c its textures), gltest.c (their test application), surface.c + raster.c + gpu.c + gl.c (the 3D backend:
+          opengl_table.h (the guest's OpenGL libraries), glfront.c + gltex.c + gllight.c +
+          glarray.c + glattrib.c (their fixed-function front end: textures, lighting and the rest of each
+          vertex's work, client arrays, the attribute stacks), gltest.c (their test application),
+          surface.c + raster.c + gpu.c + gl.c (the 3D backend:
           drawing, in software and with OpenGL, and presenting), display.c (SDL2
           window), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), main.c
