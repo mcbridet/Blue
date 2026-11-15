@@ -205,7 +205,7 @@ static void test_exports(void)
  */
 static void test_many_exports(void)
 {
-	enum { ENTRIES = 300 };
+	enum { ENTRIES = 600 };
 	static char names[ENTRIES][16];
 	static struct ndrv_export exports[ENTRIES + 1];
 	static uint32_t entry_code[ENTRIES];
@@ -223,7 +223,7 @@ static void test_many_exports(void)
 				  .hostcall = 5, .exports = exports, .export_count = ENTRIES + 1, .code = code,
 				  .code_words = 3, .entry_code = entry_code, .current_version = 1, .extra = extra,
 				  .extra_len = sizeof extra, .zero_len = 0x10000 };
-	static uint8_t buf[64 << 10];
+	static uint8_t buf[128 << 10];
 	struct ndrv_layout l;
 	size_t n = ndrv_build(&spec, buf, sizeof buf, &l);
 	CHECK(n > 0);
@@ -248,7 +248,11 @@ static void test_many_exports(void)
 	CHECK_EQ(be32(ld + 20), l.entry[1]);
 	unsigned power = be32(ld + 48), nexports = be32(ld + 52);
 	CHECK_EQ(nexports, ENTRIES + 1);
-	CHECK_EQ(power, 4);                                     /* (chains of about 10) */
+	CHECK_EQ(power, 5);                                     /* (chains of about 10) */
+	const uint8_t *relocs = ld + be32(ld + 36);
+	CHECK_EQ(be32(ld + 56 + 4), 2);                         /* TVectors in runs of at most 512 */
+	CHECK_EQ(be16(relocs), 0x4600 + 511);
+	CHECK_EQ(be16(relocs + 2), 0x4600 + ENTRIES - 512 - 1);
 	const uint8_t *strings = ld + be32(ld + 40), *hash = ld + be32(ld + 44);
 	const uint8_t *keys = hash + 4 * (1u << power), *syms = keys + 4 * nexports;
 	unsigned found = 0;
@@ -303,7 +307,7 @@ static void test_volume(void)
 	uint8_t pef[16], fork[1024];
 	CHECK(pread(fd, pef, 16, (off_t)al_bl_st * 512 + (off_t)be16(f + 74) * al_siz) == 16);
 	CHECK(!memcmp(pef, "Joy!peffpwpc", 12));
-	CHECK_EQ(be16(mdb + 12), 2);                            /* and the 3D engine */
+	CHECK_EQ(be16(mdb + 12), TOOLS_FILES + TOOLS_GL_FILES); /* and the 3D engine, the OpenGL libraries */
 	uint32_t rlen = be32(f + 36), len = 0;
 	CHECK(rlen <= sizeof fork);
 	CHECK(pread(fd, fork, rlen, (off_t)al_bl_st * 512 + (off_t)be16(f + 86) * al_siz) == (ssize_t)rlen);

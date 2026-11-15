@@ -17,9 +17,10 @@
 #define SYM_DATA 1
 #define SYM_TVECTOR 2
 
-/* Relocation opcodes (16-bit instructions) */
+/* Relocation opcodes (16-bit instructions; runs of 1 to RELOC_RUN) */
 #define RELOC_IMPORT_RUN(n) (0x4A00u | ((n) - 1u))
 #define RELOC_TVECTOR8(n) (0x4600u | ((n) - 1u))
+#define RELOC_RUN 512u
 #define RELOC_INCR_POSITION(bytes) (0x8000u | ((bytes) - 1u))
 
 #define HEADER_SIZE 40u
@@ -230,13 +231,15 @@ size_t ndrv_build(const struct ndrv_spec *spec, uint8_t *out, size_t size, struc
 	for (unsigned k = 0; k < nexports; k++)
 		exp[k].slot >>= 16;
 
-	uint16_t relocs[4];
+	uint16_t relocs[2 + (NDRV_MAX_ENTRIES + RELOC_RUN - 1) / RELOC_RUN];
 	size_t nrelocs = 0;
+	_Static_assert(NDRV_MAX_IMPORTS <= RELOC_RUN, "imports in one run");
 	if (nimp)
 		relocs[nrelocs++] = (uint16_t)RELOC_IMPORT_RUN(nimp);
 	if (tvectors > 4 * nimp)
 		relocs[nrelocs++] = (uint16_t)RELOC_INCR_POSITION(tvectors - 4 * nimp);
-	relocs[nrelocs++] = (uint16_t)RELOC_TVECTOR8(entries);
+	for (unsigned k = 0; k < entries; k += RELOC_RUN)
+		relocs[nrelocs++] = (uint16_t)RELOC_TVECTOR8(entries - k < RELOC_RUN ? entries - k : RELOC_RUN);
 
 	const size_t code_off = align(HEADER_SIZE + 3 * SECTION_HEADER_SIZE, 16);
 	const size_t data_off = align(code_off + code_size, 16);

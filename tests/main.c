@@ -34,6 +34,7 @@ int main(int argc, char **argv)
 		{ "raster", test_raster },
 		{ "rave", test_rave },
 		{ "gpu", test_gpu },
+		{ "opengl", test_opengl },
 		{ "display", test_display },
 		{ "video", test_video },
 		{ "jit", test_jit },

@@ -12,6 +12,8 @@
  *                       patches the Scrap Manager's ZeroScrap and PutScrap,
  *                       and filters events, for every application.
  *   syshm 3D Engine     a QuickDraw 3D RAVE drawing engine (rave.h).
+ *   syshm OpenGL ...    OpenGLLibrary, OpenGLMemory and OpenGLUtility
+ *                       (opengl.h), on the volume only for now.
  */
 #ifndef SYSHM_TOOLS_H
 #define SYSHM_TOOLS_H
@@ -27,6 +29,10 @@
 /* (installed copies have these numbers in their code; 0x101 is free) */
 #define HOSTCALL_TOOLS_HELPER 0x100u
 #define HOSTCALL_TOOLS_RAVE 0x102u
+#define HOSTCALL_TOOLS_GL 0x104u        /* OpenGLLibrary */
+#define HOSTCALL_TOOLS_GLM 0x105u       /* OpenGLMemory */
+#define HOSTCALL_TOOLS_GLU 0x106u       /* OpenGLUtility */
+#define HOSTCALL_TOOLS_GL_TEST 0x107u   /* the OpenGL test application (gltest.h) */
 #define TOOLS_VOLUME_SIZE (2u << 20)
 
 /* The tools' files, in the volume's order */
@@ -40,10 +46,18 @@ enum { TOOLS_ENHANCEMENTS, TOOLS_3D_ENGINE, TOOLS_FILES };
 int tools_files(struct hfs_file files[TOOLS_FILES]);
 
 /*
+ * The OpenGL libraries (opengl.h), which the tools volume has too (the
+ * installer doesn't offer them yet: see docs/opengl-plan.md). As
+ * tools_files().
+ */
+enum { TOOLS_GL_LIBRARY, TOOLS_GL_MEMORY, TOOLS_GL_UTILITY, TOOLS_GL_FILES };
+int tools_gl_files(struct hfs_file files[TOOLS_GL_FILES]);
+
+/*
  * Writes the tools volume (a disk image) to `path`. Returns 0 on success.
  * SYSHM_TOOLS_APPL=1 makes syshm Enhancements there an application the
  * Finder opens (an 'appe' only runs from Extensions), to try it from a CD's
- * system.
+ * system; SYSHM_TOOLS_GL_TEST=1 adds the OpenGL test application (gltest.h).
  */
 int tools_create(const char *path);
 

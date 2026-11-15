@@ -30,6 +30,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "mem.h"
 
@@ -47,7 +48,7 @@ enum {
 #define NDRV_OPENED_UPON_LOAD 0x02u
 #define NDRV_UNDER_EXPERT_CONTROL 0x04u
 
-#define NDRV_MAX_IMPORTS 48
+#define NDRV_MAX_IMPORTS 128
 #define NDRV_MAX_ENTRIES 1024
 #define NDRV_ENTRIES 2                  /* drivers: 0: DoDriverIO, 1: a secondary interrupt handler */
 #define NDRV_ENTRY_RESUME 0xFFFFFFFFu   /* r11 after a callout */
@@ -139,6 +140,8 @@ struct ndrv_call {
 	uint64_t f1_out;
 	uint32_t tvector;
 	uint32_t out[8];
+	bool set_out_f;                 /* ... and f1 to f13 (floating-point arguments) */
+	uint64_t out_f[13];
 };
 
 static inline void ndrv_finish(struct ndrv_call *c, uint32_t result)
@@ -156,6 +159,14 @@ static inline void ndrv_callout(struct ndrv_call *c, uint32_t tvector, uint32_t 
 	c->out[1] = a1;
 	c->out[2] = a2;
 	c->out[3] = a3;
+	c->set_out_f = false;
+}
+
+/* A callout's floating-point argument k (f1 + k, a double), after ndrv_callout() */
+static inline void ndrv_callout_double(struct ndrv_call *c, unsigned k, double v)
+{
+	memcpy(&c->out_f[k], &v, sizeof v);
+	c->set_out_f = true;
 }
 
 /* State words kept in the stub's stack frame across callouts */

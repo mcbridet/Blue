@@ -16,6 +16,7 @@
 #include "disk.h"
 #include "display.h"
 #include "drives.h"
+#include "gltest.h"
 #include "gpu.h"
 #include "install.h"
 #include "jit.h"
@@ -30,6 +31,7 @@
 #include "perf.h"
 #include "ppc_fp.h"
 #include "priv.h"
+#include "opengl.h"
 #include "rave.h"
 #include "rtas.h"
 #include "scc.h"
@@ -474,6 +476,8 @@ struct machine {
 	struct helper helper;           /* the guest tools' helper application */
 	struct clip clip;               /* ... and the clipboard it shares (the window's, or a script's) */
 	struct rave rave;               /* ... and their 3D engine */
+	struct opengl opengl;           /* ... and OpenGL */
+	struct gltest gltest;           /* ... and its test application (gltest.h) */
 	struct install install;         /* ... and installing them (see tools_startup()) */
 	bool tools_offer;               /* ... which is offered in this run */
 	unsigned tools_disk, tools_part;        /* ... on this drive's partition */
@@ -904,6 +908,10 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->rave.gpu = m->gpu;
 	m->rave.log = getenv("SYSHM_LOG_RAVE") != NULL;
 	m->rave.fps = getenv("SYSHM_RAVE_FPS") != NULL;
+	opengl_init(&m->opengl, &m->mem);
+	m->opengl.gpu = m->gpu;
+	m->opengl.log = getenv("SYSHM_LOG_GL") != NULL;
+	gltest_init(&m->gltest);
 	if (getenv("SYSHM_PERF") && !m->perf_on) {
 		m->perf_on = perf_open(&m->perf);
 		if (!m->perf_on)
@@ -2984,6 +2992,18 @@ static const char *host_call(struct machine *m, uint32_t selector)
 	case HOSTCALL_TOOLS_RAVE:
 		rave_call(&m->rave, &c);
 		break;
+	case HOSTCALL_TOOLS_GL:
+		opengl_library_call(&m->opengl, &c);
+		break;
+	case HOSTCALL_TOOLS_GLM:
+		opengl_memory_call(&m->opengl, &c);
+		break;
+	case HOSTCALL_TOOLS_GLU:
+		opengl_utility_call(&m->opengl, &c);
+		break;
+	case HOSTCALL_TOOLS_GL_TEST:
+		gltest_call(&m->gltest, &c);
+		break;
 	case HOSTCALL_TOOLS_INSTALL:
 		install_call(&m->install, &c, &m->helper);
 		tools_show(m);
@@ -3014,6 +3034,8 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		cpu->cr = (cpu->cr & 0x0FFFFFFFu) | 0x20000000u;
 	} else {
 		memcpy(&cpu->gpr[3], c.out, sizeof c.out);
+		if (c.set_out_f)
+			memcpy(&cpu->fpr[1], c.out_f, sizeof c.out_f);
 		cpu->gpr[12] = c.tvector;
 		cpu->cr &= 0x0FFFFFFFu;
 	}
@@ -3527,6 +3549,7 @@ static void stop_machine(struct machine *m)
 	if (m->has_floppy)
 		disk_close(&m->floppy);
 	rave_free(&m->rave);
+	opengl_free(&m->opengl);
 	net_free(&m->net);
 	jit_free(m->cpu.jit);
 	mem_free(&m->mem);
@@ -4060,6 +4083,10 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		       m.rave.calls, m.rave.contexts, m.rave.textures, m.rave.frames, m.rave.triangles, m.rave.backfacing);
 	if (m.rave.gpu_frames)
 		printf("; %lu frames drawn with %s", m.rave.gpu_frames, gpu_renderer(m.gpu));
+	if (m.opengl.calls)
+		printf("\nopengl: %lu calls, %lu contexts, %lu frames", m.opengl.calls, m.opengl.contexts, m.opengl.frames);
+	if (m.opengl.gpu_frames)
+		printf(" (%lu drawn with %s)", m.opengl.gpu_frames, gpu_renderer(m.gpu));
 	if (m.awacs.codec_writes)
 		printf("\nsound: %lu codec writes, %u Hz, %lu frames played, %lu recorded",
 		       m.awacs.codec_writes, awacs_rate(&m.awacs), m.awacs.frames_played, m.awacs.frames_recorded);

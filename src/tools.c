@@ -8,7 +8,9 @@
 #include <unistd.h>
 
 #include "be.h"
+#include "gltest.h"
 #include "hfs.h"
+#include "opengl.h"
 #include "rave.h"
 #include "rsrc.h"
 
@@ -24,8 +26,8 @@
 #define SIZE_32_BIT 0x0080u
 #define SIZE_HIGH_LEVEL_EVENTS 0x0040u
 
-/* A 'cfrg' resource with one PowerPC member: the whole data fork. Returns its size. */
-static size_t make_cfrg(uint8_t *p, unsigned usage, uint32_t stack, const char *name)
+/* A 'cfrg' resource with one PowerPC member: the whole data fork, of this version. Returns its size. */
+static size_t make_cfrg(uint8_t *p, unsigned usage, uint32_t stack, const char *name, uint32_t version)
 {
 	size_t n = strlen(name), member = (43 + n + 3) & ~(size_t)3;
 	memset(p, 0, 32 + member);
@@ -33,6 +35,7 @@ static size_t make_cfrg(uint8_t *p, unsigned usage, uint32_t stack, const char *
 	put_be16(p + 30, 1);                    /* members */
 	uint8_t *m = p + 32;
 	memcpy(m, "pwpc", 4);
+	put_be32(m + 8, version);               /* (current; the oldest compatible definition: 0) */
 	put_be32(m + 16, usage == CFRG_APPLICATION ? stack : 0);
 	m[22] = (uint8_t)usage;
 	m[23] = 1;                              /* in the data fork (offset 0, length 0: all of it) */
@@ -495,7 +498,7 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 	size_t engine_len = rave_build_engine(engine, sizeof engine, &layout);
 
 	uint8_t cfrg[128], size_res[10];
-	size_t cfrg_len = make_cfrg(cfrg, CFRG_APPLICATION, 32u << 10, "syshm Enhancements");
+	size_t cfrg_len = make_cfrg(cfrg, CFRG_APPLICATION, 32u << 10, "syshm Enhancements", 0);
 	put_be16(size_res, SIZE_CAN_BACKGROUND | SIZE_ONLY_BACKGROUND | SIZE_32_BIT | SIZE_HIGH_LEVEL_EVENTS);
 	put_be32(size_res + 2, 96u << 10);      /* preferred and minimum partition */
 	put_be32(size_res + 6, 96u << 10);
@@ -507,7 +510,7 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 
 	/* RAVE loads 'shlb' files of creator 'tnsl' from the Extensions folder */
 	uint8_t engine_cfrg[128];
-	size_t engine_cfrg_len = make_cfrg(engine_cfrg, CFRG_LIBRARY, 0, "syshm 3D Engine");
+	size_t engine_cfrg_len = make_cfrg(engine_cfrg, CFRG_LIBRARY, 0, "syshm 3D Engine", 0);
 	const struct rsrc engine_res[] = { { FOURCC('c', 'f', 'r', 'g'), 0, engine_cfrg, (uint32_t)engine_cfrg_len } };
 	size_t engine_rsrc_len = rsrc_build(engine_res, 1, engine_rsrc, sizeof engine_rsrc);
 	if (!helper_len || !rsrc_len || !engine_len || !engine_rsrc_len)
@@ -522,10 +525,61 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 	return 0;
 }
 
+int tools_gl_files(struct hfs_file files[TOOLS_GL_FILES])
+{
+	static uint8_t frag[TOOLS_GL_FILES][64 << 10], rsrc[TOOLS_GL_FILES][1024];
+	static const char *const names[TOOLS_GL_FILES] = { "syshm OpenGL Library", "syshm OpenGL Memory",
+							   "syshm OpenGL Utility" };
+	static const char *const fragments[TOOLS_GL_FILES] = { "OpenGLLibrary", "OpenGLMemory", "OpenGLUtility" };
+	size_t (*const build[TOOLS_GL_FILES])(uint8_t *, size_t, struct ndrv_layout *) = {
+		opengl_build_library, opengl_build_memory, opengl_build_utility };
+	for (unsigned k = 0; k < TOOLS_GL_FILES; k++) {
+		struct ndrv_layout layout;
+		size_t len = build[k](frag[k], sizeof frag[k], &layout);
+		uint8_t cfrg[128];
+		/* (as Apple's: current version 1, any version from 0 compatible) */
+		size_t cfrg_len = make_cfrg(cfrg, CFRG_LIBRARY, 0, fragments[k], 1);
+		const struct rsrc res[] = { { FOURCC('c', 'f', 'r', 'g'), 0, cfrg, (uint32_t)cfrg_len } };
+		size_t rsrc_len = rsrc_build(res, 1, rsrc[k], sizeof rsrc[k]);
+		if (!len || !rsrc_len)
+			return -1;
+		files[k] = (struct hfs_file){ names[k], FOURCC('s', 'h', 'l', 'b'), FOURCC('s', 'y', 'G', 'L'), 0, 140,
+					      (int16_t)(60 + 100 * k), frag[k], rsrc[k], (uint32_t)len, (uint32_t)rsrc_len };
+	}
+	return 0;
+}
+
+/* The OpenGL test application (gltest.h) */
+static int gl_test_file(struct hfs_file *file)
+{
+	static uint8_t frag[16384], rsrc[1024];
+	struct ndrv_layout layout;
+	size_t len = gltest_build(frag, sizeof frag, &layout);
+	uint8_t cfrg[128], size_res[10];
+	size_t cfrg_len = make_cfrg(cfrg, CFRG_APPLICATION, 32u << 10, "syshm GL Test", 0);
+	put_be16(size_res, SIZE_CAN_BACKGROUND | SIZE_32_BIT);
+	put_be32(size_res + 2, 512u << 10);
+	put_be32(size_res + 6, 512u << 10);
+	const struct rsrc res[] = {
+		{ FOURCC('S', 'I', 'Z', 'E'), -1, size_res, sizeof size_res },
+		{ FOURCC('c', 'f', 'r', 'g'), 0, cfrg, (uint32_t)cfrg_len },
+	};
+	size_t rsrc_len = rsrc_build(res, 2, rsrc, sizeof rsrc);
+	if (!len || !rsrc_len)
+		return -1;
+	*file = (struct hfs_file){ "syshm GL Test", FOURCC('A', 'P', 'P', 'L'), FOURCC('s', 'y', 'G', 'T'), 0, 240,
+				   60, frag, rsrc, (uint32_t)len, (uint32_t)rsrc_len };
+	return 0;
+}
+
 int tools_create(const char *path)
 {
-	struct hfs_file files[TOOLS_FILES];
-	if (tools_files(files))
+	struct hfs_file files[TOOLS_FILES + TOOLS_GL_FILES + 1];
+	unsigned n = TOOLS_FILES + TOOLS_GL_FILES;
+	if (tools_files(files) || tools_gl_files(files + TOOLS_FILES))
+		return -1;
+	const char *test = getenv("SYSHM_TOOLS_GL_TEST");
+	if (test && strcmp(test, "0") && gl_test_file(&files[n++]))
 		return -1;
 	const char *appl = getenv("SYSHM_TOOLS_APPL");          /* (see tools.h) */
 	if (appl && strcmp(appl, "0"))
@@ -536,7 +590,7 @@ int tools_create(const char *path)
 		return -1;
 	}
 	int err = ftruncate(fd, TOOLS_VOLUME_SIZE) ? -1 :
-		  hfs_format(fd, TOOLS_VOLUME_SIZE, "syshm Tools", hfs_mac_time_now(), files, TOOLS_FILES);
+		  hfs_format(fd, TOOLS_VOLUME_SIZE, "syshm Tools", hfs_mac_time_now(), files, n);
 	if (close(fd))
 		err = -1;
 	if (err)
