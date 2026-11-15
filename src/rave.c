@@ -273,28 +273,26 @@ static float fbits(uint32_t b)
 #define VGOURAUD_SIZE 32u
 #define VTEXTURE_SIZE 64u
 
-/* A TQAVGouraud or TQAVTexture (big-endian floats) */
+/* A TQAVGouraud or TQAVTexture (big-endian floats): color 0 the vertex's, 1 ks, 2 kd; unit 0 at u/w, v/w */
 static void read_vertex(const uint8_t *p, bool textured, struct raster_vertex *v)
 {
+	memset(v, 0, sizeof *v);
 	v->x = fbits(be32(p));
 	v->y = fbits(be32(p + 4));
 	v->z = fbits(be32(p + 8));
 	v->invw = fbits(be32(p + 12));
-	v->r = fbits(be32(p + 16));
-	v->g = fbits(be32(p + 20));
-	v->b = fbits(be32(p + 24));
-	v->a = fbits(be32(p + 28));
+	for (int k = 0; k < 4; k++)
+		v->color[0][k] = fbits(be32(p + 16 + 4 * k));
 	if (textured) {
-		v->uw = fbits(be32(p + 32));
-		v->vw = fbits(be32(p + 36));
+		v->tex[0][0] = fbits(be32(p + 32));
+		v->tex[0][1] = fbits(be32(p + 36));
+		v->tex[0][2] = v->invw;
 		for (int k = 0; k < 3; k++) {
-			v->kd[k] = fbits(be32(p + 40 + 4 * k));
-			v->ks[k] = fbits(be32(p + 52 + 4 * k));
+			v->color[2][k] = fbits(be32(p + 40 + 4 * k));
+			v->color[1][k] = v->tex[1][k] = fbits(be32(p + 52 + 4 * k));    /* (ATI's second texture's) */
 		}
 	} else {
-		v->uw = v->vw = 0;
-		v->kd[0] = v->kd[1] = v->kd[2] = 1;
-		v->ks[0] = v->ks[1] = v->ks[2] = 0;
+		v->color[2][0] = v->color[2][1] = v->color[2][2] = 1;
 	}
 }
 
@@ -674,16 +672,33 @@ static void state_of(struct rave *r, const struct rave_context *x, struct raster
 	s->z_write = x->ints[TAG_Z_BUFFER_MASK] != 0;
 	s->perspective_z = x->ints[TAG_PERSPECTIVE_Z] != 0;
 	struct rave_image *im = image_of(r, x->texture);
-	s->texture = im && !im->bitmap ? im->tex : NULL;
-	s->texture_op = x->ints[TAG_TEXTURE_OP];
-	struct rave_image *im2 = x->ati_multitexture ? image_of(r, x->texture2) : NULL;
-	s->texture2 = im2 && !im2->bitmap ? im2->tex : NULL;
-	if (s->texture2)
-		s->texture_op &= ~(unsigned)RASTER_TEX_HIGHLIGHT;      /* (ks are its coordinates) */
-	s->bilinear = x->ints[TAG_TEXTURE_FILTER] != 0;
-	s->trilinear = x->ints[TAG_TEXTURE_FILTER] >= 2;        /* kQATextureFilter_Best */
-	s->clamp_u = x->ints[TAG_GL_WRAP_U] != 0;
-	s->clamp_v = x->ints[TAG_GL_WRAP_V] != 0;
+	if (im && !im->bitmap) {
+		/*
+		 * The texture filter tag: Fast is nearest, from the nearest mipmap
+		 * level; Mid bilinear, from the nearest level; Best trilinear (on the
+		 * GPU, with anisotropic filtering where there's some).
+		 */
+		static const uint8_t min[3] = { RASTER_NEAREST_MIPMAP_NEAREST, RASTER_LINEAR_MIPMAP_NEAREST,
+						RASTER_LINEAR_MIPMAP_LINEAR };
+		uint32_t filter = x->ints[TAG_TEXTURE_FILTER] < 2 ? x->ints[TAG_TEXTURE_FILTER] : 2;
+		struct raster_unit *u = &s->unit[0];
+		u->texture = im->tex;
+		u->min_filter = min[filter];
+		u->mag_filter = filter ? RASTER_LINEAR : RASTER_NEAREST;
+		u->clamp_s = x->ints[TAG_GL_WRAP_U] != 0;
+		u->clamp_t = x->ints[TAG_GL_WRAP_V] != 0;
+		u->anisotropy = filter == 2 ? 8 : 0;
+		struct rave_image *im2 = x->ati_multitexture ? image_of(r, x->texture2) : NULL;
+		if (im2 && !im2->bitmap && im2->tex->levels) {  /* (bilinear, clamped: see TAG_ATI_MULTITEXTURE) */
+			u = &s->unit[1];
+			u->texture = im2->tex;
+			u->min_filter = RASTER_LINEAR_MIPMAP_NEAREST;
+			u->mag_filter = RASTER_LINEAR;
+			u->clamp_s = u->clamp_t = true;
+			u->projective = true;
+		}
+		raster_rave_stages(s, x->ints[TAG_TEXTURE_OP]);
+	}
 	s->blend = x->ints[TAG_BLEND] == BLEND_INTERPOLATE ? RASTER_BLEND_INTERPOLATE :
 		   x->ints[TAG_BLEND] == BLEND_OPENGL ? RASTER_BLEND_FACTORS : RASTER_BLEND_PREMULTIPLY;
 	s->blend_src = gl_factor(x->ints[TAG_GL_BLEND_SRC]);
@@ -694,13 +709,15 @@ static void state_of(struct rave *r, const struct rave_context *x, struct raster
 	/*
 	 * Fog parameters are taken from 0 to 1, as ATI's engine does (QuickDraw 3D
 	 * passes densities scaled by the camera's range, far above 1; games tuned
-	 * on ATI hardware expect a light haze from them).
+	 * on ATI hardware expect a light haze from them), and the exponential
+	 * fogs' density is per fog end: exp(-(density / end * w)^n).
 	 */
 	for (int k = 0; k < 4; k++)
 		s->fog_color[k] = unit(x->floats[TAG_FOG_A + k]);
 	s->fog_start = unit(x->floats[TAG_FOG_START]);
 	s->fog_end = unit(x->floats[TAG_FOG_END]);
-	s->fog_density = unit(x->floats[TAG_FOG_DENSITY]);
+	float density = unit(x->floats[TAG_FOG_DENSITY]);
+	s->fog_density = s->fog_end != 0 ? density / s->fog_end : density;
 	s->alpha_test = x->ints[TAG_ALPHA_TEST_FUNC] <= RASTER_ALPHA_TRUE ? x->ints[TAG_ALPHA_TEST_FUNC] : 0;
 	s->alpha_ref = x->floats[TAG_ALPHA_TEST_REF];
 	s->width = x->floats[TAG_WIDTH];

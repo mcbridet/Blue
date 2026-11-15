@@ -81,7 +81,15 @@ typedef struct __GLsync *GLsync;
 #define GL_DST_COLOR 0x0306
 #define GL_ONE_MINUS_DST_COLOR 0x0307
 #define GL_SRC_ALPHA_SATURATE 0x0308
+#define GL_CONSTANT_COLOR 0x8001
+#define GL_ONE_MINUS_CONSTANT_COLOR 0x8002
+#define GL_CONSTANT_ALPHA 0x8003
+#define GL_ONE_MINUS_CONSTANT_ALPHA 0x8004
 #define GL_FUNC_ADD 0x8006
+#define GL_MIN 0x8007
+#define GL_MAX 0x8008
+#define GL_FUNC_SUBTRACT 0x800A
+#define GL_FUNC_REVERSE_SUBTRACT 0x800B
 
 #define GL_TRIANGLES 0x0004
 
@@ -174,6 +182,7 @@ typedef struct __GLsync *GLsync;
 	X(void, BlendFunc, (GLenum sfactor, GLenum dfactor)) \
 	X(void, BlendFuncSeparate, (GLenum srgb, GLenum drgb, GLenum salpha, GLenum dalpha)) \
 	X(void, BlendEquation, (GLenum mode)) \
+	X(void, BlendColor, (GLfloat r, GLfloat g, GLfloat b, GLfloat a)) \
 	X(void, PixelStorei, (GLenum pname, GLint param)) \
 	X(void, ReadPixels, (GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, \
 			     void *pixels)) \

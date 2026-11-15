@@ -13,51 +13,63 @@
 
 /*
  * Everything is drawn with w = 1, so the GPU interpolates linearly in screen
- * space, as raster.c does; texture coordinates and fog divide by 1/w per
- * pixel. Rows go upward in GL, so image row y is GL row y: drawn upside
- * down, read back the right way up.
+ * space, as raster.c does; texture coordinates and fog divide by 1/w (or a
+ * unit's q/w) per pixel. Rows go upward in GL, so image row y is GL row y:
+ * drawn upside down, read back the right way up.
  */
 static const char vertex_source[] =
 	"layout(location = 0) in vec4 a_pos;\n"          /* x, y (pixels), z, 1/w */
-	"layout(location = 1) in vec4 a_color;\n"
-	"layout(location = 2) in vec2 a_uvw;\n"          /* u/w, v/w (bitmaps: texel coordinates) */
-	"layout(location = 3) in vec3 a_kd;\n"
-	"layout(location = 4) in vec3 a_ks;\n"
+	"layout(location = 1) in vec4 a_color0;\n"
+	"layout(location = 2) in vec4 a_color1;\n"
+	"layout(location = 3) in vec4 a_color2;\n"
+	"layout(location = 4) in float a_fog;\n"
+	"layout(location = 5) in vec3 a_tex0;\n"         /* s/w, t/w, q/w (bitmaps: texel coordinates) */
+	"layout(location = 6) in vec3 a_tex1;\n"
 	"uniform vec2 u_size;\n"
 	"noperspective out float v_invw;\n"
-	"noperspective out vec4 v_color;\n"
-	"noperspective out vec2 v_uvw;\n"
-	"noperspective out vec3 v_kd;\n"
-	"noperspective out vec3 v_ks;\n"
+	"noperspective out vec4 v_color0;\n"
+	"noperspective out vec4 v_color1;\n"
+	"noperspective out vec4 v_color2;\n"
+	"noperspective out float v_fog;\n"
+	"noperspective out vec3 v_tex0;\n"
+	"noperspective out vec3 v_tex1;\n"
 	"void main()\n"
 	"{\n"
 	"	gl_Position = vec4(a_pos.x * 2.0 / u_size.x - 1.0, a_pos.y * 2.0 / u_size.y - 1.0,\n"
 	"			   a_pos.z * 2.0 - 1.0, 1.0);\n"
 	"	v_invw = a_pos.w;\n"
-	"	v_color = a_color;\n"
-	"	v_uvw = a_uvw;\n"
-	"	v_kd = a_kd;\n"
-	"	v_ks = a_ks;\n"
+	"	v_color0 = a_color0;\n"
+	"	v_color1 = a_color1;\n"
+	"	v_color2 = a_color2;\n"
+	"	v_fog = a_fog;\n"
+	"	v_tex0 = a_tex0;\n"
+	"	v_tex1 = a_tex1;\n"
 	"}\n";
 
-/* raster.c's fragment(), step for step */
-static const char fragment_source[] =
+/*
+ * raster.c's fragment(), step for step, made for each way of drawing (a
+ * program): MODE 0 color 0, 1 textured, 2 bitmaps; PERSPECTIVE_Z;
+ * textured, UNIT0 and UNIT1 (sampled) and PROJECTIVE0 and PROJECTIVE1, and
+ * the stages' code between the head and the tail (see stage_code()).
+ */
+static const char fragment_head[] =
 	"noperspective in float v_invw;\n"
-	"noperspective in vec4 v_color;\n"
-	"noperspective in vec2 v_uvw;\n"
-	"noperspective in vec3 v_kd;\n"
-	"noperspective in vec3 v_ks;\n"
-	"uniform sampler2D u_texture;\n"
-	"uniform sampler2D u_texture2;\n"
-	"uniform bool u_second;\n"                       /* (the second texture modulates, at ks) */
-	"uniform int u_mode;\n"                          /* 0: color, 1: textured, 2: bitmap */
-	"uniform int u_texture_op;\n"
+	"noperspective in vec4 v_color0;\n"
+	"noperspective in vec4 v_color1;\n"
+	"noperspective in vec4 v_color2;\n"
+	"noperspective in float v_fog;\n"
+	"noperspective in vec3 v_tex0;\n"
+	"noperspective in vec3 v_tex1;\n"
+	"uniform sampler2D u_texture0;\n"
+	"uniform sampler2D u_texture1;\n"
+	"uniform vec4 u_constant[STAGES];\n"
 	"uniform int u_fog_mode;\n"
+	"uniform bool u_fog_coord;\n"
 	"uniform vec3 u_fog_color;\n"
 	"uniform float u_fog_start, u_fog_end, u_fog_density;\n"
 	"uniform int u_alpha_test;\n"
 	"uniform float u_alpha_ref;\n"
-	"uniform bool u_interpolate;\n"
+	"uniform int u_transparent;\n"                   /* alpha 0: drawn (0), skipped adding nothing (1), skipped (2) */
 	"layout(location = 0) out vec4 o_color;\n"
 	"void main()\n"
 	"{\n"
@@ -65,35 +77,40 @@ static const char fragment_source[] =
 	"	gl_FragDepth = v_invw > 0.0 ? v_invw / (1.0 + v_invw) : 0.0;\n"
 	"#endif\n"
 	"	float w = v_invw != 0.0 ? 1.0 / v_invw : 1e30;\n"
-	"	vec4 c = v_color;\n"
-	"	if (u_mode == 1) {\n"
-	"		vec4 t = texture(u_texture, v_uvw * w);\n"
-	"		if ((u_texture_op & 4) != 0)\n"
-	"			c.rgb = t.a * t.rgb + (1.0 - t.a) * v_color.rgb;\n"
-	"		else\n"
-	"			c = vec4(t.rgb, t.a * v_color.a);\n"
-	"		if ((u_texture_op & 1) != 0)\n"
-	"			c.rgb = clamp(c.rgb * v_kd, 0.0, 1.0);\n"
-	"		if (u_second)\n"
-	"			c *= texture(u_texture2, v_ks.xy * (v_ks.z != 0.0 ? 1.0 / v_ks.z : 1e30));\n"
-	"		else if ((u_texture_op & 2) != 0)\n"
-	"			c.rgb = clamp(c.rgb + v_ks, 0.0, 1.0);\n"
-	"	} else if (u_mode == 2) {\n"
-	"		c = texelFetch(u_texture, ivec2(floor(v_uvw)), 0);\n"
-	"		if (c.a <= 0.0)\n"
-	"			discard;\n"
-	"	}\n"
+	"	vec4 c = v_color0;\n"
+	"#if MODE == 1\n"
+	"#ifdef UNIT0\n"
+	"#ifdef PROJECTIVE0\n"
+	"	vec4 t0 = texture(u_texture0, v_tex0.xy * (v_tex0.z != 0.0 ? 1.0 / v_tex0.z : 1e30));\n"
+	"#else\n"
+	"	vec4 t0 = texture(u_texture0, v_tex0.xy * w);\n"
+	"#endif\n"
+	"#endif\n"
+	"#ifdef UNIT1\n"
+	"#ifdef PROJECTIVE1\n"
+	"	vec4 t1 = texture(u_texture1, v_tex1.xy * (v_tex1.z != 0.0 ? 1.0 / v_tex1.z : 1e30));\n"
+	"#else\n"
+	"	vec4 t1 = texture(u_texture1, v_tex1.xy * w);\n"
+	"#endif\n"
+	"#endif\n";
+
+static const char fragment_tail[] =
+	"#elif MODE == 2\n"
+	"	c = texelFetch(u_texture0, ivec2(floor(v_tex0.xy)), 0);\n"
+	"	if (c.a <= 0.0)\n"
+	"		discard;\n"
+	"#endif\n"
 	"	if (u_fog_mode != 0) {\n"
-	"		float f, d = u_fog_end != 0.0 ? u_fog_density / u_fog_end : u_fog_density;\n"
+	"		float f, z = u_fog_coord ? v_fog * w : w, d = u_fog_density;\n"
 	"		if (u_fog_mode == 1) {\n"
 	"			f = c.a;\n"
 	"			c.a = 1.0;\n"
 	"		} else if (u_fog_mode == 2) {\n"
-	"			f = w < u_fog_start ? 1.0 : w > u_fog_end ? 0.0 : (u_fog_end - w) / (u_fog_end - u_fog_start);\n"
+	"			f = z < u_fog_start ? 1.0 : z > u_fog_end ? 0.0 : (u_fog_end - z) / (u_fog_end - u_fog_start);\n"
 	"		} else if (u_fog_mode == 3) {\n"
-	"			f = exp(-d * w);\n"
+	"			f = exp(-d * z);\n"
 	"		} else {\n"
-	"			f = exp(-(d * w) * (d * w));\n"
+	"			f = exp(-(d * z) * (d * z));\n"
 	"		}\n"
 	"		f = clamp(f, 0.0, 1.0);\n"
 	"		c.rgb = f * c.rgb + (1.0 - f) * u_fog_color;\n"
@@ -105,21 +122,32 @@ static const char fragment_source[] =
 	"		if (!pass)\n"
 	"			discard;\n"
 	"	}\n"
-	"	if (c.a <= 0.0 && (u_interpolate || all(lessThanEqual(c.rgb, vec3(0.0)))))\n"
+	"	if (u_transparent != 0 && c.a <= 0.0 && (u_transparent == 2 || all(lessThanEqual(c.rgb, vec3(0.0)))))\n"
 	"		discard;\n"
 	"	o_color = c;\n"
 	"}\n";
 
-enum { MODE_COLOR, MODE_TEXTURED, MODE_BITMAP };
-enum { PROGRAM_Z, PROGRAM_PERSPECTIVE_Z, PROGRAMS };
+#define STR_(x) #x
+#define STR(x) STR_(x)
 
-struct program {
-	GLuint id;
-	GLint size, texture, texture2, second, mode, texture_op, fog_mode, fog_color, fog_start, fog_end, fog_density,
-	      alpha_test, alpha_ref, interpolate;
+enum { MODE_COLOR, MODE_TEXTURED, MODE_BITMAP };
+
+/* What a program draws: what it's made for (all but the stages of textured drawing zero) */
+struct program_key {
+	uint8_t mode, perspective_z, units, projective, stages;
+	struct raster_stage stage[RASTER_STAGES];       /* (but for their constants, which are uniforms) */
 };
 
-#define FLOATS 16                       /* per vertex: x, y, z, 1/w, r, g, b, a, u/w, v/w, kd[3], ks[3] */
+struct program {
+	struct program_key key;
+	GLuint id;
+	GLint size, texture0, texture1, constant, fog_mode, fog_coord, fog_color, fog_start, fog_end, fog_density,
+	      alpha_test, alpha_ref, transparent;
+};
+
+/* per vertex: x, y, z, 1/w, the colors (r, g, b, a), fog, each unit's s/w, t/w, q/w */
+#define FLOATS (4 + 4 * RASTER_COLORS + 1 + 3 * RASTER_UNITS)
+_Static_assert(RASTER_UNITS == 2 && RASTER_COLORS == 3 && RASTER_CONSTANT == 6, "the shaders' units and sources");
 
 /* ---- the backend ----------------------------------------------------------------- */
 
@@ -136,7 +164,7 @@ struct range {
 	const struct raster_cmd *clear;
 	unsigned state;
 	int mode;
-	const struct raster_texture *texture;
+	const struct raster_texture *image;     /* (bitmaps) */
 };
 
 struct gpu {
@@ -163,10 +191,14 @@ struct gpu {
 
 	/* the thread's */
 	struct gl gl;
-	struct program program[PROGRAMS];
+	struct program *programs;       /* made as they're needed */
+	unsigned nprograms, last_program;
 	GLuint vao, vbo;
-	GLuint sampler[12], bitmap_sampler;     /* sampler[filter * 4 + clamp_u * 2 + clamp_v] */
+	GLuint sampler[6][2][4][5];     /* by min and mag filter, clamping (s * 2 + t), anisotropy (1 << k) */
+	GLuint bitmap_sampler;
 	GLuint blank;                   /* (bound when drawing without a texture: drivers want one) */
+	GLenum blend_eq;                /* as last set (changing them costs, on some drivers) */
+	float blend_color[4];
 	float anisotropy;
 	float *verts;
 	size_t nverts, verts_cap;       /* (vertices) */
@@ -190,12 +222,14 @@ static void debug(struct gpu *g, const char *fmt, ...)
 
 /* ---- the thread: programs, samplers, textures ---------------------------------------- */
 
-static GLuint compile(struct gpu *g, GLenum type, const char *defines, const char *body)
+static GLuint compile(struct gpu *g, GLenum type, const char *defines, const char *head, const char *code,
+		      const char *tail)
 {
 	struct gl *gl = &g->gl;
 	GLuint s = gl->CreateShader(type);
-	const GLchar *src[3] = { "#version 330 core\n", defines, body };
-	gl->ShaderSource(s, 3, src, NULL);
+	const GLchar *src[6] = { "#version 330 core\n", "#define STAGES " STR(RASTER_STAGES) "\n", defines, head, code,
+				 tail };
+	gl->ShaderSource(s, 6, src, NULL);
 	gl->CompileShader(s);
 	GLint ok = 0;
 	gl->GetShaderiv(s, GL_COMPILE_STATUS, &ok);
@@ -212,13 +246,95 @@ static GLuint compile(struct gpu *g, GLenum type, const char *defines, const cha
 	return s;
 }
 
-static bool make_program(struct gpu *g, struct program *p, const char *defines)
+/* Text added to a buffer (as much as fits) */
+static void append(char *out, size_t size, size_t *n, const char *fmt, ...)
 {
+	va_list ap;
+	va_start(ap, fmt);
+	if (*n < size) {
+		int k = vsnprintf(out + *n, size - *n, fmt, ap);
+		*n += k > 0 ? (size_t)k : 0;
+	}
+	va_end(ap);
+}
+
+/* An argument of stage j as GLSL (a vec4) */
+static void arg_code(char *out, size_t size, size_t *n, unsigned arg, unsigned j)
+{
+	static const char *const source[RASTER_CONSTANT] = { "c", "v_color0", "v_color1", "v_color2", "t0", "t1" };
+	unsigned src = arg & 15u;
+	append(out, size, n, arg & RASTER_INVERT ? "(1.0 - " : "");
+	append(out, size, n, arg & RASTER_ALPHA ? "vec4(" : "");
+	if (src == RASTER_CONSTANT)
+		append(out, size, n, "u_constant[%u]", j);
+	else
+		append(out, size, n, "%s", src < RASTER_CONSTANT ? source[src] : "c");
+	append(out, size, n, arg & RASTER_ALPHA ? ".a)" : "");
+	append(out, size, n, arg & RASTER_INVERT ? ")" : "");
+}
+
+/* The stages as GLSL statements, each making c from c: its .rgb from group 0's operation, its .a from 1's */
+static void stage_code(const struct program_key *k, char *out, size_t size)
+{
+	size_t n = 0;
+	out[0] = 0;
+	for (unsigned j = 0; j < k->stages; j++) {
+		const struct raster_stage *st = &k->stage[j];
+		append(out, size, &n, "\tc = vec4(");
+		for (int g = 0; g < 2; g++) {
+			static const char *const op[] = { "#0", "#0 * #1", "#0 + #1", "#0 + #1 - 0.5",
+							  "#0 * #2 + #1 * (1.0 - #2)", "#0 - #1" };
+			append(out, size, &n, "%s%s((", g ? ", " : "", st->clamp[g] ? "clamp" : "");
+			for (const char *p = op[st->op[g] < 6 ? st->op[g] : 0]; *p; p++) {
+				if (*p == '#')
+					arg_code(out, size, &n, st->arg[g][*++p - '0'], j);
+				else
+					append(out, size, &n, "%c", *p);
+			}
+			append(out, size, &n, ")%s", g ? ".a" : ".rgb");
+			if (st->shift[g])
+				append(out, size, &n, " * %u.0", 1u << st->shift[g]);
+			append(out, size, &n, st->clamp[g] ? ", 0.0, 1.0)" : ")");
+		}
+		append(out, size, &n, ");\n");
+	}
+}
+
+/* The program that draws as the key says, made the first time it's asked for; NULL if it can't be */
+static struct program *program_of(struct gpu *g, const struct program_key *key)
+{
+	if (g->last_program < g->nprograms && !memcmp(&g->programs[g->last_program].key, key, sizeof *key))
+		return &g->programs[g->last_program];
+	for (unsigned k = 0; k < g->nprograms; k++)
+		if (!memcmp(&g->programs[k].key, key, sizeof *key)) {
+			g->last_program = k;
+			return &g->programs[k];
+		}
+	struct program *ps = realloc(g->programs, (g->nprograms + 1) * sizeof *ps);
+	if (!ps)
+		return NULL;
+	g->programs = ps;
+	struct program *p = &ps[g->nprograms];
+	memset(p, 0, sizeof *p);
+	p->key = *key;
+
 	struct gl *gl = &g->gl;
-	GLuint vs = compile(g, GL_VERTEX_SHADER, "", vertex_source);
-	GLuint fs = compile(g, GL_FRAGMENT_SHADER, defines, fragment_source);
-	if (!vs || !fs)
-		return false;
+	char defines[256], code[4096];
+	snprintf(defines, sizeof defines, "#define MODE %u\n%s%s%s%s%s", key->mode,
+		 key->perspective_z ? "#define PERSPECTIVE_Z\n" : "", key->units & 1 ? "#define UNIT0\n" : "",
+		 key->units & 2 ? "#define UNIT1\n" : "", key->projective & 1 ? "#define PROJECTIVE0\n" : "",
+		 key->projective & 2 ? "#define PROJECTIVE1\n" : "");
+	stage_code(key, code, sizeof code);
+	debug(g, "program %u: %s%s", g->nprograms, defines, code);
+	GLuint vs = compile(g, GL_VERTEX_SHADER, "", vertex_source, "", "");
+	GLuint fs = compile(g, GL_FRAGMENT_SHADER, defines, fragment_head, code, fragment_tail);
+	if (!vs || !fs) {
+		if (vs)
+			gl->DeleteShader(vs);
+		if (fs)
+			gl->DeleteShader(fs);
+		return NULL;
+	}
 	p->id = gl->CreateProgram();
 	gl->AttachShader(p->id, vs);
 	gl->AttachShader(p->id, fs);
@@ -231,28 +347,56 @@ static bool make_program(struct gpu *g, struct program *p, const char *defines)
 		char log[2048] = "";
 		gl->GetProgramInfoLog(p->id, sizeof log, NULL, log);
 		fprintf(stderr, "gpu: program: %s\n", log);
-		return false;
+		gl->DeleteProgram(p->id);
+		return NULL;
 	}
 #define U(field, name) p->field = gl->GetUniformLocation(p->id, name)
 	U(size, "u_size");
-	U(texture, "u_texture");
-	U(texture2, "u_texture2");
-	U(second, "u_second");
-	U(mode, "u_mode");
-	U(texture_op, "u_texture_op");
+	U(texture0, "u_texture0");
+	U(texture1, "u_texture1");
+	U(constant, "u_constant");
 	U(fog_mode, "u_fog_mode");
+	U(fog_coord, "u_fog_coord");
 	U(fog_color, "u_fog_color");
 	U(fog_start, "u_fog_start");
 	U(fog_end, "u_fog_end");
 	U(fog_density, "u_fog_density");
 	U(alpha_test, "u_alpha_test");
 	U(alpha_ref, "u_alpha_ref");
-	U(interpolate, "u_interpolate");
+	U(transparent, "u_transparent");
 #undef U
 	gl->UseProgram(p->id);
-	gl->Uniform1i(p->texture, 0);
-	gl->Uniform1i(p->texture2, 1);
-	return true;
+	gl->Uniform1i(p->texture0, 0);
+	gl->Uniform1i(p->texture1, 1);
+	g->last_program = g->nprograms++;
+	return p;
+}
+
+/* What draws a range */
+static void key_of(const struct raster_state *s, int mode, struct program_key *k)
+{
+	memset(k, 0, sizeof *k);
+	k->mode = (uint8_t)mode;
+	k->perspective_z = s->perspective_z;
+	if (mode != MODE_TEXTURED)
+		return;
+	k->units = (uint8_t)raster_units_used(s);
+	for (unsigned u = 0; u < RASTER_UNITS; u++)
+		k->projective |= (uint8_t)(k->units >> u & 1 && s->unit[u].projective ? 1u << u : 0);
+	k->stages = (uint8_t)(s->stages < RASTER_STAGES ? s->stages : RASTER_STAGES);
+	for (unsigned j = 0; j < k->stages; j++) {
+		const struct raster_stage *st = &s->stage[j];
+		struct raster_stage *ks = &k->stage[j];
+		for (int g = 0; g < 2; g++) {
+			unsigned op = st->op[g] <= RASTER_OP_SUBTRACT ? st->op[g] : RASTER_OP_REPLACE;
+			unsigned args = op == RASTER_OP_REPLACE ? 1 : op == RASTER_OP_INTERPOLATE ? 3 : 2;
+			ks->op[g] = (uint8_t)op;
+			for (unsigned n = 0; n < args; n++)
+				ks->arg[g][n] = st->arg[g][n] & (15u | RASTER_ALPHA | RASTER_INVERT);
+			ks->shift[g] = st->shift[g] < 3 ? st->shift[g] : 2;
+			ks->clamp[g] = st->clamp[g];
+		}
+	}
 }
 
 static bool has_extension(struct gpu *g, const char *name)
@@ -268,29 +412,32 @@ static bool has_extension(struct gpu *g, const char *name)
 }
 
 /*
- * RAVE's texture filters: Fast is nearest, from the nearest mipmap level;
- * Mid bilinear, from the nearest level; Best trilinear (and anisotropic,
- * where there's some). The GPU picks the levels per pixel.
+ * A unit's sampler: its filters and clamping, and as much anisotropic
+ * filtering as it allows, where there's some (made the first time it's
+ * needed). The GPU picks mipmap levels per pixel.
  */
-static void make_samplers(struct gpu *g)
+static GLuint sampler_of(struct gpu *g, const struct raster_unit *u)
 {
+	static const GLint filter[6] = { GL_NEAREST, GL_LINEAR, GL_NEAREST_MIPMAP_NEAREST, GL_LINEAR_MIPMAP_NEAREST,
+					 GL_NEAREST_MIPMAP_LINEAR, GL_LINEAR_MIPMAP_LINEAR };
+	unsigned min = u->min_filter < 6 ? u->min_filter : 0, mag = u->mag_filter == RASTER_LINEAR;
+	unsigned clamp = (u->clamp_s ? 2u : 0) | (u->clamp_t ? 1u : 0);
+	float most = u->anisotropy < g->anisotropy ? u->anisotropy : g->anisotropy;
+	unsigned aniso = 0;
+	while (aniso < 4 && most >= (float)(2u << aniso))
+		aniso++;
+	GLuint *s = &g->sampler[min][mag][clamp][aniso];
+	if (*s)
+		return *s;
 	struct gl *gl = &g->gl;
-	static const GLint min[3] = { GL_NEAREST_MIPMAP_NEAREST, GL_LINEAR_MIPMAP_NEAREST, GL_LINEAR_MIPMAP_LINEAR };
-	static const GLint mag[3] = { GL_NEAREST, GL_LINEAR, GL_LINEAR };
-	gl->GenSamplers(12, g->sampler);
-	for (unsigned k = 0; k < 12; k++) {
-		GLuint s = g->sampler[k];
-		unsigned filter = k / 4;
-		gl->SamplerParameteri(s, GL_TEXTURE_MIN_FILTER, min[filter]);
-		gl->SamplerParameteri(s, GL_TEXTURE_MAG_FILTER, mag[filter]);
-		gl->SamplerParameteri(s, GL_TEXTURE_WRAP_S, k & 2 ? GL_CLAMP_TO_EDGE : GL_REPEAT);
-		gl->SamplerParameteri(s, GL_TEXTURE_WRAP_T, k & 1 ? GL_CLAMP_TO_EDGE : GL_REPEAT);
-		if (filter == 2 && g->anisotropy > 1)
-			gl->SamplerParameterf(s, GL_TEXTURE_MAX_ANISOTROPY, g->anisotropy);
-	}
-	gl->GenSamplers(1, &g->bitmap_sampler);
-	gl->SamplerParameteri(g->bitmap_sampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	gl->SamplerParameteri(g->bitmap_sampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	gl->GenSamplers(1, s);
+	gl->SamplerParameteri(*s, GL_TEXTURE_MIN_FILTER, filter[min]);
+	gl->SamplerParameteri(*s, GL_TEXTURE_MAG_FILTER, filter[mag]);
+	gl->SamplerParameteri(*s, GL_TEXTURE_WRAP_S, clamp & 2 ? GL_CLAMP_TO_EDGE : GL_REPEAT);
+	gl->SamplerParameteri(*s, GL_TEXTURE_WRAP_T, clamp & 1 ? GL_CLAMP_TO_EDGE : GL_REPEAT);
+	if (aniso)
+		gl->SamplerParameterf(*s, GL_TEXTURE_MAX_ANISOTROPY, (float)(1u << aniso));
+	return *s;
 }
 
 /* A texture's GL copy, made the first time it's drawn with (its texels never change) */
@@ -384,8 +531,15 @@ static GLenum blend_factor(unsigned f)
 {
 	static const GLenum gl[] = { GL_ZERO, GL_ONE, GL_SRC_COLOR, GL_ONE_MINUS_SRC_COLOR, GL_SRC_ALPHA,
 				     GL_ONE_MINUS_SRC_ALPHA, GL_DST_ALPHA, GL_ONE_MINUS_DST_ALPHA, GL_DST_COLOR,
-				     GL_ONE_MINUS_DST_COLOR, GL_SRC_ALPHA_SATURATE };
+				     GL_ONE_MINUS_DST_COLOR, GL_SRC_ALPHA_SATURATE, GL_CONSTANT_COLOR,
+				     GL_ONE_MINUS_CONSTANT_COLOR, GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA };
 	return f < sizeof gl / sizeof gl[0] ? gl[f] : GL_ONE;
+}
+
+static GLenum blend_equation(unsigned eq)
+{
+	static const GLenum gl[] = { GL_FUNC_ADD, GL_FUNC_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT, GL_MIN, GL_MAX };
+	return eq < sizeof gl / sizeof gl[0] ? gl[eq] : GL_FUNC_ADD;
 }
 
 static float *new_vertices(struct gpu *g, size_t n)
@@ -407,9 +561,13 @@ static float *new_vertices(struct gpu *g, size_t n)
 
 static void put_vertex(float *p, const struct raster_vertex *v, float x, float y)
 {
-	const float f[FLOATS] = { x, y, v->z, v->invw, v->r, v->g, v->b, v->a, v->uw, v->vw,
-				  v->kd[0], v->kd[1], v->kd[2], v->ks[0], v->ks[1], v->ks[2] };
-	memcpy(p, f, sizeof f);
+	p[0] = x;
+	p[1] = y;
+	p[2] = v->z;
+	p[3] = v->invw;
+	memcpy(p + 4, v->color, sizeof v->color);
+	p[4 + 4 * RASTER_COLORS] = v->fog;
+	memcpy(p + 5 + 4 * RASTER_COLORS, v->tex, sizeof v->tex);
 }
 
 /* A rectangle of pixels [x0, x1) x [y0, y1) with one vertex's values, as two triangles */
@@ -446,10 +604,9 @@ static bool put_line(struct gpu *g, const struct raster_state *s, const struct r
 		struct raster_vertex v = *v0;
 		v.z = v0->z + (v1->z - v0->z) * f;
 		v.invw = v0->invw + (v1->invw - v0->invw) * f;
-		v.r = v0->r + (v1->r - v0->r) * f;
-		v.g = v0->g + (v1->g - v0->g) * f;
-		v.b = v0->b + (v1->b - v0->b) * f;
-		v.a = v0->a + (v1->a - v0->a) * f;
+		for (int j = 0; j < 4; j++)
+			v.color[0][j] = v0->color[0][j] + (v1->color[0][j] - v0->color[0][j]) * f;
+		v.fog = v0->fog + (v1->fog - v0->fog) * f;
 		if (!put_square(g, s, &v, v0->x + dx * f, v0->y + dy * f))
 			return false;
 	}
@@ -470,21 +627,21 @@ static bool put_bitmap(struct gpu *g, const struct raster_texture *image, const 
 		return false;
 	const float corner[6][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, { 0, 1 } };
 	for (int k = 0; k < 6; k++) {
-		v.uw = corner[k][0] * w;
-		v.vw = corner[k][1] * h;
-		put_vertex(p + k * FLOATS, &v, x0 + v.uw, y0 + v.vw);
+		v.tex[0][0] = corner[k][0] * w;
+		v.tex[0][1] = corner[k][1] * h;
+		put_vertex(p + k * FLOATS, &v, x0 + v.tex[0][0], y0 + v.tex[0][1]);
 	}
 	return true;
 }
 
 static bool add_range(struct gpu *g, unsigned first, const struct raster_cmd *clear, unsigned state, int mode,
-		      const struct raster_texture *texture)
+		      const struct raster_texture *image)
 {
 	unsigned count = (unsigned)g->nverts - first;
 	if (!clear && !count)
 		return true;
 	struct range *last = g->nranges ? &g->ranges[g->nranges - 1] : NULL;
-	if (!clear && last && !last->clear && last->state == state && last->mode == mode && last->texture == texture &&
+	if (!clear && last && !last->clear && last->state == state && last->mode == mode && last->image == image &&
 	    last->first + last->count == first) {
 		last->count += count;
 		return true;
@@ -497,7 +654,7 @@ static bool add_range(struct gpu *g, unsigned first, const struct raster_cmd *cl
 		g->ranges = r;
 		g->ranges_cap = cap;
 	}
-	g->ranges[g->nranges++] = (struct range){ first, count, clear, state, mode, texture };
+	g->ranges[g->nranges++] = (struct range){ first, count, clear, state, mode, image };
 	return true;
 }
 
@@ -511,14 +668,12 @@ static bool build(struct gpu *g, const struct raster_state *states, const struct
 		const struct raster_state *s = &states[c->state];
 		unsigned first = (unsigned)g->nverts;
 		int mode = MODE_COLOR;
-		const struct raster_texture *texture = NULL;
+		const struct raster_texture *image = NULL;
 		bool ok = true;
 		switch (c->kind) {
 		case RASTER_CMD_TRIANGLE: {
-			if (c->textured && s->texture && s->texture->levels) {
+			if (raster_textured(s, c->textured))
 				mode = MODE_TEXTURED;
-				texture = s->texture;
-			}
 			float *p = new_vertices(g, 3);
 			ok = p != NULL;
 			for (int j = 0; ok && j < 3; j++)
@@ -535,7 +690,7 @@ static bool build(struct gpu *g, const struct raster_state *states, const struct
 			if (!c->image || !c->image->levels)
 				continue;
 			mode = MODE_BITMAP;
-			texture = c->image;
+			image = c->image;
 			ok = put_bitmap(g, c->image, c);
 			break;
 		case RASTER_CMD_CLEAR:
@@ -544,7 +699,7 @@ static bool build(struct gpu *g, const struct raster_state *states, const struct
 		default:
 			continue;
 		}
-		if (!ok || !add_range(g, first, NULL, c->state, mode, texture))
+		if (!ok || !add_range(g, first, NULL, c->state, mode, image))
 			return false;
 	}
 	return true;
@@ -563,6 +718,11 @@ static void scissor(struct gpu *g, const struct gpu_target *t, int l, int top, i
 	g->gl.Scissor(l, top, r - l, b - top);
 }
 
+static void color_mask(struct gpu *g, uint32_t keep)
+{
+	g->gl.ColorMask(!(keep & 0x00FF0000u), !(keep & 0x0000FF00u), !(keep & 0x000000FFu), !(keep & 0xFF000000u));
+}
+
 static void clear(struct gpu *g, const struct gpu_target *t, const struct raster_state *s, const struct raster_cmd *c)
 {
 	struct gl *gl = &g->gl;
@@ -571,7 +731,7 @@ static void clear(struct gpu *g, const struct gpu_target *t, const struct raster
 		c->rect[3] < s->clip_bottom ? c->rect[3] : s->clip_bottom);
 	GLbitfield bits = 0;
 	if (c->clear_color) {
-		gl->ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+		color_mask(g, s->color_keep);
 		gl->ClearColor((float)(c->argb >> 16 & 255) / 255, (float)(c->argb >> 8 & 255) / 255,
 			       (float)(c->argb & 255) / 255, (float)(c->argb >> 24) / 255);
 		bits |= GL_COLOR_BUFFER_BIT;
@@ -585,39 +745,49 @@ static void clear(struct gpu *g, const struct gpu_target *t, const struct raster
 		gl->Clear(bits);
 }
 
-/* Sets up drawing a range with its state */
-static void set_state(struct gpu *g, const struct gpu_target *t, const struct raster_state *s, int mode,
-		      const struct raster_texture *texture)
+/* Sets up drawing a range with its state; false if there's no program for it */
+static bool set_state(struct gpu *g, const struct gpu_target *t, const struct raster_state *s, int mode,
+		      const struct raster_texture *image)
 {
 	struct gl *gl = &g->gl;
-	const struct program *p = &g->program[s->perspective_z ? PROGRAM_PERSPECTIVE_Z : PROGRAM_Z];
+	struct program_key key;
+	key_of(s, mode, &key);
+	const struct program *p = program_of(g, &key);
+	if (!p)
+		return false;
 	gl->UseProgram(p->id);
 	gl->Uniform2f(p->size, (float)t->width, (float)t->height);
-	gl->Uniform1i(p->mode, mode);
-	gl->Uniform1i(p->texture_op, mode == MODE_TEXTURED ? (GLint)s->texture_op : 0);
+	unsigned units = key.units;
+	if (key.stages && p->constant >= 0) {
+		GLfloat constant[RASTER_STAGES * 4];
+		for (unsigned k = 0; k < key.stages; k++)
+			for (int j = 0; j < 4; j++)
+				constant[4 * k + j] = s->stage[k].constant[(j + 1) & 3];      /* (r, g, b, a) */
+		gl->Uniform4fv(p->constant, (GLsizei)key.stages, constant);
+	}
 	gl->Uniform1i(p->fog_mode, mode == MODE_BITMAP ? 0 : (GLint)s->fog_mode);
+	gl->Uniform1i(p->fog_coord, s->fog_coord);
 	gl->Uniform3f(p->fog_color, s->fog_color[1], s->fog_color[2], s->fog_color[3]);
 	gl->Uniform1f(p->fog_start, s->fog_start);
 	gl->Uniform1f(p->fog_end, s->fog_end);
 	gl->Uniform1f(p->fog_density, s->fog_density);
 	gl->Uniform1i(p->alpha_test, (GLint)s->alpha_test);
 	gl->Uniform1f(p->alpha_ref, s->alpha_ref);
-	gl->Uniform1i(p->interpolate, s->blend == RASTER_BLEND_INTERPOLATE);
-	bool second = mode == MODE_TEXTURED && s->texture2 && s->texture2->levels;
-	gl->Uniform1i(p->second, second);
-	gl->ActiveTexture(GL_TEXTURE0 + 1);
-	gl->BindTexture(GL_TEXTURE_2D, second ? texture_of(g, s->texture2) : g->blank);
-	gl->BindSampler(1, g->sampler[1 * 4 + 3]);     /* (bilinear, clamped) */
-	gl->ActiveTexture(GL_TEXTURE0);
-	if (texture) {
-		gl->BindTexture(GL_TEXTURE_2D, texture_of(g, texture));
-		unsigned filter = !s->bilinear ? 0 : s->trilinear ? 2 : 1;
-		gl->BindSampler(0, mode == MODE_BITMAP ? g->bitmap_sampler :
-				   g->sampler[filter * 4 + (s->clamp_u ? 2 : 0) + (s->clamp_v ? 1 : 0)]);
-	} else {
-		gl->BindTexture(GL_TEXTURE_2D, g->blank);
-		gl->BindSampler(0, g->bitmap_sampler);
+	gl->Uniform1i(p->transparent, s->all_fragments ? 0 : s->blend == RASTER_BLEND_INTERPOLATE ? 2 : 1);
+	for (unsigned k = 0; k < RASTER_UNITS; k++) {
+		gl->ActiveTexture(GL_TEXTURE0 + k);
+		if (units >> k & 1) {
+			gl->BindTexture(GL_TEXTURE_2D, texture_of(g, s->unit[k].texture));
+			gl->BindSampler(k, sampler_of(g, &s->unit[k]));
+		} else if (k == 0 && image) {
+			gl->BindTexture(GL_TEXTURE_2D, texture_of(g, image));
+			gl->BindSampler(k, g->bitmap_sampler);
+		} else {
+			gl->BindTexture(GL_TEXTURE_2D, g->blank);
+			gl->BindSampler(k, g->bitmap_sampler);
+		}
 	}
+	gl->ActiveTexture(GL_TEXTURE0);
 	if (s->z_func == RASTER_Z_NONE) {
 		gl->Disable(GL_DEPTH_TEST);
 	} else {
@@ -625,18 +795,33 @@ static void set_state(struct gpu *g, const struct gpu_target *t, const struct ra
 		gl->DepthFunc(depth_func(s));
 		gl->DepthMask(s->z_write ? GL_TRUE : GL_FALSE);
 	}
+	GLenum eq = GL_FUNC_ADD;
 	switch (s->blend) {
 	case RASTER_BLEND_INTERPOLATE:
 		gl->BlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 		break;
 	case RASTER_BLEND_FACTORS:
+		eq = blend_equation(s->blend_eq);
 		gl->BlendFunc(blend_factor(s->blend_src), blend_factor(s->blend_dst));
+		if (memcmp(g->blend_color, s->blend_color, sizeof g->blend_color)) {
+			memcpy(g->blend_color, s->blend_color, sizeof g->blend_color);
+			gl->BlendColor(s->blend_color[1], s->blend_color[2], s->blend_color[3], s->blend_color[0]);
+		}
+		break;
+	case RASTER_BLEND_NONE:
+		gl->BlendFunc(GL_ONE, GL_ZERO);
 		break;
 	default:
 		gl->BlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 		break;
 	}
+	if (eq != g->blend_eq) {
+		g->blend_eq = eq;
+		gl->BlendEquation(eq);
+	}
+	color_mask(g, s->color_keep);
 	scissor(g, t, s->clip_left, s->clip_top, s->clip_right, s->clip_bottom);
+	return true;
 }
 
 static bool draw(struct gpu *g, const struct gpu_target *t, const struct raster_state *states,
@@ -657,8 +842,8 @@ static bool draw(struct gpu *g, const struct gpu_target *t, const struct raster_
 			clear(g, t, s, r->clear);
 			continue;
 		}
-		set_state(g, t, s, r->mode, r->texture);
-		gl->ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+		if (!set_state(g, t, s, r->mode, r->image))
+			return false;
 		gl->DrawArrays(GL_TRIANGLES, (GLint)r->first, (GLsizei)r->count);
 	}
 	return true;
@@ -709,11 +894,13 @@ static bool self_test(struct gpu *g, char *why, size_t why_size)
 		states[k].width = 3;
 		states[k].clip_right = W;
 		states[k].clip_bottom = H;
-		states[k].texture = &tx;
+		states[k].unit[0].texture = &tx;
+		states[k].unit[0].min_filter = RASTER_NEAREST_MIPMAP_NEAREST;
+		raster_rave_stages(&states[k], k == 1 ? RASTER_TEX_MODULATE | RASTER_TEX_HIGHLIGHT :
+						k == 2 ? RASTER_TEX_DECAL : 0);
 	}
-	states[1].bilinear = true;
-	states[1].texture_op = RASTER_TEX_MODULATE | RASTER_TEX_HIGHLIGHT;
-	states[2].texture_op = RASTER_TEX_DECAL;
+	states[1].unit[0].min_filter = RASTER_LINEAR_MIPMAP_NEAREST;
+	states[1].unit[0].mag_filter = RASTER_LINEAR;
 	states[2].fog_mode = RASTER_FOG_LINEAR;
 	states[2].fog_start = 0.5f;
 	states[2].fog_end = 2;
@@ -753,15 +940,15 @@ static bool self_test(struct gpu *g, char *why, size_t why_size)
 			v->y = tri[k][j][1];
 			v->z = 0.2f + 0.15f * (float)k + 0.05f * (float)j;
 			v->invw = 0.6f + 0.3f * (float)j;
-			v->r = (float)((j + k) % 3) * 0.5f;
-			v->g = (float)(j % 2);
-			v->b = 0.25f * (float)k;
-			v->a = 0.4f + 0.3f * (float)j;
-			v->uw = (float)j * 0.7f * v->invw;
-			v->vw = (float)(2 - j) * 0.6f * v->invw;
+			v->color[0][0] = (float)((j + k) % 3) * 0.5f;
+			v->color[0][1] = (float)(j % 2);
+			v->color[0][2] = 0.25f * (float)k;
+			v->color[0][3] = 0.4f + 0.3f * (float)j;
+			v->tex[0][0] = (float)j * 0.7f * v->invw;
+			v->tex[0][1] = (float)(2 - j) * 0.6f * v->invw;
 			for (int i = 0; i < 3; i++) {
-				v->kd[i] = 0.8f;
-				v->ks[i] = 0.1f;
+				v->color[1][i] = 0.1f;
+				v->color[2][i] = 0.8f;
 			}
 		}
 	}
@@ -843,8 +1030,12 @@ static bool init(struct gpu *g)
 			 tex < rb ? tex : rb);
 		return false;
 	}
-	if (!make_program(g, &g->program[PROGRAM_Z], "") ||
-	    !make_program(g, &g->program[PROGRAM_PERSPECTIVE_Z], "#define PERSPECTIVE_Z\n")) {
+	struct program_key key[2];
+	for (int k = 0; k < 2; k++) {
+		memset(&key[k], 0, sizeof key[k]);
+		key[k].perspective_z = (uint8_t)k;
+	}
+	if (!program_of(g, &key[0]) || !program_of(g, &key[1])) {
 		snprintf(g->why, sizeof g->why, "OpenGL on %s can't build the shaders", gl->renderer);
 		return false;
 	}
@@ -853,7 +1044,9 @@ static bool init(struct gpu *g)
 		gl->GetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &g->anisotropy);
 		g->anisotropy = g->anisotropy > 8 ? 8 : g->anisotropy;
 	}
-	make_samplers(g);
+	gl->GenSamplers(1, &g->bitmap_sampler);
+	gl->SamplerParameteri(g->bitmap_sampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	gl->SamplerParameteri(g->bitmap_sampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	static const uint32_t white = 0xFFFFFFFFu;
 	gl->GenTextures(1, &g->blank);
 	gl->BindTexture(GL_TEXTURE_2D, g->blank);
@@ -863,8 +1056,9 @@ static bool init(struct gpu *g)
 	gl->BindVertexArray(g->vao);
 	gl->GenBuffers(1, &g->vbo);
 	gl->BindBuffer(GL_ARRAY_BUFFER, g->vbo);
-	static const struct { GLint size, offset; } attrib[5] = { { 4, 0 }, { 4, 4 }, { 2, 8 }, { 3, 10 }, { 3, 13 } };
-	for (GLuint k = 0; k < 5; k++) {
+	static const struct { GLint size, offset; } attrib[7] = { { 4, 0 }, { 4, 4 }, { 4, 8 }, { 4, 12 }, { 1, 16 },
+								  { 3, 17 }, { 3, 20 } };
+	for (GLuint k = 0; k < 7; k++) {
 		gl->EnableVertexAttribArray(k);
 		gl->VertexAttribPointer(k, attrib[k].size, GL_FLOAT, GL_FALSE, FLOATS * sizeof(float),
 					(const void *)(uintptr_t)(attrib[k].offset * sizeof(float)));
@@ -876,6 +1070,8 @@ static bool init(struct gpu *g)
 	gl->Enable(GL_DEPTH_CLAMP);
 	gl->Enable(GL_BLEND);
 	gl->BlendEquation(GL_FUNC_ADD);
+	g->blend_eq = GL_FUNC_ADD;
+	gl->BlendColor(0, 0, 0, 0);
 	gl->Enable(GL_SCISSOR_TEST);
 	gl->PixelStorei(GL_UNPACK_ALIGNMENT, 4);
 	gl->PixelStorei(GL_PACK_ALIGNMENT, 4);
@@ -895,11 +1091,11 @@ static void cleanup(struct gpu *g)
 	struct gl *gl = &g->gl;
 	if (gl->priv) {
 		delete_dead(g);
-		for (int k = 0; k < PROGRAMS; k++)
-			if (g->program[k].id)
-				gl->DeleteProgram(g->program[k].id);
-		if (g->sampler[0])
-			gl->DeleteSamplers(12, g->sampler);
+		for (unsigned k = 0; k < g->nprograms; k++)
+			gl->DeleteProgram(g->programs[k].id);
+		for (GLuint *s = &g->sampler[0][0][0][0]; s < &g->sampler[0][0][0][0] + sizeof g->sampler / sizeof *s; s++)
+			if (*s)
+				gl->DeleteSamplers(1, s);
 		if (g->bitmap_sampler)
 			gl->DeleteSamplers(1, &g->bitmap_sampler);
 		if (g->blank)
@@ -912,6 +1108,7 @@ static void cleanup(struct gpu *g)
 	}
 	free(g->verts);
 	free(g->ranges);
+	free(g->programs);
 }
 
 /* ---- the thread: jobs -------------------------------------------------------------------- */

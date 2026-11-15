@@ -38,13 +38,22 @@ static struct raster_vertex vertex(float x, float y, float z, float r, float g, 
 	v.y = y;
 	v.z = z;
 	v.invw = 1;
-	v.r = r;
-	v.g = g;
-	v.b = b;
-	v.a = 1;
+	v.color[0][0] = r;
+	v.color[0][1] = g;
+	v.color[0][2] = b;
+	v.color[0][3] = 1;
 	for (int k = 0; k < 3; k++)
-		v.kd[k] = 1;
+		v.color[2][k] = 1;              /* (kd) */
 	return v;
+}
+
+/* A texture drawn as RAVE draws it (raster_rave_stages()) */
+static void texture(struct raster_state *s, const struct raster_texture *tx, unsigned ops, bool bilinear)
+{
+	s->unit[0].texture = tx;
+	s->unit[0].min_filter = bilinear ? RASTER_LINEAR_MIPMAP_NEAREST : RASTER_NEAREST_MIPMAP_NEAREST;
+	s->unit[0].mag_filter = bilinear ? RASTER_LINEAR : RASTER_NEAREST;
+	raster_rave_stages(s, ops);
 }
 
 static struct raster_cmd clear_cmd(uint32_t argb, float z)
@@ -74,35 +83,11 @@ static struct raster_cmd tri_cmd(unsigned state, struct raster_vertex a, struct 
 	return cmd;
 }
 
-/* The commands drawn by raster.c (one at a time, as run_band() would) into cpu_color */
+/* The commands drawn by raster.c into cpu_color */
 static void draw_cpu(const struct raster_state *states, const struct raster_cmd *cmds, unsigned n)
 {
 	struct raster_target t = { W, H, cpu_color, cpu_depth };
-	for (unsigned k = 0; k < n; k++) {
-		const struct raster_cmd *c = &cmds[k];
-		const struct raster_state *s = &states[c->state];
-		switch (c->kind) {
-		case RASTER_CMD_TRIANGLE:
-			raster_triangle(&t, s, &c->v[0], &c->v[1], &c->v[2], c->textured);
-			break;
-		case RASTER_CMD_LINE:
-			raster_line(&t, s, &c->v[0], &c->v[1]);
-			break;
-		case RASTER_CMD_POINT:
-			raster_point(&t, s, &c->v[0]);
-			break;
-		case RASTER_CMD_BITMAP:
-			raster_bitmap(&t, s, c->image, c->v[0].x, c->v[0].y, c->v[0].z);
-			break;
-		case RASTER_CMD_CLEAR: {
-			int top = c->rect[1] > s->clip_top ? c->rect[1] : s->clip_top;
-			int bottom = c->rect[3] < s->clip_bottom ? c->rect[3] : s->clip_bottom;
-			raster_clear(&t, c->rect[0], top, c->rect[2], bottom, c->clear_color, c->argb, c->clear_depth,
-				     c->z);
-			break;
-		}
-		}
-	}
+	raster_run(&t, states, cmds, n);
 }
 
 /* ... and by the GPU, into gpu_color */
@@ -191,11 +176,11 @@ static void test_texture(struct gpu *g)
 	static uint32_t texels[4] = { 0xFF000011u, 0xFF000022u, 0xFF000033u, 0xFF000044u };
 	struct raster_texture tx = { .levels = 1, .width = { 2 }, .height = { 2 }, .texels = { texels } };
 	struct raster_state s[1] = { plain() };
-	s[0].texture = &tx;
+	texture(&s[0], &tx, 0, false);
 	struct raster_vertex v[4] = { vertex(0, 0, 0, 1, 1, 1), vertex(8, 0, 0, 1, 1, 1), vertex(8, 8, 0, 1, 1, 1),
 				      vertex(0, 8, 0, 1, 1, 1) };
-	v[1].uw = v[2].uw = 1;
-	v[2].vw = v[3].vw = 1;
+	v[1].tex[0][0] = v[2].tex[0][0] = 1;
+	v[2].tex[0][1] = v[3].tex[0][1] = 1;
 	struct raster_cmd cmds[3] = { clear_cmd(0, 1), tri_cmd(0, v[0], v[1], v[2], true),
 				      tri_cmd(0, v[0], v[2], v[3], true) };
 	draw_gpu(g, s, cmds, 3);
@@ -303,9 +288,7 @@ static void test_random(struct gpu *g)
 		states[k].blend = (unsigned)k % 3;
 		states[k].blend_src = RASTER_F_SRC_ALPHA;
 		states[k].blend_dst = RASTER_F_ONE_MINUS_SRC_ALPHA;
-		states[k].texture = &tx;
-		states[k].texture_op = k & 1 ? RASTER_TEX_MODULATE : 0;
-		states[k].bilinear = k & 2;
+		texture(&states[k], &tx, k & 1 ? RASTER_TEX_MODULATE : 0, k & 2);
 		states[k].fog_mode = k == 5 ? RASTER_FOG_LINEAR : RASTER_FOG_NONE;
 		states[k].fog_start = 0.5f;
 		states[k].fog_end = 3;
@@ -323,10 +306,10 @@ static void test_random(struct gpu *g)
 		for (int v = 0; v < 3; v++) {
 			c->v[v] = vertex(frand(-10, W + 10), frand(-10, H + 10), frand(0, 1), frand(0, 1), frand(0, 1),
 					 frand(0, 1));
-			c->v[v].a = frand(0, 1);
+			c->v[v].color[0][3] = frand(0, 1);
 			c->v[v].invw = frand(0.3f, 2);
-			c->v[v].uw = frand(-1, 2) * c->v[v].invw;
-			c->v[v].vw = frand(-1, 2) * c->v[v].invw;
+			c->v[v].tex[0][0] = frand(-1, 2) * c->v[v].invw;
+			c->v[v].tex[0][1] = frand(-1, 2) * c->v[v].invw;
 		}
 		c->rect[0] = 5;
 		c->rect[1] = 7;
@@ -374,18 +357,17 @@ static void test_multitexture(struct gpu *g)
 	struct raster_texture lm2 = { .levels = 1, .width = { 4 }, .height = { 4 }, .texels = { uneven } };
 	for (int pass = 0; pass < 2; pass++) {
 		struct raster_state s[1] = { plain() };
-		s[0].texture = &tx;
-		s[0].texture2 = pass ? &lm2 : &lm;
+		s[0].unit[1].texture = pass ? &lm2 : &lm;
+		s[0].unit[1].min_filter = RASTER_LINEAR_MIPMAP_NEAREST;
+		s[0].unit[1].mag_filter = RASTER_LINEAR;
+		s[0].unit[1].clamp_s = s[0].unit[1].clamp_t = s[0].unit[1].projective = true;
+		texture(&s[0], &tx, 0, false);
 		struct raster_vertex v[4] = { vertex(0, 0, 0, 1, 1, 1), vertex(40, 0, 0, 1, 1, 1),
 					      vertex(40, 40, 0, 1, 1, 1), vertex(0, 40, 0, 1, 1, 1) };
 		for (int k = 0; k < 4; k++) {
-			v[k].uw = k == 1 || k == 2;
-			v[k].vw = k >= 2;
-			v[k].invw = v[k].ks[2] = pass ? 0.5f + 0.25f * (float)k : 1;  /* (perspective: within tolerance) */
-			v[k].uw *= v[k].invw;
-			v[k].vw *= v[k].invw;
-			v[k].ks[0] = (k == 1 || k == 2 ? 1.0f : 0.0f) * v[k].invw;
-			v[k].ks[1] = (k >= 2 ? 1.0f : 0.0f) * v[k].invw;
+			v[k].invw = v[k].tex[1][2] = pass ? 0.5f + 0.25f * (float)k : 1;  /* (perspective: within tolerance) */
+			v[k].tex[0][0] = v[k].tex[1][0] = (k == 1 || k == 2 ? 1.0f : 0.0f) * v[k].invw;
+			v[k].tex[0][1] = v[k].tex[1][1] = (k >= 2 ? 1.0f : 0.0f) * v[k].invw;
 		}
 		struct raster_cmd cmds[3] = { clear_cmd(0, 1), tri_cmd(0, v[0], v[1], v[2], true),
 					      tri_cmd(0, v[0], v[2], v[3], true) };
@@ -418,7 +400,7 @@ static void test_blend_factors(struct gpu *g)
 		states[k].blend_src = k / 11;
 		states[k].blend_dst = k % 11;
 		struct raster_vertex v = vertex((float)(k % 11) * 5, (float)(k / 11) * 4, 0, 0.6f, 0.4f, 0.2f);
-		v.a = 0.4f;
+		v.color[0][3] = 0.4f;
 		struct raster_vertex v1 = v, v2 = v;
 		v1.x += 5;
 		v2.y += 4;
@@ -428,6 +410,145 @@ static void test_blend_factors(struct gpu *g)
 	draw_gpu(g, states, cmds, 1 + 11 * 11);
 	CHECK(!gpu_failed(g));
 	CHECK(differing(2) <= W * H / 50);
+}
+
+/*
+ * What OpenGL and Glide add, each as an 8 x 8 square side by side: the
+ * stages' operations and arguments, blend equations and the constant
+ * color, no blending, color masks (in drawing and clears), the fog
+ * coordinate, fragments without alpha drawn; then a projective unit and a
+ * texture magnified and minified with different filters. As raster.c, but
+ * for a unit in the last place.
+ */
+static void test_pipeline(struct gpu *g)
+{
+	enum { N = 15 };
+	static uint32_t texel = 0x80402010u, big[16 * 16];
+	for (unsigned k = 0; k < 16 * 16; k++)
+		big[k] = 0xFF000000u | (k * 0x10101u * 17u);
+	struct raster_texture tx = { .levels = 1, .width = { 1 }, .height = { 1 }, .texels = { &texel } };
+	struct raster_texture bx = { .levels = 1, .width = { 16 }, .height = { 16 }, .texels = { big } };
+	const unsigned T = RASTER_TEXTURE0, C0 = RASTER_COLOR0, C1 = RASTER_COLOR0 + 1, K = RASTER_CONSTANT,
+		       P = RASTER_PREVIOUS, A = RASTER_ALPHA, I = RASTER_INVERT;
+	static const uint8_t ops[7][8] = {      /* rgb: op, args; a: op, args */
+		{ RASTER_OP_MODULATE, T, C0, 0, RASTER_OP_MODULATE, T, C0, 0 },
+		{ RASTER_OP_ADD, T, C0, 0, RASTER_OP_MODULATE, T, C0, 0 },
+		{ RASTER_OP_INTERPOLATE, K, C0, T, RASTER_OP_MODULATE, T, C0, 0 },
+		{ RASTER_OP_SUBTRACT, C0, T, 0, RASTER_OP_REPLACE, C0, 0, 0 },
+		{ RASTER_OP_ADD_SIGNED, T, C0, 0, RASTER_OP_REPLACE, T | I, 0, 0 },
+		{ RASTER_OP_MODULATE, T, C0 | A | I, 0, RASTER_OP_REPLACE, K, 0, 0 },
+		{ RASTER_OP_INTERPOLATE, P, C1, C0 | A, RASTER_OP_ADD, P, C1, 0 },
+	};
+	struct raster_state s[N];
+	struct raster_cmd cmds[1 + 2 * N + 1];
+	cmds[0] = clear_cmd(0x80604020u, 1);
+	for (unsigned k = 0; k < N; k++) {
+		s[k] = plain();
+		s[k].blend = RASTER_BLEND_NONE;
+		struct raster_vertex v = vertex((float)(k % 8) * 8, (float)(k / 8) * 8, 0.5f, 0.75f, 0.5f, 0.125f);
+		v.color[0][3] = k < 7 ? 0.75f : 0.25f;
+		const float c1[4] = { 0.1f, 0.2f, 0.3f, 0.4f };
+		memcpy(v.color[1], c1, sizeof c1);
+		if (k < 7) {
+			s[k].unit[0].texture = &tx;
+			s[k].stages = k == 6 ? 2 : 1;
+			struct raster_stage *st = &s[k].stage[s[k].stages - 1];
+			st->op[0] = ops[k][0];
+			st->op[1] = ops[k][4];
+			for (int n = 0; n < 3; n++) {
+				st->arg[0][n] = ops[k][1 + n];
+				st->arg[1][n] = ops[k][5 + n];
+			}
+			st->clamp[0] = st->clamp[1] = true;
+			st->shift[0] = k == 4;
+			const float constant[4] = { 0.6f, 0.9f, 0.5f, 0.25f };
+			memcpy(st->constant, constant, sizeof constant);
+			if (k == 6) {
+				s[k].stage[0].arg[0][0] = s[k].stage[0].arg[1][0] = T;
+				s[k].stage[0].clamp[0] = s[k].stage[0].clamp[1] = true;
+			}
+		} else if (k < 12) {
+			static const unsigned eq[5] = { RASTER_EQ_SUBTRACT, RASTER_EQ_REVERSE_SUBTRACT, RASTER_EQ_MIN,
+							RASTER_EQ_MAX, RASTER_EQ_ADD };
+			s[k].blend = RASTER_BLEND_FACTORS;
+			s[k].blend_src = k == 11 ? RASTER_F_CONSTANT_COLOR : RASTER_F_ONE;
+			s[k].blend_dst = k == 11 ? RASTER_F_ONE_MINUS_CONSTANT_ALPHA : RASTER_F_ONE;
+			s[k].blend_eq = eq[k - 7];
+			const float constant[4] = { 0.5f, 0.25f, 1, 0 };
+			memcpy(s[k].blend_color, constant, sizeof constant);
+		} else if (k == 12) {
+			s[k].color_keep = 0xFF00FF00u;
+		} else if (k == 13) {
+			s[k].fog_mode = RASTER_FOG_LINEAR;
+			s[k].fog_coord = true;
+			s[k].fog_end = 10;
+			s[k].fog_color[1] = 1;
+			v.invw = 0.5f;
+			v.fog = 5 * v.invw;
+		} else {
+			s[k].all_fragments = true;
+			s[k].z_func = RASTER_Z_LT;
+			s[k].z_write = true;
+			v.color[0][3] = 0;
+		}
+		struct raster_vertex q[4] = { v, v, v, v };
+		q[1].x = q[2].x = v.x + 8;
+		q[2].y = q[3].y = v.y + 8;
+		cmds[1 + 2 * k] = tri_cmd(k, q[0], q[1], q[2], true);
+		cmds[2 + 2 * k] = tri_cmd(k, q[0], q[2], q[3], true);
+	}
+	cmds[1 + 2 * N] = clear_cmd(0x11223344u, 1);
+	cmds[1 + 2 * N].state = 12;
+	cmds[1 + 2 * N].rect[0] = 40;
+	cmds[1 + 2 * N].rect[1] = 20;
+	cmds[1 + 2 * N].clear_depth = false;
+	draw_cpu(s, cmds, 2 + 2 * N);
+	draw_gpu(g, s, cmds, 2 + 2 * N);
+	CHECK(!gpu_failed(g));
+	for (int k = 0; k < W * H && getenv("SYSHM_GPU_DEBUG"); k++)
+		if (channel_diff(cpu_color[k], gpu_color[k]) > 1)
+			printf("gpu: pipeline (%d,%d): %08x against %08x\n", k % W, k / W, gpu_color[k], cpu_color[k]);
+	CHECK_EQ(differing(1), 0);
+	CHECK_EQ(cpu_color[45 * W + 60], 0x80224044u);
+
+	/*
+	 * A projective unit (q / w across the square, nearest texels: exact), and
+	 * a texture minified (linear) and magnified (nearest)
+	 */
+	struct raster_state p[2] = { plain(), plain() };
+	p[0].unit[0].texture = p[1].unit[0].texture = &bx;
+	p[0].unit[0].projective = true;
+	p[1].unit[0].min_filter = RASTER_LINEAR;
+	p[0].stages = p[1].stages = 1;
+	p[0].stage[0].arg[0][0] = p[0].stage[0].arg[1][0] = T;
+	p[1].stage[0] = p[0].stage[0];
+	struct raster_vertex v[4] = { vertex(0, 0, 0, 1, 1, 1), vertex(32, 0, 0, 1, 1, 1), vertex(32, 32, 0, 1, 1, 1),
+				      vertex(0, 32, 0, 1, 1, 1) };
+	for (int k = 0; k < 4; k++) {
+		float q = 1 + (float)k * 0.5f;
+		v[k].tex[0][0] = (k == 1 || k == 2 ? 1.0f : 0.0f) * q;
+		v[k].tex[0][1] = (k >= 2 ? 1.0f : 0.0f) * q;
+		v[k].tex[0][2] = q;
+	}
+	struct raster_vertex m[3] = { vertex(40, 0, 0, 1, 1, 1), vertex(46, 0, 0, 1, 1, 1), vertex(40, 6, 0, 1, 1, 1) };
+	m[1].tex[0][0] = m[2].tex[0][1] = 4;    /* (4 texels a pixel: linear, as raster.c sees it per triangle) */
+	struct raster_vertex z[3] = { vertex(40, 20, 0, 1, 1, 1), vertex(60, 20, 0, 1, 1, 1),
+				      vertex(40, 40, 0, 1, 1, 1) };
+	z[1].tex[0][0] = z[2].tex[0][1] = 0.45f;   /* (2.8 pixels a texel: no pixel center on a texel's edge) */
+	struct raster_cmd more[5] = { clear_cmd(0xFF000000u, 1), tri_cmd(0, v[0], v[1], v[2], true),
+				      tri_cmd(0, v[0], v[2], v[3], true), tri_cmd(1, m[0], m[1], m[2], true),
+				      tri_cmd(1, z[0], z[1], z[2], true) };
+	both(g, p, more, 5);
+	if (getenv("SYSHM_GPU_DEBUG"))
+		printf("gpu: projective and filtered: %u pixels off by more than 1, %u by more than 40\n", differing(1),
+		       differing(40));
+	for (int k = 0; k < W * H && getenv("SYSHM_GPU_DEBUG"); k++)
+		if (channel_diff(cpu_color[k], gpu_color[k]) > 1)
+			printf("gpu: (%d,%d): %08x against %08x\n", k % W, k / W, gpu_color[k], cpu_color[k]);
+	CHECK(differing(3) <= 8);               /* (texel edges under perspective, filtering's rounding) */
+	CHECK_EQ(differing(40), 0);
+	gpu_texture_free(g, &tx);
+	gpu_texture_free(g, &bx);
 }
 
 /* A failed job: everything after it is refused, and freeing still works */
@@ -471,6 +592,7 @@ void test_gpu(void)
 	test_random(g);
 	test_multitexture(g);
 	test_blend_factors(g);
+	test_pipeline(g);
 	CHECK(!gpu_failed(g));
 	gpu_close(g);
 	test_failure();

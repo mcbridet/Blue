@@ -12,29 +12,163 @@
 #include <string.h>
 #include <unistd.h>
 
-enum { A_Z, A_W, A_R, A_G, A_B, A_A, A_UW, A_VW, A_KD, A_KS = A_KD + 3, A_COUNT = A_KS + 3 };
-
 #define ALWAYS_INLINE inline __attribute__((always_inline))
 
-static void attribs(const struct raster_vertex *v, float *a)
-{
-	a[A_Z] = v->z;
-	a[A_W] = v->invw;
-	a[A_R] = v->r;
-	a[A_G] = v->g;
-	a[A_B] = v->b;
-	a[A_A] = v->a;
-	a[A_UW] = v->uw;
-	a[A_VW] = v->vw;
-	for (int k = 0; k < 3; k++) {
-		a[A_KD + k] = v->kd[k];
-		a[A_KS + k] = v->ks[k];
-	}
-}
+/* Four channels at once (each its own IEEE operation, as one at a time would be) */
+typedef float vec4 __attribute__((vector_size(16)));
+typedef int32_t vec4i __attribute__((vector_size(16)));
+
+/*
+ * The values interpolated across a primitive: depth, 1/w, the fog
+ * coordinate and color 0 always, then the colors and texture coordinates
+ * its state needs, wherever its layout puts them. Colors are a, r, g, b
+ * there, each at a multiple of four.
+ */
+enum { A_Z, A_W, A_FOG, A_C0 = 4, A_PLAIN = A_C0 + 4, A_MAX = A_C0 + 4 * RASTER_COLORS + 3 * RASTER_UNITS + 2 };
+_Static_assert(A_MAX % 4 == 0, "whole vectors of attributes");
+
+struct layout {
+	unsigned n;
+	uint8_t color[RASTER_COLORS];           /* (0: not interpolated) */
+	uint8_t tex[RASTER_UNITS], q[RASTER_UNITS];
+};
 
 static inline float clamp01(float x)
 {
 	return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+
+/* The sources a stage's arguments name */
+static unsigned arg_sources(const uint8_t arg[3], unsigned op)
+{
+	unsigned n = op == RASTER_OP_REPLACE ? 1 : op == RASTER_OP_INTERPOLATE ? 3 : 2, used = 0;
+	for (unsigned k = 0; k < n; k++)
+		used |= 1u << (arg[k] & 15u);
+	return used;
+}
+
+static unsigned sources_used(const struct raster_state *s)
+{
+	unsigned used = 0;
+	for (unsigned k = 0; k < s->stages && k < RASTER_STAGES; k++)
+		for (int g = 0; g < 2; g++)
+			used |= arg_sources(s->stage[k].arg[g], s->stage[k].op[g]);
+	return used;
+}
+
+unsigned raster_units_used(const struct raster_state *s)
+{
+	return sources_used(s) >> RASTER_TEXTURE0 & ((1u << RASTER_UNITS) - 1);
+}
+
+unsigned raster_colors_used(const struct raster_state *s)
+{
+	return 1u | (sources_used(s) >> RASTER_COLOR0 & ((1u << RASTER_COLORS) - 1));
+}
+
+bool raster_textured(const struct raster_state *s, bool textured)
+{
+	if (!textured || !s->stages)
+		return false;
+	unsigned units = raster_units_used(s);
+	for (unsigned k = 0; k < RASTER_UNITS; k++)
+		if (units >> k & 1 && (!s->unit[k].texture || !s->unit[k].texture->levels))
+			return false;
+	return true;
+}
+
+static void stage_rgb(struct raster_stage *st, unsigned op, unsigned a0, unsigned a1, unsigned a2, bool clamp)
+{
+	st->op[0] = (uint8_t)op;
+	st->arg[0][0] = (uint8_t)a0;
+	st->arg[0][1] = (uint8_t)a1;
+	st->arg[0][2] = (uint8_t)a2;
+	st->clamp[0] = clamp;
+}
+
+static void stage_alpha(struct raster_stage *st, unsigned op, unsigned a0, unsigned a1)
+{
+	st->op[1] = (uint8_t)op;
+	st->arg[1][0] = (uint8_t)a0;
+	st->arg[1][1] = (uint8_t)a1;
+}
+
+void raster_rave_stages(struct raster_state *s, unsigned ops)
+{
+	const unsigned t0 = RASTER_TEXTURE0, t1 = RASTER_TEXTURE0 + 1;
+	memset(s->stage, 0, sizeof s->stage);
+	struct raster_stage *st = s->stage;
+	if (ops & RASTER_TEX_DECAL) {
+		stage_rgb(st, RASTER_OP_INTERPOLATE, t0, RASTER_COLOR0, t0 | RASTER_ALPHA, false);
+		stage_alpha(st, RASTER_OP_REPLACE, RASTER_COLOR0, 0);
+	} else {
+		stage_rgb(st, RASTER_OP_REPLACE, t0, 0, 0, false);
+		stage_alpha(st, RASTER_OP_MODULATE, t0, RASTER_COLOR0);
+	}
+	st++;
+	if (ops & RASTER_TEX_MODULATE) {
+		stage_rgb(st, RASTER_OP_MODULATE, RASTER_PREVIOUS, RASTER_COLOR0 + 2, 0, true);
+		stage_alpha(st, RASTER_OP_REPLACE, RASTER_PREVIOUS, 0);
+		st++;
+	}
+	if (s->unit[1].texture) {
+		stage_rgb(st, RASTER_OP_MODULATE, RASTER_PREVIOUS, t1, 0, false);
+		stage_alpha(st, RASTER_OP_MODULATE, RASTER_PREVIOUS, t1);
+		st++;
+	} else if (ops & RASTER_TEX_HIGHLIGHT) {
+		stage_rgb(st, RASTER_OP_ADD, RASTER_PREVIOUS, RASTER_COLOR0 + 1, 0, true);
+		stage_alpha(st, RASTER_OP_REPLACE, RASTER_PREVIOUS, 0);
+		st++;
+	}
+	s->stages = (unsigned)(st - s->stage);
+}
+
+/* Where a primitive drawn with this state (textured or not) has its values */
+static void layout_of(const struct raster_state *s, bool textured, struct layout *L)
+{
+	memset(L, 0, sizeof *L);
+	L->color[0] = A_C0;
+	unsigned n = A_PLAIN;
+	if (textured) {
+		unsigned colors = raster_colors_used(s), units = raster_units_used(s);
+		for (unsigned k = 1; k < RASTER_COLORS; k++)
+			if (colors >> k & 1) {
+				L->color[k] = (uint8_t)n;
+				n += 4;
+			}
+		for (unsigned k = 0; k < RASTER_UNITS; k++)
+			if (units >> k & 1) {
+				L->tex[k] = (uint8_t)n;
+				n += 2;
+				if (s->unit[k].projective)
+					L->q[k] = (uint8_t)n++;
+			}
+	}
+	L->n = n;
+}
+
+static void attribs(const struct raster_vertex *v, const struct layout *L, float *a)
+{
+	a[A_Z] = v->z;
+	a[A_W] = v->invw;
+	a[A_FOG] = v->fog;
+	a[A_FOG + 1] = 0;
+	for (unsigned k = 0; k < RASTER_COLORS; k++)
+		if (L->color[k]) {
+			float *c = a + L->color[k];
+			c[0] = v->color[k][3];
+			c[1] = v->color[k][0];
+			c[2] = v->color[k][1];
+			c[3] = v->color[k][2];
+		}
+	for (unsigned k = 0; k < RASTER_UNITS; k++) {
+		if (L->tex[k]) {
+			a[L->tex[k]] = v->tex[k][0];
+			a[L->tex[k] + 1] = v->tex[k][1];
+		}
+		if (L->q[k])
+			a[L->q[k]] = v->tex[k][2];
+	}
 }
 
 float raster_far(const struct raster_state *s)
@@ -42,18 +176,18 @@ float raster_far(const struct raster_state *s)
 	return s->perspective_z ? 0.0f : 1.0f;
 }
 
-/* The rows of the target a state lets us draw */
-static inline void clip_rows(const struct raster_target *t, const struct raster_state *s, int *l, int *top, int *r,
-			     int *b)
+/* The pixels of the target a state lets us draw, within rows [rows[0], rows[1]) */
+static inline void clip_rows(const struct raster_target *t, const struct raster_state *s, const int rows[2], int *l,
+			     int *top, int *r, int *b)
 {
 	*l = s->clip_left > 0 ? s->clip_left : 0;
-	*top = s->clip_top > 0 ? s->clip_top : 0;
+	*top = rows[0] > 0 ? rows[0] : 0;
 	*r = s->clip_right < t->width ? s->clip_right : t->width;
-	*b = s->clip_bottom < t->height ? s->clip_bottom : t->height;
+	*b = rows[1] < t->height ? rows[1] : t->height;
 }
 
-void raster_clear(struct raster_target *t, int left, int top, int right, int bottom,
-		  bool color, uint32_t argb, bool depth, float z)
+static void clear_rect(struct raster_target *t, int left, int top, int right, int bottom, bool color, uint32_t argb,
+		       uint32_t keep, bool depth, float z)
 {
 	left = left < 0 ? 0 : left;
 	top = top < 0 ? 0 : top;
@@ -63,11 +197,17 @@ void raster_clear(struct raster_target *t, int left, int top, int right, int bot
 		size_t row = (size_t)y * (size_t)t->width;
 		for (int x = left; x < right; x++) {
 			if (color)
-				t->color[row + (size_t)x] = argb;
+				t->color[row + (size_t)x] = (argb & ~keep) | (t->color[row + (size_t)x] & keep);
 			if (depth)
 				t->depth[row + (size_t)x] = z;
 		}
 	}
+}
+
+void raster_clear(struct raster_target *t, int left, int top, int right, int bottom,
+		  bool color, uint32_t argb, bool depth, float z)
+{
+	clear_rect(t, left, top, right, bottom, color, argb, 0, depth, z);
 }
 
 static inline bool z_pass(unsigned f, float z, float buf)
@@ -97,12 +237,10 @@ static inline bool alpha_pass(unsigned f, float a, float ref)
 	}
 }
 
-static inline void unpack(uint32_t p, float c[4])
+static inline vec4 unpack(uint32_t p)
 {
-	c[0] = (float)(p >> 24) * (1.0f / 255);
-	c[1] = (float)(p >> 16 & 255) * (1.0f / 255);
-	c[2] = (float)(p >> 8 & 255) * (1.0f / 255);
-	c[3] = (float)(p & 255) * (1.0f / 255);
+	return (vec4){ (float)(p >> 24), (float)(p >> 16 & 255), (float)(p >> 8 & 255), (float)(p & 255) } *
+	       (1.0f / 255);
 }
 
 static inline uint32_t pack(const float c[4])
@@ -119,20 +257,22 @@ struct sampler {
 	float fw, fh;
 	bool clamp_u, clamp_v;
 	bool pow2_u, pow2_v;                    /* (wrapping by mask) */
+	bool bilinear;
 };
 
-static void sampler_init(struct sampler *sm, const struct raster_texture *tx, unsigned level,
-			 const struct raster_state *s)
+static void sampler_init(struct sampler *sm, const struct raster_unit *u, unsigned level, bool bilinear)
 {
+	const struct raster_texture *tx = u->texture;
 	sm->p = tx->texels[level];
 	sm->w = (int)tx->width[level];
 	sm->h = (int)tx->height[level];
 	sm->fw = (float)sm->w;
 	sm->fh = (float)sm->h;
-	sm->clamp_u = s->clamp_u;
-	sm->clamp_v = s->clamp_v;
+	sm->clamp_u = u->clamp_s;
+	sm->clamp_v = u->clamp_t;
 	sm->pow2_u = !(sm->w & (sm->w - 1));
 	sm->pow2_v = !(sm->h & (sm->h - 1));
+	sm->bilinear = bilinear;
 }
 
 /* A texel coordinate from a scaled float one (NaN and huge values come out in range too) */
@@ -148,33 +288,172 @@ static ALWAYS_INLINE int texel(float f, int n, bool clamp, bool pow2)
 	return i < 0 ? i + n : i;
 }
 
-static ALWAYS_INLINE void sample(const struct sampler *sm, bool bilinear, float u, float v, float c[4])
+static ALWAYS_INLINE vec4 sample(const struct sampler *sm, float u, float v)
 {
-	if (!bilinear) {
+	if (!sm->bilinear) {
 		int x = texel(u * sm->fw, sm->w, sm->clamp_u, sm->pow2_u);
 		int y = texel(v * sm->fh, sm->h, sm->clamp_v, sm->pow2_v);
-		unpack(sm->p[(size_t)y * (size_t)sm->w + (size_t)x], c);
-		return;
+		return unpack(sm->p[(size_t)y * (size_t)sm->w + (size_t)x]);
 	}
 	float fx = fminf(fmaxf(u * sm->fw - 0.5f, -1e9f), 1e9f), fy = fminf(fmaxf(v * sm->fh - 0.5f, -1e9f), 1e9f);
 	float x0f = floorf(fx), y0f = floorf(fy), ax = fx - x0f, ay = fy - y0f;
 	int xa = texel(x0f, sm->w, sm->clamp_u, sm->pow2_u), xb = texel(x0f + 1, sm->w, sm->clamp_u, sm->pow2_u);
 	int ya = texel(y0f, sm->h, sm->clamp_v, sm->pow2_v), yb = texel(y0f + 1, sm->h, sm->clamp_v, sm->pow2_v);
-	float c00[4], c10[4], c01[4], c11[4];
-	unpack(sm->p[(size_t)ya * (size_t)sm->w + (size_t)xa], c00);
-	unpack(sm->p[(size_t)ya * (size_t)sm->w + (size_t)xb], c10);
-	unpack(sm->p[(size_t)yb * (size_t)sm->w + (size_t)xa], c01);
-	unpack(sm->p[(size_t)yb * (size_t)sm->w + (size_t)xb], c11);
-	for (int k = 0; k < 4; k++) {
-		float top = c00[k] + (c10[k] - c00[k]) * ax, bottom = c01[k] + (c11[k] - c01[k]) * ax;
-		c[k] = top + (bottom - top) * ay;
-	}
+	vec4 c00 = unpack(sm->p[(size_t)ya * (size_t)sm->w + (size_t)xa]);
+	vec4 c10 = unpack(sm->p[(size_t)ya * (size_t)sm->w + (size_t)xb]);
+	vec4 c01 = unpack(sm->p[(size_t)yb * (size_t)sm->w + (size_t)xa]);
+	vec4 c11 = unpack(sm->p[(size_t)yb * (size_t)sm->w + (size_t)xb]);
+	vec4 top = c00 + (c10 - c00) * ax, bottom = c01 + (c11 - c01) * ax;
+	return top + (bottom - top) * ay;
 }
 
 /* ---- fragments -------------------------------------------------------------- */
 
+/* A stage's argument: its source, and whether that's its alpha in every channel, or 1 minus it all */
+struct arg {
+	uint8_t source;
+	bool splat, invert;
+};
+
+/* A stage ready to run: its arguments for r, g and b, and for a; what else it needs */
+struct run_stage {
+	struct arg arg[2][3];
+	bool plain;                             /* no argument splats or inverts */
+	bool constant;                          /* the constant is an argument */
+	bool scale;                             /* shifts */
+	bool clamps;
+	vec4i clamp;                            /* ... these channels (all bits) */
+};
+
+/* What drawing with a state takes, worked out once for the primitives drawn with it */
+struct prepared {
+	const struct raster_state *s;
+	bool textures;                          /* textured primitives have stages (raster_textured()) */
+	unsigned units;                         /* ... which sample these (bit k: unit k) */
+	struct layout plain, textured;          /* where primitives' values are */
+	struct run_stage stage[RASTER_STAGES];
+};
+
+/* How a primitive is shaded: where its values are, its units' textures at their levels, its stages */
+struct shade {
+	const struct layout *L;
+	unsigned units;
+	const struct run_stage *stage;
+	struct sampler sm[RASTER_UNITS];
+};
+
+static void prepare(const struct raster_state *s, struct prepared *p)
+{
+	p->s = s;
+	p->textures = raster_textured(s, true);
+	p->units = p->textures ? raster_units_used(s) : 0;
+	layout_of(s, false, &p->plain);
+	layout_of(s, true, &p->textured);
+	for (unsigned j = 0; p->textures && j < s->stages && j < RASTER_STAGES; j++) {
+		const struct raster_stage *st = &s->stage[j];
+		struct run_stage *r = &p->stage[j];
+		r->plain = true;
+		r->constant = (arg_sources(st->arg[0], st->op[0]) | arg_sources(st->arg[1], st->op[1])) >>
+			      RASTER_CONSTANT & 1;
+		r->scale = st->shift[0] || st->shift[1];
+		r->clamps = st->clamp[0] || st->clamp[1];
+		r->clamp = (vec4i){ st->clamp[1] ? -1 : 0, st->clamp[0] ? -1 : 0, st->clamp[0] ? -1 : 0,
+				    st->clamp[0] ? -1 : 0 };
+		for (int g = 0; g < 2; g++)
+			for (int n = 0; n < 3; n++) {
+				unsigned arg = st->arg[g][n], source = arg & 15u;
+				struct arg *a = &r->arg[g][n];
+				a->source = (uint8_t)(source < RASTER_SOURCES ? source : RASTER_PREVIOUS);
+				a->splat = g == 0 && (arg & RASTER_ALPHA);      /* (a's are alphas anyway) */
+				a->invert = arg & RASTER_INVERT;
+				r->plain = r->plain && !a->splat && !a->invert;
+			}
+	}
+}
+
+static ALWAYS_INLINE vec4 arg_value(const vec4 *src, struct arg a, bool plain)
+{
+	vec4 v = src[a.source];
+	if (plain)
+		return v;
+	if (a.splat)
+		v = (vec4){ v[0], v[0], v[0], v[0] };
+	return a.invert ? 1.0f - v : v;
+}
+
+static ALWAYS_INLINE vec4 stage_value(const vec4 *src, const struct arg arg[3], unsigned op, bool plain)
+{
+	vec4 x = arg_value(src, arg[0], plain);
+	switch (op) {
+	case RASTER_OP_MODULATE: return x * arg_value(src, arg[1], plain);
+	case RASTER_OP_ADD: return x + arg_value(src, arg[1], plain);
+	case RASTER_OP_ADD_SIGNED: return x + arg_value(src, arg[1], plain) - 0.5f;
+	case RASTER_OP_INTERPOLATE: {
+		vec4 z = arg_value(src, arg[2], plain);
+		return x * z + arg_value(src, arg[1], plain) * (1.0f - z);
+	}
+	case RASTER_OP_SUBTRACT: return x - arg_value(src, arg[1], plain);
+	default: return x;
+	}
+}
+
+/* A stage's result for r, g and b, and for a */
+static ALWAYS_INLINE vec4 stage_values(const vec4 *src, const struct raster_stage *st, const struct run_stage *r,
+				       bool plain)
+{
+	vec4 v = stage_value(src, r->arg[0], st->op[0], plain);
+	v[0] = stage_value(src, r->arg[1], st->op[1], plain)[0];
+	return v;
+}
+
+/* A stage: its result is the next's previous */
+static ALWAYS_INLINE void run_stage(vec4 *src, const struct raster_stage *st, const struct run_stage *r)
+{
+	if (r->constant)
+		memcpy(&src[RASTER_CONSTANT], st->constant, sizeof *src);
+	vec4 v = r->plain ? stage_values(src, st, r, true) : stage_values(src, st, r, false);
+	if (r->scale)
+		v *= (vec4){ (float)(1u << st->shift[1]), (float)(1u << st->shift[0]), (float)(1u << st->shift[0]),
+			     (float)(1u << st->shift[0]) };
+	if (r->clamps) {                /* (as clamp01(): NaN stays) */
+		vec4i below = (v < 0.0f) & r->clamp, above = (v > 1.0f) & r->clamp;
+		v = (vec4)(((vec4i)v & ~(below | above)) | ((vec4i)(vec4){ 1, 1, 1, 1 } & above));
+	}
+	src[RASTER_PREVIOUS] = v;
+}
+
+/* A textured fragment's color (a, r, g, b): its units sampled, then the stages */
+static ALWAYS_INLINE void stages(const struct raster_state *s, const struct shade *sh, const float *a, float w,
+				 float c[4])
+{
+	vec4 src[RASTER_SOURCES];
+	for (unsigned k = 0; k < RASTER_COLORS; k++)
+		if (sh->L->color[k])
+			memcpy(&src[RASTER_COLOR0 + k], a + sh->L->color[k], sizeof *src);
+	for (unsigned k = 0; k < RASTER_UNITS; k++) {
+		if (!(sh->units >> k & 1))
+			continue;
+		const float *tc = a + sh->L->tex[k];
+		float d = w;
+		if (sh->L->q[k])
+			d = a[sh->L->q[k]] != 0 ? 1.0f / a[sh->L->q[k]] : 1e30f;
+		src[RASTER_TEXTURE0 + k] = sample(&sh->sm[k], tc[0] * d, tc[1] * d);
+	}
+	src[RASTER_PREVIOUS] = src[RASTER_COLOR0];
+	_Static_assert(RASTER_STAGES == 4, "the stages, one by one");
+	if (s->stages > 0)
+		run_stage(src, &s->stage[0], &sh->stage[0]);
+	if (s->stages > 1)
+		run_stage(src, &s->stage[1], &sh->stage[1]);
+	if (s->stages > 2)
+		run_stage(src, &s->stage[2], &sh->stage[2]);
+	if (s->stages > 3)
+		run_stage(src, &s->stage[3], &sh->stage[3]);
+	memcpy(c, &src[RASTER_PREVIOUS], sizeof *src);
+}
+
 /* An OpenGL-style blend factor for each of a, r, g, b */
-static void blend_factor(unsigned f, const float src[4], const float dst[4], float out[4])
+static void blend_factor(unsigned f, const float src[4], const float dst[4], const float constant[4], float out[4])
 {
 	for (int k = 0; k < 4; k++) {
 		float v;
@@ -189,72 +468,70 @@ static void blend_factor(unsigned f, const float src[4], const float dst[4], flo
 		case RASTER_F_ONE_MINUS_DST_ALPHA: v = 1 - dst[0]; break;
 		case RASTER_F_DST_COLOR: v = dst[k]; break;
 		case RASTER_F_ONE_MINUS_DST_COLOR: v = 1 - dst[k]; break;
+		case RASTER_F_CONSTANT_COLOR: v = constant[k]; break;
+		case RASTER_F_ONE_MINUS_CONSTANT_COLOR: v = 1 - constant[k]; break;
+		case RASTER_F_CONSTANT_ALPHA: v = constant[0]; break;
+		case RASTER_F_ONE_MINUS_CONSTANT_ALPHA: v = 1 - constant[0]; break;
 		default: v = k ? fminf(src[0], 1 - dst[0]) : 1; break;  /* source alpha saturate */
 		}
 		out[k] = v;
 	}
 }
 
+static void blend_factors(const struct raster_state *s, float c[4], uint32_t dst)
+{
+	float d[4], sf[4], df[4];
+	vec4 dv = unpack(dst);
+	memcpy(d, &dv, sizeof d);
+	if (s->blend_eq == RASTER_EQ_MIN || s->blend_eq == RASTER_EQ_MAX) {
+		for (int k = 0; k < 4; k++)
+			c[k] = s->blend_eq == RASTER_EQ_MIN ? fminf(c[k], d[k]) : fmaxf(c[k], d[k]);
+		return;
+	}
+	blend_factor(s->blend_src, c, d, s->blend_color, sf);
+	blend_factor(s->blend_dst, c, d, s->blend_color, df);
+	for (int k = 0; k < 4; k++)
+		c[k] = s->blend_eq == RASTER_EQ_SUBTRACT ? c[k] * sf[k] - d[k] * df[k] :
+		       s->blend_eq == RASTER_EQ_REVERSE_SUBTRACT ? d[k] * df[k] - c[k] * sf[k] :
+		       c[k] * sf[k] + d[k] * df[k];
+}
+
 /* Compile-time variants of the pixel loop */
 #define F_TEX 1u
 #define F_FOG 2u
-#define F_BILINEAR 4u
 
 /*
- * One fragment: its color from the interpolated attributes (a) and the
- * texture (and the second texture, with sm2), fog, alpha test, then blended
- * into the target at index i (whose depth test has passed).
+ * One fragment: its color from the interpolated attributes (a) and, if
+ * textured, the stages; fog, alpha test, then blended into the target at
+ * index i (whose depth test has passed).
  */
 static ALWAYS_INLINE void fragment(struct raster_target *t, const struct raster_state *s, size_t i, const float *a,
-				   const struct sampler *sm, const struct sampler *sm2, unsigned flags, float depth)
+				   const struct shade *sh, unsigned flags, float depth)
 {
 	float c[4];                     /* a, r, g, b */
 	float w = 0;
 	if (flags & (F_TEX | F_FOG))
 		w = a[A_W] != 0 ? 1.0f / a[A_W] : 1e30f;
-	if (flags & F_TEX) {
-		sample(sm, flags & F_BILINEAR, a[A_UW] * w, a[A_VW] * w, c);
-		if (s->texture_op & RASTER_TEX_DECAL) {
-			for (int k = 1; k < 4; k++)
-				c[k] = c[0] * c[k] + (1 - c[0]) * a[A_R + k - 1];
-			c[0] = a[A_A];
-		} else {
-			c[0] *= a[A_A];
-		}
-		if (s->texture_op & RASTER_TEX_MODULATE)
-			for (int k = 1; k < 4; k++)
-				c[k] = clamp01(c[k] * a[A_KD + k - 1]);
-		if (sm2) {
-			float w2 = a[A_KS + 2] != 0 ? 1.0f / a[A_KS + 2] : 1e30f, c2[4];
-			sample(sm2, true, a[A_KS] * w2, a[A_KS + 1] * w2, c2);
-			for (int k = 0; k < 4; k++)
-				c[k] *= c2[k];
-		} else if (s->texture_op & RASTER_TEX_HIGHLIGHT) {
-			for (int k = 1; k < 4; k++)
-				c[k] = clamp01(c[k] + a[A_KS + k - 1]);
-		}
-	} else {
-		c[0] = a[A_A];
-		c[1] = a[A_R];
-		c[2] = a[A_G];
-		c[3] = a[A_B];
-	}
+	if (flags & F_TEX)
+		stages(s, sh, a, w, c);
+	else
+		memcpy(c, a + A_C0, sizeof c);
 
 	if (flags & F_FOG) {
-		float f, d = s->fog_end != 0 ? s->fog_density / s->fog_end : s->fog_density;
+		float f, z = s->fog_coord ? a[A_FOG] * w : w, d = s->fog_density;
 		switch (s->fog_mode) {
 		case RASTER_FOG_ALPHA:
 			f = c[0];
 			c[0] = 1;
 			break;
 		case RASTER_FOG_LINEAR:
-			f = w < s->fog_start ? 1 : w > s->fog_end ? 0 : (s->fog_end - w) / (s->fog_end - s->fog_start);
+			f = z < s->fog_start ? 1 : z > s->fog_end ? 0 : (s->fog_end - z) / (s->fog_end - s->fog_start);
 			break;
 		case RASTER_FOG_EXP:
-			f = expf(-d * w);
+			f = expf(-d * z);
 			break;
 		default:
-			f = expf(-(d * w) * (d * w));
+			f = expf(-(d * z) * (d * z));
 			break;
 		}
 		f = clamp01(f);
@@ -269,20 +546,15 @@ static ALWAYS_INLINE void fragment(struct raster_target *t, const struct raster_
 	 * transparent texels: what's behind them, drawn later, still shows), and
 	 * color too unless they add some.
 	 */
-	if (c[0] <= 0 && (s->blend == RASTER_BLEND_INTERPOLATE || (c[1] <= 0 && c[2] <= 0 && c[3] <= 0)))
+	if (!s->all_fragments && c[0] <= 0 &&
+	    (s->blend == RASTER_BLEND_INTERPOLATE || (c[1] <= 0 && c[2] <= 0 && c[3] <= 0)))
 		return;
-	if (s->z_write && s->z_func != RASTER_Z_NONE && c[0] > 0)
+	if (s->z_write && s->z_func != RASTER_Z_NONE && (c[0] > 0 || s->all_fragments))
 		t->depth[i] = depth;
 	if (s->blend == RASTER_BLEND_FACTORS) {
-		float d[4], sf[4], df[4];
-		unpack(t->color[i], d);
-		blend_factor(s->blend_src, c, d, sf);
-		blend_factor(s->blend_dst, c, d, df);
-		for (int k = 0; k < 4; k++)
-			c[k] = c[k] * sf[k] + d[k] * df[k];
-	} else if (c[0] < 1) {
-		float d[4];
-		unpack(t->color[i], d);
+		blend_factors(s, c, t->color[i]);
+	} else if (s->blend != RASTER_BLEND_NONE && c[0] < 1) {
+		vec4 d = unpack(t->color[i]);
 		float as = clamp01(c[0]);
 		if (s->blend == RASTER_BLEND_INTERPOLATE)
 			for (int k = 1; k < 4; k++)
@@ -292,53 +564,82 @@ static ALWAYS_INLINE void fragment(struct raster_target *t, const struct raster_
 				c[k] = c[k] + (1 - as) * d[k];
 		c[0] = 1 - (1 - as) * (1 - d[0]);
 	}
-	t->color[i] = pack(c);
+	uint32_t p = pack(c);
+	if (s->color_keep)
+		p = (p & ~s->color_keep) | (t->color[i] & s->color_keep);
+	t->color[i] = p;
 }
 
 /* ---- triangles -------------------------------------------------------------- */
 
 /*
- * Mipmap level for a triangle: texels per pixel, from the areas the triangle
- * covers (in the second texture, at the coordinates in ks)
+ * A unit's level of detail over a triangle: log2 of texels per pixel, from
+ * the areas the triangle covers in the texture and on the screen (0 if
+ * either is none)
  */
-static unsigned triangle_level(const struct raster_texture *tx, const struct raster_vertex *v[3], float area2,
-			       bool second)
+static float triangle_lod(const struct raster_unit *u, unsigned unit, const struct raster_vertex *v[3], float area2)
 {
-	if (tx->levels <= 1)
-		return 0;
-	float u[3], w[3];
+	const struct raster_texture *tx = u->texture;
+	float s[3], t[3];
 	for (int k = 0; k < 3; k++) {
-		float iw = second ? v[k]->ks[2] : v[k]->invw;
+		float iw = u->projective ? v[k]->tex[unit][2] : v[k]->invw;
 		float inv = iw != 0 ? 1.0f / iw : 0;
-		u[k] = (second ? v[k]->ks[0] : v[k]->uw) * inv * (float)tx->width[0];
-		w[k] = (second ? v[k]->ks[1] : v[k]->vw) * inv * (float)tx->height[0];
+		s[k] = v[k]->tex[unit][0] * inv * (float)tx->width[0];
+		t[k] = v[k]->tex[unit][1] * inv * (float)tx->height[0];
 	}
-	float tarea = fabsf((u[1] - u[0]) * (w[2] - w[0]) - (u[2] - u[0]) * (w[1] - w[0]));
+	float tarea = fabsf((s[1] - s[0]) * (t[2] - t[0]) - (s[2] - s[0]) * (t[1] - t[0]));
 	if (!(tarea > 0) || !(area2 > 0))
 		return 0;
-	float lod = 0.5f * log2f(tarea / area2);
-	if (!(lod > 0))
-		return 0;
-	unsigned level = (unsigned)(lod + 0.5f);
-	return level < tx->levels ? level : tx->levels - 1;
+	return 0.5f * log2f(tarea / area2);
+}
+
+static bool linear_filter(unsigned f)
+{
+	return f == RASTER_LINEAR || f == RASTER_LINEAR_MIPMAP_NEAREST || f == RASTER_LINEAR_MIPMAP_LINEAR;
+}
+
+/*
+ * A unit's texture over a triangle: magnified or minified, and if minified
+ * and mipmapped, at the level nearest its level of detail
+ */
+static void unit_setup(const struct raster_unit *u, unsigned unit, const struct raster_vertex *v[3], float area2,
+		       struct sampler *sm)
+{
+	const struct raster_texture *tx = u->texture;
+	bool mipmap = u->min_filter >= RASTER_NEAREST_MIPMAP_NEAREST && tx->levels > 1;
+	bool min_linear = linear_filter(u->min_filter), mag_linear = u->mag_filter == RASTER_LINEAR;
+	bool linear = mag_linear;
+	unsigned level = 0;
+	if (mipmap || min_linear != mag_linear) {
+		float lod = triangle_lod(u, unit, v, area2);
+		float edge = mag_linear && (u->min_filter == RASTER_NEAREST_MIPMAP_NEAREST ||
+					    u->min_filter == RASTER_NEAREST_MIPMAP_LINEAR) ? 0.5f : 0;
+		if (lod > edge) {
+			linear = min_linear;
+			if (mipmap) {
+				level = (unsigned)(lod + 0.5f);
+				level = level < tx->levels ? level : tx->levels - 1;
+			}
+		}
+	}
+	sampler_init(sm, u, level, linear);
 }
 
 /* A triangle set up for drawing */
 struct tri {
 	float ex[3], ey[3], ec[3];      /* edge functions: e = ec + ex * x + ey * y */
 	bool tl[3];                     /* top or left edges (which own pixels exactly on them) */
-	float a0[A_COUNT], ax[A_COUNT], ay[A_COUNT];    /* attributes at (ox, oy) and their gradients */
+	float a0[A_MAX], ax[A_MAX], ay[A_MAX];  /* attributes at (ox, oy) and their gradients */
 	float ox, oy;
 	int x0, x1, y0, y1;             /* pixels that may be covered */
-	unsigned na;
-	struct sampler sm;
-	bool second;                    /* sm2 samples the second texture */
-	struct sampler sm2;
+	struct shade sh;
 };
 
-static bool tri_setup(const struct raster_target *t, const struct raster_state *s, const struct raster_vertex *v0,
-		      const struct raster_vertex *v1, const struct raster_vertex *v2, bool textured, struct tri *T)
+static bool tri_setup(const struct raster_target *t, const struct prepared *p, const int rows[2],
+		      const struct raster_vertex *v0, const struct raster_vertex *v1, const struct raster_vertex *v2,
+		      bool textured, struct tri *T)
 {
+	const struct raster_state *s = p->s;
 	const struct raster_vertex *v[3] = { v0, v1, v2 };
 	float area2 = (v1->x - v0->x) * (v2->y - v0->y) - (v2->x - v0->x) * (v1->y - v0->y);
 	if (!(area2 != 0) || !isfinite(area2))
@@ -349,7 +650,7 @@ static bool tri_setup(const struct raster_target *t, const struct raster_state *
 		area2 = -area2;
 	}
 	int l, top, r, b;
-	clip_rows(t, s, &l, &top, &r, &b);
+	clip_rows(t, s, rows, &l, &top, &r, &b);
 	float minx = fminf(v[0]->x, fminf(v[1]->x, v[2]->x)), maxx = fmaxf(v[0]->x, fmaxf(v[1]->x, v[2]->x));
 	float miny = fminf(v[0]->y, fminf(v[1]->y, v[2]->y)), maxy = fmaxf(v[0]->y, fmaxf(v[1]->y, v[2]->y));
 	if (!(minx < (float)r && maxx > (float)l && miny < (float)b && maxy > (float)top))
@@ -370,28 +671,26 @@ static bool tri_setup(const struct raster_target *t, const struct raster_state *
 		T->tl[i] = dy < 0 || (dy == 0 && dx > 0);
 	}
 
-	float av[3][A_COUNT];
+	const struct layout *L = T->sh.L = textured ? &p->textured : &p->plain;
+	float av[3][A_MAX];
 	for (int k = 0; k < 3; k++)
-		attribs(v[k], av[k]);
+		attribs(v[k], L, av[k]);
 	float dx1 = v[1]->x - v[0]->x, dy1 = v[1]->y - v[0]->y, dx2 = v[2]->x - v[0]->x, dy2 = v[2]->y - v[0]->y;
-	T->na = textured ? A_COUNT : A_UW;
-	for (unsigned k = 0; k < T->na; k++) {
+	for (unsigned k = 0; k < L->n; k++) {
 		float d1 = av[1][k] - av[0][k], d2 = av[2][k] - av[0][k];
 		T->ax[k] = (d1 * dy2 - d2 * dy1) / area2;
 		T->ay[k] = (d2 * dx1 - d1 * dx2) / area2;
 		T->a0[k] = av[0][k];
 	}
+	for (unsigned k = L->n; k < A_MAX; k++)        /* (tri_rows() steps whole vectors) */
+		T->ax[k] = T->ay[k] = T->a0[k] = 0;
 	T->ox = v[0]->x;
 	T->oy = v[0]->y;
-	T->second = false;
-	if (textured) {
-		sampler_init(&T->sm, s->texture, triangle_level(s->texture, v, area2, false), s);
-		if (s->texture2 && s->texture2->levels) {
-			T->second = true;
-			sampler_init(&T->sm2, s->texture2, triangle_level(s->texture2, v, area2, true), s);
-			T->sm2.clamp_u = T->sm2.clamp_v = true;
-		}
-	}
+	T->sh.units = textured ? p->units : 0;
+	T->sh.stage = p->stage;
+	for (unsigned k = 0; k < RASTER_UNITS; k++)
+		if (T->sh.units >> k & 1)
+			unit_setup(&s->unit[k], k, v, area2, &T->sh.sm[k]);
 	return true;
 }
 
@@ -405,7 +704,7 @@ static ALWAYS_INLINE void tri_rows(struct raster_target *t, const struct raster_
 				   unsigned flags)
 {
 	bool ztest = s->z_func != RASTER_Z_NONE;
-	const unsigned na = flags & F_TEX ? A_COUNT : A_UW;
+	const unsigned na = flags & F_TEX ? A_MAX : A_PLAIN;
 	for (int y = T->y0; y < T->y1; y++) {
 		float py = (float)y + 0.5f;
 		/* the span where every edge function can be >= 0 (then each pixel is tested exactly) */
@@ -424,7 +723,7 @@ static ALWAYS_INLINE void tri_rows(struct raster_target *t, const struct raster_
 			continue;
 		int xa = (int)xs, xb = (int)xe;
 		float px = (float)xa + 0.5f;
-		float e[3], a[A_COUNT];
+		float e[3], a[A_MAX];
 		for (int i = 0; i < 3; i++)
 			e[i] = T->ec[i] + T->ex[i] * px + T->ey[i] * py;
 		for (unsigned k = 0; k < na; k++)
@@ -435,7 +734,7 @@ static ALWAYS_INLINE void tri_rows(struct raster_target *t, const struct raster_
 				size_t i = row + (size_t)x;
 				float depth = s->perspective_z ? -a[A_W] : a[A_Z];
 				if (!ztest || z_pass(s->z_func, depth, t->depth[i]))
-					fragment(t, s, i, a, &T->sm, T->second ? &T->sm2 : NULL, flags, depth);
+					fragment(t, s, i, a, &T->sh, flags, depth);
 			}
 			for (int k = 0; k < 3; k++)
 				e[k] += T->ex[k];
@@ -445,33 +744,41 @@ static ALWAYS_INLINE void tri_rows(struct raster_target *t, const struct raster_
 	}
 }
 
-void raster_triangle(struct raster_target *t, const struct raster_state *s, const struct raster_vertex *v0,
-		     const struct raster_vertex *v1, const struct raster_vertex *v2, bool textured)
+static void triangle(struct raster_target *t, const struct prepared *p, const int rows[2],
+		     const struct raster_vertex *v0, const struct raster_vertex *v1, const struct raster_vertex *v2,
+		     bool textured)
 {
-	if (textured && (!s->texture || !s->texture->levels))
-		textured = false;
+	const struct raster_state *s = p->s;
+	textured = textured && p->textures;
 	struct tri T;
-	if (!tri_setup(t, s, v0, v1, v2, textured, &T))
+	if (!tri_setup(t, p, rows, v0, v1, v2, textured, &T))
 		return;
-	unsigned flags = (textured ? F_TEX : 0) | (s->fog_mode != RASTER_FOG_NONE ? F_FOG : 0) |
-			 (textured && s->bilinear ? F_BILINEAR : 0);
+	unsigned flags = (textured ? F_TEX : 0) | (s->fog_mode != RASTER_FOG_NONE ? F_FOG : 0);
 	switch (flags) {
 	case 0: tri_rows(t, s, &T, 0); break;
 	case F_TEX: tri_rows(t, s, &T, F_TEX); break;
 	case F_FOG: tri_rows(t, s, &T, F_FOG); break;
-	case F_TEX | F_FOG: tri_rows(t, s, &T, F_TEX | F_FOG); break;
-	case F_TEX | F_BILINEAR: tri_rows(t, s, &T, F_TEX | F_BILINEAR); break;
-	default: tri_rows(t, s, &T, F_TEX | F_FOG | F_BILINEAR); break;
+	default: tri_rows(t, s, &T, F_TEX | F_FOG); break;
 	}
+}
+
+void raster_triangle(struct raster_target *t, const struct raster_state *s, const struct raster_vertex *v0,
+		     const struct raster_vertex *v1, const struct raster_vertex *v2, bool textured)
+{
+	const int rows[2] = { s->clip_top, s->clip_bottom };
+	struct prepared p;
+	prepare(s, &p);
+	triangle(t, &p, rows, v0, v1, v2, textured);
 }
 
 /* ---- lines, points, bitmaps ------------------------------------------------- */
 
-static void plot(struct raster_target *t, const struct raster_state *s, float cx, float cy, const float *a)
+static void plot(struct raster_target *t, const struct raster_state *s, const int rows[2], float cx, float cy,
+		 const float *a, const struct shade *sh)
 {
 	float half = (s->width > 1 ? s->width : 1) * 0.5f;
 	int l, top, r, b;
-	clip_rows(t, s, &l, &top, &r, &b);
+	clip_rows(t, s, rows, &l, &top, &r, &b);
 	float fx0 = floorf(cx - half + 0.5f), fy0 = floorf(cy - half + 0.5f);
 	float fx1 = floorf(cx + half + 0.5f), fy1 = floorf(cy + half + 0.5f);
 	if (!(fx1 > (float)l && fx0 < (float)r && fy1 > (float)top && fy0 < (float)b))
@@ -485,26 +792,37 @@ static void plot(struct raster_target *t, const struct raster_state *s, float cx
 			size_t i = (size_t)y * (size_t)t->width + (size_t)x;
 			if (s->z_func == RASTER_Z_NONE || z_pass(s->z_func, depth, t->depth[i])) {
 				if (flags)
-					fragment(t, s, i, a, NULL, NULL, F_FOG, depth);
+					fragment(t, s, i, a, sh, F_FOG, depth);
 				else
-					fragment(t, s, i, a, NULL, NULL, 0, depth);
+					fragment(t, s, i, a, sh, 0, depth);
 			}
 		}
 }
 
-void raster_point(struct raster_target *t, const struct raster_state *s, const struct raster_vertex *v)
+static void point(struct raster_target *t, const struct prepared *p, const int rows[2],
+		  const struct raster_vertex *v)
 {
-	float a[A_COUNT];
-	attribs(v, a);
-	plot(t, s, v->x, v->y, a);
+	const struct shade sh = { .L = &p->plain };
+	float a[A_MAX];
+	attribs(v, sh.L, a);
+	plot(t, p->s, rows, v->x, v->y, a, &sh);
 }
 
-void raster_line(struct raster_target *t, const struct raster_state *s, const struct raster_vertex *v0,
-		 const struct raster_vertex *v1)
+void raster_point(struct raster_target *t, const struct raster_state *s, const struct raster_vertex *v)
 {
-	float a0[A_COUNT], a1[A_COUNT], a[A_COUNT];
-	attribs(v0, a0);
-	attribs(v1, a1);
+	const int rows[2] = { s->clip_top, s->clip_bottom };
+	struct prepared p;
+	prepare(s, &p);
+	point(t, &p, rows, v);
+}
+
+static void line(struct raster_target *t, const struct prepared *p, const int rows[2],
+		 const struct raster_vertex *v0, const struct raster_vertex *v1)
+{
+	const struct shade sh = { .L = &p->plain };
+	float a0[A_MAX], a1[A_MAX], a[A_MAX];
+	attribs(v0, sh.L, a0);
+	attribs(v1, sh.L, a1);
 	float dx = v1->x - v0->x, dy = v1->y - v0->y;
 	float len = fmaxf(fabsf(dx), fabsf(dy));
 	if (!(len < 1e5f))
@@ -512,22 +830,29 @@ void raster_line(struct raster_target *t, const struct raster_state *s, const st
 	int steps = (int)ceilf(len);
 	for (int k = 0; k < steps; k++) {      /* (the last pixel is left to the next segment) */
 		float f = (float)k / (float)steps;
-		for (int j = 0; j < A_UW; j++)
+		for (unsigned j = 0; j < sh.L->n; j++)
 			a[j] = a0[j] + (a1[j] - a0[j]) * f;
-		plot(t, s, v0->x + dx * f, v0->y + dy * f, a);
+		plot(t, p->s, rows, v0->x + dx * f, v0->y + dy * f, a, &sh);
 	}
 }
 
-void raster_bitmap(struct raster_target *t, const struct raster_state *s, const struct raster_texture *image,
-		   float x, float y, float z)
+void raster_line(struct raster_target *t, const struct raster_state *s, const struct raster_vertex *v0,
+		 const struct raster_vertex *v1)
+{
+	const int rows[2] = { s->clip_top, s->clip_bottom };
+	struct prepared p;
+	prepare(s, &p);
+	line(t, &p, rows, v0, v1);
+}
+
+static void bitmap(struct raster_target *t, const struct raster_state *s, const int rows[2],
+		   const struct raster_texture *image, float x, float y, float z)
 {
 	int w = (int)image->width[0], h = (int)image->height[0];
 	int ox = (int)floorf(x + 0.5f), oy = (int)floorf(y + 0.5f);
 	int l, top, r, b;
-	clip_rows(t, s, &l, &top, &r, &b);
-	struct raster_state flat = *s;
-	flat.texture_op = 0;
-	flat.fog_mode = RASTER_FOG_NONE;
+	clip_rows(t, s, rows, &l, &top, &r, &b);
+	const struct shade sh = { .L = NULL };
 	for (int j = 0; j < h; j++) {
 		int py = oy + j;
 		if (py < top || py >= b)
@@ -536,21 +861,22 @@ void raster_bitmap(struct raster_target *t, const struct raster_state *s, const 
 			int px = ox + i;
 			if (px < l || px >= r)
 				continue;
-			float a[A_COUNT] = { 0 };
-			float c[4];
-			unpack(image->texels[0][(size_t)j * (size_t)w + (size_t)i], c);
-			a[A_Z] = z;
-			a[A_W] = 1;
-			a[A_A] = c[0];
-			a[A_R] = c[1];
-			a[A_G] = c[2];
-			a[A_B] = c[3];
+			float a[A_PLAIN] = { z, 1 };
+			vec4 c = unpack(image->texels[0][(size_t)j * (size_t)w + (size_t)i]);
+			memcpy(a + A_C0, &c, sizeof c);
 			size_t k = (size_t)py * (size_t)t->width + (size_t)px;
 			float depth = s->perspective_z ? -1.0f : z;
 			if (c[0] > 0 && (s->z_func == RASTER_Z_NONE || z_pass(s->z_func, depth, t->depth[k])))
-				fragment(t, &flat, k, a, NULL, NULL, 0, depth);
+				fragment(t, s, k, a, &sh, 0, depth);
 		}
 	}
+}
+
+void raster_bitmap(struct raster_target *t, const struct raster_state *s, const struct raster_texture *image,
+		   float x, float y, float z)
+{
+	const int rows[2] = { s->clip_top, s->clip_bottom };
+	bitmap(t, s, rows, image, x, y, z);
 }
 
 /* ---- command lists, run in bands of rows on several threads -------------------- */
@@ -579,30 +905,33 @@ static struct {
 static void run_band(struct raster_target *t, const struct raster_state *states, const struct raster_cmd *cmds,
 		     unsigned n, int y0, int y1)
 {
+	struct prepared p = { .s = NULL };
 	for (unsigned k = 0; k < n; k++) {
 		const struct raster_cmd *c = &cmds[k];
-		struct raster_state s = states[c->state];
-		s.clip_top = s.clip_top > y0 ? s.clip_top : y0;
-		s.clip_bottom = s.clip_bottom < y1 ? s.clip_bottom : y1;
-		if (s.clip_top >= s.clip_bottom)
+		const struct raster_state *s = &states[c->state];
+		const int rows[2] = { s->clip_top > y0 ? s->clip_top : y0, s->clip_bottom < y1 ? s->clip_bottom : y1 };
+		if (rows[0] >= rows[1])
 			continue;
+		if (p.s != s && c->kind <= RASTER_CMD_POINT)
+			prepare(s, &p);
 		switch (c->kind) {
 		case RASTER_CMD_TRIANGLE:
-			raster_triangle(t, &s, &c->v[0], &c->v[1], &c->v[2], c->textured);
+			triangle(t, &p, rows, &c->v[0], &c->v[1], &c->v[2], c->textured);
 			break;
 		case RASTER_CMD_LINE:
-			raster_line(t, &s, &c->v[0], &c->v[1]);
+			line(t, &p, rows, &c->v[0], &c->v[1]);
 			break;
 		case RASTER_CMD_POINT:
-			raster_point(t, &s, &c->v[0]);
+			point(t, &p, rows, &c->v[0]);
 			break;
 		case RASTER_CMD_BITMAP:
-			raster_bitmap(t, &s, c->image, c->v[0].x, c->v[0].y, c->v[0].z);
+			bitmap(t, s, rows, c->image, c->v[0].x, c->v[0].y, c->v[0].z);
 			break;
 		case RASTER_CMD_CLEAR: {
-			int top = c->rect[1] > s.clip_top ? c->rect[1] : s.clip_top;
-			int bottom = c->rect[3] < s.clip_bottom ? c->rect[3] : s.clip_bottom;
-			raster_clear(t, c->rect[0], top, c->rect[2], bottom, c->clear_color, c->argb, c->clear_depth, c->z);
+			int top = c->rect[1] > rows[0] ? c->rect[1] : rows[0];
+			int bottom = c->rect[3] < rows[1] ? c->rect[3] : rows[1];
+			clear_rect(t, c->rect[0], top, c->rect[2], bottom, c->clear_color, c->argb, s->color_keep,
+				   c->clear_depth, c->z);
 			break;
 		}
 		}

@@ -1,10 +1,12 @@
 /*
- * The 3D engine's GPU backend: draws the rasterizer's recorded commands
+ * The 3D backend's GPU side: draws the rasterizer's recorded commands
  * (raster.h) with OpenGL 3.3 core in an off-screen context of its own,
  * owned by a thread of its own, and reads frames back into host buffers for
- * rave.c to present. Pixels match raster.c's but for rounding at triangle
- * edges and in filtering, and mipmapping, which the GPU does per pixel
- * (trilinear with the state's `trilinear`). See docs/gpu-plan.md.
+ * the guest's 3D APIs to present. Pixels match raster.c's but for rounding
+ * at triangle edges and in filtering, and mipmapping, which the GPU does per
+ * pixel (trilinear with the *_MIPMAP_LINEAR filters). Each way of drawing (a
+ * state's stages, above all) gets a program of its own, made the first time
+ * it's needed. See docs/gpu-plan.md.
  *
  * One thread (the emulator's) calls these. Every call but gpu_open() and
  * gpu_ready() first waits for the job the previous one started.
