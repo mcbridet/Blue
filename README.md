@@ -981,14 +981,15 @@ software (on 8.6, an M5 Mac).
     code (`pthread_jit_write_protect_np()`, about 25 ns a switch). What's
     left that only macOS pays (those switches, its slower fault signals) is
     under 1% of a boot.
-  - x86-64 (docs/x86-jit-plan.md, milestone 2 of 5): the same blocks,
+  - x86-64 (docs/x86-jit-plan.md, milestone 3 of 5): the same blocks,
     links, budget, exits, hooks and time base, with integer, compare,
-    condition-register and branch instructions translated, and loads and
+    condition-register and branch instructions translated, loads and
     stores (fastmem, as above, with MOVBE; checked once one faults; stores
-    to pages with translated code in place); floating point and the rest
-    call the interpreter from inside the block, and system calls, traps,
-    host calls and device registers leave for it (which makes kernel calls
-    and device accesses in place itself). It needs x86-64-v3 (AVX2, FMA3,
+    to pages with translated code in place), and floating point as above
+    (with FMA3; FPRs cached in xmm6-xmm15). String instructions call the
+    interpreter from inside the block, and system calls, traps, host calls
+    and device registers leave for it (which makes kernel calls and device
+    accesses in place itself). It needs x86-64-v3 (AVX2, FMA3,
     BMI1/2, LZCNT, MOVBE; other processors interpret, and syshm says
     what's missing). Five guest registers live in host registers (CR, LR,
     r3, r4, r24) and four more are cached within a block. Under Rosetta 2,

@@ -10,6 +10,42 @@ sharing everything that isn't about the host's instructions.
 
 ## Status
 
+Milestone 3 done (floating point):
+
+- **The interpreter's NaNs** first, in a commit of their own: NaN results
+  are a 750's on every host (the first NaN of frA, frB and frC, quieted,
+  else 0x7FF8000000000000; never negated by `fnmadd`/`fnmsub`; cut to
+  single precision by single-precision operations and `frsp`), and
+  ∞ × 0 + a quiet NaN is VXIMZ everywhere. The new tests fail with the
+  old code on both hosts (different cases on each) and pass on macOS and
+  Linux, AArch64 and x86_64. AArch64's boots (output and screenshots),
+  its fuzzing (100,000 programs: the JIT sends NaNs to the interpreter,
+  so both sides changed alike) and its generated code (the hashes) are as
+  before.
+- **FP natively**, the AArch64 design: FPRs cached in xmm6-xmm15;
+  A-form arithmetic with FMA3 where the interpreter's fast path would
+  take it, inexactness by error-free transformations, XX and FX at once,
+  FR, FI and FPRF left pending for the settle stub (a routine for each
+  operation, `fp_settle()` for the rest); `fnmadd`/`fnmsub` negate the
+  rounded fma, as the interpreter does; `fsel` (VCMPSD and VBLENDVPD),
+  the moves, `fcmpu`/`fcmpo`, `frsp`, `fctiw[z]`, the FPSCR instructions;
+  `lfs`/`lfd`/`stfs`/`stfd` in every form; `lfd` of two words just stored
+  with `stw` put together from the registers. Anything else goes out of
+  line to the interpreter.
+- **Checks**: the fuzzer passes 450,000 programs under Rosetta (100,000
+  with `SYSHM_JIT_FASTMEM=0`) and 30,000 under QEMU; all of `make test` on
+  macOS and Linux, both architectures. The three CD boots end exactly as
+  on AArch64 under Rosetta, and the 8.5 CD under QEMU. AArch64's
+  generated code is byte for byte as before.
+- **Speed** under Rosetta on the M5, milestone 2's build against this
+  one, alternating (medians of 4): the 8.5 CD 5.9 → 5.9 s, 9.1's 4.7 →
+  4.5 s, 9.2.2's 4.5 → 4.4 s. The boots hardly use FP: their time goes to
+  the interpreter, which they leave the JIT for 4 to 13 million times
+  (kernel calls and device registers: milestone 4). The benchmark's FP
+  loop: 98 → 900 million instructions a second (AArch64's JIT natively:
+  1,680); its integer and copy loops are as before (7,200-7,900 and
+  10,500), once blocks start where they did (Findings).
+
 Milestone 2 done (memory):
 
 - **Loads and stores** of bytes, halfwords and words, D-form and indexed,
@@ -429,25 +465,23 @@ Notes on the table:
 - **`fctiw[z]`**: VROUNDSD (nearest-even or toward zero), VCVTTSD2SI and
   a compare after converting back, like AArch64's FRINTN/FCVTZS/SCVTF.
   Out of range or NaN goes out of line.
-- **`fsel`, `fcmpu`**: UCOMISD, whose parity flag means unordered.
+- **`fsel`**: VCMPSD (0 ≤ a, false for a NaN) and VBLENDVPD.
+- **`fcmpu`/`fcmpo`**: UCOMISD, whose parity flag means unordered (out of
+  line then, for VXSNAN and VXVC).
 - **The FPSCR's mode and XX** are tested in memory (`test byte
   [rbx+fpscr+k]`), not kept in a register as w5 is on AArch64.
 - **MXCSR**: generated code assumes round to nearest, all exceptions
-  masked, no FTZ or DAZ, as the interpreter's fast path already does.
-  Debug builds check it at entry.
+  masked, no FTZ or DAZ, as the interpreter's fast path already does; the
+  interpreter puts round to nearest back after each operation in another
+  mode (`nearest_rounding()`), which the fuzzer's programs exercise.
 - **NaNs, infinities, denormals, directed rounding** never come out of
   the native paths; they go to the interpreter, as on AArch64. So the JIT
   equals the interpreter on any host, whatever the interpreter does.
-- **The interpreter's NaNs**: what it does depends on the host (Status).
-  The x86 interpreter, as shipped today, gives negative default NaNs that
-  no 750 would. Tininess for UX may also differ: x86 detects it after
-  rounding, AArch64 before (PowerPC's rule to be checked). Proposed, as a
-  separate change in milestone 3 if the supervisor agrees:
-  `ppc_fp.c`'s general path picks NaN results by PowerPC's rule (frA,
-  frB, frC, quieted, or 0x7FF8000000000000) and does the same for the
-  invalid-operation bits. Then both hosts give a 750's results. It doesn't
-  touch either JIT; it changes AArch64 hosts' results only for operations
-  that produce NaNs.
+- **The interpreter's NaNs** were the host's; since milestone 3 they're
+  a 750's on every host (Status). Tininess for UX may still differ: x86
+  detects it after rounding, AArch64 before (PowerPC's rule to be
+  checked); only the interpreter sees it, as underflows never take the
+  native paths.
 
 ### Kernel calls, hooks, device registers, time base, profiler
 
@@ -547,6 +581,17 @@ candidate if profiles ask for it.
 - **Comparing runs across hosts** needs the same time zone: the guest's
   clock is the host's local time, so a container in UTC ran the 8.5 CD
   differently from macOS in Sydney until `TZ` matched.
+- **Under Rosetta, a hot loop that crosses a 4 KB boundary runs at 60-80%
+  speed** (the x86 page size it emulates): with milestone 3's larger stubs
+  the benchmark's blocks moved, and its integer loop fell from 7,200 to
+  5,900 million instructions a second, the copy loop from 10,450 to
+  5,400, with byte-identical code. Padded to cross the boundary or not,
+  the same blocks gave 6,100 against 7,500 and 6,300 against 10,550.
+  Blocks now start on a 4 KB page of their own, which keeps the
+  benchmark's clear of a boundary. Real x86 processors don't care; a
+  boot's blocks cross boundaries as they fall, as they always have
+  (milestone 5 may keep small blocks from crossing, if Rosetta timings
+  matter enough).
 
 ## Timing on real hardware
 
@@ -631,7 +676,11 @@ statistics (the JIT's own line aside).
    - block alignment;
    - memory operands for read-once guest registers;
    - native `lswx`/`stswx` if profiles say so;
-   - the 68k emulator's dispatch jump.
+   - the 68k emulator's dispatch jump;
+   - FP records that the next arithmetic would replace unread, which are
+     stored at once when the result overwrites an operand (`fmadd f2,
+     f2, f3, f1`): kept elsewhere, or not made, where nothing between can
+     leave the block or read them.
 
    The aim is host instructions per guest instruction within about 1.3
    times AArch64's, and timings on real hardware where it can be had.
