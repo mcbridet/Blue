@@ -10,10 +10,12 @@
 # time (the same guest work on every host) with the JIT and once
 # interpreted: the 8.5 CD (MOS.rom and 85.iso), 9.1's (91.iso) and
 # 9.2.2's (922.iso), from the top of the tree or where SYSHM_ROM,
-# SYSHM_85_ISO, SYSHM_91_ISO and SYSHM_922_ISO say. On Linux it also reads
-# the processor's counters (host instructions and cycles per guest
-# instruction), where the kernel allows (perf_event_paranoid at most 2).
-# Nothing is written outside the tree but the log.
+# SYSHM_85_ISO, SYSHM_91_ISO and SYSHM_922_ISO say. It also reads the
+# processor's counters, host instructions and cycles per guest instruction:
+# on Linux for the emulation thread, where the kernel allows
+# (perf_event_paranoid at most 2); on macOS for the whole process (under
+# Rosetta, the ARM instructions it runs). Nothing is written outside the
+# tree but the log.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 runs=${1:-3}
@@ -39,8 +41,12 @@ SYSHM_JIT_BENCH=1 build/syshm-tests jit | grep -v '^jit  *ok'
 TIMEFORMAT='%R %U'
 rom=${SYSHM_ROM:-MOS.rom}
 boot() {        # name, then boot's arguments
-	local name=$1 times=() t
+	local name=$1 times=() t max=0 prev= a
 	shift
+	for a in "$@"; do
+		[ "$prev" = --max ] && max=$a
+		prev=$a
+	done
 	if ! build/syshm boot "$@" --max 1 > /dev/null 2>&1; then
 		echo "$name: not here (or doesn't start)"
 		return
@@ -56,6 +62,10 @@ boot() {        # name, then boot's arguments
 	echo "$jit" | sed 's/^/  /'
 	if [ "$(uname -s)" = Linux ]; then
 		SYSHM_PERF=1 build/syshm boot "$@" --fixed-time 1000000000 2>&1 | grep -E '^(perf total|SYSHM_PERF)' | sed 's/^/  /'
+	else
+		/usr/bin/time -l build/syshm boot "$@" --fixed-time 1000000000 2>&1 > /dev/null |
+			awk -v n="$max" '/instructions retired/ { i = $1 } /cycles elapsed/ { c = $1 }
+				END { if (i && n) printf "  host (whole process): %.2f instructions, %.2f cycles per guest instruction\n", i / n, c / n }'
 	fi
 	rm -f build/jit-timing.out
 }

@@ -878,8 +878,8 @@ software (on 8.6, an M5 Mac).
 - A JIT to AArch64 and x86-64, on Linux and macOS (`src/jit.c`, the
   runtime both share; `src/jit_a64.c` and `src/a64.h`, `src/jit_x86.c` and
   `src/x86.h`, the translators; `--interp` turns it off). What follows is
-  the AArch64 JIT; the x86-64 one is under way (below, and
-  docs/x86-jit-plan.md). Blocks of up to 128
+  the AArch64 JIT; the x86-64 one works the same way, with differences
+  below (and in docs/x86-jit-plan.md). Blocks of up to 128
   instructions are translated
   natively once they have run 16 times (`SYSHM_JIT_HOT`). A block ends at
   an unconditional or computed branch; past a conditional one it goes on
@@ -989,7 +989,7 @@ software (on 8.6, an M5 Mac).
     code (`pthread_jit_write_protect_np()`, about 25 ns a switch). What's
     left that only macOS pays (those switches, its slower fault signals) is
     under 1% of a boot.
-  - x86-64 (docs/x86-jit-plan.md, milestone 4 of 5): the same blocks,
+  - x86-64 (docs/x86-jit-plan.md): the same blocks,
     links, budget, exits, hooks and time base, with integer, compare,
     condition-register and branch instructions translated, loads and
     stores (fastmem, as above, with MOVBE; checked once one faults; stores
@@ -1000,8 +1000,11 @@ software (on 8.6, an M5 Mac).
     instructions call the interpreter from inside the block, as on
     AArch64. It needs x86-64-v3 (AVX2, FMA3,
     BMI1/2, LZCNT, MOVBE; other processors interpret, and syshm says
-    what's missing). Five guest registers live in host registers (CR, LR,
-    r3, r4, r24) and four more are cached within a block. Under Rosetta 2,
+    what's missing). Six guest registers live in host registers (CR, LR,
+    r3, r4, r24, r29) and four more are cached within a block. Its code
+    takes about as many host instructions per guest instruction as
+    AArch64's: in the CD boots, everything included, 1.03-1.08 times
+    AArch64's (counted by QEMU; docs/x86-jit-plan.md). Under Rosetta 2,
     `ROSETTA_ADVERTISE_AVX=1` in the environment has it offer x86-64-v3.
     The 8.5, 9.1 and 9.2.2 CD boots in instruction time end exactly as on
     AArch64, and so do an installed 9.2.2's start and Unreal Tournament's
@@ -1659,7 +1662,7 @@ tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
           devtree.py (device-tree copy dumper), disasm.py (disassembler),
           heap.py (heap zones in a RAM dump, checked),
           gltable.py (the OpenGL libraries' functions, from Apple's)
-docs/     x86-jit-plan.md (the x86-64 JIT, under way), gpu-plan.md (the
+docs/     x86-jit-plan.md (the x86-64 JIT), gpu-plan.md (the
           3D engine's OpenGL backend), opengl-plan.md and
           glide-plan.md (Mac OS 9's OpenGL, under way, and 3dfx Glide),
           nk2-reference.md (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2
