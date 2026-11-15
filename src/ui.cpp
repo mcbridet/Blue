@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "imgui.h"
 
@@ -167,6 +168,40 @@ static void render(struct ui *u, ImDrawData *dd)
 }
 
 /*
+ * Text wrapped to `width`, breaking lines only at spaces: Dear ImGui's own
+ * wrapping also breaks after punctuation, quotes among it, which could leave
+ * an opening quote at the end of a line, apart from the word it opens. (A
+ * word wider than `width` is wrapped as Dear ImGui wraps it.)
+ */
+static void text_wrapped(const char *text, float width)
+{
+	char buf[2048];
+	size_t n = strlen(text);
+	if (n < sizeof buf) {
+		memcpy(buf, text, n + 1);
+		for (char *line = buf, *p = buf; *p;) {         /* (p: after a word, or at the start) */
+			char *next = p;
+			while (*next == ' ')
+				next++;
+			while (*next && *next != ' ' && *next != '\n')
+				next++;
+			if (p != line && *p == ' ' && ImGui::CalcTextSize(line, next).x > width) {
+				*p = '\n';
+				line = ++p;
+			} else if (*next == '\n') {
+				line = p = next + 1;
+			} else {
+				p = next;
+			}
+		}
+		text = buf;
+	}
+	ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width + 1);
+	ImGui::TextUnformatted(text);
+	ImGui::PopTextWrapPos();
+}
+
+/*
  * The drives with removable media: what's in each, with an Eject button
  * (disabled while Mac OS uses the disc: it's the one to eject it then).
  */
@@ -245,9 +280,7 @@ static enum ui_action menu(const struct ui_state *s)
 			    "(while the Mac hides its cursor; Control-Option releases it)");
 	if (s->news) {
 		ImGui::Separator();
-		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 520);  /* (the drives' news can be long) */
-		ImGui::TextUnformatted(s->news);
-		ImGui::PopTextWrapPos();
+		text_wrapped(s->news, 520);     /* (the drives' news can be long) */
 	}
 	ImGui::Separator();
 	ImGui::TextDisabled("F12 or Esc resumes");
@@ -272,9 +305,7 @@ static enum ui_action prompt(const struct ui_state *s)
 		     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
 			     ImGuiWindowFlags_NoSavedSettings);
 	ImGui::BeginDisabled(s->menu);
-	ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + PROMPT_WIDTH);
-	ImGui::TextUnformatted(s->prompt);
-	ImGui::PopTextWrapPos();
+	text_wrapped(s->prompt, PROMPT_WIDTH);
 	ImGui::Dummy(ImVec2(PROMPT_WIDTH, 4));
 	/* (as wide as the wider label needs: "Put Back and Restart") */
 	const char *const labels[] = { s->prompt_no, s->prompt_yes };
