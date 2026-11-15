@@ -78,10 +78,31 @@ static unsigned fixed_host(unsigned g)
 	return NO_REG;
 }
 
+/*
+ * FPRs are cached the same way, in xmm6-xmm15; xmm0-xmm5 are scratch. No
+ * XMM register survives a call to C (System V), so all are written back
+ * before one and loaded again after.
+ */
+#define NFCACHE 10u
+#define FREG(s) (6u + (s))
+#define X0 0u
+#define X1 1u
+#define X2 2u
+#define X3 3u
+#define X4 4u
+#define X5 5u
+
 struct cache_state {
+	uint16_t fp_dirty;
+	/* FP_PENDING() of an operation whose record is still to be stored (see fp_arith()), or 0; its operand FPRs */
+	uint16_t fp_rec;
 	int8_t guest[NCACHE];           /* guest register in each slot, or -1 */
 	uint8_t dirty;                  /* slots not yet written back */
+	int8_t fpr[NFCACHE];            /* FPR in each FP slot (FREG()), or -1 */
+	int8_t fp_rec_ops[3];
 };
+
+_Static_assert(sizeof(struct cache_state) == 22, "no padding (cache states are compared with memcmp())");
 
 struct fixup {
 	uint8_t *at;                    /* rel32 field, or the faulting instruction (FIX_SITE) */
@@ -101,8 +122,29 @@ struct slow_store {
 	unsigned k, size;
 	struct cache_state cs;
 	bool update, swap;              /* rA is still to update (from eax); a byte-reversed store */
+	bool fp;                        /* the value is in XMM register s (stfs: its single's bits) */
 	unsigned ra, s;                 /* rA, and the host register holding the value */
 };
+
+#define MAX_SLOW_FP MAX_BLOCK_INSNS
+#define MAX_FP_EXITS 16u
+
+/* Out-of-line path of a floating-point instruction: the interpreter runs it (see fp_insn()) */
+struct slow_fp {
+	uint8_t *at[MAX_FP_EXITS];      /* rel32 fields of the jumps to it */
+	unsigned nat;
+	uint8_t *rejoin;
+	struct cache_state cs, after;   /* at the jumps to it, where it rejoins */
+	uint32_t insn, pc;
+};
+
+/* A word the block stored, at rA + d, from rS (both unchanged since) */
+struct stored_word {
+	int8_t base, src;
+	int16_t off;
+};
+
+#define MAX_STORED 8u
 
 /* A conditional branch the block continues past: its taken path, out of line */
 struct branch_exit {
@@ -135,15 +177,24 @@ struct tx {
 	unsigned nbexits;
 	struct slow_store slow[MAX_SLOW_STORES];
 	unsigned nslow;
+	struct slow_fp fps[MAX_SLOW_FP];
+	unsigned nfps;
 	struct cache_state rc;
 	int8_t slot_of[NGUEST];
 	uint32_t used[NCACHE], tick;
 	unsigned pins;                  /* slots the current instruction uses */
+	int8_t fp_slot_of[32];
+	uint32_t fp_used[NFCACHE];
+	unsigned fp_pins;
+	bool fp_mode_ok;                /* the FPSCR is known to round to nearest with no exceptions enabled */
+	struct stored_word stored[MAX_STORED];  /* see forward_double() */
+	unsigned nstored;
 };
 
 #define B (&t->x)
 #define OFF(field) ((int32_t)offsetof(struct ppc_cpu, field))
 #define GPR(r) (OFF(gpr) + 4 * (int32_t)(r))
+#define FPR(r) (OFF(fpr) + 8 * (int32_t)(r))
 #define ST(field) x86_rip(&t->j->st.field)
 
 static void ld32(struct tx *t, unsigned reg, int32_t off) { x86_load(B, 4, false, reg, x86_m(R_CPU, off)); }
@@ -174,20 +225,71 @@ static void rc_reset(struct tx *t)
 	t->rc.dirty = 0;
 	memset(t->slot_of, -1, sizeof t->slot_of);
 	t->pins = 0;
+	memset(t->rc.fpr, -1, sizeof t->rc.fpr);
+	t->rc.fp_dirty = 0;
+	memset(t->fp_slot_of, -1, sizeof t->fp_slot_of);
+	t->fp_pins = 0;
+	t->rc.fp_rec = 0;
+	memset(t->rc.fp_rec_ops, -1, sizeof t->rc.fp_rec_ops);
 }
 
-/* Writes back the registers dirty in `cs` */
+/*
+ * Stores the record of the FP operation `cs` defers (see fp_arith()): its
+ * operands, which are still in their FPRs, and FP_PENDING(). Uses xmm5
+ * (and no general register: exits keep the pc in eax).
+ */
+static void fp_record(struct tx *t, const struct cache_state *cs)
+{
+	if (!cs->fp_rec)
+		return;
+	for (unsigned k = 0; k < 3; k++) {
+		int r = cs->fp_rec_ops[k];
+		if (r < 0)
+			continue;
+		unsigned x = X5;
+		for (unsigned s = 0; s < NFCACHE; s++)
+			if (cs->fpr[s] == r)
+				x = FREG(s);
+		if (x == X5)
+			x86_vmovsd(B, false, X5, x86_m(R_CPU, FPR((unsigned)r)));
+		x86_vmovsd(B, true, x, ST(fp_ops[k]));
+	}
+	x86_store_imm(B, 8, ST(fp_op), cs->fp_rec);             /* (and fp_fpcc = 0) */
+}
+
+/* Writes back the registers dirty in `cs` (and a deferred FP record) */
 static void rc_store(struct tx *t, const struct cache_state *cs)
 {
+	fp_record(t, cs);
 	for (unsigned s = 0; s < NCACHE; s++)
 		if (cs->dirty & (1u << s))
 			st32(t, cache_reg[s], guest_off((unsigned)cs->guest[s]));
+	for (unsigned s = 0; s < NFCACHE; s++)
+		if (cs->fp_dirty & (1u << s))
+			x86_vmovsd(B, true, FREG(s), x86_m(R_CPU, FPR((unsigned)cs->fpr[s])));
+}
+
+/* Loads the FPRs cached in `cs` after a call into C */
+static void rc_fp_load(struct tx *t, const struct cache_state *cs)
+{
+	for (unsigned s = 0; s < NFCACHE; s++)
+		if (cs->fpr[s] >= 0)
+			x86_vmovsd(B, false, FREG(s), x86_m(R_CPU, FPR((unsigned)cs->fpr[s])));
 }
 
 static void rc_flush(struct tx *t)
 {
 	rc_store(t, &t->rc);
 	t->rc.dirty = 0;
+	t->rc.fp_dirty = 0;
+	t->rc.fp_rec = 0;
+}
+
+/* Stores the deferred FP record now */
+static void fp_record_now(struct tx *t)
+{
+	fp_record(t, &t->rc);
+	t->rc.fp_rec = 0;
 }
 
 /* A slot for guest register g: a free one, or the least recently used (written back) */
@@ -241,9 +343,21 @@ static unsigned rd(struct tx *t, unsigned g)
 	return rc_use(t, (unsigned)s);
 }
 
+/* Guest register g changes: stored words it was the base or the value of are forgotten */
+static void forget_stored(struct tx *t, unsigned g)
+{
+	for (unsigned k = 0; k < t->nstored;) {
+		if (t->stored[k].base == (int8_t)g || t->stored[k].src == (int8_t)g)
+			t->stored[k] = t->stored[--t->nstored];
+		else
+			k++;
+	}
+}
+
 /* A host register for guest register g's new value (all 32 bits must be written) */
 static unsigned wr(struct tx *t, unsigned g)
 {
+	forget_stored(t, g);
 	unsigned h = fixed_host(g);
 	if (h != NO_REG)
 		return h;
@@ -257,6 +371,7 @@ static unsigned wr(struct tx *t, unsigned g)
 /* Guest register g, to be changed in place */
 static unsigned rw(struct tx *t, unsigned g)
 {
+	forget_stored(t, g);
 	unsigned h = rd(t, g);
 	if (fixed_host(g) == NO_REG)
 		t->rc.dirty |= (uint8_t)(1u << t->slot_of[g]);
@@ -274,6 +389,67 @@ static unsigned rd_where(struct tx *t, unsigned g, struct x86_mem *m)
 		return rc_use(t, (unsigned)s);
 	*m = x86_m(R_CPU, guest_off(g));
 	return NO_REG;
+}
+
+/* An FP slot for FPR r: a free one, or the least recently used (written back) */
+static unsigned fp_alloc(struct tx *t, unsigned r)
+{
+	unsigned best = NFCACHE;
+	for (unsigned s = 0; s < NFCACHE; s++) {
+		if (t->fp_pins & (1u << s))
+			continue;
+		if (t->rc.fpr[s] < 0) {
+			best = s;
+			break;
+		}
+		if (best == NFCACHE || t->fp_used[s] < t->fp_used[best])
+			best = s;
+	}
+	if (best == NFCACHE) {                  /* (an instruction uses at most four) */
+		fprintf(stderr, "jit: no register for f%u at %08X\n", r, t->pc);
+		abort();
+	}
+	int8_t old = t->rc.fpr[best];
+	if (old >= 0) {
+		if (t->rc.fp_dirty & (1u << best))
+			x86_vmovsd(B, true, FREG(best), x86_m(R_CPU, FPR((unsigned)old)));
+		t->fp_slot_of[old] = -1;
+	}
+	t->rc.fpr[best] = (int8_t)r;
+	t->rc.fp_dirty &= (uint16_t)~(1u << best);
+	t->fp_slot_of[r] = (int8_t)best;
+	return best;
+}
+
+static unsigned fp_use(struct tx *t, unsigned s)
+{
+	t->fp_pins |= 1u << s;
+	t->fp_used[s] = ++t->tick;
+	return FREG(s);
+}
+
+/* An XMM register holding FPR r */
+static unsigned frd(struct tx *t, unsigned r)
+{
+	int s = t->fp_slot_of[r];
+	if (s < 0) {
+		s = (int)fp_alloc(t, r);
+		x86_vmovsd(B, false, FREG((unsigned)s), x86_m(R_CPU, FPR(r)));
+	}
+	return fp_use(t, (unsigned)s);
+}
+
+/* An XMM register for FPR r's new value (the deferred FP record stored first if r is an operand of it) */
+static unsigned fwr(struct tx *t, unsigned r)
+{
+	const int8_t *ops = t->rc.fp_rec_ops;
+	if (t->rc.fp_rec && (ops[0] == (int8_t)r || ops[1] == (int8_t)r || ops[2] == (int8_t)r))
+		fp_record_now(t);
+	int s = t->fp_slot_of[r];
+	if (s < 0)
+		s = (int)fp_alloc(t, r);
+	t->rc.fp_dirty |= (uint16_t)(1u << s);
+	return fp_use(t, (unsigned)s);
 }
 
 /* The fixed registers to and from memory, before and after calls into C */
@@ -435,6 +611,8 @@ static void call_step(struct tx *t, uint32_t insn)
 	x86_call_m(B, ST(step));
 	fixed_load(t, NFIXED);          /* it may have changed any register */
 	rc_reset(t);
+	t->fp_mode_ok = false;
+	t->nstored = 0;
 	x86_test_ri(B, 0, X86_RAX, 0xFF);
 	exit_if(t, X86_E);
 	exit_if_code_changed(t);
@@ -918,9 +1096,16 @@ static void page_flags(struct tx *t)
 	x86_load(B, 8, false, T2, ST(membase));
 }
 
-/* Stores 1 << size bytes of register s at m (big-endian, unless `swap`) */
-static void store_value(struct tx *t, unsigned size, bool swap, unsigned s, struct x86_mem m)
+/* Stores 1 << size bytes of register s at m (big-endian, unless `swap`); `fp`: of XMM register s, through rcx */
+static void store_value(struct tx *t, unsigned size, bool swap, bool fp, unsigned s, struct x86_mem m)
 {
+	if (fp) {
+		if (size == 3)
+			x86_vmovq_to(B, T1, s);
+		else
+			x86_vmovd_to(B, T1, s);
+		s = T1;
+	}
 	if (size == 0)
 		x86_store(B, 1, s, m);
 	else if (swap)
@@ -929,9 +1114,70 @@ static void store_value(struct tx *t, unsigned size, bool swap, unsigned s, stru
 		x86_movbe(B, true, 1u << size, s, m);
 }
 
-static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool update, bool indexed, bool swap,
-		       unsigned rd_, unsigned ra, unsigned rb, int32_t d)
+static void load_single(struct tx *t, unsigned r);
+static void store_single(struct tx *t, unsigned r);
+
+enum { LS_GPR, LS_DOUBLE, LS_SINGLE };          /* load_store()'s register kinds */
+
+/*
+ * lfd of the two words the block has just stored with stw, as compilers
+ * turn integers into doubles: the double is put together from the
+ * registers stored (the host can't forward two stores to one load, which
+ * then waits for them to reach its cache). They went to plain memory
+ * (fastmem: else the block would have been left), and nothing has stored
+ * there since. False if it isn't that.
+ */
+static bool forward_double(struct tx *t, unsigned frt, unsigned ra, int32_t d)
 {
+	int hi = -1, lo = -1;
+	for (unsigned k = 0; k < t->nstored; k++) {
+		if (t->stored[k].base != (int8_t)ra)
+			continue;
+		if (t->stored[k].off == d)
+			hi = t->stored[k].src;
+		else if (t->stored[k].off == d + 4)
+			lo = t->stored[k].src;
+	}
+	if (hi < 0 || lo < 0)
+		return false;
+	unsigned h = rd(t, (unsigned)hi), l = rd(t, (unsigned)lo);
+	x86_mov_rr(B, 0, T1, h);
+	x86_shift_ri(B, X86_SHL, 1, T1, 32);
+	x86_alu_rr(B, X86_OR, 1, T1, l);
+	x86_vmovq_from(B, fwr(t, frt), T1);
+	return true;
+}
+
+/* After a store of `bytes` at rA + d (indexed: unknown), from rS: what's known stored, and if `keep`, this word too */
+static void note_store(struct tx *t, bool keep, bool indexed, unsigned ra, int32_t d, unsigned bytes, unsigned rs)
+{
+	if (indexed || !ra) {
+		t->nstored = 0;
+		return;
+	}
+	for (unsigned k = 0; k < t->nstored;) {         /* (other bases may point there too) */
+		const struct stored_word *w = &t->stored[k];
+		if (w->base != (int8_t)ra || (w->off < d + (int32_t)bytes && d < w->off + 4))
+			t->stored[k] = t->stored[--t->nstored];
+		else
+			k++;
+	}
+	if (keep && t->nstored < MAX_STORED && d >= -32768 && d <= 32767)
+		t->stored[t->nstored++] = (struct stored_word){ (int8_t)ra, (int8_t)rs, (int16_t)d };
+}
+
+static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool update, bool indexed, bool swap,
+		       unsigned fp, unsigned rd_, unsigned ra, unsigned rb, int32_t d)
+{
+	if (load && fp == LS_DOUBLE && !update && !indexed && ra && forward_double(t, rd_, ra, d))
+		return;
+	unsigned s = NO_REG;
+	if (!load && fp == LS_DOUBLE) {
+		s = frd(t, rd_);
+	} else if (!load && fp == LS_SINGLE) {
+		store_single(t, rd_);                   /* (before the EA: it needs the scratch registers) */
+		s = X5;
+	}
 	effective_address(t, update, indexed, ra, rb, d);
 	bool fast = fast_access(t);
 	if (!fast)
@@ -943,7 +1189,7 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 			exit_if(t, X86_E);
 		}
 		struct cache_state before = t->rc;              /* a fault leaves the registers as they are here */
-		unsigned v = wr(t, rd_);
+		unsigned v = fp ? T1 : wr(t, rd_);
 		if (fast)
 			add_site(t, &before);
 		if (size == 0) {
@@ -954,24 +1200,35 @@ static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool u
 			x86_movbe(B, false, 2, v, m);
 			x86_extend(B, 2, sign, 0, v, v);
 		} else {
-			x86_movbe(B, false, 4, v, m);
+			x86_movbe(B, false, 1u << size, v, m);
 		}
+		if (fp == LS_DOUBLE)
+			x86_vmovq_from(B, fwr(t, rd_), T1);
+		else if (fp == LS_SINGLE)
+			load_single(t, rd_);
 	} else {
-		unsigned s = rd(t, rd_);
+		if (fp == LS_GPR)
+			s = rd(t, rd_);
 		if (fast) {
+			if (fp == LS_DOUBLE)                    /* (the access itself must be the fault site) */
+				x86_vmovq_to(B, T1, s);
+			else if (fp == LS_SINGLE)
+				x86_vmovd_to(B, T1, s);
 			add_site(t, &t->rc);
-			store_value(t, size, swap, s, m);
+			store_value(t, size, swap, false, fp ? T1 : s, m);
 		} else if (t->nslow < MAX_SLOW_STORES) {
 			x86_test_ri(B, 0, T1, MEM_FAST_W);
 			struct slow_store *ss = &t->slow[t->nslow++];
-			*ss = (struct slow_store){ x86_jcc(B, X86_E, NULL), NULL, t->k, size, t->rc, update, swap, ra, s };
-			store_value(t, size, swap, s, m);
+			*ss = (struct slow_store){ x86_jcc(B, X86_E, NULL), NULL, t->k, size, t->rc, update, swap, fp != LS_GPR,
+						   ra, s };
+			store_value(t, size, swap, fp != LS_GPR, s, m);
 			ss->rejoin = t->x.p;
 		} else {
 			x86_test_ri(B, 0, T1, MEM_FAST_W);
 			exit_if(t, X86_E);
-			store_value(t, size, swap, s, m);
+			store_value(t, size, swap, fp != LS_GPR, s, m);
 		}
+		note_store(t, fast && size == 2 && fp == LS_GPR && !update, indexed, ra, d, 1u << size, rd_);
 	}
 	if (update)
 		x86_mov_rr(B, 0, wr(t, ra), T0);
@@ -1006,35 +1263,42 @@ static void slow_stores(struct tx *t)
 		}
 		x86_test_ri(B, 0, T1, MEM_CODE);
 		uint8_t *plain[2] = { fwd(t, X86_E), NULL }, *call = NULL;
-		if (bytes > 1) {                                        /* within one word? */
-			x86_mov_rr(B, 0, T2, T0);
-			x86_alu_ri(B, X86_AND, 0, T2, 3);
-			x86_alu_ri(B, X86_CMP, 0, T2, (int32_t)(4 - bytes));
-			call = fwd(t, X86_A);
+		if (bytes <= 4) {
+			if (bytes > 1) {                                /* within one word? */
+				x86_mov_rr(B, 0, T2, T0);
+				x86_alu_ri(B, X86_AND, 0, T2, 3);
+				x86_alu_ri(B, X86_CMP, 0, T2, (int32_t)(4 - bytes));
+				call = fwd(t, X86_A);
+			}
+			x86_load(B, 8, false, T2, ST(pages));           /* the word's bit in its page's bitmap */
+			x86_mov_rr(B, 0, T1, T0);
+			x86_shift_ri(B, X86_SHR, 0, T1, MEM_PAGE_SHIFT);
+			x86_load(B, 8, false, T2, x86_mx(T2, T1, 3, 0));
+			x86_mov_rr(B, 0, T1, T0);
+			x86_shift_ri(B, X86_SHR, 0, T1, 8);
+			x86_alu_ri(B, X86_AND, 0, T1, PAGE_WORDS / 64 - 1);
+			x86_load(B, 8, false, T2, x86_mx(T2, T1, 3, (int32_t)offsetof(struct jit_page, words)));
+			x86_mov_rr(B, 0, T1, T0);
+			x86_shift_ri(B, X86_SHR, 0, T1, 2);
+			x86_op_rr(B, 0, 1, 0x0FA3, T1, T2, 0);          /* bt rdx, rcx */
+			plain[1] = fwd(t, X86_AE);
 		}
-		x86_load(B, 8, false, T2, ST(pages));                   /* the word's bit in its page's bitmap */
-		x86_mov_rr(B, 0, T1, T0);
-		x86_shift_ri(B, X86_SHR, 0, T1, MEM_PAGE_SHIFT);
-		x86_load(B, 8, false, T2, x86_mx(T2, T1, 3, 0));
-		x86_mov_rr(B, 0, T1, T0);
-		x86_shift_ri(B, X86_SHR, 0, T1, 8);
-		x86_alu_ri(B, X86_AND, 0, T1, PAGE_WORDS / 64 - 1);
-		x86_load(B, 8, false, T2, x86_mx(T2, T1, 3, (int32_t)offsetof(struct jit_page, words)));
-		x86_mov_rr(B, 0, T1, T0);
-		x86_shift_ri(B, X86_SHR, 0, T1, 2);
-		x86_op_rr(B, 0, 1, 0x0FA3, T1, T2, 0);                  /* bt rdx, rcx */
-		plain[1] = fwd(t, X86_AE);
 		land(t, call);
 
-		/* code_store(&jit_state, EA, the bytes in guest order, size) */
-		rc_store(t, &ss->cs);
-		fixed_store(t, CALLER_SAVED_FIXED);
-		x86_mov_rr(B, 0, T2, ss->s);
+		/* code_store(&jit_state, EA, the bytes in guest order, size), the value taken first (xmm5) */
+		if (ss->fp && ss->size == 3)
+			x86_vmovq_to(B, T2, ss->s);
+		else if (ss->fp)
+			x86_vmovd_to(B, T2, ss->s);
+		else
+			x86_mov_rr(B, 0, T2, ss->s);
 		if (ss->size && !ss->swap) {
-			x86_bswap(B, 0, T2);
+			x86_bswap(B, ss->size == 3, T2);
 			if (ss->size == 1)
 				x86_shift_ri(B, X86_SHR, 0, T2, 16);
 		}
+		rc_store(t, &ss->cs);
+		fixed_store(t, CALLER_SAVED_FIXED);
 		if (ss->update)                                         /* eax must survive the call */
 			x86_store(B, 4, T0, ST(scratch));
 		x86_mov_rr(B, 0, X86_RSI, T0);
@@ -1045,6 +1309,7 @@ static void slow_stores(struct tx *t)
 		for (unsigned c = 0; c < NCACHE; c++)
 			if (ss->cs.guest[c] >= 0)
 				ld32(t, cache_reg[c], guest_off((unsigned)ss->cs.guest[c]));
+		rc_fp_load(t, &ss->cs);
 		rc_reset(t);                                            /* (everything was written back) */
 		if (ss->update) {
 			x86_load(B, 4, false, T0, ST(scratch));
@@ -1065,7 +1330,7 @@ static void slow_stores(struct tx *t)
 		for (unsigned p = 0; p < 2; p++)
 			land(t, plain[p]);
 		x86_load(B, 8, false, T2, ST(membase));
-		store_value(t, ss->size, ss->swap, ss->s, x86_mx(T2, T0, 0, 0));
+		store_value(t, ss->size, ss->swap, ss->fp, ss->s, x86_mx(T2, T0, 0, 0));
 		x86_jmp(B, ss->rejoin);
 	}
 }
@@ -1093,6 +1358,8 @@ static void block_access(struct tx *t, bool load, unsigned n)
 static void load_store_multiple(struct tx *t, bool load, unsigned rs, unsigned ra, int32_t d)
 {
 	unsigned n = 32 - rs;
+	if (!load)
+		t->nstored = 0;
 	effective_address(t, false, false, ra, 0, d);
 	block_access(t, load, 4 * n);
 	t->pins = 0;                    /* each register is used once */
@@ -1113,6 +1380,838 @@ static void zero_block(struct tx *t, unsigned ra, unsigned rb)
 	block_access(t, false, 1);      /* (32 aligned bytes don't cross a page) */
 	for (int k = 0; k < 4; k++)
 		x86_store_imm(B, 8, x86_m(T2, 8 * k), 0);
+}
+
+/* ---- floating point --------------------------------------------------------- */
+
+/*
+ * As on AArch64 (see jit_a64.c): arithmetic natively where the interpreter's
+ * fast path would take it (round to nearest, no exceptions enabled,
+ * operands and results well inside the normal range, so that inexact is the
+ * only possible exception and an error-free transformation finds it, FMA3
+ * doing the exact products), the FPSCR's FR, FI and FPRF left pending as a
+ * record for the settle stub (build_settle()); anything else out of line,
+ * where the interpreter runs the instruction (struct slow_fp). The FPSCR
+ * stays in memory, its bits tested there. Scratch: xmm0-xmm5 (the result in
+ * xmm0), rax, rcx and rdx (dl: whether inexact).
+ */
+
+#define FPSCR_FX 0x80000000u
+#define FPSCR_XX (1u << 25)
+#define FPSCR_FI (1u << 17)
+#define FPSCR_VX_ALL 0x01F80700u                        /* VXSNAN to VXVC, VXSOFT, VXSQRT, VXCVI */
+#define FPSCR_EXC_ALL (0xFu << 25 | FPSCR_VX_ALL)       /* OX UX ZX XX and those */
+
+/* tame(): zero, or a magnitude from 2^-900 to 2^1000 (biased exponents) */
+#define TAME_LO 123u
+#define TAME_HI 2022u
+
+#define FPSCR_MEM x86_m(R_CPU, OFF(fpscr))
+#define K_SIGN x86_rip(t->j->k_sign)
+#define K_ABS x86_rip(t->j->k_abs)
+#define K_ONE x86_rip(t->j->k_one)
+
+/* After the instruction's FPR operands are in the cache (the slow path writes back what's dirty here) */
+static bool fp_begin(struct tx *t, uint32_t insn)
+{
+	if (t->nfps >= MAX_SLOW_FP)
+		return false;
+	struct slow_fp *f = &t->fps[t->nfps++];
+	f->nat = 0;
+	f->rejoin = NULL;
+	f->cs = t->rc;
+	f->insn = insn;
+	f->pc = t->pc;
+	return true;
+}
+
+/* To the slow path if cc */
+static void fp_slow(struct tx *t, enum x86_cond cc)
+{
+	struct slow_fp *f = &t->fps[t->nfps - 1];
+	uint8_t *at = x86_jcc(B, cc, NULL);
+	if (f->nat < MAX_FP_EXITS)
+		f->at[f->nat++] = at;
+	else
+		t->x.overflow = true;
+}
+
+static void fp_end(struct tx *t)
+{
+	struct slow_fp *f = &t->fps[t->nfps - 1];
+	f->rejoin = t->x.p;
+	f->after = t->rc;
+}
+
+/*
+ * The slow paths: the interpreter executes the instruction, which changes
+ * only FPRs, the FPSCR and CR (memory and GPRs are the business of loads
+ * and stores, which take other paths); the registers are loaded again
+ * afterwards, as they're cached where it rejoins.
+ */
+static void slow_fps(struct tx *t)
+{
+	for (unsigned k = 0; k < t->nfps && !t->x.overflow; k++) {
+		struct slow_fp *f = &t->fps[k];
+		if (!f->nat)
+			continue;
+		for (unsigned s = 0; s < f->nat; s++)
+			land(t, f->at[s]);
+		rc_store(t, &f->cs);
+		fixed_store(t, NFIXED);
+		x86_mov_rr(B, 1, X86_RDI, R_CPU);
+		x86_mov_ri(B, X86_RSI, f->insn);
+		x86_mov_ri(B, X86_RDX, f->pc);
+		x86_call_m(B, ST(step));
+		fixed_load(t, NFIXED);
+		for (unsigned c = 0; c < NCACHE; c++)
+			if (f->after.guest[c] >= 0)
+				ld32(t, cache_reg[c], guest_off((unsigned)f->after.guest[c]));
+		rc_fp_load(t, &f->after);
+		x86_jmp(B, f->rejoin);
+	}
+}
+
+/*
+ * Leaves the block for the interpreter unless the FPSCR rounds to nearest
+ * and enables no exceptions (with `any_rounding`, just enables none), which
+ * the rest of the block then knows
+ */
+static void fp_mode(struct tx *t, bool any_rounding)
+{
+	if (t->fp_mode_ok)
+		return;
+	x86_test_mi(B, 1, FPSCR_MEM, any_rounding ? 0xF8 : 0xFB);       /* (NI, 0x04, changes nothing here) */
+	exit_if(t, X86_NE);
+	if (!any_rounding)
+		t->fp_mode_ok = true;
+}
+
+/*
+ * Out of line unless the double in x has a biased exponent from lo to hi,
+ * or (if zero_ok) is zero. For zero_ok, returns the jump taken in range,
+ * to land() after code that checks the zero case further. Uses rax, rcx.
+ */
+static uint8_t *fp_range(struct tx *t, unsigned x, unsigned lo, unsigned hi, bool zero_ok)
+{
+	x86_vmovq_to(B, T0, x);
+	x86_rorx(B, 1, T1, T0, 52);                             /* (sign and exponent at the bottom) */
+	x86_alu_ri(B, X86_AND, 0, T1, 0x7FF);
+	x86_alu_ri(B, X86_SUB, 0, T1, (int32_t)lo);
+	x86_alu_ri(B, X86_CMP, 0, T1, (int32_t)(hi - lo));
+	if (!zero_ok) {
+		fp_slow(t, X86_A);
+		return NULL;
+	}
+	uint8_t *ok = fwd(t, X86_BE);
+	x86_alu_rr(B, X86_ADD, 1, T0, T0);                      /* x << 1: zero? */
+	fp_slow(t, X86_NE);
+	return ok;
+}
+
+/* rax = the bits of x << 1: ZF if x is zero */
+static void fp_zero_test(struct tx *t, unsigned x)
+{
+	x86_vmovq_to(B, T0, x);
+	x86_alu_rr(B, X86_ADD, 1, T0, T0);
+}
+
+/* Out of line unless a or c is zero (a zero product is exact then; otherwise it underflowed) */
+static void fp_either_zero(struct tx *t, unsigned a, unsigned c)
+{
+	fp_zero_test(t, a);
+	uint8_t *zero = fwd(t, X86_E);
+	fp_zero_test(t, c);
+	fp_slow(t, X86_NE);
+	land(t, zero);
+}
+
+/* edx = (x != 0), or edx |= that */
+static void fp_nonzero(struct tx *t, unsigned x, bool or)
+{
+	fp_zero_test(t, x);
+	if (or) {
+		x86_setcc(B, X86_NE, T0);
+		x86_extend(B, 1, false, 0, T0, T0);
+		x86_alu_rr(B, X86_OR, 0, T2, T0);
+	} else {
+		x86_setcc(B, X86_NE, T2);
+		x86_extend(B, 1, false, 0, T2, T2);
+	}
+}
+
+/* Rounds xmm0 to single precision as opcode 59 does, out of line unless tame_single(); edx |= it changed if `track` */
+static void fp_round_single(struct tx *t, bool track)
+{
+	x86_vcvt(B, true, X5, X0, X0);
+	x86_vcvt(B, false, X5, X5, X5);
+	uint8_t *ok = fp_range(t, X5, 903, 1148, true);
+	fp_zero_test(t, X0);                                    /* rounded to zero: was it zero? */
+	fp_slow(t, X86_NE);
+	land(t, ok);
+	if (track) {
+		x86_vmovq_to(B, T0, X5);
+		x86_vmovq_to(B, T1, X0);
+		x86_alu_rr(B, X86_CMP, 1, T0, T1);
+		x86_setcc(B, X86_NE, T0);
+		x86_extend(B, 1, false, 0, T0, T0);
+		x86_alu_rr(B, X86_OR, 0, T2, T0);
+	}
+	x86_vmovapd(B, X0, X5);
+}
+
+/* eax = FPRF for the zero or normal double in rax: 0x02, or 0x12 if negative; 0x04, or 0x08. Uses rcx */
+static void fp_fprf(struct tx *t)
+{
+	x86_mov_rr(B, 1, T1, T0);
+	x86_shift_ri(B, X86_SHR, 1, T1, 63);
+	x86_alu_rr(B, X86_ADD, 1, T0, T0);
+	uint8_t *zero = fwd(t, X86_E);
+	x86_shift_ri(B, X86_SHL, 0, T1, 2);
+	x86_lea(B, 0, T0, x86_m(T1, 4));
+	uint8_t *done = fwd_always(t);
+	land(t, zero);
+	x86_shift_ri(B, X86_SHL, 0, T1, 4);
+	x86_lea(B, 0, T0, x86_m(T1, 2));
+	land(t, done);
+}
+
+/* CR1 from the FPSCR in register `reg` */
+static void cr1_from(struct tx *t, unsigned reg)
+{
+	mov_rr(t, T0, reg);
+	x86_shift_ri(B, X86_SHR, 0, T0, 4);
+	x86_alu_ri(B, X86_AND, 0, T0, 0x0F000000);
+	unsigned cr = rw(t, G_CR);
+	x86_alu_ri(B, X86_AND, 0, cr, ~0x0F000000);
+	x86_alu_rr(B, X86_OR, 0, cr, T0);
+}
+
+/* Rc = 1 for instructions that leave the FPSCR alone: CR1 from it */
+static void fp_cr1(struct tx *t, bool rc)
+{
+	if (rc) {
+		x86_load(B, 4, false, T0, FPSCR_MEM);
+		cr1_from(t, T0);
+	}
+}
+
+/*
+ * The FPSCR after an operation with result xmm0, inexact if dl: FR and FI
+ * (and FX, XX), FPRF if `fprf`; it and the result stored, CR1 set for Rc.
+ */
+static void fp_commit(struct tx *t, unsigned frt, bool fprf, bool rc)
+{
+	if (fprf) {
+		x86_vmovq_to(B, T0, X0);
+		fp_fprf(t);
+		x86_shift_ri(B, X86_SHL, 0, T0, 12);
+	}
+	x86_load(B, 4, false, T1, FPSCR_MEM);
+	x86_alu_ri(B, X86_AND, 0, T1, (int32_t)~(FPSCR_FR_FI | (fprf ? 0x1Fu << 12 : 0)));
+	if (fprf)
+		x86_alu_rr(B, X86_OR, 0, T1, T0);
+	x86_test_ri(B, 0, T2, 0xFF);
+	uint8_t *exact = fwd(t, X86_E);
+	x86_test_ri(B, 0, T1, FPSCR_XX);
+	uint8_t *had = fwd(t, X86_NE);
+	x86_alu_ri(B, X86_OR, 0, T1, (int32_t)FPSCR_FX);       /* FX: XX is new */
+	land(t, had);
+	x86_alu_ri(B, X86_OR, 0, T1, (int32_t)(FPSCR_XX | FPSCR_FI));
+	land(t, exact);
+	x86_store(B, 4, T1, FPSCR_MEM);
+	x86_vmovapd(B, fwr(t, frt), X0);
+	if (rc)
+		cr1_from(t, T1);
+}
+
+/* FPR r = the single in ecx, as a double (lfs: exactly; infinities and NaNs keep their bits). Uses rdx, xmm5 */
+static void load_single(struct tx *t, unsigned r)
+{
+	unsigned d = fwr(t, r);
+	x86_mov_rr(B, 0, T2, T1);
+	x86_shift_ri(B, X86_SHR, 0, T2, 23);
+	x86_alu_ri(B, X86_AND, 0, T2, 0xFF);
+	x86_alu_ri(B, X86_CMP, 0, T2, 255);
+	uint8_t *special = fwd(t, X86_E);
+	x86_vmovd_from(B, X5, T1);
+	x86_vcvt(B, false, d, d, X5);
+	uint8_t *done = fwd_always(t);
+	land(t, special);
+	x86_extend(B, 4, true, 1, T1, T1);                      /* sign, exponent 0xFF, fraction << 29 */
+	x86_shift_ri(B, X86_SHL, 1, T1, 29);
+	x86_mov_ri64(B, T2, 0x7FF0000000000000ull);
+	x86_alu_rr(B, X86_OR, 1, T1, T2);
+	x86_vmovq_from(B, d, T1);
+	land(t, done);
+}
+
+/* xmm5 = FPR r in single precision, as stfs stores it (see ppc_fp_double_to_single()). Uses rax, rcx, rdx */
+static void store_single(struct tx *t, unsigned r)
+{
+	x86_vmovq_to(B, T0, frd(t, r));
+	x86_rorx(B, 1, T1, T0, 52);
+	x86_alu_ri(B, X86_AND, 0, T1, 0x7FF);                  /* exponent */
+	x86_alu_ri(B, X86_CMP, 0, T1, 896);
+	uint8_t *small = fwd(t, X86_BE);
+	x86_mov_rr(B, 1, T2, T0);                               /* bits 0-1 and 5-34 */
+	x86_shift_ri(B, X86_SHR, 1, T2, 32);
+	x86_alu_ri(B, X86_AND, 0, T2, (int32_t)0xC0000000u);
+	x86_shift_ri(B, X86_SHR, 1, T0, 29);
+	x86_alu_ri(B, X86_AND, 0, T0, 0x3FFFFFFF);
+	x86_alu_rr(B, X86_OR, 0, T0, T2);
+	uint8_t *done = fwd_always(t);
+	land(t, small);
+	x86_mov_rr(B, 1, T2, T0);                               /* the sign */
+	x86_shift_ri(B, X86_SHR, 1, T2, 63);
+	x86_shift_ri(B, X86_SHL, 0, T2, 31);
+	x86_alu_ri(B, X86_CMP, 0, T1, 874);
+	uint8_t *zero = fwd(t, X86_B);
+	/* a denormal single: (fraction | 1 << 52) >> (897 - exponent + 29) */
+	x86_shift_ri(B, X86_SHL, 1, T0, 12);
+	x86_shift_ri(B, X86_SHR, 1, T0, 12);
+	x86_bt_ri(B, X86_BTS, 1, T0, 52);
+	x86_unary(B, X86_NEG, 0, T1);
+	x86_alu_ri(B, X86_ADD, 0, T1, 897 + 29);
+	x86_shiftx(B, X86_SHR, 1, T0, T0, T1);
+	x86_alu_rr(B, X86_OR, 0, T2, T0);
+	land(t, zero);
+	x86_mov_rr(B, 0, T0, T2);
+	land(t, done);
+	x86_vmovd_from(B, X5, T0);
+}
+
+/*
+ * The error-free transformation of fma_inexact() (ppc_fp.c): dl = raw =
+ * a * c + ad inexactly, u1 = a * c in xmm2 (which it uses up), with the
+ * other scratch registers (xmm0, unless it's raw, kept on the stack)
+ */
+static void fma_inexact(struct tx *t, unsigned a, unsigned c, unsigned ad, unsigned raw)
+{
+	unsigned t0 = raw == X0 ? X1 : X0, t1 = X4, t2 = X5, t3 = X3, u = X2;
+	if (t0 == X0)
+		x86_vmovsd(B, true, X0, x86_m(X86_RSP, 0));
+	x86_vmovapd(B, t0, u);
+	x86_vfma(B, X86_VFMSUB231SD, t0, a, c);                 /* u2 = a * c - u1 */
+	x86_vsd(B, X86_VADDSD, t1, ad, t0);                     /* a1 = b + u2 */
+	x86_vsd(B, X86_VSUBSD, t2, t1, ad);                     /* a1 - b */
+	x86_vsd(B, X86_VSUBSD, t0, t0, t2);                     /* u2 - (a1 - b) */
+	x86_vsd(B, X86_VSUBSD, t2, t1, t2);
+	x86_vsd(B, X86_VSUBSD, t2, ad, t2);                     /* b - (a1 - (a1 - b)) */
+	x86_vsd(B, X86_VADDSD, t0, t2, t0);                     /* z (ad no longer needed: xmm3 is free) */
+	x86_vsd(B, X86_VADDSD, t2, u, t1);                      /* b1 = u1 + a1 */
+	x86_vsd(B, X86_VSUBSD, t3, t2, u);                      /* bv = b1 - u1 */
+	x86_vsd(B, X86_VSUBSD, t1, t1, t3);                     /* a1 - bv */
+	x86_vsd(B, X86_VSUBSD, t3, t2, t3);                     /* b1 - bv */
+	x86_vsd(B, X86_VSUBSD, u, u, t3);                       /* u1 - (b1 - bv) */
+	x86_vsd(B, X86_VADDSD, u, u, t1);                       /* b2 */
+	x86_vsd(B, X86_VSUBSD, t2, t2, raw);                    /* b1 - r */
+	x86_vsd(B, X86_VADDSD, t2, t2, u);                      /* g */
+	x86_vsd(B, X86_VADDSD, t1, t2, t0);                     /* r2 = g + z */
+	x86_vsd(B, X86_VSUBSD, t3, t1, t2);
+	x86_vsd(B, X86_VSUBSD, t3, t0, t3);                     /* r3 = z - (r2 - g) */
+	fp_nonzero(t, t1, false);
+	fp_nonzero(t, t3, true);
+	if (t0 == X0)
+		x86_vmovsd(B, false, X0, x86_m(X86_RSP, 0));
+}
+
+/* dl = s = a + b inexactly (Knuth's TwoSum, as sum_inexact() in ppc_fp.c), with xmm3 and xmm5 */
+static void sum_inexact(struct tx *t, unsigned a, unsigned b, unsigned s)
+{
+	x86_vsd(B, X86_VSUBSD, X5, s, a);                       /* bv = s - a */
+	x86_vsd(B, X86_VSUBSD, X3, s, X5);                      /* av = s - bv */
+	x86_vsd(B, X86_VSUBSD, X3, a, X3);
+	x86_vsd(B, X86_VSUBSD, X5, b, X5);
+	x86_vsd(B, X86_VADDSD, X5, X3, X5);                     /* (a - av) + (b - bv) */
+	fp_nonzero(t, X5, false);
+}
+
+/* Which A-form operations natively, and which operands they use (opcode 63 also has fsel and frsqrte) */
+static bool fp_a_form(unsigned op, unsigned xo5, bool uses[3])
+{
+	static const uint32_t valid59 = 1u << 18 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 24 | 1u << 25 |
+					1u << 28 | 1u << 29 | 1u << 30 | 1u << 31;
+	static const uint32_t valid63 = 1u << 18 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 23 | 1u << 25 |
+					1u << 26 | 1u << 28 | 1u << 29 | 1u << 30 | 1u << 31;
+	uses[0] = xo5 != 22 && xo5 != 24 && xo5 != 26;
+	uses[1] = xo5 != 25;
+	uses[2] = xo5 == 23 || xo5 == 25 || xo5 >= 28;
+	return (op == 59 ? valid59 : valid63) & (1u << xo5);
+}
+
+/* Out of line unless the operands of fdiv, fsqrt, fres and frsqrte are tame */
+static void fp_operands_tame(struct tx *t, const unsigned h[3], const bool uses[3])
+{
+	for (unsigned k = 0; k < 3; k++)
+		if (uses[k])
+			land(t, fp_range(t, h[k], TAME_LO, TAME_HI, true));
+}
+
+/* Out of line unless a * c (into xmm2) is tame and didn't underflow to zero (fused operations) */
+static void fp_product_tame(struct tx *t, unsigned a, unsigned c)
+{
+	x86_vsd(B, X86_VMULSD, X2, a, c);
+	uint8_t *ok = fp_range(t, X2, TAME_LO, TAME_HI, true);
+	fp_either_zero(t, a, c);
+	land(t, ok);
+}
+
+/*
+ * The result of an A-form operation (opcode 59 single, 63 double
+ * precision) in xmm0, with its operands in XMM registers h (a, b, c), out
+ * of line unless the interpreter's fast path would take it. As there, only
+ * division and square roots check their operands: for the others a tame
+ * result is enough. With `lazy`, the checks only the inexact check needs
+ * (fp_lazy_checks()) are left out; the result is still the interpreter's,
+ * with no exception but inexact. Returns the register holding the result
+ * before negation and rounding (xmm0 or xmm1). Keeps for fp_inexact():
+ * frsqrte's square root, and fmsub's and fnmsub's -b, in xmm3.
+ */
+static unsigned fp_compute(struct tx *t, unsigned op, unsigned xo5, const unsigned h[3], const bool uses[3], bool lazy)
+{
+	unsigned a = h[0], b = h[1], c = h[2];
+	bool checked = xo5 == 22 || xo5 == 24 || xo5 == 26 || (xo5 == 18 && !lazy);
+	if (checked)
+		fp_operands_tame(t, h, uses);
+	switch (xo5) {
+	case 18:                                                /* fdiv */
+		fp_zero_test(t, b);
+		fp_slow(t, X86_E);
+		x86_vsd(B, X86_VDIVSD, X0, a, b);
+		{
+			uint8_t *ok = fp_range(t, X0, TAME_LO, TAME_HI, true);
+			fp_zero_test(t, a);                     /* underflow unless a = 0 */
+			fp_slow(t, X86_NE);
+			land(t, ok);
+		}
+		break;
+	case 20: case 21:                                       /* fsub, fadd */
+		x86_vsd(B, xo5 == 20 ? X86_VSUBSD : X86_VADDSD, X0, a, b);
+		land(t, fp_range(t, X0, TAME_LO, TAME_HI, true));
+		break;
+	case 22: {                                              /* fsqrt: b >= 0 */
+		x86_vmovq_to(B, T0, b);
+		x86_test_rr(B, 1, T0, T0);
+		uint8_t *positive = fwd(t, X86_NS);
+		x86_alu_rr(B, X86_ADD, 1, T0, T0);
+		fp_slow(t, X86_NE);
+		land(t, positive);
+		x86_vsd(B, X86_VSQRTSD, X0, b, b);
+		break;
+	}
+	case 24:                                                /* fres */
+		fp_zero_test(t, b);
+		fp_slow(t, X86_E);
+		x86_vmovsd(B, false, X0, K_ONE);
+		x86_vsd(B, X86_VDIVSD, X0, X0, b);
+		fp_range(t, X0, TAME_LO, TAME_HI, false);
+		break;
+	case 25: {                                              /* fmul */
+		x86_vsd(B, X86_VMULSD, X0, a, c);
+		uint8_t *ok = fp_range(t, X0, TAME_LO, TAME_HI, true);
+		fp_either_zero(t, a, c);
+		land(t, ok);
+		break;
+	}
+	case 26:                                                /* frsqrte: b > 0 */
+		x86_vmovq_to(B, T0, b);
+		x86_test_rr(B, 1, T0, T0);
+		fp_slow(t, X86_LE);
+		x86_vsd(B, X86_VSQRTSD, X3, b, b);
+		x86_vmovsd(B, false, X0, K_ONE);
+		x86_vsd(B, X86_VDIVSD, X0, X0, X3);
+		break;
+	default: {                                              /* fmsub, fmadd, fnmsub, fnmadd */
+		unsigned ad = xo5 & 1 ? b : X3;                 /* (b, or -b as the interpreter has it) */
+		if (ad != b)
+			x86_vpd_m(B, X86_VXORPD, X3, b, K_SIGN);
+		x86_vmovapd(B, X0, ad);
+		x86_vfma(B, X86_VFMADD231SD, X0, a, c);
+		uint8_t *ok = fp_range(t, X0, TAME_LO, TAME_HI, true);
+		if (lazy)                                       /* zero: exact unless the product underflowed */
+			fp_product_tame(t, a, c);
+		land(t, ok);
+		if (!lazy)
+			fp_product_tame(t, a, c);
+		break;
+	}
+	}
+	unsigned raw = X0;
+	if (xo5 >= 30 || op == 59) {
+		x86_vmovapd(B, X1, X0);
+		raw = X1;
+	}
+	if (xo5 >= 30)                                          /* (the rounded fma negated, as the interpreter does) */
+		x86_vpd_m(B, X86_VXORPD, X0, X0, K_SIGN);
+	if (op == 59)
+		fp_round_single(t, false);
+	return raw;
+}
+
+/* What fp_compute() left out for `lazy` */
+static void fp_lazy_checks(struct tx *t, unsigned xo5, const unsigned h[3], const bool uses[3])
+{
+	if (xo5 == 18)
+		fp_operands_tame(t, h, uses);
+	else if (xo5 >= 28)
+		fp_product_tame(t, h[0], h[2]);
+}
+
+/* dl = whether the operation fp_compute() did was inexact */
+static void fp_inexact(struct tx *t, unsigned op, unsigned xo5, const unsigned h[3], unsigned raw)
+{
+	unsigned a = h[0], b = h[1], c = h[2];
+	switch (xo5) {
+	case 18:                                                /* a - r * b */
+		x86_vmovapd(B, X4, a);
+		x86_vfma(B, X86_VFNMADD231SD, X4, raw, b);
+		fp_nonzero(t, X4, false);
+		break;
+	case 20:
+		x86_vpd_m(B, X86_VXORPD, X4, b, K_SIGN);
+		sum_inexact(t, a, X4, raw);
+		break;
+	case 21:
+		sum_inexact(t, a, b, raw);
+		break;
+	case 22:                                                /* b - r * r */
+		x86_vmovapd(B, X4, b);
+		x86_vfma(B, X86_VFNMADD231SD, X4, raw, raw);
+		fp_nonzero(t, X4, false);
+		break;
+	case 24:                                                /* 1 - r * b */
+		x86_vmovsd(B, false, X4, K_ONE);
+		x86_vfma(B, X86_VFNMADD231SD, X4, raw, b);
+		fp_nonzero(t, X4, false);
+		break;
+	case 25:                                                /* a * c - r */
+		x86_vmovapd(B, X4, raw);
+		x86_vfma(B, X86_VFMSUB231SD, X4, a, c);
+		fp_nonzero(t, X4, false);
+		break;
+	case 26:                                                /* b - s * s, 1 - r * s */
+		x86_vmovapd(B, X4, b);
+		x86_vfma(B, X86_VFNMADD231SD, X4, X3, X3);
+		fp_nonzero(t, X4, false);
+		x86_vmovsd(B, false, X4, K_ONE);
+		x86_vfma(B, X86_VFNMADD231SD, X4, raw, X3);
+		fp_nonzero(t, X4, true);
+		break;
+	default:
+		fma_inexact(t, a, c, xo5 & 1 ? b : X3, raw);
+		break;
+	}
+	if (op == 59) {                                         /* ... or rounded to single */
+		x86_vmovq_to(B, T0, X0);
+		x86_vmovq_to(B, T1, raw);
+		if (xo5 >= 30)
+			x86_bt_ri(B, X86_BTC, 1, T1, 63);
+		x86_alu_rr(B, X86_CMP, 1, T0, T1);
+		x86_setcc(B, X86_NE, T0);
+		x86_extend(B, 1, false, 0, T0, T0);
+		x86_alu_rr(B, X86_OR, 0, T2, T0);
+	}
+}
+
+/*
+ * A-form arithmetic, natively where the interpreter's fast path would take
+ * it (see fp_compute()), the FPSCR kept lazily as on AArch64: XX and FX at
+ * once (with the inexact check, which is then needed, only while XX is
+ * clear), FR, FI and FPRF left pending: the operation and its operands go
+ * in struct jit_state, for fp_settle() or the settle stub to work them out
+ * when something else might look (C, the interpreter, a compare, mffs).
+ */
+static void fp_arith(struct tx *t, unsigned op, unsigned xo5, unsigned frt, const unsigned regs[3], const unsigned h[3],
+		     const bool uses[3], bool rc)
+{
+	fp_mode(t, false);
+	unsigned raw = fp_compute(t, op, xo5, h, uses, true);
+
+	/* XX clear: was it inexact? Then XX, and FX */
+	x86_test_mi(B, 1, x86_m(R_CPU, OFF(fpscr) + 3), FPSCR_XX >> 24);
+	uint8_t *xx_set = fwd(t, X86_NE);
+	fp_lazy_checks(t, xo5, h, uses);
+	fp_inexact(t, op, xo5, h, raw);
+	x86_test_ri(B, 0, T2, 0xFF);
+	uint8_t *exact = fwd(t, X86_E);
+	x86_alu_mi(B, X86_OR, 4, FPSCR_MEM, (int32_t)(FPSCR_FX | FPSCR_XX));
+	land(t, exact);
+	land(t, xx_set);
+
+	/*
+	 * The rest pending: its record (replacing any before) is left to the
+	 * next exit, call into C or reader of the FPSCR to store, unless the
+	 * result replaces an operand (see fp_record(), fwr()); then the result.
+	 */
+	struct cache_state *cs = &t->rc;
+	cs->fp_rec = FP_PENDING(op, xo5);
+	bool replaced = false;
+	for (unsigned k = 0; k < 3; k++) {
+		cs->fp_rec_ops[k] = uses[k] ? (int8_t)regs[k] : -1;
+		replaced |= uses[k] && regs[k] == frt;
+	}
+	if (replaced)
+		fp_record_now(t);
+	x86_vmovapd(B, fwr(t, frt), X0);
+	fp_cr1(t, rc);
+}
+
+/* The settle stub first, if the instruction touches what may be pending and something is */
+static void fp_settle_first(struct tx *t, uint32_t touched)
+{
+	if (!(touched & FPSCR_PENDING))
+		return;
+	uint16_t pending = t->rc.fp_rec;
+	fp_record_now(t);
+	uint8_t *settled = NULL;
+	if (pending) {
+		x86_mov_ri(B, T0, pending);
+	} else {
+		x86_load(B, 4, false, T0, ST(fp_op));
+		x86_test_rr(B, 0, T0, T0);
+		settled = fwd(t, X86_E);
+	}
+	x86_call(B, t->j->settle);
+	land(t, settled);
+}
+
+/* VX and FEX in ecx worked out again, as fpscr_summarize() (ppc_fp.c) does */
+static void fp_summarize(struct tx *t)
+{
+	x86_alu_ri(B, X86_AND, 0, T1, ~0x60000000);
+	x86_test_ri(B, 0, T1, FPSCR_VX_ALL);
+	x86_setcc(B, X86_NE, T0);
+	x86_extend(B, 1, false, 0, T0, T0);
+	x86_shift_ri(B, X86_SHL, 0, T0, 29);
+	x86_alu_rr(B, X86_OR, 0, T1, T0);
+	x86_mov_rr(B, 0, T0, T1);                               /* VX OX UX ZX XX over their enables */
+	x86_shift_ri(B, X86_SHR, 0, T0, 22);
+	x86_alu_rr(B, X86_AND, 0, T0, T1);
+	x86_test_ri(B, 0, T0, 0xF8);
+	x86_setcc(B, X86_NE, T0);
+	x86_extend(B, 1, false, 0, T0, T0);
+	x86_shift_ri(B, X86_SHL, 0, T0, 30);
+	x86_alu_rr(B, X86_OR, 0, T1, T0);
+}
+
+/*
+ * mffs, mtfsf, mtfsfi, mtfsb0, mtfsb1 and mcrfs, as ppc_fp_exec() does
+ * them. What arithmetic left pending stays so, unless they read or change
+ * part of it: then it's worked out first, or it's all replaced.
+ */
+static void fp_fpscr(struct tx *t, uint32_t i, unsigned xo10)
+{
+	unsigned frt = (i >> 21) & 31, frb = (i >> 11) & 31;
+	bool rc = i & 1;
+	unsigned hb = xo10 == 711 ? frd(t, frb) : NO_REG;
+	switch (xo10) {
+	case 583:                                       /* mffs */
+		fp_settle_first(t, FPSCR_PENDING);
+		x86_load(B, 4, false, T1, FPSCR_MEM);
+		x86_vmovq_from(B, fwr(t, frt), T1);
+		break;
+	case 711: {                                     /* mtfsf */
+		unsigned flm = (i >> 17) & 0xFF;
+		uint32_t mask = 0;
+		for (unsigned k = 0; k < 8; k++)
+			if (flm & (0x80u >> k))
+				mask |= 0xFu << (28 - 4 * k);
+		if ((mask & FPSCR_PENDING) == FPSCR_PENDING) {
+			x86_store_imm(B, 8, ST(fp_op), 0);
+			t->rc.fp_rec = 0;
+		} else {
+			fp_settle_first(t, mask);
+		}
+		x86_vmovd_to(B, T0, hb);                /* (its low word) */
+		if (mask == 0xFFFFFFFFu) {
+			x86_mov_rr(B, 0, T1, T0);
+		} else {
+			x86_load(B, 4, false, T1, FPSCR_MEM);
+			x86_alu_ri(B, X86_AND, 0, T1, (int32_t)~mask);
+			x86_alu_ri(B, X86_AND, 0, T0, (int32_t)mask);
+			x86_alu_rr(B, X86_OR, 0, T1, T0);
+		}
+		break;
+	}
+	case 134: {                                     /* mtfsfi */
+		unsigned sh = 28 - 4 * ((i >> 23) & 7);
+		uint32_t mask = 0xFu << sh, val = ((i >> 12) & 0xF) << sh;
+		fp_settle_first(t, mask);
+		x86_load(B, 4, false, T1, FPSCR_MEM);
+		x86_alu_ri(B, X86_AND, 0, T1, (int32_t)~mask);
+		if (val)
+			x86_alu_ri(B, X86_OR, 0, T1, (int32_t)val);
+		break;
+	}
+	case 38: case 70: {                             /* mtfsb1, mtfsb0 */
+		uint32_t bit = 0x80000000u >> frt;
+		fp_settle_first(t, bit);
+		x86_load(B, 4, false, T1, FPSCR_MEM);
+		if (bit == 0x40000000u || bit == 0x20000000u)   /* (FEX and VX are summaries) */
+			break;
+		if (xo10 == 70) {
+			x86_alu_ri(B, X86_AND, 0, T1, (int32_t)~bit);
+			break;
+		}
+		if (bit & FPSCR_EXC_ALL) {              /* a new exception: FX */
+			x86_test_ri(B, 0, T1, bit);
+			x86_setcc(B, X86_E, T0);
+			x86_extend(B, 1, false, 0, T0, T0);
+			x86_shift_ri(B, X86_SHL, 0, T0, 31);
+			x86_alu_rr(B, X86_OR, 0, T1, T0);
+		}
+		x86_alu_ri(B, X86_OR, 0, T1, (int32_t)bit);
+		break;
+	}
+	default: {                                      /* mcrfs */
+		unsigned crfd = (i >> 23) & 7, sh = 28 - 4 * ((i >> 18) & 7);
+		uint32_t clear = 0xFu << sh & (0x80000000u | FPSCR_EXC_ALL), mask = 0xFu << (28 - 4 * crfd);
+		fp_settle_first(t, 0xFu << sh);
+		x86_load(B, 4, false, T1, FPSCR_MEM);
+		x86_rorx(B, 0, T0, T1, (sh - (28 - 4 * crfd)) & 31);   /* the field, moved */
+		x86_alu_ri(B, X86_AND, 0, T0, (int32_t)mask);
+		unsigned cr = rw(t, G_CR);
+		x86_alu_ri(B, X86_AND, 0, cr, (int32_t)~mask);
+		x86_alu_rr(B, X86_OR, 0, cr, T0);
+		if (clear)
+			x86_alu_ri(B, X86_AND, 0, T1, (int32_t)~clear);
+		rc = false;
+		break;
+	}
+	}
+	if (xo10 != 583) {
+		fp_summarize(t);
+		x86_store(B, 4, T1, FPSCR_MEM);
+		if (xo10 != 64)
+			t->fp_mode_ok = false;
+	}
+	if (rc)
+		cr1_from(t, T1);
+}
+
+/* Opcodes 59 and 63; false for call_step() */
+static bool fp_insn(struct tx *t, uint32_t i)
+{
+	unsigned op = i >> 26, frt = (i >> 21) & 31, fra = (i >> 16) & 31, frb = (i >> 11) & 31, frc = (i >> 6) & 31;
+	unsigned xo5 = (i >> 1) & 31, xo10 = (i >> 1) & 0x3FF;
+	bool rc = i & 1;
+
+	if (op == 63 && !(xo5 & 0x10)) {
+		switch (xo10) {
+		case 40: case 72: case 136: case 264: { /* fneg, fmr, fnabs, fabs */
+			unsigned b = frd(t, frb), d = fwr(t, frt);
+			if (xo10 == 72)
+				x86_vmovapd(B, d, b);
+			else if (xo10 == 40)
+				x86_vpd_m(B, X86_VXORPD, d, b, K_SIGN);
+			else if (xo10 == 264)
+				x86_vpd_m(B, X86_VANDPD, d, b, K_ABS);
+			else
+				x86_vpd_m(B, X86_VORPD, d, b, K_SIGN);
+			fp_cr1(t, rc);
+			return true;
+		}
+		case 0: case 32: {                      /* fcmpu, fcmpo */
+			unsigned crf = (i >> 23) & 7, a = frd(t, fra), b = frd(t, frb);
+			fp_record_now(t);
+			if (!fp_begin(t, i))
+				return false;
+			x86_vucomisd(B, a, b);
+			fp_slow(t, X86_P);              /* unordered: VXSNAN, VXVC */
+			x86_mov_ri(B, T0, CR_EQ);
+			x86_mov_ri(B, T1, CR_LT);
+			x86_cmov(B, X86_B, 0, T0, T1);
+			x86_mov_ri(B, T1, CR_GT);
+			x86_cmov(B, X86_A, 0, T0, T1);
+			x86_load(B, 4, false, T1, ST(fp_op));
+			x86_test_rr(B, 0, T1, T1);
+			uint8_t *settled = fwd(t, X86_E);
+			x86_lea(B, 0, T1, x86_m(T0, 0x10));     /* FPCC over what's pending */
+			x86_store(B, 4, T1, ST(fp_fpcc));
+			uint8_t *done = fwd_always(t);
+			land(t, settled);
+			x86_load(B, 4, false, T1, FPSCR_MEM);
+			x86_alu_ri(B, X86_AND, 0, T1, ~0xF000);
+			x86_mov_rr(B, 0, T2, T0);
+			x86_shift_ri(B, X86_SHL, 0, T2, 12);
+			x86_alu_rr(B, X86_OR, 0, T1, T2);
+			x86_store(B, 4, T1, FPSCR_MEM);
+			land(t, done);
+			uint32_t mask = 0xFu << (28 - 4 * crf);
+			if (28 - 4 * crf)
+				x86_shift_ri(B, X86_SHL, 0, T0, 28 - 4 * crf);
+			unsigned cr = rw(t, G_CR);
+			x86_alu_ri(B, X86_AND, 0, cr, (int32_t)~mask);
+			x86_alu_rr(B, X86_OR, 0, cr, T0);
+			fp_end(t);
+			return true;
+		}
+		case 12: {                              /* frsp */
+			unsigned b = frd(t, frb);
+			if (!fp_begin(t, i))
+				return false;
+			fp_mode(t, false);
+			land(t, fp_range(t, b, TAME_LO, TAME_HI, true));
+			x86_vmovapd(B, X0, b);
+			x86_alu_rr(B, X86_XOR, 0, T2, T2);
+			fp_round_single(t, true);
+			fp_commit(t, frt, true, rc);
+			x86_store_imm(B, 8, ST(fp_op), 0);
+			t->rc.fp_rec = 0;                       /* (it replaced all that was pending) */
+			fp_end(t);
+			return true;
+		}
+		case 14: case 15: {                     /* fctiw, fctiwz */
+			unsigned b = frd(t, frb);
+			if (!fp_begin(t, i))
+				return false;
+			fp_mode(t, xo10 == 15);
+			fp_settle_first(t, FPSCR_PENDING);      /* (FPRF stays) */
+			x86_vroundsd(B, X5, b, b, (xo10 == 14 ? 0 : 3) | 8);
+			x86_vcvttsd2si(B, 0, T0, X5);
+			x86_vcvtsi2sd(B, 0, X4, X4, T0);
+			x86_vucomisd(B, X4, X5);
+			fp_slow(t, X86_NE);                     /* out of range, NaN */
+			fp_slow(t, X86_P);
+			x86_vucomisd(B, X5, b);
+			x86_setcc(B, X86_NE, T2);
+			x86_extend(B, 1, false, 0, T2, T2);
+			x86_mov_ri64(B, T1, 0xFFF8000000000000ull);     /* FP_INT_HI */
+			x86_alu_rr(B, X86_OR, 1, T0, T1);
+			x86_vmovq_from(B, X0, T0);
+			fp_commit(t, frt, false, rc);
+			fp_end(t);
+			return true;
+		}
+		case 583: case 711: case 134: case 38: case 70: case 64:
+			fp_fpscr(t, i, xo10);
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	bool uses[3];
+	if (!fp_a_form(op, xo5, uses))
+		return false;
+	unsigned h[3] = { 0, 0, 0 };
+	const unsigned regs[3] = { fra, frb, frc };
+	for (unsigned k = 0; k < 3; k++)
+		if (uses[k])
+			h[k] = frd(t, regs[k]);
+	if (xo5 == 23) {                                /* fsel: a >= 0 (not a NaN) ? c : b */
+		x86_vpd(B, X86_VXORPD, X5, X5, X5);
+		x86_vcmpsd(B, X4, X5, h[0], 2);
+		x86_vblendvpd(B, fwr(t, frt), h[1], h[2], X4);
+		fp_cr1(t, rc);
+		return true;
+	}
+	if (!fp_begin(t, i))
+		return false;
+	fp_arith(t, op, xo5, frt, regs, h, uses, rc);
+	fp_end(t);
+	return true;
 }
 
 /* slw, srw, sraw: 64-bit shifts, whose 6-bit count is PowerPC's (rB & 63) */
@@ -1287,18 +2386,23 @@ static int insn31(struct tx *t, uint32_t i)
 		return EMITTED;
 	}
 	case 1014:                                                      /* dcbz */
+		t->nstored = 0;
 		zero_block(t, ra, rb);
 		return EMITTED;
 
-	case 23: case 55:   load_store(t, 2, true, false, xo == 55, true, false, rd_, ra, rb, 0); return EMITTED;
-	case 87: case 119:  load_store(t, 0, true, false, xo == 119, true, false, rd_, ra, rb, 0); return EMITTED;
-	case 279: case 311: load_store(t, 1, true, false, xo == 311, true, false, rd_, ra, rb, 0); return EMITTED;
-	case 343: case 375: load_store(t, 1, true, true, xo == 375, true, false, rd_, ra, rb, 0); return EMITTED;
-	case 151: case 183: load_store(t, 2, false, false, xo == 183, true, false, rd_, ra, rb, 0); return EMITTED;
-	case 215: case 247: load_store(t, 0, false, false, xo == 247, true, false, rd_, ra, rb, 0); return EMITTED;
-	case 407: case 439: load_store(t, 1, false, false, xo == 439, true, false, rd_, ra, rb, 0); return EMITTED;
-	case 534: case 790: load_store(t, xo == 534 ? 2 : 1, true, false, false, true, true, rd_, ra, rb, 0); return EMITTED;
-	case 662: case 918: load_store(t, xo == 662 ? 2 : 1, false, false, false, true, true, rd_, ra, rb, 0);
+	case 23: case 55:   load_store(t, 2, true, false, xo == 55, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;
+	case 87: case 119:  load_store(t, 0, true, false, xo == 119, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;
+	case 279: case 311: load_store(t, 1, true, false, xo == 311, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;
+	case 343: case 375: load_store(t, 1, true, true, xo == 375, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;
+	case 151: case 183: load_store(t, 2, false, false, xo == 183, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;
+	case 215: case 247: load_store(t, 0, false, false, xo == 247, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;
+	case 407: case 439: load_store(t, 1, false, false, xo == 439, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;
+	case 535: case 567: load_store(t, 2, true, false, xo == 567, true, false, LS_SINGLE, rd_, ra, rb, 0); return EMITTED;
+	case 599: case 631: load_store(t, 3, true, false, xo == 631, true, false, LS_DOUBLE, rd_, ra, rb, 0); return EMITTED;
+	case 663: case 695: load_store(t, 2, false, false, xo == 695, true, false, LS_SINGLE, rd_, ra, rb, 0); return EMITTED;
+	case 727: case 759: load_store(t, 3, false, false, xo == 759, true, false, LS_DOUBLE, rd_, ra, rb, 0); return EMITTED;
+	case 534: case 790: load_store(t, xo == 534 ? 2 : 1, true, false, false, true, true, LS_GPR, rd_, ra, rb, 0); return EMITTED;
+	case 662: case 918: load_store(t, xo == 662 ? 2 : 1, false, false, false, true, true, LS_GPR, rd_, ra, rb, 0);
 		return EMITTED;                                         /* (lwbrx lhbrx stwbrx sthbrx) */
 
 	case 54: case 86: case 246: case 278: case 758: case 982: case 598: case 854:
@@ -1477,15 +2581,23 @@ static int insn(struct tx *t, uint32_t i)
 	}
 	case 31:
 		return insn31(t, i);
-	case 32: case 33: load_store(t, 2, true, false, op == 33, false, false, rd_, ra, 0, simm); return EMITTED;
-	case 34: case 35: load_store(t, 0, true, false, op == 35, false, false, rd_, ra, 0, simm); return EMITTED;
-	case 40: case 41: load_store(t, 1, true, false, op == 41, false, false, rd_, ra, 0, simm); return EMITTED;
-	case 42: case 43: load_store(t, 1, true, true, op == 43, false, false, rd_, ra, 0, simm); return EMITTED;
-	case 36: case 37: load_store(t, 2, false, false, op == 37, false, false, rd_, ra, 0, simm); return EMITTED;
-	case 38: case 39: load_store(t, 0, false, false, op == 39, false, false, rd_, ra, 0, simm); return EMITTED;
-	case 44: case 45: load_store(t, 1, false, false, op == 45, false, false, rd_, ra, 0, simm); return EMITTED;
+	case 32: case 33: load_store(t, 2, true, false, op == 33, false, false, LS_GPR, rd_, ra, 0, simm); return EMITTED;
+	case 34: case 35: load_store(t, 0, true, false, op == 35, false, false, LS_GPR, rd_, ra, 0, simm); return EMITTED;
+	case 40: case 41: load_store(t, 1, true, false, op == 41, false, false, LS_GPR, rd_, ra, 0, simm); return EMITTED;
+	case 42: case 43: load_store(t, 1, true, true, op == 43, false, false, LS_GPR, rd_, ra, 0, simm); return EMITTED;
+	case 36: case 37: load_store(t, 2, false, false, op == 37, false, false, LS_GPR, rd_, ra, 0, simm); return EMITTED;
+	case 38: case 39: load_store(t, 0, false, false, op == 39, false, false, LS_GPR, rd_, ra, 0, simm); return EMITTED;
+	case 44: case 45: load_store(t, 1, false, false, op == 45, false, false, LS_GPR, rd_, ra, 0, simm); return EMITTED;
 	case 46: case 47: load_store_multiple(t, op == 46, rd_, ra, simm); return EMITTED;
-	default:                /* floating point, string operations, ... */
+	case 48: case 49: load_store(t, 2, true, false, op == 49, false, false, LS_SINGLE, rd_, ra, 0, simm); return EMITTED;
+	case 50: case 51: load_store(t, 3, true, false, op == 51, false, false, LS_DOUBLE, rd_, ra, 0, simm); return EMITTED;
+	case 52: case 53: load_store(t, 2, false, false, op == 53, false, false, LS_SINGLE, rd_, ra, 0, simm); return EMITTED;
+	case 54: case 55: load_store(t, 3, false, false, op == 55, false, false, LS_DOUBLE, rd_, ra, 0, simm); return EMITTED;
+	case 59: case 63:
+		if (!fp_insn(t, i))
+			call_step(t, i);
+		return EMITTED;
+	default:                /* string operations, ... */
 		call_step(t, i);
 		return EMITTED;
 	}
@@ -1566,6 +2678,9 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	t.nlinks = 0;
 	t.nbexits = 0;
 	t.nslow = 0;
+	t.nfps = 0;
+	t.fp_mode_ok = false;
+	t.nstored = 0;
 	rc_reset(&t);
 	uint32_t pc = pc0;
 	unsigned n = 0, budget_needed, cover = 0;
@@ -1581,6 +2696,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 		t.pc = t.pcs[n] = pc;
 		t.k = n;
 		t.pins = 0;
+		t.fp_pins = 0;
 		uint32_t i = mem_r32(j->mem, pc);
 		if (!cover && pc - pc0 != 4 * n)
 			cover = n;              /* the block has left its first run of words */
@@ -1625,6 +2741,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 
 	rc_reset(&t);                   /* (what follows is out of line) */
 	slow_stores(&t);
+	slow_fps(&t);
 	branch_exits(&t);
 	rc_reset(&t);
 
@@ -1695,6 +2812,106 @@ struct jit_block *arch_translate(struct jit *j, uint32_t pc0)
 
 /* ---- entry, exit and dispatch ------------------------------------------ */
 
+/*
+ * The settle stub, called with FP_PENDING() in eax: works out FR, FI and
+ * FPRF of the pending operation as fp_settle() does, through a routine for
+ * each (the operands in xmm13-xmm15, saved meanwhile), or, for operands
+ * the interpreter's fast path wouldn't take (which fp_compute()'s lazy
+ * checks let through), by calling fp_settle(), keeping the registers
+ * generated code holds in caller-saved ones. Uses the scratch registers.
+ */
+static void build_settle(struct tx *t)
+{
+	static const uint8_t keep[] = { X86_R10, X86_R11, X86_RSI, X86_RDI, X86_R8, X86_R9 };
+	uint8_t *slow[64 * MAX_FP_EXITS], *exits[64];
+	unsigned nslow = 0, nexits = 0;
+	x86_alu_ri(B, X86_SUB, 1, X86_RSP, 40);                 /* ([rsp] for fma_inexact()) */
+	for (unsigned k = 0; k < 3; k++)
+		x86_vmovsd(B, true, 13 + k, x86_m(X86_RSP, 8 + 8 * (int32_t)k));
+	x86_alu_ri(B, X86_AND, 0, T0, 0x3F);
+	x86_lea(B, 1, T1, x86_rip(t->x.p));                     /* (the table, below) */
+	uint8_t *lea_end = t->x.p;
+	x86_jmp_m(B, x86_mx(T1, T0, 3, 0));
+	while ((uintptr_t)t->x.p & 7)
+		x86_int3(B);
+	uint8_t *table = t->x.p;
+	if (!t->x.overflow) {
+		int32_t rel = (int32_t)(table - lea_end);
+		memcpy(lea_end - 4, &rel, 4);
+	}
+	for (unsigned k = 0; k < 64; k++)
+		x86_imm(B, 0, 8);
+	const uint8_t *entry[64] = { 0 };
+	for (unsigned k = 0; k < 64; k++) {
+		unsigned op = k & 0x20 ? 59 : 63, xo5 = k & 31;
+		bool uses[3];
+		if (xo5 == 23 || !fp_a_form(op, xo5, uses))
+			continue;
+		entry[k] = t->x.p;
+		const unsigned h[3] = { 13, 14, 15 };
+		for (unsigned r = 0; r < 3; r++)
+			if (uses[r])
+				x86_vmovsd(B, false, h[r], ST(fp_ops[r]));
+		t->nfps = 1;
+		t->fps[0].nat = 0;
+		unsigned raw = fp_compute(t, op, xo5, h, uses, false);
+		for (unsigned b = 0; b < t->fps[0].nat; b++)
+			slow[nslow++] = t->fps[0].at[b];
+		fp_inexact(t, op, xo5, h, raw);
+		x86_vmovq_to(B, T0, X0);
+		fp_fprf(t);
+		x86_shift_ri(B, X86_SHL, 0, T0, 12);
+		x86_load(B, 4, false, T1, FPSCR_MEM);
+		x86_alu_ri(B, X86_AND, 0, T1, (int32_t)~FPSCR_PENDING);
+		x86_alu_rr(B, X86_OR, 0, T1, T0);
+		x86_test_ri(B, 0, T2, 0xFF);
+		uint8_t *exact = fwd(t, X86_E);
+		x86_alu_ri(B, X86_OR, 0, T1, (int32_t)FPSCR_FI);
+		land(t, exact);
+		x86_load(B, 4, false, T0, ST(fp_fpcc));
+		x86_test_rr(B, 0, T0, T0);
+		uint8_t *no_fpcc = fwd(t, X86_E);
+		x86_alu_ri(B, X86_AND, 0, T1, ~0xF000);
+		x86_alu_ri(B, X86_AND, 0, T0, 0xF);
+		x86_shift_ri(B, X86_SHL, 0, T0, 12);
+		x86_alu_rr(B, X86_OR, 0, T1, T0);
+		land(t, no_fpcc);
+		x86_store(B, 4, T1, FPSCR_MEM);
+		x86_store_imm(B, 8, ST(fp_op), 0);
+		exits[nexits++] = fwd_always(t);
+	}
+	t->nfps = 0;
+
+	/* fp_settle(), keeping the registers generated code holds in caller-saved ones */
+	const uint8_t *c_settle = t->x.p;
+	for (unsigned b = 0; b < nslow; b++)
+		land(t, slow[b]);
+	x86_alu_ri(B, X86_SUB, 1, X86_RSP, 112);
+	for (unsigned k = 0; k < sizeof keep; k++)
+		x86_store(B, 8, keep[k], x86_m(X86_RSP, 8 * (int32_t)k));
+	for (unsigned k = 0; k < 7; k++)
+		x86_vmovsd(B, true, 6 + k, x86_m(X86_RSP, 48 + 8 * (int32_t)k));
+	x86_mov_rr(B, 1, X86_RDI, R_CPU);
+	x86_call_m(B, ST(settle));
+	for (unsigned k = 0; k < sizeof keep; k++)
+		x86_load(B, 8, false, keep[k], x86_m(X86_RSP, 8 * (int32_t)k));
+	for (unsigned k = 0; k < 7; k++)
+		x86_vmovsd(B, false, 6 + k, x86_m(X86_RSP, 48 + 8 * (int32_t)k));
+	x86_alu_ri(B, X86_ADD, 1, X86_RSP, 112);
+
+	for (unsigned e = 0; e < nexits; e++)
+		land(t, exits[e]);
+	for (unsigned k = 0; k < 3; k++)
+		x86_vmovsd(B, false, 13 + k, x86_m(X86_RSP, 8 + 8 * (int32_t)k));
+	x86_alu_ri(B, X86_ADD, 1, X86_RSP, 40);
+	x86_ret(B);
+	if (!t->x.overflow)
+		for (unsigned k = 0; k < 64; k++) {
+			uint64_t to = (uint64_t)(uintptr_t)(entry[k] ? entry[k] : c_settle);
+			memcpy(table + 8 * k, &to, 8);
+		}
+}
+
 static void build_stubs(struct jit *j)
 {
 	static struct tx tx;
@@ -1702,6 +2919,17 @@ static void build_stubs(struct jit *j)
 	t->j = j;
 	t->x = (struct x86_buf){ j->code, j->code_end, false };
 	static const uint8_t saved[] = { X86_RBP, X86_RBX, X86_R12, X86_R13, X86_R14, X86_R15 };
+
+	/* constants (16 bytes each, for the packed logical operations) */
+	j->k_sign = t->x.p;
+	x86_imm(B, 0x8000000000000000ull, 8);
+	x86_imm(B, 0, 8);
+	j->k_abs = t->x.p;
+	x86_imm(B, 0x7FFFFFFFFFFFFFFFull, 8);
+	x86_imm(B, 0, 8);
+	j->k_one = t->x.p;
+	x86_imm(B, 0x3FF0000000000000ull, 8);
+	x86_imm(B, 0, 8);
 
 	/* enter(cpu rdi, code rsi, budget rdx, state rcx) */
 	memcpy(&j->enter, &(void *){ t->x.p }, sizeof j->enter);         /* object to function pointer */
@@ -1757,6 +2985,11 @@ static void build_stubs(struct jit *j)
 	x86_store(B, 8, T1, ST(link_site));
 	x86_mov_ri(B, T0, EXIT_LINK);
 	x86_jmp(B, j->exit);
+
+	j->settle = t->x.p;
+	build_settle(t);
+	while ((uintptr_t)t->x.p & 4095)        /* (the benchmark's blocks where they were: see the plan's findings) */
+		x86_int3(B);
 
 	j->blocks_start = j->code_free = t->x.p;
 }
@@ -1884,13 +3117,14 @@ void arch_set_context_pc(void *ctx, const void *pc)
 
 unsigned arch_marks(const struct jit *j, struct jit_mark marks[8])
 {
-	marks[0] = (struct jit_mark){ "enter", j->code };
+	marks[0] = (struct jit_mark){ "enter", j->code };     /* (with the constants) */
 	marks[1] = (struct jit_mark){ "exit", j->exit };
 	marks[2] = (struct jit_mark){ "side exit", j->side_exit };
 	marks[3] = (struct jit_mark){ "hook", j->hook_exit };
 	marks[4] = (struct jit_mark){ "miss", j->miss_exit };
 	marks[5] = (struct jit_mark){ "link", j->link_branch };
-	return 6;
+	marks[6] = (struct jit_mark){ "settle", j->settle };
+	return 7;
 }
 
 #endif

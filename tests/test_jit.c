@@ -845,6 +845,7 @@ static void test_x86_encoding(void)
 	X86_CASE(x86_call_m(b, x86_rip(start + 0x1000)),
 		 "call qword ptr [rip + L + 0x1000]", "\xff\x15\xfa\x0f\x00\x00");
 	X86_CASE(x86_ret(b), "ret", "\xc3");
+	X86_CASE(x86_call(b, start + 0x1000), "L: call L + 0x1000", "\xe8\xfb\x0f\x00\x00");
 	X86_CASE(x86_push(b, X86_RBP), "push rbp", "\x55");
 	X86_CASE(x86_push(b, X86_R15), "push r15", "\x41\x57");
 	X86_CASE(x86_pop(b, X86_R12), "pop r12", "\x41\x5c");
@@ -886,6 +887,19 @@ static void test_x86_encoding(void)
 	X86_CASE(x86_vcvttsd2si(b, 0, X86_RAX, 1), "vcvttsd2si eax, xmm1", "\xc5\xfb\x2c\xc1");
 	X86_CASE(x86_vcvttsd2si(b, 1, X86_R10, 9), "vcvttsd2si r10, xmm9", "\xc4\x41\xfb\x2c\xd1");
 	X86_CASE(x86_vcvtsi2sd(b, 0, 0, 0, X86_RAX), "vcvtsi2sd xmm0, xmm0, eax", "\xc5\xfb\x2a\xc0");
+	X86_CASE(x86_vmovd_from(b, 5, X86_RCX), "vmovd xmm5, ecx", "\xc5\xf9\x6e\xe9");
+	X86_CASE(x86_vmovd_from(b, 13, X86_R9), "vmovd xmm13, r9d", "\xc4\x41\x79\x6e\xe9");
+	X86_CASE(x86_vmovd_to(b, X86_RAX, 14), "vmovd eax, xmm14", "\xc5\x79\x7e\xf0");
+	X86_CASE(x86_vpd_m(b, X86_VXORPD, 0, 9, x86_rip(start + 0x1000)),
+		 "vxorpd xmm0, xmm9, xmmword ptr [rip + L + 0x1000]", "\xc5\xb1\x57\x05\xf8\x0f\x00\x00");
+	X86_CASE(x86_vpd_m(b, X86_VANDPD, 12, 3, x86_m(X86_RBX, 0x10)),
+		 "vandpd xmm12, xmm3, xmmword ptr [rbx + 0x10]", "\xc5\x61\x54\x63\x10");
+	X86_CASE(x86_vcmpsd(b, 4, 5, 9, 2), "vcmplesd xmm4, xmm5, xmm9", "\xc4\xc1\x53\xc2\xe1\x02");
+	X86_CASE(x86_vblendvpd(b, 7, 3, 14, 4), "vblendvpd xmm7, xmm3, xmm14, xmm4", "\xc4\xc3\x61\x4b\xfe\x40");
+	X86_CASE(x86_vblendvpd(b, 12, 12, 0, 13), "vblendvpd xmm12, xmm12, xmm0, xmm13", "\xc4\x63\x19\x4b\xe0\xd0");
+	X86_CASE(x86_vmovsd(b, false, 13, x86_rip(start + 0x1000)),
+		 "vmovsd xmm13, qword ptr [rip + L + 0x1000]", "\xc5\x7b\x10\x2d\xf8\x0f\x00\x00");
+	X86_CASE(x86_vmovsd(b, true, 0, x86_m(X86_RSP, 0)), "vmovsd qword ptr [rsp], xmm0", "\xc5\xfb\x11\x04\x24");
 	CHECK(!b->overflow);
 }
 
