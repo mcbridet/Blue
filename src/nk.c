@@ -479,6 +479,10 @@ struct machine {
 	unsigned tools_disk, tools_part;        /* ... on this drive's partition */
 	uint16_t watched_trap;          /* the trap the idle hook stops at (see watch_trap()) */
 	bool synch_idle_seen;           /* ... it has stopped at _SynchIdleTime (Mac OS 8: see tools_idle()) */
+	/* the 3D engine's frames for the screen (see frame_shown()) */
+	bool frame_started[RAVE_MAX_CONTEXTS];  /* each context began one since its last was shown */
+	uint64_t frame_due;             /* the guest waits in the engine's call until this guest time (0: it doesn't) */
+	uint32_t frame_pc, frame_sp;    /* ... the call's, there */
 	struct gpu *gpu;                /* ... which draws with this, if the host can (see nk_boot()) */
 	/* SYSHM_PERF: the host's counters for this thread, printed every second */
 	bool perf_on;
@@ -1384,7 +1388,8 @@ static void fast_start_input(struct machine *m, int key, bool down)
  *
  * Guest time that disk transfers put ahead of the host clock is made up
  * here, while nothing shows it: guest time runs at 3/4 speed while the guest
- * idles, unless sound plays.
+ * idles, unless sound plays. Not while it waits for a frame of its 3D
+ * engine's (see frame_shown()): that shows.
  */
 #define IDLE_CATCH_UP 4u                /* (a quarter of each sleep) */
 
@@ -1396,11 +1401,9 @@ static uint64_t host_ns_at(const struct machine *m, uint64_t ticks, uint64_t hz)
 	return at > lead ? at - lead : 0;
 }
 
-static void idle_wait(struct machine *m, uint64_t deadline)
+/* (`idle`: the guest has nothing to do, rather than waiting for its 3D engine) */
+static void nap(struct machine *m, uint64_t deadline, bool idle)
 {
-	m->idle_calls++;
-	if (m->fast_start)
-		fast_start_idle(m);
 	if (!m->idle_sleep || m->ipl)
 		return;
 	if (m->mp_kernel && mp_next_due(&m->mp) < deadline)
@@ -1436,10 +1439,18 @@ static void idle_wait(struct machine *m, uint64_t deadline)
 	}
 	uint64_t slept = host_ns() - now;
 	m->idle_ns += slept;
-	if (!m->fast_start && !sound) {
+	if (idle && !m->fast_start && !sound) {
 		uint64_t catch_up = ns_to_tb(slept / IDLE_CATCH_UP);
 		m->lead_tb -= catch_up < m->lead_tb ? catch_up : m->lead_tb;
 	}
+}
+
+static void idle_wait(struct machine *m, uint64_t deadline)
+{
+	m->idle_calls++;
+	if (m->fast_start)
+		fast_start_idle(m);
+	nap(m, deadline, true);
 }
 
 /* Low-memory mouse globals (Points are v, h) */
@@ -2955,6 +2966,74 @@ static bool tools_idle(struct machine *m, bool at_trap)
 }
 
 /*
+ * The 3D engine's frames for the screen come at most one a vertical blank
+ * of the display's (video_frame_shown()), which shows no more, and a real
+ * Mac's 3D hardware drew games no faster. The engine draws as fast as the
+ * host can, and games of the time go wrong at frame rates they never saw:
+ * Unreal Tournament ticks its actors at least 5 ms at a time (its engine
+ * clamps each tick's time to 0.005-0.4 s), so at the 400 frames a second
+ * it reached, its game ran at twice the speed. The engine call that ended
+ * the frame (QARenderEnd, or QASwapBuffers if that came first after
+ * QARenderStart) returns once the display shows it: in real time the guest
+ * waits in it, taking interrupts meanwhile (it makes the call again, which
+ * goes no further until then: see frame_wait()); in instruction time guest
+ * time moves on as if it had waited, as for disk transfers.
+ */
+#define RAVE_DEVICE_GDEVICE 1u          /* (kQADeviceGDevice: a context drawing to a screen) */
+#define RAVE_RENDER_START 13u           /* (kQARenderStart: the draw method) */
+_Static_assert(RAVE_MAX_CONTEXTS <= VIDEO_FRAME_SOURCES, "a source for each 3D context");
+
+static void blue_naps(struct machine *m, uint64_t until, bool idle);
+
+/* Guest time now: in real time, what the host clock says it is (see nk_boot()) */
+static uint64_t guest_now(const struct machine *m)
+{
+	if (!m->realtime)
+		return m->cpu.tb;
+	uint64_t tb = ns_to_tb(host_ns() - m->start_ns) + m->lead_tb;
+	return tb > m->cpu.tb ? tb : m->cpu.tb;
+}
+
+/* After an engine call, with each context's frame count before it: true if the guest waits now */
+static bool frame_shown(struct machine *m, const struct ndrv_call *c, const unsigned long *frames)
+{
+	bool wait = false;
+	for (unsigned k = 0; k < RAVE_MAX_CONTEXTS; k++) {
+		const struct rave_context *x = &m->rave.ctx[k];
+		if (c->entry == RAVE_ENTRY_DRAW + RAVE_RENDER_START && x->used && x->guest == c->arg[0])
+			m->frame_started[k] = true;
+		if (!c->done || !x->used || x->frames == frames[k] || !m->frame_started[k] ||
+		    x->device_type != RAVE_DEVICE_GDEVICE)
+			continue;
+		m->frame_started[k] = false;
+		uint64_t now = guest_now(m), shown = video_frame_shown(&m->video, k, x->guest, now);
+		if (shown == now)
+			continue;
+		if (!m->realtime) {
+			pass_guest_time(m, shown - now);
+		} else {
+			m->frame_due = shown;
+			m->frame_pc = m->cpu.pc;
+			m->frame_sp = m->cpu.gpr[1];
+			wait = true;
+		}
+	}
+	return wait;
+}
+
+/* The guest made the call it waits in again (see frame_shown()) */
+static const char *frame_wait(struct machine *m)
+{
+	if (guest_now(m) >= m->frame_due) {
+		m->frame_due = 0;
+		m->cpu.pc += 4;         /* (its results have been in place since it ended the frame) */
+	} else {
+		blue_naps(m, m->frame_due, false);
+	}
+	return NULL;
+}
+
+/*
  * A host call from a generated driver (see ndrv.h): run the native driver
  * one step, then either finish (CR0[EQ] set, result in r3) or have the stub
  * call a Mac OS routine (TVector in r12, arguments in r3..r10).
@@ -2974,6 +3053,7 @@ static const char *host_call(struct machine *m, uint32_t selector)
 	if (!mem_ok(&m->mem, c.frame, 80, MEM_RW))
 		return "driver stack frame not in writable memory";
 
+	unsigned long frames[RAVE_MAX_CONTEXTS] = { 0 };       /* (the 3D engine's contexts', before the call) */
 	switch (selector) {
 	case HOSTCALL_VIDEO_DRIVER:
 		video_driver_call(&m->video, &c);
@@ -2982,6 +3062,10 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		helper_call(&m->helper, &c, &m->video, &m->clip);
 		break;
 	case HOSTCALL_TOOLS_RAVE:
+		if (m->frame_due && cpu->pc == m->frame_pc && cpu->gpr[1] == m->frame_sp)
+			return frame_wait(m);
+		for (unsigned k = 0; k < RAVE_MAX_CONTEXTS; k++)
+			frames[k] = m->rave.ctx[k].frames;
 		rave_call(&m->rave, &c);
 		break;
 	case HOSTCALL_TOOLS_INSTALL:
@@ -3017,6 +3101,8 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		cpu->gpr[12] = c.tvector;
 		cpu->cr &= 0x0FFFFFFFu;
 	}
+	if (selector == HOSTCALL_TOOLS_RAVE && frame_shown(m, &c, frames))
+		return NULL;            /* (the guest makes the call again, until frame_wait() lets it return) */
 	cpu->pc += 4;
 	return NULL;
 }
@@ -3159,14 +3245,17 @@ static void switch_task(struct machine *m, uint32_t to)
 /*
  * The blue task naps until guest time `until` (UINT64_MAX: an interrupt):
  * Multiprocessing Services' tasks that are ready run meanwhile (see
- * mp_nap()), else the processor idles. Not while an interrupt waits for
- * it.
+ * mp_nap()), else the processor idles (`idle`; otherwise it waits for its
+ * 3D engine: see nap()). Not while an interrupt waits for it.
  */
-static void blue_naps(struct machine *m, uint64_t until)
+static void blue_naps(struct machine *m, uint64_t until, bool idle)
 {
 	if (m->mp_kernel && blue_running(m) && !m->ipl && blue_interruptible(m) && mp_nap(&m->mp, until) != MP_NAP_IDLE)
 		return;
-	idle_wait(m, until);
+	if (idle)
+		idle_wait(m, until);
+	else
+		nap(m, until, false);
 }
 
 /*
@@ -3292,7 +3381,7 @@ static const char *kcall_mp_dispatch(struct machine *m, uint32_t next_pc)
 		set_shifty(m, SHIFTY_YIELDED, SHIFTY_CLEARED);
 	if (cpu->gpr[0] == MP_DELAY_UNTIL && blue_running(m)) {
 		tools_idle(m, false);
-		blue_naps(m, (uint64_t)cpu->gpr[3] << 32 | cpu->gpr[4]);
+		blue_naps(m, (uint64_t)cpu->gpr[3] << 32 | cpu->gpr[4], true);
 		cpu->gpr[3] = 0;                /* noErr */
 		cpu->pc = next_pc;
 		return NULL;
@@ -3398,7 +3487,7 @@ static const char *kernel_call(struct machine *m, unsigned n)
 		}
 		if (cpu->gpr[3] <= 7 && !(cpu->gpr[4] & cpu->cr)) {
 			tools_idle(m, false);
-			blue_naps(m, UINT64_MAX);       /* until an interrupt: there's no processor state to lose */
+			blue_naps(m, UINT64_MAX, true); /* until an interrupt: there's no processor state to lose */
 		}
 		cpu->gpr[3] = 0;
 		break;
@@ -3866,12 +3955,14 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			break;
 		case PPC_EXIT_HOSTCALL:
 			why = host_call(&m, cpu->exit_insn & 0x03FFFFFFu);
+			if (opt->realtime && m.frame_due)
+				sync = true;    /* catch up with the host clock now (the guest waits for a frame's time) */
 			break;
 		case PPC_EXIT_HOOK:
 			if (m.watched_trap == TRAP_SYNCH_IDLE_TIME) {
 				m.synch_idle_seen = true;
 				if (!tools_idle(&m, true))
-					blue_naps(&m, UINT64_MAX);
+					blue_naps(&m, UINT64_MAX, true);
 			} else if ((uint16_t)cpu->gpr[8] == TRAP_IDLE_9_SELECTOR) {     /* (the emulator's d0) */
 				tools_idle(&m, true);
 			}

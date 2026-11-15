@@ -43,7 +43,8 @@ through the host (in real time). Games run accelerated by the guest tools'
 3D engine, on the host's GPU: Unreal Tournament plays, and Bugdom (QuickDraw
 3D, Game Sprockets) reached about 100 frames per second in play on an M1
 Max, with music (it needs URL Access, which comes with Mac OS 8.6 and
-later). The built-in Ethernet reaches the host's
+later; frames for the screen now come at most 60 a second, see Guest
+tools). The built-in Ethernet reaches the host's
 network, so Internet Explorer loads web pages. CD-ROM drives play audio CDs
 and games' CD soundtracks (cue sheets) through the sound chip, as the iMac's
 drive did.
@@ -755,6 +756,18 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
   second, and `SYSHM_LOG_RAVE=1` logs every call. docs/gpu-plan.md
   describes the GPU backend in full.
 
+  Frames for the screen come at most one a vertical blank of the display's
+  (60 a second of guest time), which shows no more; the iMac's 3D hardware
+  drew games no faster. The call that ends one (QARenderEnd) returns once
+  the display shows it: in real time the guest waits in it, taking
+  interrupts meanwhile; in instruction time guest time moves on instead.
+  Games of the time go wrong at the frame rates the host's GPU reaches:
+  Unreal Tournament's engine ticks its actors at least 5 ms at a time, so
+  at 400 frames a second its game, timers and match clock included, ran
+  at twice the speed (see Findings in plan.md). Waiting, the host sleeps,
+  as when the guest idles (but guest time ahead of the host clock isn't
+  made up then: the game would show it).
+
 Like the drivers, these are generated code fragments whose logic runs in
 syshm through host calls (`src/tools.c`). Bugdom's setup, for the record:
 QuickDraw 3D 1.6, Game Sprockets, URL Access (part of Mac OS 8.6 and later;
@@ -772,7 +785,10 @@ Rage 128's multitexturing: a second texture (the lightmap; tag 1018, a
 pointer) modulates the first while tag 1012 is on, at coordinates in the
 vertices' specular fields (ks: u/w, v/w, 1/w); both renderers do that,
 filtering the lightmap bilinearly, clamped (the other tags UT sets then,
-always the same, are taken to mean that). The engine's data carries
+always the same, are taken to mean that). It plays at 60 frames a second,
+in time (a match's Elapsed Time 30 s in 30 s of host time, on 8.6 and
+9.2.2; 66 s at 640x480 and 40-46 s at 1024x768 before the frames were
+paced). The engine's data carries
 its version, so one installed by an older syshm isn't asked for what it
 lacks: syshm says to install it again (and a window offers to update it).
 

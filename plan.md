@@ -1905,3 +1905,43 @@ Facts later tasks need, added as they are found.
   mffs leaves the upper word 0 (`FP_INT_HI`'s comment says otherwise; the
   750's is undefined, 0xFFF80000 on the Gekko): both engines agree, as
   before.
+- **Unreal Tournament at double speed** (real time, the guest tools' 3D
+  engine; the Mac CD's 4.0 application, "Version 400", the same file on
+  8.6 and 9.2.2): what it times with, from its code fragment (one PEF
+  container, imports Microseconds, TickCount, LMGetTicks, Gestalt, no
+  DriverServicesLib): `appSeconds()` (code section +0x361E0) adds up
+  Microseconds deltas times 1e-6; `appCycles()` (+0x1635C8) is mftb's low
+  word, for its stats only, its "CPU cycle test" (in the log: "secs/cycle")
+  timing Delay(30) with it; `appSleep()` spins on Microseconds. The main
+  loop (+0x1511E0) ticks the engine with appSeconds' difference. A probe
+  reading appSeconds' total in guest memory once a second of host time
+  found it right: with guest time on 8.6 (Microseconds there is the Time
+  Manager's, from VIA timer 2) and 0.6% fast on 9.2.2 (below), in the intro,
+  the menus and play, headless and in a window, with the tools installed
+  at startup or during the session; and guest time kept the host clock's
+  pace (the lead fast start and disk transfers left stays as it was while
+  UT runs: it never idles, and it reads no disk in play). The speed is
+  UT's own: `ULevel::Tick` (+0xB7120) multiplies the tick's time by
+  TimeDilation, adds it to the level's TimeSeconds, then clamps it to
+  0.005-0.4 s (`Clamp` with the TOC's 0.005f and 0.4f, +0xB716C) for the
+  actors' ticks, so above 200 frames a second actors, their timers (the
+  game's one-second timer counts the match's Elapsed Time and time limit
+  down) and everything moving run fast: 400 frames a second, twice the
+  speed. Measured (M5, headless, practice DeathMatch on DM-Barricade, the
+  scoreboard's Elapsed Time over 30 s of host time, `SYSHM_RAVE_FPS`):
+  9.2.2 at 640x480 490 frames a second, 66 s; at 1024x768 (the user's
+  ini later) 290, 40 s; 8.6 at 1024x768 340, 46 s. A real iMac drew UT at
+  well under 60. Now (`frame_shown()`, `frame_wait()` in `src/nk.c`,
+  `video_frame_shown()` in `src/video.c`) a context drawing to a screen
+  shows a frame at most once a vertical blank interval after its last, and
+  the call that ended it (the first QARenderEnd or QASwapBuffers after a
+  QARenderStart) returns then: in real time it leaves the host call without
+  moving the PC, so the guest takes interrupts and makes the call again,
+  which naps (`blue_naps()`, Multiprocessing Services' tasks first) until
+  the frame's time, without making up guest time's lead as idling does;
+  in instruction time guest time moves on, as for disk transfers. After:
+  60.0 frames a second, Elapsed Time 30 s in 30 s (9.2.2 and 8.6, both at
+  1024x768; in a window too), and the host sleeps about half the time or
+  more while it plays. The 8.5 and 9.1 CD checks (4 billion instructions),
+  the 9.2.2 CD's (3 billion) and installed 8.6's (5 billion) end exactly
+  as before (no 3D frames there). Tests: `tests/test_video.c`.
