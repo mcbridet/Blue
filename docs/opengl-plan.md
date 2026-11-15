@@ -15,14 +15,127 @@ It should come first (see Order).
 Milestones 0 (the groundwork, shared with Glide), 1 (AGL and a clear), 2
 (a triangle), 3 (textures, and Unreal Tournament's OpenGL build), 4
 (arrays, fog, lighting and the rest of the common state), 5 (display
-lists, pixel paths, 3D textures, OpenGLUtility) and 6 (completeness:
-selection and feedback, evaluators, `aglSetFullScreen`, `aglUseFont`) are
-built; Quake III Arena's demo plays. S3TC and paletted textures are left
-out: Apple's Mac OS 9.2.2 doesn't offer them for a Rage 128. Milestone 7
-(performance) is next. The user chose OpenGL before Glide, and accepted
-the proposed decisions below for now (replacing the libraries, recording
-in guest memory, fixed function in C on the host, frames read back into
-guest memory, a Rage 128's identity).
+lists, pixel paths, 3D textures, OpenGLUtility), 6 (completeness:
+selection and feedback, evaluators, `aglSetFullScreen`, `aglUseFont`) and
+7 (performance: measured, the rasterizer faster, frames shown at an even
+pace) are built; Quake III Arena's demo plays. S3TC and paletted textures
+are left out: Apple's Mac OS 9.2.2 doesn't offer them for a Rage 128.
+What's left is under "Not yet" in milestone 6. The user chose OpenGL
+before Glide, and accepted the proposed decisions below for now
+(replacing the libraries, recording in guest memory, fixed function in C
+on the host, frames read back into guest memory, a Rage 128's identity).
+
+Milestone 7:
+
+- **Measuring** (`SYSHM_GL_PROFILE=FILE`, in `src/opengl.c`; `src/nk.c`,
+  `src/surface.c` and `src/gpu.c` count their parts): a line for each
+  frame shown on the screen with the host time since the one before and
+  where it went: the libraries' host calls (the front end: everything in
+  them but what follows), waiting for the backend (to take a batch, to
+  finish), reading back from the GPU, writing the frame into guest memory,
+  napping until the frame is due (pacing) or idle; the rest is the guest
+  (translated code, devices). Then the calls, records and primitives, the
+  GPU thread's time drawing and reading back, the textures it made; and a
+  line at each update of the window. Real-time runs on the shared host
+  were noisy (other work on it, and in GPU runs macOS clocking the
+  processor and GPU down, as syshm sleeps more than half of each frame),
+  so the rasterizer was measured by replaying batches captured from the
+  games (a scratch tool, not kept: every frame drawn again and checked
+  against the captured one's hash, best of three) and counting
+  instructions (callgrind on Linux), and the games in instruction time.
+- **Where the time goes**, real time on an M5 (4 performance cores), 640 x
+  480, in milliseconds a frame (Quake III's `demo001`; UT's intro, and a
+  deathmatch against bots):
+
+  | | fps | frame p50 / p90 / p99 | guest | front end | waiting for the backend | reading back | presenting | napping (paced) |
+  |---|---|---|---|---|---|---|---|---|
+  | Q3, GPU | 60.0 | 16.7 / 17.8 / 18.9 | 3.1 | 1.8 | 0.1 | 1.6 | 0.3 | 9.7 |
+  | Q3, software | 59.2 | 16.7 / 17.6 / 24.2 | 1.5 | 0.9 | 6.8 | | 0.2 | 7.5 |
+  | UT intro, GPU | 60.0 | 16.7 / 17.3 / 18.5 | 4.5 | 0.8 | 0.5 | 1.9 | 0.4 | 8.6 |
+  | UT intro, software | 52.3 | 18.5 / 23.2 / 26.9 | 3.4 | 0.5 | 12.5 | | 0.3 | 2.5 |
+  | UT match, GPU | 60.0 | 16.7 / 18.4 / 21.6 | 3.8 | 0.3 | 0.2 | 2.3 | 0.4 | 9.7 |
+  | UT match, software | 59.1 | 16.7 / 17.5 / 21.8 | 1.4 | 0.2 | 9.6 | | 0.3 | 5.6 |
+
+  Quake III makes about 670 calls, 1,040 records and 3,400 primitives a
+  frame; UT's match 5 calls (lists and arrays recorded) and 6,000-9,000
+  records for 800-1,000 primitives; UT's intro makes 58 textures a frame
+  (275 KB, its animated ones). The guest library's own code (recording)
+  is a small part of the guest's time: about 15 PowerPC instructions a
+  record, some 0.3 ms a frame in UT and less in Quake III. On the GPU
+  every frame is ready in time, with 7-10 ms to spare: reading back is
+  the biggest of syshm's own costs, but it's mostly the GPU finishing the
+  frame at the low clocks macOS gives it between frames (replayed at full
+  clocks a whole frame, drawn and read back, takes 0.5-0.9 ms). In
+  software the rasterizer is the cost: inside it, unpacking pixels to
+  floats, the blend factors, texel addresses, packing, the stages. The
+  frame times above are when each frame is swapped, which varies with the
+  guest's work; what the window shows is below.
+- **The rasterizer** (`src/raster.c`), its pixels the same bit for bit:
+  pixels unpacked and packed as whole vectors (each lane the same IEEE
+  operation as one at a time; NaN packs to 0, as converting it one at a
+  time gives on the hosts syshm runs on), the blend factors as vectors,
+  blending by one and zero (adding) skipped (the color as it is, but -0
+  for +0, which packs the same), bilinear texel addresses without the
+  float clamping and floor when the coordinates are below 2^24 (then they
+  and the next ones are exact whole numbers). Replayed, every frame as
+  captured: UT's frames 30% faster in one thread (40-42 to 29 ms a frame;
+  51 to 27 under another load) and with the default threads (24-26 to
+  17.5-18.3 ms), Quake III's demo 26% (9.5 to 7.0 ms). In real time,
+  software: Quake III 59.2 to 59.9 frames a second (waiting for the
+  backend 6.8 to 5.1 ms a frame, p99 24.2 to 21.2 ms), UT's intro 52.3 to
+  56.8 (12.5 to 8.9 ms); in instruction time UT's match waits 6.7-10.2 ms
+  a frame rather than 11.6-14.5. The same 20 random streams of RAVE calls
+  give the same hashes (macOS, Linux on ARM and on x86-64), the GPU's
+  frames of them are milestone 6's exactly, and the games' instruction-time
+  runs are milestone 6's (Quake III's frame on macOS, Linux and the GPU;
+  UT's eight screenshots).
+- **Pacing the window** (`src/nk.c`): in real time the window shows each
+  paced frame (OpenGL's or RAVE's) when it's due, rather than at its own
+  next update, which ran a little slower than 60 a second, so that every
+  few seconds a frame was shown twice and the next never. Quake III in a
+  window (SDL's dummy video driver): updates every 16.70 ms (p99 17.69),
+  0.8% of frames never shown, before; every 16.67 ms (p99 16.91), none
+  lost, after; UT's match, 99.9% of updates a new frame. In instruction
+  time nothing changes.
+- **Tried and not kept:** a `glFlush` after each GPU draw job (no clear
+  change); four helper threads for the rasterizer rather than two (faster
+  replayed at times, but no clear gain in the games' runs, with a fifth
+  busy thread on a host of four performance cores); bands
+  of 8 rows rather than 16 (the same); setting triangles up once a batch
+  rather than once a band (a band's setup costs nothing measurable). The
+  plan's other ideas weren't the costs measured: presenting directly
+  (writing a frame to guest memory is 0.2-0.5 ms), reading back only what
+  changed (the games redraw every pixel each frame), transform in a vertex
+  shader (the front end is 0.2-1.8 ms a frame, and software needs it in
+  C), bigger batches (waiting for the GPU is 0.1-0.6 ms a frame). Left as
+  candidates: reading back asynchronously while the guest waits for its
+  frame's turn (for games short of time), and a vertex cache in
+  `glDrawElements` (about 0.25 ms a frame in Quake III).
+- **Tests:** without EGL (a Linux without libEGL), `opengl` crashed:
+  feedback against Mesa ran without Mesa; it's skipped now, as the rest
+  is. On AMD's radeonsi (Mesa 26.2, a Radeon RX 6800 XT, x86-64 Linux) two
+  checks failed: `gpu`'s projective square had 14 pixel centers on texel
+  edges (exactly, by its numbers: where the division's rounding decides,
+  and radeonsi rounds otherwise at 14 of them, llvmpipe at 2), and
+  `opengl`'s stencil scene (11 pixels where the alpha tested against 0.5
+  was exactly 0.5) and pixels scene (one depth image's depth exactly a
+  quad's: 6 pixels) had ties too. The scenes and the square are
+  moved off them (each texel edge now at least a thousandth of a texel
+  from a pixel center; the alpha's 0.5 between pixel centers; the depths
+  0.004 off the quad's), and `gpu`'s texture's neighbors are 16 apart, so
+  a pixel a texel off shows: 0 pixels differ now on radeonsi, llvmpipe and
+  Metal. The pixels scene's `glCopyPixels` of depths is radeonsi's own bug
+  (no color at all, where OpenGL has the raster color, and the depths
+  written with the depth test off; llvmpipe does as OpenGL says): those
+  288 pixels aren't compared on radeonsi, with a message. Against
+  radeonsi then, by scene (pixels differing by more than 2; covered by one
+  only): gradient 0, depth 1 (1, a center on an edge: snapping), flat 0,
+  smooth 2,739 (quads split otherwise, as llvmpipe), primitives 0, blend 0,
+  texture 0, clamp 3,840 (`GL_CLAMP`'s border, as llvmpipe), edge 0,
+  multitexture 0, lighting 0, specular 0, fog 0, texgen 0, arrays 0,
+  stencil 0, offset 0, clip 0, lists 0, pixels 0, texture3d 0, glu 31 (30;
+  libGLU's quadrics), eval 0, eval_lit 0; and our GPU backend on radeonsi
+  against our software: 0 in each but depth (1).
 
 Milestone 6:
 
@@ -1405,7 +1518,8 @@ Shared pieces may already exist from Glide.
    listed them for the Rage 128 (it doesn't).
 7. **Performance:** direct presentation for full-screen contexts; reading
    back only what changed; transform in a vertex shader; bigger batches.
-   The same checks, with Quake III's demo and UT as the game tests.
+   The same checks, with Quake III's demo and UT as the game tests. (As
+   done: measured first, then the costs measured fixed; see Status.)
 
 ## Tests
 

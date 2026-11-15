@@ -115,7 +115,7 @@ Done:
   in place of the Driver Services timer. The restored 9.2.2 reaches the
   Finder in instruction time without a key. See Findings, "The display's
   interrupt".
-- **OpenGL** (Task 18; milestones 0 to 5 of docs/opengl-plan.md): the
+- **OpenGL** (Task 18; milestones 0 to 7 of docs/opengl-plan.md): the
   libraries, AGL and clears, checked by a test application in the guest;
   gl calls recorded in guest memory by the library's own code, and a
   fixed-function front end on the host drawing triangles (matrices,
@@ -705,8 +705,29 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 18. OpenGL for Mac OS 9 games
 
-- **Status:** milestones 0 to 6 done (docs/opengl-plan.md has the plan,
-  its milestones and what's built). Milestone 6, completeness: selection
+- **Status:** milestones 0 to 7 done (docs/opengl-plan.md has the plan,
+  its milestones and what's built). Milestone 7, performance: measured
+  first (`SYSHM_GL_PROFILE`: where each frame's host time goes), in real
+  time on an M5 at 640 x 480. On the GPU, Quake III's demo and UT run at
+  60 frames a second with 7-10 ms of each frame to spare (the guest 3-5
+  ms, the front end 0.3-1.8, reading back 1.6-2.3, mostly the GPU
+  finishing at low clocks); in software the rasterizer is the cost (7-12
+  ms a frame waited for). The rasterizer is about 30% faster, its pixels
+  the same bit for bit (pixels unpacked and packed as vectors, vector
+  blend factors, blending by one and zero skipped, bilinear texel
+  addresses without float clamping where they're exact): Quake III in
+  software 59.2 to 59.9 frames a second, UT's intro 52.3 to 56.8. In a
+  window in real time, frames are shown when they're due, at an even pace
+  (before, the window's own updates ran slower than 60 a second, and a
+  frame was shown twice and the next lost every few seconds). The games'
+  instruction-time runs, the 3D engine's pixels (software and GPU) and the
+  8.5 and 9.1 boots are as before. Two test fixes: `opengl` crashed on a
+  Linux without libEGL (feedback compared against Mesa without Mesa), and
+  on AMD's radeonsi `gpu` and `opengl` failed at ties the tests set up
+  (pixel centers exactly on texel edges, an alpha exactly the alpha
+  test's, a depth exactly a quad's), now moved off, and at radeonsi's
+  `glCopyPixels` of depths (see Findings), not compared there. Milestone
+  6, completeness: selection
   and feedback (`src/glselect.c`: hit records and every feedback type, the
   primitives clipped to the view volume, in Mesa's order), evaluators
   (`src/gleval.c`: one- and two-dimensional maps of every kind, grids,
@@ -805,7 +826,9 @@ the kernel); 8 onwards as the boot progresses.
   on macOS (with the next item) and Linux; on the GPU, 4 frames differ,
   each in one pixel's channel by one step. The 8.5 and 9.1 CDs boot to the same screenshots as
   main's.
-- **Next:** milestone 7 (performance). Open items: OpenGLUtility's
+- **Next:** the plan's milestones are done. Candidates for speed, if a
+  game needs them: reading back asynchronously while the guest waits for
+  its frame's turn, a vertex cache in `glDrawElements`. Open items: OpenGLUtility's
   tessellators and NURBS renderers keep their objects and properties but
   draw nothing (until a program needs them); lines and points aren't
   textured, and neither
@@ -934,6 +957,26 @@ Facts later tasks need, added as they are found.
   device, attaches the drawable through its engine and sets the viewport
   to the size; neither the library, the engine nor the ATI renderer
   imports a Display Manager call.
+- **radeonsi's `glCopyPixels` of depths** (OpenGL, milestone 7; Mesa
+  26.2 on a Radeon RX 6800 XT, surfaceless EGL, compatibility profile):
+  copying `GL_DEPTH` writes no color at all (OpenGL 1.2's 4.3.3 has the
+  fragments take the raster color) and writes the depths with the depth
+  test disabled too (with it off, nothing should reach the depth buffer);
+  llvmpipe does as OpenGL says. A 64 x 32 framebuffer object, a quad at
+  depth 0.5 in red, then `glCopyPixels(0, 0, 16, 16, GL_DEPTH)` in blue:
+  radeonsi leaves black with depth 0.5 there, with the test `GL_LESS`,
+  `GL_ALWAYS` or off. `tests/test_opengl.c` leaves those pixels out on
+  radeonsi.
+- **Ties in the tests** (OpenGL, milestone 7): a test whose numbers put a
+  pixel center exactly on a texel's edge, or a value exactly at a test's
+  reference, passes on one GPU and fails on another, since there the last
+  bit of a division or interpolation decides (radeonsi rounded otherwise
+  than llvmpipe and Metal at 14 texel edges of a projective square, 11
+  pixels of an alpha test against 0.5, a depth image's 0.6 against a
+  quad's). Exact rational numbers make them: perspective with q of 1 to
+  2.5 across 32 pixels and 16 texels put many pixel centers on edges.
+  The tests keep a margin now (a thousandth of a texel; an alpha's 0.5
+  between pixel centers).
 - **S3TC and paletted textures on Mac OS 9.2.2** (OpenGL, milestone 6):
   the extension strings of 9.2.2's OpenGLEngine, OpenGLRendererATI and
   the software OpenGLRenderer have neither S3TC nor

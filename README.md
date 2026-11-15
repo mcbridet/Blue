@@ -797,7 +797,9 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
   at 400 frames a second its game, timers and match clock included, ran
   at twice the speed (see Findings in plan.md). Waiting, the host sleeps,
   as when the guest idles (but guest time ahead of the host clock isn't
-  made up then: the game would show it).
+  made up then: the game would show it). In a window in real time, the
+  window shows each such frame when it's due, so frames come at an even
+  pace.
 - **syshm OpenGL Library, Memory and Utility** (under way:
   docs/opengl-plan.md): Mac OS 9's OpenGL libraries, as syshm's own, under
   Apple's fragment names (OpenGLLibrary, OpenGLMemory, OpenGLUtility) with
@@ -842,7 +844,13 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
   and Quake III Arena's demo play with them, on the GPU and in software.
   Swaps to the screen or a window are paced as the 3D engine's frames are
   (above). `SYSHM_GL_FPS=1` prints the frame rate every second, and
-  `SYSHM_LOG_GL=1` logs every call.
+  `SYSHM_LOG_GL=1` logs every call. `SYSHM_GL_PROFILE=FILE` writes a line
+  to FILE for each frame shown on the screen: the host time since the one
+  before and where it went (the libraries' host calls, waiting for the
+  backend, reading back from the GPU, writing the frame to guest memory,
+  waiting for the frame's turn), the calls, records and primitives, and
+  the GPU thread's time drawing and reading back; and a line for each
+  update of the window (see docs/opengl-plan.md, milestone 7).
 
 Like the drivers, these are generated code fragments whose logic runs in
 syshm through host calls (`src/tools.c`). Bugdom's setup, for the record:
