@@ -443,8 +443,8 @@ static void test_pipeline(struct gpu *g)
 {
 	enum { N = 15 };
 	static uint32_t texel = 0x80402010u, big[16 * 16];
-	for (unsigned k = 0; k < 16 * 16; k++)
-		big[k] = 0xFF000000u | (k * 0x10101u * 17u);
+	for (unsigned k = 0; k < 16 * 16; k++)          /* (red across, green down: a texel's neighbors 16 apart) */
+		big[k] = 0xFF000080u | (k % 16 * 16) << 16 | (k / 16 * 16) << 8;
 	struct raster_texture tx = { .levels = 1, .width = { 1 }, .height = { 1 }, .texels = { &texel } };
 	struct raster_texture bx = { .levels = 1, .width = { 16 }, .height = { 16 }, .texels = { big } };
 	const unsigned T = RASTER_TEXTURE0, C0 = RASTER_COLOR0, C1 = RASTER_COLOR0 + 1, K = RASTER_CONSTANT,
@@ -532,7 +532,11 @@ static void test_pipeline(struct gpu *g)
 
 	/*
 	 * A projective unit (q / w across the square, nearest texels: exact), and
-	 * a texture minified (linear) and magnified (nearest)
+	 * a texture minified (linear) and magnified (nearest). The square's
+	 * texels are moved 0.856 of one across and down, so that no pixel's
+	 * center is on a texel's edge (where the division's rounding would
+	 * decide: AMD's radeonsi rounds otherwise at 14 of them); each pixel is
+	 * at least a thousandth of a texel from one.
 	 */
 	struct raster_state p[2] = { plain(), plain() };
 	p[0].unit[0].texture = p[1].unit[0].texture = &bx;
@@ -545,8 +549,8 @@ static void test_pipeline(struct gpu *g)
 				      vertex(0, 32, 0, 1, 1, 1) };
 	for (int k = 0; k < 4; k++) {
 		float q = 1 + (float)k * 0.5f;
-		v[k].tex[0][0] = (k == 1 || k == 2 ? 1.0f : 0.0f) * q;
-		v[k].tex[0][1] = (k >= 2 ? 1.0f : 0.0f) * q;
+		v[k].tex[0][0] = ((k == 1 || k == 2 ? 1.0f : 0.0f) + 0.0535f) * q;
+		v[k].tex[0][1] = ((k >= 2 ? 1.0f : 0.0f) + 0.0535f) * q;
 		v[k].tex[0][2] = q;
 	}
 	struct raster_vertex m[3] = { vertex(40, 0, 0, 1, 1, 1), vertex(46, 0, 0, 1, 1, 1), vertex(40, 6, 0, 1, 1, 1) };
@@ -559,13 +563,13 @@ static void test_pipeline(struct gpu *g)
 				      tri_cmd(1, z[0], z[1], z[2], true) };
 	both(g, p, more, 5);
 	if (getenv("SYSHM_GPU_DEBUG"))
-		printf("gpu: projective and filtered: %u pixels off by more than 1, %u by more than 40\n", differing(1),
-		       differing(40));
+		printf("gpu: projective and filtered: %u pixels off by more than 1, %u by more than 20\n", differing(1),
+		       differing(20));
 	for (int k = 0; k < W * H && getenv("SYSHM_GPU_DEBUG"); k++)
 		if (channel_diff(cpu_color[k], gpu_color[k]) > 1)
 			printf("gpu: (%d,%d): %08x against %08x\n", k % W, k / W, gpu_color[k], cpu_color[k]);
 	CHECK(differing(3) <= 8);               /* (texel edges under perspective, filtering's rounding) */
-	CHECK_EQ(differing(40), 0);
+	CHECK_EQ(differing(20), 0);             /* (none a texel off) */
 	gpu_texture_free(g, &tx);
 	gpu_texture_free(g, &bx);
 }

@@ -1039,7 +1039,7 @@ static size_t array_bytes(unsigned k, bool big, uint8_t *out)
 	case ARR_PIX_DEPTH:
 		for (int j = 0; j < 6; j++)
 			for (int i = 0; i < 8; i++)
-				PUT(GL_FLOAT, 0.2 + 0.08 * i + 0.01 * j);
+				PUT(GL_FLOAT, 0.204 + 0.08 * i + 0.01 * j);
 		break;
 	case ARR_PIX_STENCIL:
 		for (int j = 0; j < 6; j++)
@@ -1372,7 +1372,11 @@ static const struct op scene_arrays[] = {
 	{ NULL, { 0 } },
 };
 
-/* the stencil: a shape, counting, inverting with a write mask, after the alpha test, when the depth test fails */
+/*
+ * The stencil: a shape, counting, inverting with a write mask, after the
+ * alpha test (its alpha 0.5 between pixels' centers, not on one: there,
+ * rounding would decide), when the depth test fails
+ */
 static const struct op scene_stencil[] = {
 	ORTHO, { "glClearColor", { 0.1, 0.1, 0.1, 1 } }, { "glClearDepth", { 1 } }, { "glClearStencil", { 0 } },
 	{ "glClear", { GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT } }, EN(GL_STENCIL_TEST),
@@ -1395,8 +1399,8 @@ static const struct op scene_stencil[] = {
 	{ "glStencilOp", { GL_KEEP, GL_KEEP, GL_KEEP } }, C3(0.2, 0.3, 1), QUAD2(48.2, 1.3, 94.6, 44.7),
 	EN(GL_ALPHA_TEST), { "glAlphaFunc", { GL_GREATER, 0.5 } }, { "glStencilFunc", { GL_ALWAYS, 5, 0xFF } },
 	{ "glStencilOp", { GL_KEEP, GL_KEEP, GL_REPLACE } }, { "glColorMask", { 0, 0, 0, 0 } },
-	BEGIN(GL_QUADS), C4(1, 1, 1, 0), V2(4.4, 48.3), C4(1, 1, 1, 1), V2(44.6, 48.3), V2(44.6, 70.2), C4(1, 1, 1, 0),
-	V2(4.4, 70.2), END,
+	BEGIN(GL_QUADS), C4(1, 1, 1, 0), V2(3.4, 48.3), C4(1, 1, 1, 1), V2(44.6, 48.3), V2(44.6, 70.2), C4(1, 1, 1, 0),
+	V2(3.4, 70.2), END,
 	DIS(GL_ALPHA_TEST), { "glColorMask", { 1, 1, 1, 1 } }, { "glStencilFunc", { GL_EQUAL, 5, 0xFF } },
 	{ "glStencilOp", { GL_KEEP, GL_KEEP, GL_KEEP } }, C3(1, 1, 0.3), QUAD2(4.4, 48.3, 44.6, 70.2),
 	EN(GL_DEPTH_TEST), { "glStencilFunc", { GL_ALWAYS, 0, 0xFF } }, C3(0.5, 0.5, 0.5),
@@ -1495,8 +1499,9 @@ static const struct op scene_lists[] = {
  * rows where neither OpenGL 1.2's rectangles nor rounding would, see
  * test_glfront.c), through the pixel transfer's scales and biases (no
  * maps: see mesa_invoke(); test_glfront.c checks them); bitmaps moving the
- * raster position; a copy of what's drawn; a depth image tested against, a
- * stencil image stenciled by
+ * raster position; a copy of what's drawn; a depth image tested against
+ * (none of its depths a quad's: there, rounding would decide), a stencil
+ * image stenciled by
  */
 enum { GL_RGBA_T = 0x1908, GL_RGB_T = 0x1907, GL_LUMINANCE_T = 0x1909, GL_RED_SCALE = 0x0D14, GL_BLUE_SCALE = 0x0D1A,
        GL_BLUE_BIAS = 0x0D1B, GL_ALPHA_SCALE = 0x0D1C, GL_COLOR_T = 0x1800, GL_DEPTH_COMPONENT_T = 0x1902,
@@ -2322,6 +2327,20 @@ static struct {
 } egl;
 
 static void *glu_lib, *mesa_quadric;   /* (SGI's GLU: SYSHM_TEST_GLU's) */
+static char mesa_renderer[128];         /* (its GL_RENDERER) */
+
+/*
+ * What a Mesa driver draws wrong, not compared on it: radeonsi (Mesa
+ * 26.2, on a Radeon RX 6800 XT) draws glCopyPixels' copies of depths with
+ * no color at all (rather than the raster color), and writes their depths
+ * with the depth test off too; llvmpipe draws them as OpenGL says
+ */
+static const struct {
+	const char *scene, *renderer, *what;
+	int left, top, right, bottom;           /* (pixels; rows top first) */
+} mesa_wrong[] = {
+	{ "pixels", "radeonsi", "glCopyPixels' depths", 68, SH - 71, 92, SH - 59 },
+};
 
 static void (*mesa_fn(const char *name))(void)
 {
@@ -2589,7 +2608,12 @@ static bool mesa_scene(const struct op *ops, uint32_t *out)
 	if (!ctx || !egl.MakeCurrent(egl.display, NULL, NULL, ctx))
 		return false;
 	enum { GL_FRAMEBUFFER = 0x8D40, GL_RENDERBUFFER = 0x8D41, GL_RGBA8 = 0x8058, GL_DEPTH24_STENCIL8 = 0x88F0,
-	       GL_COLOR_ATTACHMENT0 = 0x8CE0, GL_DEPTH_STENCIL_ATTACHMENT = 0x821A, GL_RGBA = 0x1908 };
+	       GL_COLOR_ATTACHMENT0 = 0x8CE0, GL_DEPTH_STENCIL_ATTACHMENT = 0x821A, GL_RGBA = 0x1908,
+	       GL_RENDERER_T = 0x1F01 };
+	if (!mesa_renderer[0]) {
+		const char *r = GLFN(const char *(*)(uint32_t), "glGetString")(GL_RENDERER_T);
+		snprintf(mesa_renderer, sizeof mesa_renderer, "%s", r ? r : "?");
+	}
 	uint32_t fbo, rb[2];
 	GLFN(void (*)(int32_t, uint32_t *), "glGenFramebuffers")(1, &fbo);
 	GLFN(void (*)(int32_t, uint32_t *), "glGenRenderbuffers")(2, rb);
@@ -2657,6 +2681,15 @@ static void test_mesa(void)
 		}
 		CHECK(mesa_scene(scenes[k].ops, ref));
 		save("mesa", k, ref);
+		for (unsigned w = 0; w < sizeof mesa_wrong / sizeof mesa_wrong[0]; w++) {
+			if (strcmp(mesa_wrong[w].scene, scenes[k].name) || !strstr(mesa_renderer, mesa_wrong[w].renderer))
+				continue;
+			printf("opengl: %s: %s not compared (%s draws them wrong)\n", scenes[k].name, mesa_wrong[w].what,
+			       mesa_wrong[w].renderer);
+			for (int y = mesa_wrong[w].top; y < mesa_wrong[w].bottom; y++)
+				for (int x = mesa_wrong[w].left; x < mesa_wrong[w].right; x++)
+					ref[y * SW + x] = images[0][k][y * SW + x];
+		}
 		unsigned most, n = differing(images[0][k], ref, 2, &most);
 		unsigned covered = 0;                   /* (pixels one draws on and the other doesn't) */
 		for (unsigned i = 0; i < SW * SH; i++)
