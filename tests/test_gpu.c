@@ -126,6 +126,25 @@ static void both(struct gpu *g, const struct raster_state *states, const struct 
 	draw_gpu(g, states, cmds, n);
 }
 
+/*
+ * Triangles reaching past the target's edges (as clipped OpenGL triangles
+ * do, within the guard band) are interpolated as raster.c does, wherever
+ * the GPU cuts them
+ */
+static void test_past_edges(struct gpu *g)
+{
+	static const float far[][2] = { { -96, 84 }, { -40, 60 }, { 20, -50 }, { 200, 90 } };
+	struct raster_state s[1] = { plain() };
+	for (unsigned k = 0; k < sizeof far / sizeof far[0]; k++) {
+		struct raster_vertex a = vertex(175.06f, 84, 0.25f, 0.85f, 0.49f, 0.48f);
+		struct raster_vertex b = vertex(32, 21.3f, 0.75f, 0.1f, 0.3f, 0.1f);
+		struct raster_vertex c = vertex(far[k][0], far[k][1], 0.5f, 0.57f, 0.58f, 0.57f);
+		struct raster_cmd cmds[2] = { clear_cmd(0, 1), tri_cmd(0, a, b, c, false) };
+		both(g, s, cmds, 2);
+		CHECK(differing(2) <= 2);
+	}
+}
+
 /* Two triangles sharing an edge cover each pixel of their square exactly once */
 static void test_coverage(struct gpu *g)
 {
@@ -585,6 +604,7 @@ void test_gpu(void)
 		return;
 	}
 	test_coverage(g);
+	test_past_edges(g);
 	test_depth(g);
 	test_texture(g);
 	test_exact(g);

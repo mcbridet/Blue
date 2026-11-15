@@ -527,7 +527,7 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 
 int tools_gl_files(struct hfs_file files[TOOLS_GL_FILES])
 {
-	static uint8_t frag[TOOLS_GL_FILES][64 << 10], rsrc[TOOLS_GL_FILES][1024];
+	static uint8_t frag[TOOLS_GL_FILES][OPENGL_LIBRARY_MAX], rsrc[TOOLS_GL_FILES][1024];
 	static const char *const names[TOOLS_GL_FILES] = { "syshm OpenGL Library", "syshm OpenGL Memory",
 							   "syshm OpenGL Utility" };
 	static const char *const fragments[TOOLS_GL_FILES] = { "OpenGLLibrary", "OpenGLMemory", "OpenGLUtility" };

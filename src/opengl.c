@@ -1,5 +1,6 @@
 #include "opengl.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,18 +72,10 @@ _Static_assert(E_INIT == OPENGL_ENTRY_INIT && E_TERM == OPENGL_ENTRY_TERM && E_T
 
 /* ---- OpenGL's and AGL's numbers ------------------------------------------------- */
 
-enum { GL_NO_ERROR, GL_INVALID_ENUM = 0x0500, GL_INVALID_VALUE, GL_INVALID_OPERATION, GL_STACK_OVERFLOW,
-       GL_STACK_UNDERFLOW, GL_OUT_OF_MEMORY };
-#define GL_DEPTH_BUFFER_BIT 0x0100u
-#define GL_ACCUM_BUFFER_BIT 0x0200u
-#define GL_STENCIL_BUFFER_BIT 0x0400u
-#define GL_COLOR_BUFFER_BIT 0x4000u
+/* OpenGL's (the front end's are in glfront.h) */
 enum { GL_VENDOR = 0x1F00, GL_RENDERER, GL_VERSION, GL_EXTENSIONS };
-enum { GL_SCISSOR_BOX = 0x0C10, GL_SCISSOR_TEST = 0x0C11, GL_VIEWPORT = 0x0BA2, GL_COLOR_CLEAR_VALUE = 0x0C22,
-       GL_COLOR_WRITEMASK = 0x0C23, GL_DEPTH_CLEAR_VALUE = 0x0B73, GL_DEPTH_WRITEMASK = 0x0B72,
-       GL_DOUBLEBUFFER = 0x0C32, GL_MAX_TEXTURE_SIZE = 0x0D33, GL_MAX_VIEWPORT_DIMS = 0x0D3A,
-       GL_RED_BITS = 0x0D52, GL_GREEN_BITS, GL_BLUE_BITS, GL_ALPHA_BITS, GL_DEPTH_BITS, GL_STENCIL_BITS,
-       GL_MAX_TEXTURE_UNITS_ARB = 0x84E2 };
+enum { GL_DOUBLEBUFFER = 0x0C32, GL_MAX_TEXTURE_SIZE = 0x0D33, GL_RED_BITS = 0x0D52, GL_GREEN_BITS, GL_BLUE_BITS,
+       GL_ALPHA_BITS, GL_DEPTH_BITS, GL_STENCIL_BITS };
 
 /* AGL's (agl.h) */
 enum { AGL_NONE, AGL_ALL_RENDERERS, AGL_BUFFER_SIZE, AGL_LEVEL, AGL_RGBA, AGL_DOUBLEBUFFER, AGL_STEREO,
@@ -123,7 +116,6 @@ enum { OPTION_SWAP_RECT, OPTION_BUFFER_RECT, OPTION_SWAP_LIMIT, OPTION_COLORMAP_
 #define VIDEO_MEMORY (32u << 20)
 #define TEXTURE_MEMORY (32u << 20)
 #define MAX_TEXTURE_SIZE 1024
-#define TEXTURE_UNITS 2
 static const char vendor[] = "ATI Technologies Inc.";
 static const char renderer[] = "Rage 128 OpenGL Engine";
 static const char version[] = "1.2 syshm";
@@ -142,14 +134,15 @@ static const char *const agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE] = {
 /*
  * After the entries' TVectors: what it is and its version (which goes up
  * when the fragment changes, so that one installed by an older syshm is
- * told apart), the current context (glc_cc), the recording buffer's
- * bounds, the strings glGetString() and aglErrorString() give; then,
- * zero-filled, the contexts, pixel formats and renderer infos.
+ * told apart), the current context (glc_cc), where the next record goes
+ * and where the buffer ends (see "recording"), the strings glGetString()
+ * and aglErrorString() give; then, zero-filled, the contexts, pixel
+ * formats, renderer infos and the recording buffer.
  */
 #define DATA_MAGIC 0x7379474Cu          /* 'syGL' */
-#define DATA_VERSION 1u
-enum { D_MAGIC = 0, D_VERSION = 4, D_CURRENT = OPENGL_DATA_CURRENT, D_RECORD = 12, D_RECORD_END = 16,
-       D_STRINGS = 20 };
+#define DATA_VERSION 2u
+enum { D_MAGIC = 0, D_VERSION = 4, D_CURRENT = OPENGL_DATA_CURRENT, D_RECORD = OPENGL_DATA_RECORD,
+       D_RECORD_END = D_RECORD + 4, D_STRINGS = 20 };
 #define FORMATS 16
 #define FORMAT_SIZE 32u
 #define RENDERER_INFOS 4
@@ -171,7 +164,7 @@ static struct {
 	size_t len;
 	uint32_t vendor, renderer, version, extensions;
 	uint32_t agl_error[AGL_ERRORS - AGL_BAD_ATTRIBUTE], no_error, unknown_error;
-	uint32_t contexts, formats, renderer_infos, end;       /* the zero-filled parts */
+	uint32_t contexts, formats, renderer_infos, record, end;       /* the zero-filled parts */
 } lib;
 
 static uint32_t put_string(const char *s)
@@ -201,17 +194,305 @@ static void make_data(void)
 	lib.contexts = (uint32_t)(lib.len + 15) & ~15u;
 	lib.formats = lib.contexts + OPENGL_CONTEXTS * CONTEXT_SIZE;
 	lib.renderer_infos = lib.formats + FORMATS * FORMAT_SIZE;
-	lib.end = lib.renderer_infos + RENDERER_INFOS * RENDERER_INFO_SIZE;
+	lib.record = lib.renderer_infos + RENDERER_INFOS * RENDERER_INFO_SIZE;
+	lib.end = lib.record + OPENGL_RECORD_SIZE;
+}
+
+/* ---- recording ---------------------------------------------------------------------- */
+
+/*
+ * gl functions that return nothing and take only values, or values and
+ * then one array of a size their name gives (glVertex3fv, glLoadMatrixf),
+ * aren't host calls: the library's own code for each (record_code())
+ * appends a record of the call to a buffer in the process's instance of
+ * the library's data, and the host does what's recorded before any host
+ * call of the library's (so before glGetError, a swap, or another context
+ * made current). A record is a word, the function's entry << 16 | the
+ * record's size in bytes, then the arguments in order: each integer a
+ * word, as its register had it (or past r10, the caller's parameter area),
+ * each float the 4 bytes stfs stores, each double its 8; an array's
+ * elements each as such an argument (bytes and halfwords made words). When
+ * the buffer is full, the call is a host call after all, and the host
+ * makes the same record of it and does it by the same code. Calls through
+ * a context's dispatch table are recorded so too, if that context is the
+ * current one.
+ *
+ * Not recorded: glFlush and glFinish (which show the frame), and what reads
+ * arrays in the guest's memory there and then (glArrayElement,
+ * glDrawArrays, glDrawElements, glDrawRangeElements, glLockArraysEXT).
+ */
+#define RECORD_MAX 160u                 /* bytes, at most (glLoadMatrixd's: 132) */
+#define CODE_WORDS 32768u               /* the recording code's, at most */
+
+struct recorded {
+	uint8_t size;                   /* the record's, in bytes (0: not recorded) */
+	uint8_t count;                  /* the array's elements (0: no array) */
+	char args[20];                  /* the arguments' types, as recorded */
+};
+static struct recorded recorded[GL_FUNCTIONS];
+
+/* Attribute functions (glVertex3f, glColor4ubv...): what they set, from how many values of which type */
+enum { A_NONE, A_VERTEX, A_COLOR, A_SECONDARY, A_NORMAL, A_TEXCOORD, A_MULTITEX, A_RASTERPOS, A_INDEX, A_EDGEFLAG,
+       A_FOGCOORD, A_EVALCOORD };
+struct attrib {
+	uint8_t kind, count;
+	char type;                      /* (as opengl_table.h's) */
+	bool array;                     /* (...v: in an array) */
+};
+static struct attrib attribs[GL_FUNCTIONS];
+static bool inside_ok[GL_FUNCTIONS];    /* what may be called between glBegin and glEnd */
+
+/* An attribute function's name, parsed; false if it isn't one */
+static bool parse_attrib(const char *name, struct attrib *a)
+{
+	static const struct {
+		const char *prefix;
+		uint8_t kind, count;
+	} kinds[] = {
+		{ "glVertex", A_VERTEX, 0 }, { "glColor", A_COLOR, 0 }, { "glSecondaryColor", A_SECONDARY, 0 },
+		{ "glNormal", A_NORMAL, 0 }, { "glTexCoord", A_TEXCOORD, 0 }, { "glMultiTexCoord", A_MULTITEX, 0 },
+		{ "glRasterPos", A_RASTERPOS, 0 }, { "glIndex", A_INDEX, 1 }, { "glEdgeFlag", A_EDGEFLAG, 1 },
+		{ "glFogCoord", A_FOGCOORD, 1 }, { "glEvalCoord", A_EVALCOORD, 0 },
+	};
+	static const struct {
+		const char *suffix;
+		char type;
+	} types[] = { { "ub", 'B' }, { "us", 'S' }, { "ui", 'I' }, { "b", 'b' }, { "s", 's' }, { "i", 'i' },
+		      { "f", 'f' }, { "d", 'd' } };
+	for (unsigned k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+		size_t n = strlen(kinds[k].prefix);
+		if (strncmp(name, kinds[k].prefix, n))
+			continue;
+		const char *p = name + n;
+		struct attrib r = { kinds[k].kind, kinds[k].count, 0, false };
+		if (*p >= '1' && *p <= '4')
+			r.count = (uint8_t)(*p++ - '0');
+		if (r.kind == A_EDGEFLAG)
+			r.type = 'B';
+		for (unsigned j = 0; j < sizeof types / sizeof types[0] && !r.type; j++)
+			if (!strncmp(p, types[j].suffix, strlen(types[j].suffix))) {
+				r.type = types[j].type;
+				p += strlen(types[j].suffix);
+			}
+		if (*p == 'v') {
+			r.array = true;
+			p++;
+		}
+		if (r.type && r.count && (!*p || !strcmp(p, "ARB") || !strcmp(p, "EXT"))) {
+			*a = r;
+			return true;
+		}
+	}
+	return false;
+}
+
+/* How many elements a function's array has (by its name), and their type; 0 if that isn't fixed */
+static unsigned array_of(const char *name, char *type)
+{
+	struct attrib a;
+	if (parse_attrib(name, &a) && a.array) {
+		*type = a.type;
+		return a.count;
+	}
+	static const char *const matrices[] = { "glLoadMatrix", "glMultMatrix", "glLoadTransposeMatrix",
+						"glMultTransposeMatrix" };
+	for (unsigned k = 0; k < sizeof matrices / sizeof matrices[0]; k++) {
+		size_t n = strlen(matrices[k]);
+		const char *p = name + n;
+		if (!strncmp(name, matrices[k], n) && (*p == 'f' || *p == 'd') && (!p[1] || !strcmp(p + 1, "ARB"))) {
+			*type = *p;
+			return 16;
+		}
+	}
+	return 0;
+}
+
+/* What's recorded, what sets attributes, what may come between glBegin and glEnd */
+static void make_tables(void)
+{
+	static const char *const not_recorded[] = { "glFlush", "glFinish", "glArrayElement", "glDrawArrays",
+						    "glDrawElements", "glDrawRangeElements", "glLockArraysEXT",
+						    "glUnlockArraysEXT" };
+	static bool made;
+	if (made)
+		return;
+	made = true;
+	for (unsigned fn = 0; fn < GL_FUNCTIONS; fn++) {
+		const struct function *f = &library_functions[fn];
+		parse_attrib(f->name, &attribs[fn]);
+		inside_ok[fn] = (attribs[fn].kind && attribs[fn].kind != A_RASTERPOS) || fn == F_glEnd ||
+				!strncmp(f->name, "glMaterial", 10) || !strncmp(f->name, "glEvalPoint", 11) ||
+				fn == F_glArrayElement || fn == F_glCallList || fn == F_glCallLists;
+		bool skip = f->result[0] != 'v';
+		for (unsigned k = 0; k < sizeof not_recorded / sizeof not_recorded[0]; k++)
+			skip |= !strcmp(f->name, not_recorded[k]);
+		struct recorded r;
+		memset(&r, 0, sizeof r);
+		unsigned size = 4, fprs = 0, n = 0;
+		for (const char *p = f->args; *p && !skip; p++) {
+			char type;
+			unsigned count = *p == 'p' && !p[1] ? array_of(f->name, &type) : 0;
+			if (*p == 'p' && (!count || n + count >= sizeof r.args)) {
+				skip = true;
+			} else if (*p == 'p') {
+				r.count = (uint8_t)count;
+				memset(r.args + n, type, count);
+				n += count;
+				size += count * (type == 'd' ? 8 : 4);
+			} else {
+				fprs += *p == 'f' || *p == 'd';
+				r.args[n++] = *p;
+				size += *p == 'd' ? 8 : 4;
+			}
+		}
+		if (skip || fprs > 13 || size > RECORD_MAX)
+			continue;
+		r.size = (uint8_t)size;
+		recorded[fn] = r;
+	}
+}
+
+unsigned opengl_recorded(unsigned fn, const char **args)
+{
+	make_tables();
+	if (fn >= GL_FUNCTIONS || !recorded[fn].size)
+		return 0;
+	*args = recorded[fn].args;
+	return recorded[fn].size;
+}
+
+/* PowerPC instructions, for record_code() */
+enum { OP_ADDI = 14, OP_ADDIS = 15, OP_ORI = 24, OP_LWZ = 32, OP_LBZ = 34, OP_STW = 36, OP_LHZ = 40, OP_STFS = 52,
+       OP_STFD = 54 };
+#define INSN_CMPLW(ra, rb) (31u << 26 | (ra) << 16 | (rb) << 11 | 32u << 1)     /* (cr0) */
+#define INSN_BGT 0x41810000u                    /* bc 12,1 (cr0 gt) */
+#define INSN_BNE 0x40820000u                    /* bc 4,2 (cr0 eq clear) */
+#define INSN_BLR 0x4E800020u
+#define INSN_B(off) (0x48000000u | ((uint32_t)(off) & 0x03FFFFFCu))
+
+static uint32_t d_form(unsigned op, unsigned rt, unsigned ra, int32_t d)
+{
+	return (uint32_t)op << 26 | rt << 21 | ra << 16 | ((uint32_t)d & 0xFFFFu);
+}
+
+/*
+ * The code recording a call to gl function fn (with table, as a context's
+ * dispatch table calls it: the context first, which must be the current
+ * one), `at` bytes into the code section, with the library's own data
+ * `data` bytes into the data section. Returns its size in words (written
+ * up to `room`).
+ *
+ *        [lwz r12,CURRENT(r2) ; cmplw r3,r12 ; bne host]  (table)
+ *        lwz r11,RECORD(r2)              where the record goes
+ *        lwz r12,RECORD_END(r2)
+ *        addi r0,r11,size                ... and the next one
+ *        cmplw r0,r12
+ *        bgt host                        (no room)
+ *        stw r0,RECORD(r2)
+ *        lis r0,fn ; ori r0,r0,size ; stw r0,0(r11)
+ *        stw r3,4(r11) ; stfs f1,8(r11) ...      the arguments
+ *        blr
+ * host:  b stub                          the entry's host call (li r11,entry ; b common)
+ */
+static size_t record_code(uint32_t *w, size_t room, uint32_t at, unsigned fn, bool table, uint32_t data)
+{
+	const struct recorded *r = &recorded[fn];
+	size_t n = 0, branch[2], branches = 0;
+#define EMIT(insn) \
+	do { \
+		if (n < room) \
+			w[n] = (insn); \
+		n++; \
+	} while (0)
+	const int32_t rec = (int32_t)(data + D_RECORD);
+	if (table) {
+		EMIT(d_form(OP_LWZ, 12, 2, (int32_t)(data + D_CURRENT)));
+		EMIT(INSN_CMPLW(3u, 12u));
+		branch[branches++] = n;
+		EMIT(INSN_BNE);
+	}
+	EMIT(d_form(OP_LWZ, 11, 2, rec));
+	EMIT(d_form(OP_LWZ, 12, 2, rec + 4));
+	EMIT(d_form(OP_ADDI, 0, 11, r->size));
+	EMIT(INSN_CMPLW(0u, 12u));
+	branch[branches++] = n;
+	EMIT(INSN_BGT);
+	EMIT(d_form(OP_STW, 0, 2, rec));
+	EMIT(d_form(OP_ADDIS, 0, 0, (int32_t)fn));
+	EMIT(d_form(OP_ORI, 0, 0, r->size));
+	EMIT(d_form(OP_STW, 0, 11, 0));
+	unsigned word = table, fpr = 0;
+	int32_t off = 4;
+	for (const char *p = library_functions[fn].args; *p; p++) {
+		switch (*p) {
+		case 'f':
+			EMIT(d_form(OP_STFS, 1 + fpr++, 11, off));
+			word++;
+			off += 4;
+			break;
+		case 'd':
+			EMIT(d_form(OP_STFD, 1 + fpr++, 11, off));
+			word += 2;
+			off += 8;
+			break;
+		case 'p': {                     /* (the array: its elements copied) */
+			unsigned base = 3 + word;
+			if (word >= 8) {
+				EMIT(d_form(OP_LWZ, 12, 1, 24 + 4 * (int32_t)word));
+				base = 12;
+			}
+			word++;
+			const char type = r->args[strlen(r->args) - 1];
+			for (int32_t e = 0; e < r->count; e++) {
+				switch (type) {
+				case 'b': case 'B': EMIT(d_form(OP_LBZ, 0, base, e)); break;
+				case 's': case 'S': EMIT(d_form(OP_LHZ, 0, base, 2 * e)); break;
+				case 'd':
+					EMIT(d_form(OP_LWZ, 0, base, 8 * e));
+					EMIT(d_form(OP_STW, 0, 11, off));
+					off += 4;
+					EMIT(d_form(OP_LWZ, 0, base, 8 * e + 4));
+					break;
+				default: EMIT(d_form(OP_LWZ, 0, base, 4 * e)); break;
+				}
+				EMIT(d_form(OP_STW, 0, 11, off));
+				off += 4;
+			}
+			break;
+		}
+		default:
+			if (word < 8) {
+				EMIT(d_form(OP_STW, 3 + word, 11, off));
+			} else {
+				EMIT(d_form(OP_LWZ, 0, 1, 24 + 4 * (int32_t)word));
+				EMIT(d_form(OP_STW, 0, 11, off));
+			}
+			word++;
+			off += 4;
+			break;
+		}
+	}
+	EMIT(INSN_BLR);
+	const size_t host = n;
+	const uint32_t stub = NDRV_STUB_SIZE * (table ? E_TABLE + fn : fn);
+	EMIT(INSN_B((int32_t)stub - (int32_t)(at + 4 * (uint32_t)host)));
+	for (size_t k = 0; k < branches; k++)
+		if (branch[k] < room)
+			w[branch[k]] |= (uint32_t)(4 * (host - branch[k])) & 0xFFFCu;
+#undef EMIT
+	return n;
 }
 
 size_t opengl_build_library(uint8_t *out, size_t size, struct ndrv_layout *layout)
 {
 	static struct ndrv_export exports[F_LIBRARY + 1];
+	static uint32_t code[CODE_WORDS], entry_code[E_LIBRARY];
 	make_data();
+	make_tables();
 	for (unsigned k = 0; k < F_LIBRARY; k++)
 		exports[k] = (struct ndrv_export){ .name = library_functions[k].name, .entry = k };
 	exports[F_LIBRARY] = (struct ndrv_export){ .name = "glc_cc", .data = true, .offset = D_CURRENT };
-	const struct ndrv_spec spec = {
+	struct ndrv_spec spec = {
 		.kind = FRAG_LIBRARY,
 		.entries = E_LIBRARY,
 		.init_entry = E_INIT,
@@ -224,6 +505,26 @@ size_t opengl_build_library(uint8_t *out, size_t size, struct ndrv_layout *layou
 		.zero_len = lib.end - (uint32_t)lib.len,
 		.current_version = 1,           /* (as Apple's: see docs/opengl-plan.md) */
 	};
+	/* the layout first (the data's doesn't depend on the code), then the recording code (see above) */
+	if (!ndrv_build(&spec, out, size, layout))
+		return 0;
+	const uint32_t first = ndrv_code_offset(E_LIBRARY);
+	size_t n = 0;
+	for (unsigned k = 0; k < E_LIBRARY; k++)
+		entry_code[k] = NDRV_STUB;
+	for (unsigned table = 0; table < 2; table++)
+		for (unsigned fn = 0; fn < GL_FUNCTIONS; fn++) {
+			if (!recorded[fn].size)
+				continue;
+			uint32_t at = first + 4 * (uint32_t)n;
+			entry_code[table ? E_TABLE + fn : fn] = at;
+			n += record_code(code + n, n < CODE_WORDS ? CODE_WORDS - n : 0, at, fn, table, layout->extra);
+		}
+	if (n > CODE_WORDS)
+		return 0;
+	spec.code = code;
+	spec.code_words = n;
+	spec.entry_code = entry_code;
 	return ndrv_build(&spec, out, size, layout);
 }
 
@@ -271,7 +572,7 @@ int opengl_entry(const char *name)
 
 void opengl_init(struct opengl *o, struct mem *mem)
 {
-	static uint8_t scratch[64 << 10];
+	static uint8_t scratch[OPENGL_LIBRARY_MAX];
 	memset(o, 0, sizeof *o);
 	o->mem = mem;
 	opengl_build_library(scratch, sizeof scratch, &o->library);
@@ -474,10 +775,11 @@ static bool fit_drawable(struct opengl *o, struct opengl_context *x)
 		return false;
 	x->width = w;
 	x->height = h;
+	glf_changed(&x->st);
 	if (!x->attached) {             /* (as OpenGL says: the drawable's size, when first attached) */
 		x->attached = true;
-		x->st.viewport[2] = x->st.scissor[2] = w;
-		x->st.viewport[3] = x->st.scissor[3] = h;
+		glf_viewport(&x->st, 0, 0, w, h);
+		glf_scissor(&x->st, 0, 0, w, h);
 	}
 	return true;
 }
@@ -563,13 +865,13 @@ static unsigned get_args(const struct ndrv_call *c, const char *sig, unsigned sk
 	return n;
 }
 
-static void log_call(const char *lib_name, const struct function *f, const union arg *a, unsigned n,
+static void log_call(const char *lib_name, const char *name, const char *types, const union arg *a, unsigned n,
 		     const char *what)
 {
-	printf("%s: %s(", lib_name, f->name);
+	printf("%s: %s(", lib_name, name);
 	for (unsigned k = 0; k < n; k++) {
 		const char *sep = k ? ", " : "";
-		switch (f->args[k]) {
+		switch (types[k]) {
 		case 'f': printf("%s%g", sep, (double)a[k].f); break;
 		case 'd': printf("%s%g", sep, a[k].d); break;
 		case 'b': case 's': case 'i': printf("%s%d", sep, a[k].i); break;
@@ -582,10 +884,19 @@ static void log_call(const char *lib_name, const struct function *f, const union
 
 /* ---- GL ------------------------------------------------------------------------------- */
 
-static void gl_error(struct opengl_context *x, uint32_t e)
+static void not_yet(struct opengl *o, unsigned fn)
 {
-	if (!x->st.error)
-		x->st.error = e;
+	if (!o->unimplemented[fn]) {
+		o->unimplemented[fn] = 1;
+		printf("opengl: %s isn't done yet\n", library_functions[fn].name);
+		fflush(stdout);
+	}
+}
+
+static struct gl_target target_of(struct opengl_context *x)
+{
+	return (struct gl_target){ x->has_surface ? &x->surface : NULL, x->width, x->height, x->depth_bits,
+				   x->pixel_size == 32 ? 8 : 0 };
 }
 
 static float clampf(float v)
@@ -593,62 +904,83 @@ static float clampf(float v)
 	return v > 0 ? (v < 1 ? v : 1) : 0;
 }
 
-static void gl_clear(struct opengl_context *x, uint32_t mask)
+/* An attribute's value given as type t: colors' and normals' integers mapped to 0..1 (or -1..1 if signed) */
+static float attrib_value(const union arg *a, char t, bool normalized)
 {
-	if (mask & ~(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT | GL_ACCUM_BUFFER_BIT)) {
-		gl_error(x, GL_INVALID_VALUE);
-		return;
+	switch (t) {
+	case 'f': return a->f;
+	case 'd': return (float)a->d;
+	case 'b': return normalized ? (float)((2.0 * a->i + 1) / 255) : (float)a->i;
+	case 'B': return normalized ? (float)(a->u / 255.0) : (float)a->u;
+	case 's': return normalized ? (float)((2.0 * a->i + 1) / 65535) : (float)a->i;
+	case 'S': return normalized ? (float)(a->u / 65535.0) : (float)a->u;
+	case 'i': return normalized ? (float)((2.0 * a->i + 1) / 4294967295.0) : (float)a->i;
+	default: return normalized ? (float)(a->u / 4294967295.0) : (float)a->u;
 	}
-	const struct gl_state *st = &x->st;
-	bool color = mask & GL_COLOR_BUFFER_BIT && (st->color_mask[0] || st->color_mask[1] || st->color_mask[2] ||
-						    st->color_mask[3]);
-	bool depth = mask & GL_DEPTH_BUFFER_BIT && st->depth_mask && x->depth_bits;
-	if (!x->has_surface || (!color && !depth))
-		return;
-	struct raster_state s;
-	memset(&s, 0, sizeof s);
-	s.clip_right = x->width;
-	s.clip_bottom = x->height;
-	s.color_keep = (st->color_mask[0] ? 0 : 0x00FF0000u) | (st->color_mask[1] ? 0 : 0x0000FF00u) |
-		       (st->color_mask[2] ? 0 : 0x000000FFu) | (st->color_mask[3] ? 0 : 0xFF000000u);
-	struct raster_cmd *c = surface_cmd(&x->surface, &s, RASTER_CMD_CLEAR);
-	if (!c) {
-		gl_error(x, GL_OUT_OF_MEMORY);
-		return;
-	}
-	c->rect[2] = x->width;
-	c->rect[3] = x->height;
-	if (st->scissor_test) {         /* (counting from the bottom) */
-		c->rect[0] = st->scissor[0];
-		c->rect[2] = st->scissor[0] + st->scissor[2];
-		c->rect[1] = x->height - st->scissor[1] - st->scissor[3];
-		c->rect[3] = x->height - st->scissor[1];
-	}
-	c->clear_color = color;
-	c->clear_depth = depth;
-	const float *cc = st->clear_color;
-	c->argb = (uint32_t)(clampf(cc[3]) * 255 + 0.5f) << 24 | (uint32_t)(clampf(cc[0]) * 255 + 0.5f) << 16 |
-		  (uint32_t)(clampf(cc[1]) * 255 + 0.5f) << 8 | (uint32_t)(clampf(cc[2]) * 255 + 0.5f);
-	c->z = (float)(st->clear_depth < 0 ? 0 : st->clear_depth > 1 ? 1 : st->clear_depth);
 }
 
-/* An integer state's values (glGetIntegerv and friends); 0 for an enum it doesn't know */
-static unsigned gl_get(const struct opengl_context *x, uint32_t pname, double *v)
+/* glVertex, glColor and the rest (attribs[fn]) */
+static void set_attrib(struct opengl *o, struct opengl_context *x, unsigned fn, const union arg *a)
 {
-	const struct gl_state *st = &x->st;
+	const struct attrib *at = &attribs[fn];
+	struct gl_state *st = &x->st;
+	const unsigned first = at->kind == A_MULTITEX;          /* (the texture unit first) */
+	const bool normalized = at->kind == A_COLOR || at->kind == A_SECONDARY || at->kind == A_NORMAL;
+	float v[4] = { 0, 0, 0, 1 };
+	for (unsigned k = 0; k < at->count; k++)
+		v[k] = attrib_value(&a[first + k], at->type, normalized);
+	switch (at->kind) {
+	case A_VERTEX: {
+		struct gl_target t = target_of(x);
+		glf_vertex(st, &t, v);
+		break;
+	}
+	case A_COLOR: memcpy(st->color, v, sizeof v); break;
+	case A_SECONDARY: memcpy(st->secondary_color, v, 3 * sizeof *v); break;
+	case A_NORMAL: memcpy(st->normal, v, 3 * sizeof *v); break;
+	case A_TEXCOORD: memcpy(st->tex[0], v, sizeof v); break;
+	case A_MULTITEX:
+		if (a[0].u - GL_TEXTURE0_ARB < GLF_TEXTURE_UNITS)
+			memcpy(st->tex[a[0].u - GL_TEXTURE0_ARB], v, sizeof v);
+		else
+			glf_error(st, GL_INVALID_ENUM);
+		break;
+	case A_EDGEFLAG: st->edge_flag = a[0].u != 0; break;
+	case A_FOGCOORD: st->fog_coord = v[0]; break;
+	case A_INDEX: break;                    /* (there's no color index mode) */
+	default: not_yet(o, fn); break;         /* (raster positions, evaluators) */
+	}
+}
+
+/* glLoadMatrix and its kin's argument (as glLoadMatrixf's) */
+static void matrix_arg(unsigned fn, const union arg *a, float m[16])
+{
+	bool doubles = recorded[fn].args[0] == 'd';
+	bool transpose = fn == F_glLoadTransposeMatrixfARB || fn == F_glLoadTransposeMatrixdARB ||
+			 fn == F_glMultTransposeMatrixfARB || fn == F_glMultTransposeMatrixdARB;
+	for (unsigned k = 0; k < 16; k++) {
+		unsigned from = transpose ? (k & 3) * 4 + k / 4 : k;
+		m[k] = doubles ? (float)a[from].d : a[from].f;
+	}
+}
+
+/* State glGetIntegerv gives as fractions of the integers' range (colors, normals, depths) */
+static bool scaled(uint32_t pname)
+{
+	return pname == 0x0B00 || pname == 0x0B02 || pname == 0x0C22 || pname == 0x8005 || pname == 0x0BC2 ||
+	       pname == 0x0B73 || pname == 0x0B70 || pname == 0x8459;
+}
+
+/* A state's values (glGetDoublev's); 0 for an enum it doesn't know */
+static unsigned gl_get(struct opengl_context *x, uint32_t pname, double *v)
+{
+	unsigned n = glf_get(&x->st, pname, v);
+	if (n)
+		return n;
 	bool deep = x->pixel_size == 32;
 	switch (pname) {
-	case GL_VIEWPORT: for (int k = 0; k < 4; k++) v[k] = st->viewport[k]; return 4;
-	case GL_SCISSOR_BOX: for (int k = 0; k < 4; k++) v[k] = st->scissor[k]; return 4;
-	case GL_SCISSOR_TEST: v[0] = st->scissor_test; return 1;
-	case GL_COLOR_CLEAR_VALUE: for (int k = 0; k < 4; k++) v[k] = st->clear_color[k]; return 4;
-	case GL_COLOR_WRITEMASK: for (int k = 0; k < 4; k++) v[k] = st->color_mask[k]; return 4;
-	case GL_DEPTH_CLEAR_VALUE: v[0] = st->clear_depth; return 1;
-	case GL_DEPTH_WRITEMASK: v[0] = st->depth_mask; return 1;
 	case GL_DOUBLEBUFFER: v[0] = (x->format & PF_DOUBLE) != 0; return 1;
 	case GL_MAX_TEXTURE_SIZE: v[0] = MAX_TEXTURE_SIZE; return 1;
-	case GL_MAX_TEXTURE_UNITS_ARB: v[0] = TEXTURE_UNITS; return 1;
-	case GL_MAX_VIEWPORT_DIMS: v[0] = v[1] = 4096; return 2;
 	case GL_RED_BITS: case GL_GREEN_BITS: case GL_BLUE_BITS: v[0] = deep ? 8 : 5; return 1;
 	case GL_ALPHA_BITS: v[0] = deep ? 8 : 0; return 1;
 	case GL_DEPTH_BITS: v[0] = x->depth_bits; return 1;
@@ -657,11 +989,20 @@ static unsigned gl_get(const struct opengl_context *x, uint32_t pname, double *v
 	}
 }
 
-static uint32_t gl_call(struct opengl *o, struct ndrv_call *c, struct opengl_context *x, unsigned fn,
-			const union arg *a)
+static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn, const union arg *a)
 {
 	struct gl_state *st = &x->st;
 	struct mem *m = o->mem;
+	if (st->inside && !inside_ok[fn]) {
+		glf_error(st, GL_INVALID_OPERATION);
+		return 0;
+	}
+	if (attribs[fn].kind) {
+		set_attrib(o, x, fn, a);
+		return 0;
+	}
+	struct gl_target t = target_of(x);
+	float mat[16];
 	switch (fn) {
 	case F_glClearColor:
 		for (int k = 0; k < 4; k++)
@@ -670,35 +1011,57 @@ static uint32_t gl_call(struct opengl *o, struct ndrv_call *c, struct opengl_con
 	case F_glClearDepth:
 		st->clear_depth = a[0].d < 0 ? 0 : a[0].d > 1 ? 1 : a[0].d;
 		return 0;
-	case F_glClear:
-		gl_clear(x, a[0].u);
-		return 0;
-	case F_glViewport:
-	case F_glScissor:
-		if (a[2].i < 0 || a[3].i < 0) {
-			gl_error(x, GL_INVALID_VALUE);
-			return 0;
-		}
-		for (int k = 0; k < 4; k++)
-			(fn == F_glViewport ? st->viewport : st->scissor)[k] = a[k].i;
-		if (fn == F_glViewport)         /* (as GL_MAX_VIEWPORT_DIMS) */
-			for (int k = 2; k < 4; k++)
-				st->viewport[k] = st->viewport[k] < 4096 ? st->viewport[k] : 4096;
-		return 0;
+	case F_glClear: glf_clear(st, &t, a[0].u); return 0;
+	case F_glViewport: glf_viewport(st, a[0].i, a[1].i, a[2].i, a[3].i); return 0;
+	case F_glScissor: glf_scissor(st, a[0].i, a[1].i, a[2].i, a[3].i); return 0;
+	case F_glDepthRange: glf_depth_range(st, a[0].d, a[1].d); return 0;
 	case F_glEnable:
 	case F_glDisable:
-		if (a[0].u == GL_SCISSOR_TEST)
-			st->scissor_test = fn == F_glEnable;
+		if (!glf_enable(st, a[0].u, fn == F_glEnable))
+			glf_error(st, GL_INVALID_ENUM);
 		return 0;
-	case F_glIsEnabled:
-		return a[0].u == GL_SCISSOR_TEST ? st->scissor_test : 0;
-	case F_glColorMask:
-		for (int k = 0; k < 4; k++)
-			st->color_mask[k] = a[k].u != 0;
+	case F_glIsEnabled: {
+		int on = glf_is_enabled(st, a[0].u);
+		if (on < 0)
+			glf_error(st, GL_INVALID_ENUM);
+		return on > 0;
+	}
+	case F_glColorMask: glf_color_mask(st, a[0].u != 0, a[1].u != 0, a[2].u != 0, a[3].u != 0); return 0;
+	case F_glDepthMask: glf_depth_mask(st, a[0].u != 0); return 0;
+	case F_glDepthFunc: glf_depth_func(st, a[0].u); return 0;
+	case F_glBlendFunc: glf_blend_func(st, a[0].u, a[1].u); return 0;
+	case F_glBlendEquation: case F_glBlendEquationEXT: glf_blend_equation(st, a[0].u); return 0;
+	case F_glBlendColor: case F_glBlendColorEXT: glf_blend_color(st, a[0].f, a[1].f, a[2].f, a[3].f); return 0;
+	case F_glAlphaFunc: glf_alpha_func(st, a[0].u, a[1].f); return 0;
+	case F_glCullFace: glf_cull_face(st, a[0].u); return 0;
+	case F_glFrontFace: glf_front_face(st, a[0].u); return 0;
+	case F_glShadeModel: glf_shade_model(st, a[0].u); return 0;
+	case F_glPointSize: glf_point_size(st, a[0].f); return 0;
+	case F_glLineWidth: glf_line_width(st, a[0].f); return 0;
+	case F_glHint: return 0;                /* (hints taken: the same either way) */
+	case F_glActiveTextureARB: glf_active_texture(st, a[0].u); return 0;
+	case F_glMatrixMode: glf_matrix_mode(st, a[0].u); return 0;
+	case F_glLoadIdentity: glf_identity(st); return 0;
+	case F_glLoadMatrixf: case F_glLoadMatrixd: case F_glLoadTransposeMatrixfARB: case F_glLoadTransposeMatrixdARB:
+		matrix_arg(fn, a, mat);
+		glf_load(st, mat);
 		return 0;
-	case F_glDepthMask:
-		st->depth_mask = a[0].u != 0;
+	case F_glMultMatrixf: case F_glMultMatrixd: case F_glMultTransposeMatrixfARB: case F_glMultTransposeMatrixdARB:
+		matrix_arg(fn, a, mat);
+		glf_mult(st, mat);
 		return 0;
+	case F_glTranslatef: glf_translate(st, a[0].f, a[1].f, a[2].f); return 0;
+	case F_glTranslated: glf_translate(st, (float)a[0].d, (float)a[1].d, (float)a[2].d); return 0;
+	case F_glScalef: glf_scale(st, a[0].f, a[1].f, a[2].f); return 0;
+	case F_glScaled: glf_scale(st, (float)a[0].d, (float)a[1].d, (float)a[2].d); return 0;
+	case F_glRotatef: glf_rotate(st, a[0].f, a[1].f, a[2].f, a[3].f); return 0;
+	case F_glRotated: glf_rotate(st, (float)a[0].d, (float)a[1].d, (float)a[2].d, (float)a[3].d); return 0;
+	case F_glFrustum: glf_frustum(st, a[0].d, a[1].d, a[2].d, a[3].d, a[4].d, a[5].d); return 0;
+	case F_glOrtho: glf_ortho(st, a[0].d, a[1].d, a[2].d, a[3].d, a[4].d, a[5].d); return 0;
+	case F_glPushMatrix: glf_push(st); return 0;
+	case F_glPopMatrix: glf_pop(st); return 0;
+	case F_glBegin: glf_begin(st, a[0].u); return 0;
+	case F_glEnd: glf_end(st, &t); return 0;
 	case F_glGetError: {
 		uint32_t e = st->error;
 		st->error = GL_NO_ERROR;
@@ -712,7 +1075,7 @@ static uint32_t gl_call(struct opengl *o, struct ndrv_call *c, struct opengl_con
 		case GL_VERSION: return base + lib.version;
 		case GL_EXTENSIONS: return base + lib.extensions;
 		default:
-			gl_error(x, GL_INVALID_ENUM);
+			glf_error(st, GL_INVALID_ENUM);
 			return 0;
 		}
 	}
@@ -724,7 +1087,7 @@ static uint32_t gl_call(struct opengl *o, struct ndrv_call *c, struct opengl_con
 		unsigned n = gl_get(x, a[0].u, v);
 		unsigned size = fn == F_glGetBooleanv ? 1 : fn == F_glGetDoublev ? 8 : 4;
 		if (!n) {
-			gl_error(x, GL_INVALID_ENUM);
+			glf_error(st, GL_INVALID_ENUM);
 			return 0;
 		}
 		if (!writable(m, a[1].u, n * size))
@@ -734,7 +1097,10 @@ static uint32_t gl_call(struct opengl *o, struct ndrv_call *c, struct opengl_con
 			if (fn == F_glGetBooleanv) {
 				mem_w8(m, at, v[k] != 0);
 			} else if (fn == F_glGetIntegerv) {
-				mem_w32(m, at, (uint32_t)(int32_t)v[k]);
+				double d = scaled(a[0].u) ? (v[k] < -1 ? -1 : v[k] > 1 ? 1 : v[k]) * 2147483647.0 :
+					   floor(v[k] + 0.5);
+				d = d < -2147483648.0 ? -2147483648.0 : d > 2147483647.0 ? 2147483647.0 : d;
+				mem_w32(m, at, (uint32_t)(int32_t)d);
 			} else if (fn == F_glGetFloatv) {
 				float f = (float)v[k];
 				uint32_t b;
@@ -754,14 +1120,129 @@ static uint32_t gl_call(struct opengl *o, struct ndrv_call *c, struct opengl_con
 			show(o, x);
 		return 0;
 	default:
-		if (!o->unimplemented[fn]) {
-			o->unimplemented[fn] = 1;
-			printf("opengl: %s isn't done yet\n", library_functions[fn].name);
-			fflush(stdout);
-		}
-		(void)c;
+		not_yet(o, fn);
 		return 0;
 	}
+}
+
+/* ---- doing records ------------------------------------------------------------------- */
+
+/* A record's arguments (after its first word), by the types recorded */
+static unsigned record_args(const uint8_t *p, const char *types, union arg *a)
+{
+	unsigned k = 0;
+	for (; types[k]; k++) {
+		switch (types[k]) {
+		case 'f': {
+			uint32_t w = be32(p);
+			memcpy(&a[k].f, &w, 4);
+			p += 4;
+			break;
+		}
+		case 'd': {
+			uint64_t q = be64(p);
+			memcpy(&a[k].d, &q, 8);
+			p += 8;
+			break;
+		}
+		case 'b': a[k].i = (int8_t)be32(p); p += 4; break;
+		case 'B': a[k].u = be32(p) & 0xFF; p += 4; break;
+		case 's': a[k].i = (int16_t)be32(p); p += 4; break;
+		case 'S': a[k].u = be32(p) & 0xFFFF; p += 4; break;
+		default: a[k].u = be32(p); p += 4; break;
+		}
+	}
+	return k;
+}
+
+/* The record a call of fn (after `skip` words: the dispatch table's context) makes; false if it can't be read */
+static bool make_record(struct opengl *o, const struct ndrv_call *c, unsigned fn, unsigned skip, uint8_t *r)
+{
+	const struct recorded *rc = &recorded[fn];
+	struct ndrv_args it = ndrv_args(c);
+	for (unsigned k = 0; k < skip; k++)
+		ndrv_next_word(&it);
+	put_be32(r, (uint32_t)fn << 16 | rc->size);
+	uint8_t *p = r + 4;
+	for (const char *s = library_functions[fn].args; *s; s++) {
+		switch (*s) {
+		case 'f': put_be32(p, ndrv_next_float(&it)); p += 4; break;
+		case 'd': put_be64(p, ndrv_next_double(&it)); p += 8; break;
+		case 'p': {
+			const char type = rc->args[strlen(rc->args) - 1];
+			uint32_t at = ndrv_next_word(&it), size = type == 'd' ? 8 : type == 'b' || type == 'B' ? 1 :
+								    type == 's' || type == 'S' ? 2 : 4;
+			if (!readable(o->mem, at, rc->count * size))
+				return false;
+			for (unsigned e = 0; e < rc->count; e++, at += size) {
+				if (size == 8) {
+					put_be64(p, mem_r64(o->mem, at));
+					p += 8;
+				} else {
+					put_be32(p, size == 1 ? mem_r8(o->mem, at) : size == 2 ? mem_r16(o->mem, at) :
+						 mem_r32(o->mem, at));
+					p += 4;
+				}
+			}
+			break;
+		}
+		default: put_be32(p, ndrv_next_word(&it)); p += 4; break;
+		}
+	}
+	return true;
+}
+
+/* Does a record of fn's (to x, if there's a context) */
+static void run_record(struct opengl *o, struct opengl_context *x, unsigned fn, const uint8_t *r)
+{
+	union arg a[24];
+	unsigned n = record_args(r + 4, recorded[fn].args, a);
+	if (o->log)
+		log_call("gl", library_functions[fn].name, recorded[fn].args, a, n, "");
+	if (x)
+		gl_call(o, x, fn, a);
+}
+
+/* The context current in an instance, or NULL */
+static struct opengl_context *current(struct opengl *o, struct opengl_instance *in)
+{
+	uint32_t at = data_of(o, in) + D_CURRENT;
+	return readable(o->mem, at, 4) ? context_at(o, in, mem_r32(o->mem, at)) : NULL;
+}
+
+/* Starts an instance's buffer afresh */
+static void record_start(struct opengl *o, struct opengl_instance *in)
+{
+	uint32_t data = data_of(o, in);
+	put_word(o->mem, data + D_RECORD, data + lib.record);
+	put_word(o->mem, data + D_RECORD_END, data + lib.record + OPENGL_RECORD_SIZE);
+}
+
+/* Does what's recorded in an instance's buffer (to its current context), which is then empty */
+static void drain(struct opengl *o, struct opengl_instance *in)
+{
+	struct mem *m = o->mem;
+	uint32_t data = data_of(o, in), start = data + lib.record;
+	if (!readable(m, data, D_STRINGS) || !readable(m, start, OPENGL_RECORD_SIZE))
+		return;
+	uint32_t at = mem_r32(m, data + D_RECORD);
+	if (at != start && at - start <= OPENGL_RECORD_SIZE) {
+		struct opengl_context *x = current(o, in);
+		const uint8_t *p = mem_ptr(m, start), *end = mem_ptr(m, at);
+		while (p < end) {
+			uint32_t h = (uint32_t)(end - p) >= 4 ? be32(p) : 0;
+			unsigned fn = h >> 16, size = h & 0xFFFF;
+			if (fn >= GL_FUNCTIONS || !recorded[fn].size || size != recorded[fn].size ||
+			    size > (size_t)(end - p)) {
+				o->bad_records++;               /* (not ours: the rest dropped) */
+				break;
+			}
+			o->recorded++;
+			run_record(o, x, fn, p);
+			p += size;
+		}
+	}
+	record_start(o, in);
 }
 
 /* ---- AGL ------------------------------------------------------------------------------- */
@@ -996,11 +1477,7 @@ static struct opengl_context *new_context(struct opengl *o, struct opengl_instan
 	x->stencil_bits = mem_r32(m, pf + PF_STENCIL);
 	x->pixel_size = mem_r32(m, pf + PF_PIXEL);
 	x->swap_interval = 0;
-	struct gl_state *st = &x->st;
-	st->clear_depth = 1;
-	for (int j = 0; j < 4; j++)
-		st->color_mask[j] = true;
-	st->depth_mask = true;
+	glf_init(&x->st);
 	/* the handle (itself), then the dispatch table: each gl function's TVector, taking the handle first */
 	mem_w32(m, guest, guest);
 	for (unsigned slot = 0; slot < TABLE_SLOTS; slot++)
@@ -1303,6 +1780,7 @@ void opengl_library_call(struct opengl *o, struct ndrv_call *c)
 			if (c->entry == E_INIT) {
 				in->toc = toc;
 				put_word(o->mem, data_of(o, in) + D_CURRENT, 0);
+				record_start(o, in);
 			}
 		}
 		ndrv_finish(c, 0);
@@ -1316,29 +1794,31 @@ void opengl_library_call(struct opengl *o, struct ndrv_call *c)
 		ndrv_finish(c, 0);
 		return;
 	}
-	const struct function *f = &library_functions[fn];
-	union arg a[16];
-	unsigned n = get_args(c, f->args, skip, a);
 	struct opengl_instance *in = instance_of(o, c->toc, true);
 	if (!in) {
 		ndrv_finish(c, 0);
 		return;
 	}
-	uint32_t result;
-	if (fn >= GL_FUNCTIONS) {
-		result = agl_call(o, c, in, fn, a);
-	} else {
-		uint32_t data = data_of(o, in);
-		uint32_t guest = skip ? ndrv_arg(c, 0) : readable(o->mem, data + D_CURRENT, 4) ?
-			mem_r32(o->mem, data + D_CURRENT) : 0;
-		struct opengl_context *x = context_at(o, in, guest);
-		result = x ? gl_call(o, c, x, fn, a) : 0;
+	drain(o, in);                                   /* (what was recorded comes first) */
+	const struct function *f = &library_functions[fn];
+	struct opengl_context *x = fn >= GL_FUNCTIONS ? NULL : skip ? context_at(o, in, ndrv_arg(c, 0)) :
+				   current(o, in);
+	if (fn < GL_FUNCTIONS && recorded[fn].size) {
+		/* (one the library records, as a host call: its record made here, then done as recorded ones are) */
+		uint8_t r[RECORD_MAX];
+		if (make_record(o, c, fn, skip, r))
+			run_record(o, x, fn, r);
+		ndrv_finish(c, 0);
+		return;
 	}
+	union arg a[16];
+	unsigned n = get_args(c, f->args, skip, a);
+	uint32_t result = fn >= GL_FUNCTIONS ? agl_call(o, c, in, fn, a) : x ? gl_call(o, x, fn, a) : 0;
 	if (o->log) {
 		char what[32] = "";
 		if (f->result[0] != 'v')
 			snprintf(what, sizeof what, " = 0x%X", result);
-		log_call("gl", f, a, n, what);
+		log_call("gl", f->name, f->args, a, n, what);
 	}
 	finish_call(c, f->result, result);
 }
@@ -1387,7 +1867,7 @@ void opengl_memory_call(struct opengl *o, struct ndrv_call *c)
 	union arg a[8];
 	unsigned n = get_args(c, f->args, 0, a);
 	if (o->log)
-		log_call("glm", f, a, n, "");
+		log_call("glm", f->name, f->args, a, n, "");
 	ndrv_set_state(c, 0, MS_NONE);
 	switch (c->entry) {
 	case M_glmMalloc: case M_glmVecAlloc: case M_glmDCBAlloc:
@@ -1457,7 +1937,7 @@ void opengl_utility_call(struct opengl *o, struct ndrv_call *c)
 	union arg a[16];
 	unsigned n = get_args(c, f->args, 0, a);
 	if (o->log)
-		log_call("glu", f, a, n, "");
+		log_call("glu", f->name, f->args, a, n, "");
 	if (!(o->glu_told >> c->entry & 1)) {
 		o->glu_told |= 1ull << c->entry;
 		printf("opengl: %s isn't done yet\n", f->name);

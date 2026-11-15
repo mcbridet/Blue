@@ -13,7 +13,9 @@
 	X(EndUpdate)
 #define GL_IMPORTS(X) X(aglChoosePixelFormat) X(aglCreateContext) X(aglSetDrawable) X(aglSetCurrentContext) \
 	X(aglSwapBuffers) X(glClearColor) X(glClear) X(glScissor) X(glEnable) X(glDisable) X(glGetString) \
-	X(glGetError) X(glViewport)
+	X(glGetError) X(glViewport) X(glClearDepth) X(glDepthFunc) X(glShadeModel) X(glMatrixMode) \
+	X(glLoadIdentity) X(glFrustum) X(glTranslatef) X(glRotatef) X(glPushMatrix) X(glPopMatrix) X(glBegin) \
+	X(glEnd) X(glColor3f) X(glColor3ub) X(glVertex3f) X(glVertex3fv)
 
 enum {
 #define X(name) I_##name,
@@ -40,10 +42,11 @@ static const char *const import_names[I_COUNT] = {
 /*
  * Its data (after the entry's TVector): QuickDraw's globals (thePort last),
  * an event record, the window's rectangle and title, the pixel format's
- * attributes, then the variables: the window, the pixel format, the context.
+ * attributes, a vertex for glVertex3fv, then the variables: the window,
+ * the pixel format, the context.
  */
-enum { D_QD = 0, D_THE_PORT = 202, D_EVENT = 208, D_RECT = 224, D_TITLE = 232, D_ATTRIBS = 264, D_VARS = 328,
-       D_SIZE = D_VARS + 20 };
+enum { D_QD = 0, D_THE_PORT = 202, D_EVENT = 208, D_RECT = 224, D_TITLE = 232, D_ATTRIBS = 264, D_VERTEX = 316,
+       D_VARS = 328, D_SIZE = D_VARS + 20 };
 enum { V_NONE, V_WINDOW, V_FORMAT, V_CONTEXT, V_DEVICE };
 #define WINDOW_LEFT 40
 #define WINDOW_TOP 60
@@ -53,9 +56,21 @@ enum { V_NONE, V_WINDOW, V_FORMAT, V_CONTEXT, V_DEVICE };
 /* AGL's and OpenGL's */
 #define AGL_RGBA 4
 #define AGL_DOUBLEBUFFER 5
+#define AGL_DEPTH_SIZE 12
 #define AGL_ACCELERATED 73
+#define GL_DEPTH_BUFFER_BIT 0x0100u
 #define GL_COLOR_BUFFER_BIT 0x4000u
 #define GL_SCISSOR_TEST 0x0C11u
+#define GL_DEPTH_TEST 0x0B71u
+#define GL_LESS 0x0201u
+#define GL_FLAT 0x1D00u
+#define GL_SMOOTH 0x1D01u
+#define GL_MODELVIEW 0x1700u
+#define GL_PROJECTION 0x1701u
+#define GL_TRIANGLES 4u
+#define GL_TRIANGLE_STRIP 5u
+#define GL_TRIANGLE_FAN 6u
+#define GL_QUADS 7u
 #define GL_VENDOR 0x1F00u
 #define GL_RENDERER 0x1F01u
 #define GL_VERSION 0x1F02u
@@ -72,9 +87,12 @@ size_t gltest_build(uint8_t *out, size_t size, struct ndrv_layout *layout)
 	put_be16(data + D_RECT + 6, WINDOW_LEFT + WINDOW_WIDTH);
 	data[D_TITLE] = 7;
 	memcpy(data + D_TITLE + 1, "GL Test", 7);
-	static const uint32_t attribs[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_ACCELERATED, 0 };
+	static const uint32_t attribs[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_DEPTH_SIZE, 16, AGL_ACCELERATED, 0 };
 	for (unsigned k = 0; k < sizeof attribs / sizeof attribs[0]; k++)
 		put_be32(data + D_ATTRIBS + 4 * k, attribs[k]);
+	static const uint32_t vertex[3] = { 0x3FB33333u, 0x3F99999Au, 0 };     /* (1.4, 1.2, 0) */
+	for (unsigned k = 0; k < 3; k++)
+		put_be32(data + D_VERTEX + 4 * k, vertex[k]);
 	const struct ndrv_spec spec = {
 		.kind = FRAG_APPLICATION, .entries = 1, .hostcall = HOSTCALL_TOOLS_GL_TEST, .imports = imports,
 		.import_count = I_COUNT, .extra = data, .extra_len = sizeof data,
@@ -84,27 +102,35 @@ size_t gltest_build(uint8_t *out, size_t size, struct ndrv_layout *layout)
 
 /* ---- scenes --------------------------------------------------------------------- */
 
-/* A call: an import, its words (variables, addresses in the data, or values) and doubles */
+/*
+ * A call: an import, its words (variables, addresses in the data, or
+ * values) and floating-point arguments (floats rounded to single precision,
+ * as a compiled caller passes them, or doubles)
+ */
 struct gltest_step {
 	uint8_t import;
 	uint8_t words, doubles;
 	uint8_t result;                 /* the variable it goes to (V_NONE: none) */
 	bool show;                      /* print it: a C string */
 	uint32_t w[8];
-	double f[4];
+	double f[6];
+	bool single;
 };
 
 #define VAR(k) (0xF0000000u | (k))
 #define DATA(offset) (0xE0000000u | (offset))
 
 #define CALL(name, ...) { I_##name, sizeof (uint32_t[]){ __VA_ARGS__ } / sizeof(uint32_t), 0, V_NONE, false, \
-			  { __VA_ARGS__ }, { 0 } }
-#define CALL0(name) { I_##name, 0, 0, V_NONE, false, { 0 }, { 0 } }
+			  { __VA_ARGS__ }, { 0 }, false }
+#define CALL0(name) { I_##name, 0, 0, V_NONE, false, { 0 }, { 0 }, false }
 #define CALL_INTO(var, name, ...) { I_##name, sizeof (uint32_t[]){ __VA_ARGS__ } / sizeof(uint32_t), 0, var, \
-				    false, { __VA_ARGS__ }, { 0 } }
+				    false, { __VA_ARGS__ }, { 0 }, false }
 #define CALL_SHOW(name, ...) { I_##name, sizeof (uint32_t[]){ __VA_ARGS__ } / sizeof(uint32_t), 0, V_NONE, true, \
-			       { __VA_ARGS__ }, { 0 } }
-#define CALL_F4(name, a, b, c, d) { I_##name, 0, 4, V_NONE, false, { 0 }, { a, b, c, d } }
+			       { __VA_ARGS__ }, { 0 }, false }
+#define CALL_F(name, ...) { I_##name, 0, sizeof (double[]){ __VA_ARGS__ } / sizeof(double), V_NONE, false, \
+			    { 0 }, { __VA_ARGS__ }, true }
+#define CALL_D(name, ...) { I_##name, 0, sizeof (double[]){ __VA_ARGS__ } / sizeof(double), V_NONE, false, \
+			    { 0 }, { __VA_ARGS__ }, false }
 
 /* Starting: the Toolbox, the screen's depth (SYSHM_GL_TEST_DEPTH, 32 if not), a window, a context drawing in it */
 #define DEPTH 0xD0000000u               /* (the depth, in a word) */
@@ -134,13 +160,72 @@ static const struct gltest_step start[] = {
  * rectangle 20 pixels in from its bottom left
  */
 static const struct gltest_step scene_clear[] = {
-	CALL_F4(glClearColor, 0.25, 0.5, 0.75, 1.0),
+	CALL_F(glClearColor, 0.25, 0.5, 0.75, 1.0),
 	CALL(glClear, GL_COLOR_BUFFER_BIT),
 	CALL(glEnable, GL_SCISSOR_TEST),
 	CALL(glScissor, 20, 20, 100, 60),
-	CALL_F4(glClearColor, 1.0, 0.5, 0.0, 1.0),
+	CALL_F(glClearColor, 1.0, 0.5, 0.0, 1.0),
 	CALL(glClear, GL_COLOR_BUFFER_BIT),
 	CALL(glDisable, GL_SCISSOR_TEST),
+	CALL(aglSwapBuffers, VAR(V_CONTEXT)),
+};
+
+/*
+ * "triangle": in perspective (a frustum 4:3, near 1, far 10), a floor
+ * from behind the near plane into the distance (a strip, clipped by that
+ * plane), then turned 25 degrees about y: a triangle of red, green and
+ * blue, and a yellow quad tilted through it (depth tested: the quad in
+ * front below where they cross, behind above), and a flat-shaded fan
+ */
+static const struct gltest_step scene_triangle[] = {
+	CALL_F(glClearColor, 0.1, 0.1, 0.2, 1.0),
+	CALL_D(glClearDepth, 1.0),
+	CALL(glClear, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT),
+	CALL(glEnable, GL_DEPTH_TEST),
+	CALL(glDepthFunc, GL_LESS),
+	CALL(glMatrixMode, GL_PROJECTION),
+	CALL0(glLoadIdentity),
+	CALL_D(glFrustum, -1.0, 1.0, -0.75, 0.75, 1.0, 10.0),
+	CALL(glMatrixMode, GL_MODELVIEW),
+	CALL0(glLoadIdentity),
+	CALL_F(glTranslatef, 0.0, 0.0, -3.0),
+	CALL(glBegin, GL_TRIANGLE_STRIP),
+	CALL_F(glColor3f, 0.6, 0.6, 0.6),
+	CALL_F(glVertex3f, -3.0, -1.0, 2.5),
+	CALL_F(glVertex3f, 3.0, -1.0, 2.5),
+	CALL_F(glColor3f, 0.1, 0.3, 0.1),
+	CALL_F(glVertex3f, -3.0, -1.0, -6.0),
+	CALL_F(glVertex3f, 3.0, -1.0, -6.0),
+	CALL0(glEnd),
+	CALL0(glPushMatrix),
+	CALL_F(glRotatef, 25.0, 0.0, 1.0, 0.0),
+	CALL(glBegin, GL_TRIANGLES),
+	CALL(glColor3ub, 255, 0, 0),
+	CALL_F(glVertex3f, -1.0, -0.8, 0.0),
+	CALL(glColor3ub, 0, 255, 0),
+	CALL_F(glVertex3f, 1.0, -0.8, 0.0),
+	CALL(glColor3ub, 0, 0, 255),
+	CALL_F(glVertex3f, 0.0, 0.9, 0.0),
+	CALL0(glEnd),
+	CALL(glBegin, GL_QUADS),
+	CALL_F(glColor3f, 1.0, 0.9, 0.1),
+	CALL_F(glVertex3f, -1.2, -0.3, 0.6),
+	CALL_F(glVertex3f, 1.2, -0.3, 0.6),
+	CALL_F(glVertex3f, 1.2, 0.3, -0.6),
+	CALL_F(glVertex3f, -1.2, 0.3, -0.6),
+	CALL0(glEnd),
+	CALL0(glPopMatrix),
+	CALL(glShadeModel, GL_FLAT),
+	CALL(glBegin, GL_TRIANGLE_FAN),
+	CALL_F(glVertex3f, 1.6, 0.6, 0.0),
+	CALL_F(glColor3f, 1.0, 0.0, 1.0),
+	CALL_F(glVertex3f, 2.2, 0.6, 0.0),
+	CALL_F(glColor3f, 0.0, 1.0, 1.0),
+	CALL_F(glVertex3f, 2.0, 1.1, 0.0),
+	CALL_F(glColor3f, 1.0, 1.0, 1.0),
+	CALL(glVertex3fv, DATA(D_VERTEX) + 0),
+	CALL0(glEnd),
+	CALL(glShadeModel, GL_SMOOTH),
 	CALL(aglSwapBuffers, VAR(V_CONTEXT)),
 };
 
@@ -150,6 +235,7 @@ static const struct {
 	unsigned n;
 } scenes[] = {
 	{ "clear", scene_clear, sizeof scene_clear / sizeof scene_clear[0] },
+	{ "triangle", scene_triangle, sizeof scene_triangle / sizeof scene_triangle[0] },
 };
 
 void gltest_init(struct gltest *t)
@@ -192,7 +278,7 @@ static void call(struct gltest *t, struct ndrv_call *c, const struct gltest_step
 	for (unsigned k = 0; k < s->words; k++)
 		c->out[k] = word(t, c, s->w[k]);
 	for (unsigned k = 0; k < s->doubles; k++)
-		ndrv_callout_double(c, k, s->f[k]);
+		ndrv_callout_double(c, k, s->single ? (double)(float)s->f[k] : s->f[k]);
 }
 
 static void step(struct gltest *t, struct ndrv_call *c, unsigned phase, unsigned k, unsigned after)

@@ -2,10 +2,13 @@
  * The guest's OpenGL: syshm's own OpenGLLibrary (gl and agl), OpenGLMemory
  * (glm) and OpenGLUtility (glu), generated code fragments under Apple's
  * fragment names and with Apple's exports (opengl_table.h), whose calls are
- * host calls (see ndrv.h). The host keeps each context's state and draws
- * with the 3D backend (surface.h: the GPU or raster.c), and a frame goes
- * into the context's drawable in guest memory (a window's or the screen's
- * port, or an offscreen buffer) when it's swapped. See docs/opengl-plan.md.
+ * host calls (see ndrv.h), or for most of gl's, records the library's own
+ * code writes into a buffer in guest memory, done on the host at the next
+ * host call (see opengl.c). The host keeps each context's state, its front
+ * end (glfront.h) draws with the 3D backend (surface.h: the GPU or
+ * raster.c), and a frame goes into the context's drawable in guest memory
+ * (a window's or the screen's port, or an offscreen buffer) when it's
+ * swapped. See docs/opengl-plan.md.
  *
  * A context (AGLContext) is a structure in the library's data laid out as
  * Apple's: its handle, then the dispatch table of its gl functions, which
@@ -19,6 +22,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "glfront.h"
 #include "gpu.h"
 #include "mem.h"
 #include "ndrv.h"
@@ -26,17 +30,6 @@
 
 #define OPENGL_CONTEXTS 8               /* per process */
 #define OPENGL_INSTANCES 16             /* processes using the library at once */
-
-/* GL state (what's done so far) */
-struct gl_state {
-	uint32_t error;                 /* the first since glGetError() */
-	float clear_color[4];           /* r, g, b, a */
-	double clear_depth;
-	int32_t viewport[4], scissor[4];
-	bool scissor_test;
-	bool color_mask[4];             /* r, g, b, a */
-	bool depth_mask;
-};
 
 struct opengl_instance;
 
@@ -77,7 +70,8 @@ struct opengl {
 	bool log;                       /* SYSHM_LOG_GL: every call */
 	unsigned char unimplemented[1024];      /* (said once each: OpenGLLibrary's functions) */
 	uint64_t glu_told;                      /* (... OpenGLUtility's) */
-	unsigned long calls, contexts, frames, gpu_frames;
+	unsigned long calls, recorded, contexts, frames, gpu_frames;
+	unsigned long bad_records;              /* (records that made no sense: the rest of the buffer dropped) */
 };
 
 void opengl_init(struct opengl *o, struct mem *mem);
@@ -88,7 +82,8 @@ void opengl_library_call(struct opengl *o, struct ndrv_call *c);
 void opengl_memory_call(struct opengl *o, struct ndrv_call *c);
 void opengl_utility_call(struct opengl *o, struct ndrv_call *c);
 
-/* The fragments; each returns its size (0 if `size` is too small) */
+/* The fragments; each returns its size (0 if `size` is too small: OPENGL_LIBRARY_MAX is enough for any) */
+#define OPENGL_LIBRARY_MAX (256u << 10)
 size_t opengl_build_library(uint8_t *out, size_t size, struct ndrv_layout *layout);
 size_t opengl_build_memory(uint8_t *out, size_t size, struct ndrv_layout *layout);
 size_t opengl_build_utility(uint8_t *out, size_t size, struct ndrv_layout *layout);
@@ -98,7 +93,8 @@ size_t opengl_build_utility(uint8_t *out, size_t size, struct ndrv_layout *layou
  * initialization and termination routines, and (from OPENGL_ENTRY_TABLE,
  * plus the function's) each gl function as a context's dispatch table
  * calls it, with the context's handle first. glc_cc is OPENGL_DATA_CURRENT
- * bytes into the fragment-specific data.
+ * bytes into the fragment-specific data, the recording buffer's bounds
+ * OPENGL_DATA_RECORD.
  */
 int opengl_entry(const char *name);
 #define OPENGL_FUNCTIONS 473u
@@ -106,5 +102,14 @@ int opengl_entry(const char *name);
 #define OPENGL_ENTRY_TERM (OPENGL_FUNCTIONS + 1)
 #define OPENGL_ENTRY_TABLE (OPENGL_FUNCTIONS + 3)
 #define OPENGL_DATA_CURRENT 8u
+#define OPENGL_DATA_RECORD 12u          /* (where the next record goes; then where the buffer ends) */
+
+/*
+ * How OpenGLLibrary records a call to gl function fn (its entry), if it
+ * does: the record's size in bytes and its arguments' types as recorded
+ * (opengl_table.h's, an array's elements in its place); 0 if it doesn't
+ */
+unsigned opengl_recorded(unsigned fn, const char **args);
+#define OPENGL_RECORD_SIZE (64u << 10)  /* the buffer */
 
 #endif

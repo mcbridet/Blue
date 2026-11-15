@@ -14,8 +14,11 @@
 /*
  * Everything is drawn with w = 1, so the GPU interpolates linearly in screen
  * space, as raster.c does; texture coordinates and fog divide by 1/w (or a
- * unit's q/w) per pixel. Rows go upward in GL, so image row y is GL row y:
- * drawn upside down, read back the right way up.
+ * unit's q/w) per pixel. (The varyings are smooth, which with w = 1 is the
+ * same as noperspective: Mesa's llvmpipe interpolates noperspective ones
+ * wrongly where it clips a triangle at the target's edges, which OpenGL's
+ * do reach.) Rows go upward in GL, so image row y is GL row y: drawn upside
+ * down, read back the right way up.
  */
 static const char vertex_source[] =
 	"layout(location = 0) in vec4 a_pos;\n"          /* x, y (pixels), z, 1/w */
@@ -26,13 +29,13 @@ static const char vertex_source[] =
 	"layout(location = 5) in vec3 a_tex0;\n"         /* s/w, t/w, q/w (bitmaps: texel coordinates) */
 	"layout(location = 6) in vec3 a_tex1;\n"
 	"uniform vec2 u_size;\n"
-	"noperspective out float v_invw;\n"
-	"noperspective out vec4 v_color0;\n"
-	"noperspective out vec4 v_color1;\n"
-	"noperspective out vec4 v_color2;\n"
-	"noperspective out float v_fog;\n"
-	"noperspective out vec3 v_tex0;\n"
-	"noperspective out vec3 v_tex1;\n"
+	"smooth out float v_invw;\n"
+	"smooth out vec4 v_color0;\n"
+	"smooth out vec4 v_color1;\n"
+	"smooth out vec4 v_color2;\n"
+	"smooth out float v_fog;\n"
+	"smooth out vec3 v_tex0;\n"
+	"smooth out vec3 v_tex1;\n"
 	"void main()\n"
 	"{\n"
 	"	gl_Position = vec4(a_pos.x * 2.0 / u_size.x - 1.0, a_pos.y * 2.0 / u_size.y - 1.0,\n"
@@ -53,13 +56,13 @@ static const char vertex_source[] =
  * the stages' code between the head and the tail (see stage_code()).
  */
 static const char fragment_head[] =
-	"noperspective in float v_invw;\n"
-	"noperspective in vec4 v_color0;\n"
-	"noperspective in vec4 v_color1;\n"
-	"noperspective in vec4 v_color2;\n"
-	"noperspective in float v_fog;\n"
-	"noperspective in vec3 v_tex0;\n"
-	"noperspective in vec3 v_tex1;\n"
+	"smooth in float v_invw;\n"
+	"smooth in vec4 v_color0;\n"
+	"smooth in vec4 v_color1;\n"
+	"smooth in vec4 v_color2;\n"
+	"smooth in float v_fog;\n"
+	"smooth in vec3 v_tex0;\n"
+	"smooth in vec3 v_tex1;\n"
 	"uniform sampler2D u_texture0;\n"
 	"uniform sampler2D u_texture1;\n"
 	"uniform vec4 u_constant[STAGES];\n"

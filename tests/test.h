@@ -47,6 +47,7 @@ void test_clip(void);
 void test_raster(void);
 void test_rave(void);
 void test_gpu(void);
+void test_glfront(void);
 void test_opengl(void);
 void test_display(void);
 void test_video(void);
