@@ -3216,6 +3216,8 @@ static void test_feedback(void)
 static void test_mesa_feedback(void)
 {
 	static uint32_t img[SW * SH];
+	if (!mesa_open())
+		return;                 /* (test_mesa() has said so) */
 	for (unsigned k = 0; k < FB_SCENES; k++) {
 		memset(fb, 0, sizeof fb);
 		memcpy(fb[0].snap, fb_ours[k].snap, sizeof fb_ours[k].snap);
