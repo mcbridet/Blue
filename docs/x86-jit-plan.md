@@ -10,6 +10,32 @@ sharing everything that isn't about the host's instructions.
 
 ## Status
 
+Milestone 2 done (memory):
+
+- **Loads and stores** of bytes, halfwords and words, D-form and indexed,
+  with update, the byte-reversed ones (`lwbrx`, `lhbrx`, `stwbrx`,
+  `sthbrx`, which AArch64 leaves to the interpreter), `lmw`/`stmw` and
+  `dcbz`: fastmem through the view with MOVBE, the faulting access's side
+  exit found by the shared fault handler (SIGSEGV on Linux, SIGBUS on
+  macOS, RIP moved to the stub), the instruction checked from then on;
+  without fastmem, or once checked, page flags first. Stores to pages
+  with translated code take the slow path AArch64's do (a plain store
+  unless the word is translated code, else `code_store()`): planned for
+  milestone 4, but the 68k emulator stores next to its code all the time.
+  Device registers still leave for the interpreter (milestone 4), and
+  string instructions call it, as on AArch64.
+- **Checks**: the fuzzer (now requiring fastmem faults on x86-64 too)
+  passes 100,000 programs under Rosetta and 30,000 more under QEMU; all of
+  `make test` on both; the three CD boots end exactly as on AArch64,
+  under Rosetta, with `SYSHM_JIT_FASTMEM=0` too, and the 8.5 CD under
+  QEMU (1,273 fastmem faults, fewer than AArch64's 1,893: 4 KB host
+  pages). AArch64's generated code is still byte for byte what it was
+  before the split (the hashes over the fuzzer and the boots).
+- **Speed** under Rosetta on the M5, before and after: the 8.5 CD 13.4 →
+  6.3 s, 9.1's 12.2 → 4.7 s, 9.2.2's 11.2 → 4.6 s; the benchmark's
+  dispatch loop 382 → 830 million instructions a second, the copy loop
+  566 → 10,450 million (AArch64's JIT natively: 1,180 and 10,600).
+
 Milestone 1 done (the split, then the integer core):
 
 - **The split**: `jit.c` holds the runtime, `jit_a64.c` the AArch64
@@ -506,6 +532,21 @@ candidate if profiles ask for it.
 - **Real hardware**: if the user has an x86 machine (an Intel Mac or a
   Linux PC), `SYSHM_PERF=1` on Linux gives the real instructions and
   cycles per guest instruction.
+
+## Findings
+
+- **AArch64's link counts vary between identical runs** (by about 3% of
+  links; the guest's results don't): `arch_link()` turns a B into another
+  B without the barriers that would make the core fetch it anew (the
+  architecture allows a core to go on executing the old one for a while,
+  and both are right), so the old one sometimes goes to the link stub
+  again, which links it again and counts another link. With the barriers
+  after each link, four 9.1 CD runs made exactly 23,057 links each (without
+  them 23,901 to 23,930). x86 sees its own stores to code at once: its
+  counts are the same every run.
+- **Comparing runs across hosts** needs the same time zone: the guest's
+  clock is the host's local time, so a container in UTC ran the 8.5 CD
+  differently from macOS in Sydney until `TZ` matched.
 
 ## Timing on real hardware
 
