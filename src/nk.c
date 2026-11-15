@@ -492,6 +492,10 @@ struct machine {
 	bool frame_started[RAVE_MAX_CONTEXTS];  /* each context began one since its last was shown */
 	uint64_t frame_due;             /* the guest waits in the engine's call until this guest time (0: it doesn't) */
 	uint32_t frame_pc, frame_sp;    /* ... the call's, there */
+	uint64_t transfer_due;          /* ... or in a disk driver's, until its transfer ends (see drive_call()) */
+	uint32_t transfer_pc, transfer_sp;
+	unsigned long transfer_waits;   /* ... which it has done this often */
+	uint64_t transfer_wait_tb;      /* ... for this long */
 	struct gpu *gpu;                /* ... which draws with this, if the host can (see nk_boot()) */
 	/* SYSHM_PERF: the host's counters for this thread, printed every second */
 	bool perf_on;
@@ -538,6 +542,13 @@ struct machine {
 	uint64_t next_frame_ns;         /* when the window is next updated */
 	unsigned long idle_calls;       /* _SynchIdleTime and PowerDispatch naps */
 	uint64_t idle_ns;               /* host time spent sleeping for them */
+	/* SYSHM_LOG_AUDIO (see audio_report()) */
+	bool audio_log;
+	uint64_t audio_log_ns;          /* host time of the last report */
+	uint64_t disk_charged_tb;       /* guest time disk transfers took, all along */
+	uint64_t log_disk, log_charged_tb, log_frames, log_naps;        /* ... and the rest, as of the last report */
+	uint64_t naps, nap_over_ns, nap_over_max_ns;    /* host sleeps, and how much longer than asked they took */
+	uint64_t sound_ns, sound_gap_ns;        /* host time sound frames last came from the guest, and the longest wait for them */
 	uint32_t recompiled_traps;      /* the 68k emulator's trap entry for recompiled code, or 0 */
 	/* fast start (see fast_start_begin()) */
 	bool fast_start;
@@ -707,6 +718,13 @@ static void init_info_records(struct machine *m)
 	bootinfo_hwinfo(&m->bootinfo, k + m->hw_info);
 }
 
+static uint64_t host_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+
 /*
  * Played sound: the codec's volume applied, then to the host and the
  * capture file. Nothing here feeds back into the guest, which is paced by
@@ -715,6 +733,12 @@ static void init_info_records(struct machine *m)
 static void play_sound(void *ctx, const uint8_t *frames, unsigned count, unsigned rate)
 {
 	struct machine *m = ctx;
+	if (m->audio_log) {
+		uint64_t now = host_ns();
+		if (m->sound_ns && now - m->sound_ns > m->sound_gap_ns)
+			m->sound_gap_ns = now - m->sound_ns;
+		m->sound_ns = now;
+	}
 	unsigned gl, gr;
 	awacs_gain(&m->awacs, &gl, &gr);
 	uint8_t out[256 * 4], wav[256 * 4];
@@ -1066,6 +1090,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	mmio_add(&m->bus, MACIO_DBDMA, DBDMA_SIZE, &dbdma_mmio_ops, &m->dbdma, "dbdma");
 	awacs_init(&m->awacs, &m->dbdma, TIMEBASE_HZ);
 	m->awacs.log = getenv("SYSHM_LOG_SOUND") != NULL;
+	m->audio_log = getenv("SYSHM_LOG_AUDIO") != NULL;
 	/*
 	 * The codec's status says it's valid, as a running codec's does. Mac
 	 * OS's sound plug-in polls for it after setting the codec up, and
@@ -1177,13 +1202,6 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->context = m->system_cb = ecb;
 	m->system = true;
 	return 0;
-}
-
-static uint64_t host_ns(void)
-{
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 
 /* Timebase ticks in `ns` nanoseconds of host time. */
@@ -1452,6 +1470,12 @@ static void nap(struct machine *m, uint64_t deadline, bool idle)
 	}
 	uint64_t slept = host_ns() - now;
 	m->idle_ns += slept;
+	m->naps++;
+	if (slept > until - now) {
+		m->nap_over_ns += slept - (until - now);
+		if (slept - (until - now) > m->nap_over_max_ns)
+			m->nap_over_max_ns = slept - (until - now);
+	}
 	if (idle && !m->fast_start && !sound) {
 		uint64_t catch_up = ns_to_tb(slept / IDLE_CATCH_UP);
 		m->lead_tb -= catch_up < m->lead_tb ? catch_up : m->lead_tb;
@@ -2879,30 +2903,6 @@ static const char *kcall_vm_dispatch(struct machine *m)
 }
 
 /*
- * Disk transfers take guest time, at the speeds of the drives of the day.
- * Without it, a program's launch or a file copy takes no time at all, and
- * Mac OS, which counts a process's processor time in whole ticks, can see a
- * busy process as never having run: the Mac OS 9 installer then waits
- * forever for its engine to start. A transfer moves guest time on by at most
- * a tick, so that a big one doesn't jump past what interrupts keep going,
- * such as sound.
- */
-#define HD_BYTES_PER_SECOND 20000000u   /* a hard disk around 2000 */
-#define CD_BYTES_PER_SECOND 4000000u    /* a 24x to 32x CD-ROM drive */
-
-/* A disk driver's step, whose transfers take guest time */
-static void drive_call(struct machine *m, struct disk *d, struct ndrv_call *c)
-{
-	uint64_t moved = d->bytes_read + d->bytes_written;
-	disk_driver_call(d, c, TIMEBASE_HZ);
-	moved = d->bytes_read + d->bytes_written - moved;
-	if (moved) {
-		uint64_t ticks = moved * TIMEBASE_HZ / (d->cdrom ? CD_BYTES_PER_SECOND : HD_BYTES_PER_SECOND);
-		pass_guest_time(m, ticks < TIMEBASE_HZ / 60 ? ticks : TIMEBASE_HZ / 60);
-	}
-}
-
-/*
  * The guest tools, in window runs (and runs whose input script answers for
  * the window): looked for on the startup disk before Mac OS starts, and
  * offered once the Finder is up if they're missing or another syshm's (see
@@ -3047,6 +3047,67 @@ static const char *frame_wait(struct machine *m)
 }
 
 /*
+ * Disk transfers take guest time, at the speeds of the drives of the day.
+ * Without it, a program's launch or a file copy takes no time at all, and
+ * Mac OS, which counts a process's processor time in whole ticks, can see a
+ * busy process as never having run: the Mac OS 9 installer then waits
+ * forever for its engine to start. A transfer moves guest time on by at most
+ * a tick, so that a big one doesn't jump past what interrupts keep going,
+ * such as sound.
+ *
+ * In real time, that puts guest time ahead of the host clock until
+ * idle_wait() makes it up, which it doesn't while sound plays; and while
+ * sound plays, guest time ahead is sound played ahead, which the host's
+ * sound output can only drop: a movie streaming from disk ran guest time
+ * 1.1 to 2.3 times as fast as the host clock, its sound in pieces (plan.md,
+ * Findings). So while sound plays, a transfer takes host time instead, all
+ * of it, as a real drive's DMA does while the processor goes on: the guest
+ * waits in the driver's call until it's over, taking interrupts meanwhile
+ * (it makes the call again, which goes no further until then, as for the 3D
+ * engine's frames), and guest time keeps the host clock's pace. (A call
+ * made while another waits, from an interrupt, or by another task than Mac
+ * OS's, moves guest time on as before.)
+ */
+#define HD_BYTES_PER_SECOND 20000000u   /* a hard disk around 2000 */
+#define CD_BYTES_PER_SECOND 4000000u    /* a 24x to 32x CD-ROM drive */
+
+/* A disk driver's step, whose transfers take guest time: true if the guest waits now */
+static bool drive_call(struct machine *m, struct disk *d, struct ndrv_call *c)
+{
+	uint64_t moved = d->bytes_read + d->bytes_written;
+	disk_driver_call(d, c, TIMEBASE_HZ);
+	moved = d->bytes_read + d->bytes_written - moved;
+	if (!moved)
+		return false;
+	uint64_t ticks = moved * TIMEBASE_HZ / (d->cdrom ? CD_BYTES_PER_SECOND : HD_BYTES_PER_SECOND);
+	if (m->realtime && awacs_playing(&m->awacs) && !m->transfer_due && blue_running(m)) {
+		m->disk_charged_tb += ticks;
+		m->transfer_waits++;
+		m->transfer_wait_tb += ticks;
+		m->transfer_due = guest_now(m) + ticks;
+		m->transfer_pc = m->cpu.pc;
+		m->transfer_sp = m->cpu.gpr[1];
+		return true;
+	}
+	ticks = ticks < TIMEBASE_HZ / 60 ? ticks : TIMEBASE_HZ / 60;
+	m->disk_charged_tb += ticks;
+	pass_guest_time(m, ticks);
+	return false;
+}
+
+/* The guest made the disk driver's call it waits in again */
+static const char *transfer_wait(struct machine *m)
+{
+	if (guest_now(m) >= m->transfer_due) {
+		m->transfer_due = 0;
+		m->cpu.pc += 4;         /* (its results have been in place since the transfer) */
+	} else {
+		blue_naps(m, m->transfer_due, false);
+	}
+	return NULL;
+}
+
+/*
  * A host call from a generated driver (see ndrv.h): run the native driver
  * one step, then either finish (CR0[EQ] set, result in r3) or have the stub
  * call a Mac OS routine (TVector in r12, arguments in r3..r10).
@@ -3067,6 +3128,7 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		return "driver stack frame not in writable memory";
 
 	unsigned long frames[RAVE_MAX_CONTEXTS] = { 0 };       /* (the 3D engine's contexts', before the call) */
+	bool transfer = false;          /* (a disk driver's call that the guest waits in) */
 	switch (selector) {
 	case HOSTCALL_VIDEO_DRIVER:
 		video_driver_call(&m->video, &c);
@@ -3103,8 +3165,10 @@ static const char *host_call(struct machine *m, uint32_t selector)
 	case HOSTCALL_FLOPPY_DRIVER: {
 		if (!m->has_floppy)
 			return "unknown host call";
+		if (m->transfer_due && cpu->pc == m->transfer_pc && cpu->gpr[1] == m->transfer_sp)
+			return transfer_wait(m);
 		bool had = m->floppy.media;
-		drive_call(m, &m->floppy, &c);
+		transfer = drive_call(m, &m->floppy, &c);
 		if (had && !m->floppy.media)
 			floppy_next(m);         /* (Mac OS ejected it) */
 		break;
@@ -3112,7 +3176,9 @@ static const char *host_call(struct machine *m, uint32_t selector)
 	default:
 		if (selector - HOSTCALL_DISK_DRIVER >= m->disks)
 			return "unknown host call";
-		drive_call(m, &m->disk[selector - HOSTCALL_DISK_DRIVER], &c);
+		if (m->transfer_due && cpu->pc == m->transfer_pc && cpu->gpr[1] == m->transfer_sp)
+			return transfer_wait(m);
+		transfer = drive_call(m, &m->disk[selector - HOSTCALL_DISK_DRIVER], &c);
 		break;
 	}
 
@@ -3130,6 +3196,8 @@ static const char *host_call(struct machine *m, uint32_t selector)
 	}
 	if (selector == HOSTCALL_TOOLS_RAVE && frame_shown(m, &c, frames))
 		return NULL;            /* (the guest makes the call again, until frame_wait() lets it return) */
+	if (transfer)
+		return NULL;            /* (... until transfer_wait() does) */
 	cpu->pc += 4;
 	return NULL;
 }
@@ -3167,6 +3235,50 @@ static void perf_report(struct machine *m)
 	m->perf_idle_ns = m->idle_ns;
 	m->perf_disk_read = disk_read;
 	m->perf_disk_written = disk_written;
+}
+
+/*
+ * SYSHM_LOG_AUDIO: every second of host time while sound plays (or played
+ * since the last report), how the host's sound queue fared (its depth
+ * before each chunk was queued, chunks dropped when it was full, silence
+ * added when it ran dry), and what paces it: the frames the guest's sound
+ * DMA played, how far guest time is ahead of the host clock, the disk
+ * transfers and the guest time they took, and how much longer than asked
+ * the host's sleeps took.
+ */
+static void audio_report(struct machine *m)
+{
+	uint64_t now = host_ns();
+	if (now - m->audio_log_ns < 1000000000u)
+		return;
+	uint64_t disk = 0;
+	for (unsigned k = 0; k < m->disks; k++)
+		disk += m->disk[k].bytes_read + m->disk[k].bytes_written;
+	struct audio_stats a = { 0 };
+	if (m->audio)
+		audio_take_stats(m->audio, &a);
+	uint64_t frames = m->awacs.frames_played;
+	if (m->audio_log_ns && (frames != m->log_frames || awacs_playing(&m->awacs))) {
+		double s = (double)(now - m->audio_log_ns) * 1e-9, ms = a.rate ? 1000.0 / a.rate : 0;
+		uint64_t naps = m->naps - m->log_naps;
+		printf("audio @%.1f s: %.0f frames/s from the guest (%.1f ms apart at most); queue %.0f-%.0f ms, "
+		       "played %+.2f%% to %+.2f%% fast, %lu chunks dropped, silence added %lu times; guest time %.1f ms "
+		       "ahead; disks %.1f MB/s, taking %.0f ms/s; %llu sleeps, %.2f ms longer on average, %.1f ms at most\n",
+		       (double)(now - m->start_ns) * 1e-9, (double)(frames - m->log_frames) / s,
+		       (double)m->sound_gap_ns * 1e-6, a.queued_min * ms, a.queued_max * ms, a.skew_min * 1e-4,
+		       a.skew_max * 1e-4, a.drops, a.pads,
+		       (double)tb_to_ns(m->lead_tb) * 1e-6, (double)(disk - m->log_disk) / s * 1e-6,
+		       (double)tb_to_ns(m->disk_charged_tb - m->log_charged_tb) * 1e-6 / s, (unsigned long long)naps,
+		       naps ? (double)m->nap_over_ns / (double)naps * 1e-6 : 0.0, (double)m->nap_over_max_ns * 1e-6);
+		fflush(stdout);
+	}
+	m->audio_log_ns = now;
+	m->log_disk = disk;
+	m->log_charged_tb = m->disk_charged_tb;
+	m->log_frames = frames;
+	m->log_naps = m->naps;
+	m->nap_over_ns = m->nap_over_max_ns = 0;
+	m->sound_gap_ns = 0;
 }
 
 /*
@@ -3700,6 +3812,8 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->next_frame_ns = old.next_frame_ns;
 	m->idle_calls = old.idle_calls;
 	m->idle_ns = old.idle_ns;
+	m->transfer_waits = old.transfer_waits;
+	m->transfer_wait_tb = old.transfer_wait_tb;
 	m->dev_accesses = old.dev_accesses;
 	m->dev_inline = old.dev_inline;
 	m->net_poll_ns = old.net_poll_ns;
@@ -3888,6 +4002,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			}
 			if (m.perf_on)
 				perf_report(&m);
+			if (m.audio_log)
+				audio_report(&m);
 		}
 
 		uint64_t left = opt->max_insns - cpu->icount;
@@ -3983,8 +4099,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 			break;
 		case PPC_EXIT_HOSTCALL:
 			why = host_call(&m, cpu->exit_insn & 0x03FFFFFFu);
-			if (opt->realtime && m.frame_due)
-				sync = true;    /* catch up with the host clock now (the guest waits for a frame's time) */
+			if (opt->realtime && (m.frame_due || m.transfer_due))
+				sync = true;    /* catch up with the host clock now (the guest waits for a frame's or transfer's time) */
 			break;
 		case PPC_EXIT_HOOK:
 			if (m.watched_trap == TRAP_SYNCH_IDLE_TIME) {
@@ -4188,6 +4304,9 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 		       m.awacs.codec_writes, awacs_rate(&m.awacs), m.awacs.frames_played, m.awacs.frames_recorded);
 	if (m.awacs.frames_through)
 		printf("\nsound: %lu frames with the CD's audio in them", m.awacs.frames_through);
+	if (m.transfer_waits)
+		printf("\nsound: disk transfers waited out while it played: %lu (%.1f s)", m.transfer_waits,
+		       (double)m.transfer_wait_tb / TIMEBASE_HZ);
 	if (m.audio)
 		printf("\naudio: %lu frames dropped, %lu frames of silence added",
 		       audio_dropped(m.audio), audio_padded(m.audio));
