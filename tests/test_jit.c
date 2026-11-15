@@ -20,6 +20,7 @@
 #include "../src/mmio.h"
 #include "../src/ppc.h"
 #include "../src/ppc_fp.h"
+#include "../src/x86.h"
 #include "ppcasm.h"
 #include "test.h"
 
@@ -640,6 +641,252 @@ static void test_logic_imm(void)
 	}
 }
 
+static void x86_expect(const uint8_t *got, const uint8_t *end, const char *text, const char *want, size_t n)
+{
+	if ((size_t)(end - got) != n || memcmp(got, want, n)) {
+		fprintf(stderr, "x86.h: %s:", text);
+		for (const uint8_t *p = got; p < end; p++)
+			fprintf(stderr, " %02x", *p);
+		fprintf(stderr, ", not");
+		for (size_t k = 0; k < n; k++)
+			fprintf(stderr, " %02x", (uint8_t)want[k]);
+		fprintf(stderr, "\n");
+		test_failures++;
+	}
+}
+
+#define X86_CASE(call, text, bytes) \
+	do { start = b->p; call; x86_expect(start, b->p, text, bytes, sizeof bytes - 1); } while (0)
+
+/*
+ * x86.h's encodings, each as LLVM's assembler makes it from the text (but
+ * where it picks another encoding as good, noted)
+ */
+static void test_x86_encoding(void)
+{
+	static uint8_t buf[1 << 16];
+	struct x86_buf xb = { buf, buf + sizeof buf, false }, *b = &xb;
+	uint8_t *start;
+	X86_CASE(x86_mov_rr(b, 0, X86_RAX, X86_R9), "mov eax, r9d", "\x44\x89\xc8");
+	X86_CASE(x86_mov_rr(b, 1, X86_R13, X86_RBX), "mov r13, rbx", "\x49\x89\xdd");
+	X86_CASE(x86_mov_rr(b, 0, X86_RSI, X86_RDI), "mov esi, edi", "\x89\xfe");
+	X86_CASE(x86_mov_ri(b, X86_R10, 0x12345678), "mov r10d, 0x12345678", "\x41\xba\x78\x56\x34\x12");
+	X86_CASE(x86_mov_ri(b, X86_RBP, 0), "mov ebp, 0", "\xbd\x00\x00\x00\x00");
+	X86_CASE(x86_mov_ri64(b, X86_RAX, 0x123456789ull),
+		 "movabs rax, 0x123456789", "\x48\xb8\x89\x67\x45\x23\x01\x00\x00\x00");
+	X86_CASE(x86_mov_ri64(b, X86_RCX, (uint64_t)-2), "mov rcx, -2", "\x48\xc7\xc1\xfe\xff\xff\xff");
+	X86_CASE(x86_mov_ri64(b, X86_R8, 0xFFFFFFFFu), "mov r8d, 0xffffffff", "\x41\xb8\xff\xff\xff\xff");
+	X86_CASE(x86_load(b, 1, false, X86_RAX, x86_m(X86_RBX, 4)),
+		 "movzx eax, byte ptr [rbx + 4]", "\x0f\xb6\x43\x04");
+	X86_CASE(x86_load(b, 2, true, X86_RCX, x86_m(X86_R13, 0)), "movsx ecx, word ptr [r13]", "\x41\x0f\xbf\x4d\x00");
+	X86_CASE(x86_load(b, 2, false, X86_R9, x86_m(X86_RBP, -8)),
+		 "movzx r9d, word ptr [rbp - 8]", "\x44\x0f\xb7\x4d\xf8");
+	X86_CASE(x86_load(b, 1, true, X86_RDX, x86_m(X86_R12, 0x200)),
+		 "movsx edx, byte ptr [r12 + 0x200]", "\x41\x0f\xbe\x94\x24\x00\x02\x00\x00");
+	X86_CASE(x86_load(b, 4, false, X86_RDX, x86_m(X86_R12, 0x200)),
+		 "mov edx, dword ptr [r12 + 0x200]", "\x41\x8b\x94\x24\x00\x02\x00\x00");
+	X86_CASE(x86_load(b, 8, false, X86_RAX, x86_m(X86_RBP, 0)), "mov rax, qword ptr [rbp]", "\x48\x8b\x45\x00");
+	X86_CASE(x86_load(b, 4, false, X86_R9, x86_m(X86_RSP, 8)),
+		 "mov r9d, dword ptr [rsp + 8]", "\x44\x8b\x4c\x24\x08");
+	X86_CASE(x86_load(b, 4, false, X86_RAX, x86_mx(X86_R15, X86_RAX, 0, 0)),
+		 "mov eax, dword ptr [r15 + rax]", "\x41\x8b\x04\x07");
+	X86_CASE(x86_load(b, 4, false, X86_RSI, x86_mx(X86_R15, X86_R8, 1, 0x10)),
+		 "mov esi, dword ptr [r15 + 2*r8 + 0x10]", "\x43\x8b\x74\x47\x10");
+	X86_CASE(x86_load(b, 4, false, X86_RCX, x86_mx(X86_RBX, X86_R12, 0, 0)),
+		 "mov ecx, dword ptr [rbx + r12]", "\x42\x8b\x0c\x23");
+	X86_CASE(x86_load(b, 8, false, X86_RDX, x86_mx(X86_RBP, X86_RCX, 3, 0)),
+		 "mov rdx, qword ptr [rbp + 8*rcx]", "\x48\x8b\x54\xcd\x00");
+	X86_CASE(x86_load(b, 4, false, X86_RAX, x86_mx(X86_R13, X86_RAX, 0, 0)),
+		 "mov eax, dword ptr [r13 + rax]", "\x41\x8b\x44\x05\x00");
+	X86_CASE(x86_load(b, 4, false, X86_R11, x86_mx(X86_RSP, X86_RAX, 2, 0x1000)),
+		 "mov r11d, dword ptr [rsp + 4*rax + 0x1000]", "\x44\x8b\x9c\x84\x00\x10\x00\x00");
+	X86_CASE(x86_load(b, 4, false, X86_RAX, x86_rip(start + 0x1000)),
+		 "mov eax, dword ptr [rip + L + 0x1000]", "\x8b\x05\xfa\x0f\x00\x00");
+	X86_CASE(x86_store(b, 1, X86_RSI, x86_m(X86_RBX, 1)), "mov byte ptr [rbx + 1], sil", "\x40\x88\x73\x01");
+	X86_CASE(x86_store(b, 1, X86_RAX, x86_mx(X86_R15, X86_RCX, 0, 0)),
+		 "mov byte ptr [r15 + rcx], al", "\x41\x88\x04\x0f");
+	X86_CASE(x86_store(b, 2, X86_RCX, x86_mx(X86_R15, X86_RAX, 0, 0)),
+		 "mov word ptr [r15 + rax], cx", "\x66\x41\x89\x0c\x07");
+	X86_CASE(x86_store(b, 4, X86_R11, x86_m(X86_RBX, 0x180)),
+		 "mov dword ptr [rbx + 0x180], r11d", "\x44\x89\x9b\x80\x01\x00\x00");
+	X86_CASE(x86_store(b, 8, X86_R14, x86_m(X86_RSP, 0)), "mov qword ptr [rsp], r14", "\x4c\x89\x34\x24");
+	X86_CASE(x86_store_imm(b, 4, x86_m(X86_RBX, 0x184), 0x12345678),
+		 "mov dword ptr [rbx + 0x184], 0x12345678", "\xc7\x83\x84\x01\x00\x00\x78\x56\x34\x12");
+	X86_CASE(x86_store_imm(b, 1, x86_m(X86_RBX, 3), 1), "mov byte ptr [rbx + 3], 1", "\xc6\x43\x03\x01");
+	X86_CASE(x86_store_imm(b, 2, x86_m(X86_RBX, 2), 0x1234),
+		 "mov word ptr [rbx + 2], 0x1234", "\x66\xc7\x43\x02\x34\x12");
+	X86_CASE(x86_store_imm(b, 8, x86_m(X86_RAX, 0), 0xFFFFFFFFu),
+		 "mov qword ptr [rax], -1", "\x48\xc7\x00\xff\xff\xff\xff");
+	X86_CASE(x86_store_imm(b, 4, x86_rip(start + 0x1000), 7),
+		 "mov dword ptr [rip + L + 0x1000], 7", "\xc7\x05\xf6\x0f\x00\x00\x07\x00\x00\x00");
+	X86_CASE(x86_extend(b, 1, false, 0, X86_RAX, X86_RSI), "movzx eax, sil", "\x40\x0f\xb6\xc6");
+	X86_CASE(x86_extend(b, 1, false, 0, X86_R8, X86_RDI), "movzx r8d, dil", "\x44\x0f\xb6\xc7");
+	X86_CASE(x86_extend(b, 1, false, 0, X86_RSI, X86_RCX), "movzx esi, cl", "\x0f\xb6\xf1");
+	X86_CASE(x86_extend(b, 2, true, 0, X86_RCX, X86_RDX), "movsx ecx, dx", "\x0f\xbf\xca");
+	X86_CASE(x86_extend(b, 1, true, 0, X86_R13, X86_R9), "movsx r13d, r9b", "\x45\x0f\xbe\xe9");
+	X86_CASE(x86_extend(b, 4, true, 1, X86_RAX, X86_R13), "movsxd rax, r13d", "\x49\x63\xc5");
+	X86_CASE(x86_lea(b, 0, X86_RAX, x86_m(X86_R13, 0x7FFF)),
+		 "lea eax, [r13 + 0x7fff]", "\x41\x8d\x85\xff\x7f\x00\x00");
+	X86_CASE(x86_lea(b, 0, X86_RAX, x86_m(X86_R13, -32768)),
+		 "lea eax, [r13 - 0x8000]", "\x41\x8d\x85\x00\x80\xff\xff");
+	X86_CASE(x86_lea(b, 0, X86_RCX, x86_mx(X86_RBX, X86_RDX, 0, 0)), "lea ecx, [rbx + rdx]", "\x8d\x0c\x13");
+	X86_CASE(x86_lea(b, 0, X86_R9, x86_mx(X86_RBP, X86_R12, 0, 0)), "lea r9d, [rbp + r12]", "\x46\x8d\x4c\x25\x00");
+	X86_CASE(x86_lea(b, 1, X86_RDX, x86_rip(start + 0x1000)),
+		 "lea rdx, [rip + L + 0x1000]", "\x48\x8d\x15\xf9\x0f\x00\x00");
+	X86_CASE(x86_movbe(b, false, 4, X86_RAX, x86_mx(X86_R15, X86_RCX, 0, 0)),
+		 "movbe eax, dword ptr [r15 + rcx]", "\x41\x0f\x38\xf0\x04\x0f");
+	X86_CASE(x86_movbe(b, true, 4, X86_R10, x86_mx(X86_R15, X86_RAX, 0, 0)),
+		 "movbe dword ptr [r15 + rax], r10d", "\x45\x0f\x38\xf1\x14\x07");
+	X86_CASE(x86_movbe(b, false, 2, X86_RCX, x86_mx(X86_R15, X86_RAX, 0, 0)),
+		 "movbe cx, word ptr [r15 + rax]", "\x66\x41\x0f\x38\xf0\x0c\x07");
+	X86_CASE(x86_movbe(b, true, 2, X86_RDX, x86_mx(X86_R15, X86_RAX, 0, 0)),
+		 "movbe word ptr [r15 + rax], dx", "\x66\x41\x0f\x38\xf1\x14\x07");
+	X86_CASE(x86_movbe(b, false, 8, X86_RAX, x86_mx(X86_R15, X86_RDX, 0, 0)),
+		 "movbe rax, qword ptr [r15 + rdx]", "\x49\x0f\x38\xf0\x04\x17");
+	X86_CASE(x86_bswap(b, 0, X86_RAX), "bswap eax", "\x0f\xc8");
+	X86_CASE(x86_bswap(b, 0, X86_R9), "bswap r9d", "\x41\x0f\xc9");
+	X86_CASE(x86_bswap(b, 1, X86_RCX), "bswap rcx", "\x48\x0f\xc9");
+	X86_CASE(x86_alu_rr(b, X86_ADD, 0, X86_RAX, X86_R9), "add eax, r9d", "\x44\x01\xc8");
+	X86_CASE(x86_alu_rr(b, X86_SUB, 0, X86_R13, X86_RSI), "sub r13d, esi", "\x41\x29\xf5");
+	X86_CASE(x86_alu_rr(b, X86_AND, 0, X86_RBP, X86_RDI), "and ebp, edi", "\x21\xfd");
+	X86_CASE(x86_alu_rr(b, X86_OR, 1, X86_RCX, X86_R8), "or rcx, r8", "\x4c\x09\xc1");
+	X86_CASE(x86_alu_rr(b, X86_XOR, 0, X86_RDX, X86_RDX), "xor edx, edx", "\x31\xd2");
+	X86_CASE(x86_alu_rr(b, X86_CMP, 0, X86_R12, X86_RAX), "cmp r12d, eax", "\x41\x39\xc4");
+	X86_CASE(x86_alu_rr(b, X86_ADC, 0, X86_RAX, X86_R10), "adc eax, r10d", "\x44\x11\xd0");
+	X86_CASE(x86_alu_rr(b, X86_SBB, 0, X86_RCX, X86_RCX), "sbb ecx, ecx", "\x19\xc9");
+	X86_CASE(x86_alu_rm(b, X86_ADD, 0, X86_RAX, x86_m(X86_RBX, 0x10)),
+		 "add eax, dword ptr [rbx + 0x10]", "\x03\x43\x10");
+	X86_CASE(x86_alu_rm(b, X86_CMP, 0, X86_RCX, x86_rip(start + 0x1000)),
+		 "cmp ecx, dword ptr [rip + L + 0x1000]", "\x3b\x0d\xfa\x0f\x00\x00");
+	X86_CASE(x86_alu_mr(b, X86_OR, 0, x86_m(X86_RBX, 8), X86_RAX), "or dword ptr [rbx + 8], eax", "\x09\x43\x08");
+	X86_CASE(x86_alu_ri(b, X86_ADD, 0, X86_RCX, 1), "add ecx, 1", "\x83\xc1\x01");
+	X86_CASE(x86_alu_ri(b, X86_SUB, 1, X86_R14, 128), "sub r14, 128", "\x49\x81\xee\x80\x00\x00\x00");
+	X86_CASE(x86_alu_ri(b, X86_CMP, 1, X86_R14, 0x7FFFFFFF), "cmp r14, 0x7fffffff", "\x49\x81\xfe\xff\xff\xff\x7f");
+	X86_CASE(x86_alu_ri(b, X86_AND, 0, X86_RBP, (int32_t)0xFFFF0FFFu),
+		 "and ebp, 0xffff0fff", "\x81\xe5\xff\x0f\xff\xff");
+	X86_CASE(x86_alu_ri(b, X86_OR, 0, X86_RCX, -1), "or ecx, -1", "\x83\xc9\xff");
+	X86_CASE(x86_alu_ri(b, X86_XOR, 0, X86_RDX, (int32_t)0x80000000u),
+		 "xor edx, 0x80000000", "\x81\xf2\x00\x00\x00\x80");
+	X86_CASE(x86_alu_ri(b, X86_CMP, 0, X86_R11, -128), "cmp r11d, -128", "\x41\x83\xfb\x80");
+	X86_CASE(x86_alu_mi(b, X86_CMP, 4, x86_rip(start + 0x1000), 0),
+		 "cmp dword ptr [rip + L + 0x1000], 0", "\x83\x3d\xf9\x0f\x00\x00\x00");
+	X86_CASE(x86_alu_mi(b, X86_SUB, 8, x86_m(X86_RBX, 0), 5), "sub qword ptr [rbx], 5", "\x48\x83\x2b\x05");
+	X86_CASE(x86_alu_mi(b, X86_CMP, 1, x86_m(X86_RBX, 2), 0), "cmp byte ptr [rbx + 2], 0", "\x80\x7b\x02\x00");
+	X86_CASE(x86_alu_mi(b, X86_AND, 4, x86_m(X86_RBX, 0x184), (int32_t)0xDFFFFFFFu),
+		 "and dword ptr [rbx + 0x184], 0xdfffffff", "\x81\xa3\x84\x01\x00\x00\xff\xff\xff\xdf");
+	X86_CASE(x86_test_rr(b, 0, X86_RAX, X86_RAX), "test eax, eax", "\x85\xc0");
+	X86_CASE(x86_test_rr(b, 1, X86_R10, X86_R10), "test r10, r10", "\x4d\x85\xd2");
+	X86_CASE(x86_test_ri(b, 0, X86_RBP, 0x10000), "test ebp, 0x10000", "\xf7\xc5\x00\x00\x01\x00");
+	X86_CASE(x86_test_ri(b, 0, X86_RSI, 4), "test sil, 4", "\x40\xf6\xc6\x04");
+	X86_CASE(x86_test_ri(b, 0, X86_R12, 0x80000000u), "test r12d, 0x80000000", "\x41\xf7\xc4\x00\x00\x00\x80");
+	X86_CASE(x86_test_ri(b, 0, X86_RCX, 0x80), "test cl, 0x80", "\xf6\xc1\x80");
+	X86_CASE(x86_test_mi(b, 1, x86_m(X86_RBX, 0x183), 2),
+		 "test byte ptr [rbx + 0x183], 2", "\xf6\x83\x83\x01\x00\x00\x02");
+	X86_CASE(x86_test_mi(b, 4, x86_m(X86_RBX, 4), 0x10000),
+		 "test dword ptr [rbx + 4], 0x10000", "\xf7\x43\x04\x00\x00\x01\x00");
+	X86_CASE(x86_unary(b, X86_NOT, 0, X86_RCX), "not ecx", "\xf7\xd1");
+	X86_CASE(x86_unary(b, X86_NEG, 0, X86_R9), "neg r9d", "\x41\xf7\xd9");
+	X86_CASE(x86_unary(b, X86_MUL, 1, X86_RCX), "mul rcx", "\x48\xf7\xe1");
+	X86_CASE(x86_unary(b, X86_IMUL1, 0, X86_RCX), "imul ecx", "\xf7\xe9");
+	X86_CASE(x86_unary(b, X86_DIV, 0, X86_RCX), "div ecx", "\xf7\xf1");
+	X86_CASE(x86_unary(b, X86_IDIV, 1, X86_RCX), "idiv rcx", "\x48\xf7\xf9");
+	X86_CASE(x86_inc(b, true, 0, X86_RSI), "dec esi", "\xff\xce");
+	X86_CASE(x86_inc(b, false, 1, X86_R11), "inc r11", "\x49\xff\xc3");
+	X86_CASE(x86_shift_ri(b, X86_SHL, 0, X86_RAX, 3), "shl eax, 3", "\xc1\xe0\x03");
+	X86_CASE(x86_shift_ri(b, X86_SHR, 0, X86_R10, 1), "shr r10d, 1", "\x41\xd1\xea");
+	X86_CASE(x86_shift_ri(b, X86_SAR, 1, X86_RCX, 63), "sar rcx, 63", "\x48\xc1\xf9\x3f");
+	X86_CASE(x86_shift_ri(b, X86_ROL, 0, X86_RBP, 8), "rol ebp, 8", "\xc1\xc5\x08");
+	X86_CASE(x86_shift_ri(b, X86_ROR, 0, X86_RDX, 31), "ror edx, 31", "\xc1\xca\x1f");
+	X86_CASE(x86_shift_cl(b, X86_SHL, 0, X86_RAX), "shl eax, cl", "\xd3\xe0");
+	X86_CASE(x86_shift_cl(b, X86_ROL, 0, X86_R9), "rol r9d, cl", "\x41\xd3\xc1");
+	X86_CASE(x86_imul_rr(b, 0, X86_RAX, X86_R9), "imul eax, r9d", "\x41\x0f\xaf\xc1");
+	X86_CASE(x86_imul_rr(b, 1, X86_RAX, X86_RCX), "imul rax, rcx", "\x48\x0f\xaf\xc1");
+	X86_CASE(x86_imul_rri(b, 0, X86_RCX, X86_RSI, 5), "imul ecx, esi, 5", "\x6b\xce\x05");
+	X86_CASE(x86_imul_rri(b, 0, X86_R8, X86_R13, 0x10000),
+		 "imul r8d, r13d, 0x10000", "\x45\x69\xc5\x00\x00\x01\x00");
+	X86_CASE(x86_cdq(b, 0), "cdq", "\x99");
+	X86_CASE(x86_cdq(b, 1), "cqo", "\x48\x99");
+	X86_CASE(x86_setcc(b, X86_L, X86_RAX), "setl al", "\x0f\x9c\xc0");
+	X86_CASE(x86_setcc(b, X86_G, X86_RCX), "setg cl", "\x0f\x9f\xc1");
+	X86_CASE(x86_setcc(b, X86_NE, X86_RSI), "setne sil", "\x40\x0f\x95\xc6");
+	X86_CASE(x86_setcc(b, X86_B, X86_R9), "setb r9b", "\x41\x0f\x92\xc1");
+	X86_CASE(x86_setcc(b, X86_O, X86_RDX), "seto dl", "\x0f\x90\xc2");
+	X86_CASE(x86_cmov(b, X86_G, 0, X86_RAX, X86_RCX), "cmovg eax, ecx", "\x0f\x4f\xc1");
+	X86_CASE(x86_cmov(b, X86_L, 0, X86_R10, X86_RDX), "cmovl r10d, edx", "\x44\x0f\x4c\xd2");
+	X86_CASE(x86_cmov(b, X86_E, 1, X86_RAX, X86_R9), "cmove rax, r9", "\x49\x0f\x44\xc1");
+	X86_CASE(x86_bt_ri(b, X86_BT, 0, X86_RBP, 31), "bt ebp, 31", "\x0f\xba\xe5\x1f");
+	X86_CASE(x86_bt_ri(b, X86_BTS, 0, X86_R12, 5), "bts r12d, 5", "\x41\x0f\xba\xec\x05");
+	X86_CASE(x86_bt_ri(b, X86_BTR, 0, X86_RCX, 29), "btr ecx, 29", "\x0f\xba\xf1\x1d");
+	X86_CASE(x86_bt_ri(b, X86_BTC, 1, X86_RAX, 63), "btc rax, 63", "\x48\x0f\xba\xf8\x3f");
+	X86_CASE(x86_bt_mi(b, X86_BT, x86_m(X86_RBX, 0x184), 31),
+		 "bt dword ptr [rbx + 0x184], 31", "\x0f\xba\xa3\x84\x01\x00\x00\x1f");
+	X86_CASE(x86_cmc(b), "cmc", "\xf5");
+	X86_CASE(x86_lzcnt(b, 0, X86_RAX, X86_R9), "lzcnt eax, r9d", "\xf3\x41\x0f\xbd\xc1");
+	X86_CASE(x86_tzcnt(b, 1, X86_RCX, X86_RDX), "tzcnt rcx, rdx", "\xf3\x48\x0f\xbc\xca");
+	X86_CASE(x86_andn(b, 0, X86_RAX, X86_RCX, X86_RDX), "andn eax, ecx, edx", "\xc4\xe2\x70\xf2\xc2");
+	X86_CASE(x86_andn(b, 1, X86_R9, X86_R10, X86_R11), "andn r9, r10, r11", "\xc4\x42\xa8\xf2\xcb");
+	X86_CASE(x86_bzhi(b, 0, X86_RAX, X86_RDX, X86_RCX), "bzhi eax, edx, ecx", "\xc4\xe2\x70\xf5\xc2");
+	X86_CASE(x86_bzhi(b, 0, X86_R8, X86_R13, X86_RSI), "bzhi r8d, r13d, esi", "\xc4\x42\x48\xf5\xc5");
+	X86_CASE(x86_shiftx(b, X86_SHL, 0, X86_RAX, X86_RDI, X86_RCX), "shlx eax, edi, ecx", "\xc4\xe2\x71\xf7\xc7");
+	X86_CASE(x86_shiftx(b, X86_SHR, 0, X86_R8, X86_R13, X86_R10), "shrx r8d, r13d, r10d", "\xc4\x42\x2b\xf7\xc5");
+	X86_CASE(x86_shiftx(b, X86_SAR, 1, X86_RDX, X86_RAX, X86_RCX), "sarx rdx, rax, rcx", "\xc4\xe2\xf2\xf7\xd0");
+	X86_CASE(x86_shiftx(b, X86_SHL, 1, X86_RAX, X86_RSI, X86_R11), "shlx rax, rsi, r11", "\xc4\xe2\xa1\xf7\xc6");
+	X86_CASE(x86_rorx(b, 0, X86_RAX, X86_RBP, 4), "rorx eax, ebp, 4", "\xc4\xe3\x7b\xf0\xc5\x04");
+	X86_CASE(x86_rorx(b, 1, X86_R10, X86_R13, 63), "rorx r10, r13, 63", "\xc4\x43\xfb\xf0\xd5\x3f");
+	X86_CASE(x86_rorx(b, 0, X86_RSI, X86_R9, 0), "rorx esi, r9d, 0", "\xc4\xc3\x7b\xf0\xf1\x00");
+	X86_CASE(x86_mulx(b, 0, X86_RAX, X86_RCX, X86_RSI), "mulx eax, ecx, esi", "\xc4\xe2\x73\xf6\xc6");
+	X86_CASE(x86_mulx(b, 1, X86_R8, X86_R9, X86_R10), "mulx r8, r9, r10", "\xc4\x42\xb3\xf6\xc2");
+	X86_CASE(x86_jmp_r(b, X86_RAX), "jmp rax", "\xff\xe0");
+	X86_CASE(x86_jmp_r(b, X86_R11), "jmp r11", "\x41\xff\xe3");
+	X86_CASE(x86_jmp_m(b, x86_mx(X86_RDX, X86_RCX, 1, 0)), "jmp qword ptr [rdx + 2*rcx]", "\xff\x24\x4a");
+	X86_CASE(x86_jmp_m(b, x86_mx(X86_RDX, X86_R9, 1, 0)), "jmp qword ptr [rdx + 2*r9]", "\x42\xff\x24\x4a");
+	X86_CASE(x86_call_m(b, x86_rip(start + 0x1000)),
+		 "call qword ptr [rip + L + 0x1000]", "\xff\x15\xfa\x0f\x00\x00");
+	X86_CASE(x86_ret(b), "ret", "\xc3");
+	X86_CASE(x86_push(b, X86_RBP), "push rbp", "\x55");
+	X86_CASE(x86_push(b, X86_R15), "push r15", "\x41\x57");
+	X86_CASE(x86_pop(b, X86_R12), "pop r12", "\x41\x5c");
+	X86_CASE(x86_pop(b, X86_RBX), "pop rbx", "\x5b");
+	X86_CASE(x86_int3(b), "int3", "\xcc");
+	X86_CASE(x86_jmp(b, start + 0x1000), "jmp L + 0x1000", "\xe9\xfb\x0f\x00\x00");
+	X86_CASE(x86_jcc(b, X86_L, start + 0x1000), "jl L + 0x1000", "\x0f\x8c\xfa\x0f\x00\x00");
+	X86_CASE(x86_jcc(b, X86_NE, start - 0x100), "jne L - 0x100", "\x0f\x85\xfa\xfe\xff\xff");
+	X86_CASE(x86_patch8(x86_jmp8(b), start + 0x10), "jmp L + 0x10", "\xeb\x0e");
+	X86_CASE(x86_patch8(x86_jcc8(b, X86_AE), start + 0x40), "jae L + 0x40", "\x73\x3e");
+	X86_CASE(x86_vsd(b, X86_VADDSD, 0, 1, 2), "vaddsd xmm0, xmm1, xmm2", "\xc5\xf3\x58\xc2");
+	X86_CASE(x86_vsd(b, X86_VMULSD, 9, 10, 15), "vmulsd xmm9, xmm10, xmm15", "\xc4\x41\x2b\x59\xcf");
+	X86_CASE(x86_vsd(b, X86_VSUBSD, 3, 12, 4), "vsubsd xmm3, xmm12, xmm4", "\xc5\x9b\x5c\xdc");
+	X86_CASE(x86_vsd(b, X86_VDIVSD, 8, 8, 0), "vdivsd xmm8, xmm8, xmm0", "\xc5\x3b\x5e\xc0");
+	X86_CASE(x86_vsd(b, X86_VSQRTSD, 1, 1, 9), "vsqrtsd xmm1, xmm1, xmm9", "\xc4\xc1\x73\x51\xc9");
+	X86_CASE(x86_vmovapd(b, 6, 14), "vmovapd xmm6, xmm14", "\xc4\xc1\x79\x28\xf6");    /* (LLVM: c5 79 29 f6) */
+	X86_CASE(x86_vmovapd(b, 14, 6), "vmovapd xmm14, xmm6", "\xc5\x79\x28\xf6");
+	X86_CASE(x86_vmovq_from(b, 3, X86_RAX), "vmovq xmm3, rax", "\xc4\xe1\xf9\x6e\xd8");
+	X86_CASE(x86_vmovq_from(b, 12, X86_R9), "vmovq xmm12, r9", "\xc4\x41\xf9\x6e\xe1");
+	X86_CASE(x86_vmovq_to(b, X86_RCX, 12), "vmovq rcx, xmm12", "\xc4\x61\xf9\x7e\xe1");
+	X86_CASE(x86_vmovsd(b, false, 1, x86_m(X86_RBX, 0x100)),
+		 "vmovsd xmm1, qword ptr [rbx + 0x100]", "\xc5\xfb\x10\x8b\x00\x01\x00\x00");
+	X86_CASE(x86_vmovsd(b, true, 9, x86_m(X86_RBX, 0x108)),
+		 "vmovsd qword ptr [rbx + 0x108], xmm9", "\xc5\x7b\x11\x8b\x08\x01\x00\x00");
+	X86_CASE(x86_vmovsd(b, false, 2, x86_mx(X86_R15, X86_RAX, 0, 0)),
+		 "vmovsd xmm2, qword ptr [r15 + rax]", "\xc4\xc1\x7b\x10\x14\x07");
+	X86_CASE(x86_vucomisd(b, 0, 7), "vucomisd xmm0, xmm7", "\xc5\xf9\x2e\xc7");
+	X86_CASE(x86_vucomisd(b, 10, 11), "vucomisd xmm10, xmm11", "\xc4\x41\x79\x2e\xd3");
+	X86_CASE(x86_vpd(b, X86_VXORPD, 2, 2, 2), "vxorpd xmm2, xmm2, xmm2", "\xc5\xe9\x57\xd2");
+	X86_CASE(x86_vpd(b, X86_VANDPD, 0, 1, 13),
+		 "vandpd xmm0, xmm1, xmm13", "\xc4\xc1\x71\x54\xc5");        /* (LLVM: c5 91 54 c1) */
+	X86_CASE(x86_vfma(b, X86_VFMADD231SD, 0, 1, 2), "vfmadd231sd xmm0, xmm1, xmm2", "\xc4\xe2\xf1\xb9\xc2");
+	X86_CASE(x86_vfma(b, X86_VFMSUB231SD, 9, 10, 11), "vfmsub231sd xmm9, xmm10, xmm11", "\xc4\x42\xa9\xbb\xcb");
+	X86_CASE(x86_vfma(b, X86_VFNMADD231SD, 3, 14, 5), "vfnmadd231sd xmm3, xmm14, xmm5", "\xc4\xe2\x89\xbd\xdd");
+	X86_CASE(x86_vfma(b, X86_VFNMSUB231SD, 15, 0, 8), "vfnmsub231sd xmm15, xmm0, xmm8", "\xc4\x42\xf9\xbf\xf8");
+	X86_CASE(x86_vcvt(b, true, 0, 0, 1), "vcvtsd2ss xmm0, xmm0, xmm1", "\xc5\xfb\x5a\xc1");
+	X86_CASE(x86_vcvt(b, false, 2, 2, 9), "vcvtss2sd xmm2, xmm2, xmm9", "\xc4\xc1\x6a\x5a\xd1");
+	X86_CASE(x86_vroundsd(b, 0, 0, 1, 3), "vroundsd xmm0, xmm0, xmm1, 3", "\xc4\xe3\x79\x0b\xc1\x03");
+	X86_CASE(x86_vcvttsd2si(b, 0, X86_RAX, 1), "vcvttsd2si eax, xmm1", "\xc5\xfb\x2c\xc1");
+	X86_CASE(x86_vcvttsd2si(b, 1, X86_R10, 9), "vcvttsd2si r10, xmm9", "\xc4\x41\xfb\x2c\xd1");
+	X86_CASE(x86_vcvtsi2sd(b, 0, 0, 0, X86_RAX), "vcvtsi2sd xmm0, xmm0, eax", "\xc5\xfb\x2a\xc0");
+	CHECK(!b->overflow);
+}
+
 /*
  * NanoKernel 2's quick system calls, by both engines: answered in place,
  * retiring nothing, while the time base is below sc_until; else (and for
@@ -874,4 +1121,5 @@ void test_jit(void)
 	test_random_programs(programs / 4 + 1, false);
 	unsetenv("SYSHM_JIT_FASTMEM");
 	test_logic_imm();
+	test_x86_encoding();
 }
