@@ -1397,10 +1397,10 @@ static const struct op scene_lists[] = {
  * Pixel rectangles: images of each kind of format at the raster position,
  * zoomed by whole numbers (once upside down: Mesa's fractional zooms put
  * rows where neither OpenGL 1.2's rectangles nor rounding would, see
- * test_glfront.c), through the pixel transfer's scales and biases
- * (Mesa's pixel maps quantize: those are checked in test_pixel_maps()); bitmaps
- * moving the raster position; a copy of what's drawn; a depth image tested
- * against, a stencil image stenciled by
+ * test_glfront.c), through the pixel transfer's scales and biases (no
+ * maps: see mesa_invoke(); test_glfront.c checks them); bitmaps moving the
+ * raster position; a copy of what's drawn; a depth image tested against, a
+ * stencil image stenciled by
  */
 enum { GL_RGBA_T = 0x1908, GL_RGB_T = 0x1907, GL_LUMINANCE_T = 0x1909, GL_RED_SCALE = 0x0D14, GL_BLUE_SCALE = 0x0D1A,
        GL_BLUE_BIAS = 0x0D1B, GL_ALPHA_SCALE = 0x0D1C, GL_COLOR_T = 0x1800, GL_DEPTH_COMPONENT_T = 0x1902,
@@ -1559,7 +1559,7 @@ static uint32_t scene_quadric;
 static void glu_invoke(const struct op *op)
 {
 	const char *sig = glu_functions[glu_entry(op->name)].args;
-	uint32_t w[16] = { 0 };
+	uint32_t w[24] = { 0 };                 /* (gluLookAt's nine doubles take 18 words) */
 	double f[13];
 	unsigned nw = 0, nf = 0;
 	for (const char *c = sig; *c; c++) {
@@ -2187,6 +2187,17 @@ static void mesa_invoke(const struct op *op)
 {
 	if (!strncmp(op->name, "glu", 3)) {
 		mesa_glu_invoke(op);
+		return;
+	}
+	/*
+	 * Mesa 25.2's glDrawPixels with GL_MAP_COLOR on frees a block it goes on
+	 * using: its blue and alpha come out as garbage (identity maps too), and
+	 * when the context goes it writes into the block, corrupting the heap
+	 * (glibc aborts on a later free, or something crashes: in some runs,
+	 * as threads' allocations fall)
+	 */
+	if (!strcmp(op->name, "glPixelTransferi") && op->a[0] == 0x0D10 && op->a[1] != 0) {
+		CHECK(!"GL_MAP_COLOR in a scene drawn by Mesa");
 		return;
 	}
 	int fn = opengl_entry(op->name);

@@ -1400,10 +1400,8 @@ static void test_raster_pos(void)
 
 static void test_draw_pixels(void)
 {
-	start();
-	ortho();
 	/* a zoomed image's texel (i, j) covers the pixels whose centers are in its rectangle (OpenGL 1.2's
-	 * 3.6.4), from the raster position rounded to a pixel's corner */
+	 * 3.6.4), from the raster position rounded to a pixel's corner; zoomed backwards, the other way */
 	static uint8_t image[4 * 3 * 4];
 	for (int k = 0; k < 12; k++) {
 		image[4 * k] = (uint8_t)(20 * k + 10);
@@ -1411,21 +1409,27 @@ static void test_draw_pixels(void)
 		image[4 * k + 2] = 0;
 		image[4 * k + 3] = 255;
 	}
-	const float z[2] = { 1.6f, -1.7f };
-	glf_pixel_zoom(&st, z[0], z[1]);
-	raster_pos(10.3f, 30.4f, 0);
-	glf_draw_pixels(&st, &target, 4, 3, GL_RGBA, GL_UNSIGNED_BYTE, image);
-	drawn();
-	unsigned wrong = 0, covered = 0;
-	for (int y = 20; y < 32; y++)
-		for (int x = 8; x < 20; x++) {
-			double i = floor((x + 0.5 - 10) / z[0]), j = floor((y + 0.5 - 30) / z[1]);
-			bool in = i >= 0 && i < 4 && j >= 0 && j < 3;
-			uint32_t want = in ? argb(20 * (int)(j * 4 + i) + 10, (int)(j * 4 + i), 0, 255) : 0;
-			wrong += pixel(x, y) != want;
-			covered += in;
-		}
-	CHECK(wrong == 0 && covered == 6 * 5);
+	static const float zooms[2][2] = { { 1.6f, -1.7f }, { -1.5f, 1.3f } };
+	static const unsigned covering[2] = { 6 * 5, 6 * 4 };
+	for (int n = 0; n < 2; n++) {
+		start();
+		ortho();
+		const float *z = zooms[n];
+		glf_pixel_zoom(&st, z[0], z[1]);
+		raster_pos(10.3f, 30.4f, 0);
+		glf_draw_pixels(&st, &target, 4, 3, GL_RGBA, GL_UNSIGNED_BYTE, image);
+		drawn();
+		unsigned wrong = 0, covered = 0;
+		for (int y = 18; y < 40; y++)
+			for (int x = 0; x < 24; x++) {
+				double i = floor((x + 0.5 - 10) / z[0]), j = floor((y + 0.5 - 30) / z[1]);
+				bool in = i >= 0 && i < 4 && j >= 0 && j < 3;
+				uint32_t want = in ? argb(20 * (int)(j * 4 + i) + 10, (int)(j * 4 + i), 0, 255) : 0;
+				wrong += pixel(x, y) != want;
+				covered += in;
+			}
+		CHECK(wrong == 0 && covered == covering[n]);
+	}
 	glf_pixel_zoom(&st, 1, 1);
 	/* the transfer: scale and bias, then the maps (each component through its own) */
 	start();
