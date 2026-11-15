@@ -45,7 +45,7 @@ static bool is_gl(unsigned t)
 /* Whether a tool is to be installed or updated, if it isn't current: not syshm's OpenGL when Apple's go back */
 static bool wanted(const struct install_check *ck, unsigned t)
 {
-	return !(ck->apple_restore && is_gl(t));
+	return !((ck->apple_restore || ck->apple_kept) && is_gl(t));
 }
 
 struct look {
@@ -238,6 +238,8 @@ static void say_found(struct install *in)
 	if (on || off)
 		add(line, sizeof line, "; Apple's OpenGL libraries are in %s%s%s", on ? "\"" EXTENSIONS_NAME "\"" : "",
 		    on && off ? " and " : "", off ? "\"" DISABLED_NAME "\"" : "");
+	if (ck->apple_kept)
+		add(line, sizeof line, " (put back in this run: syshm's aren't offered)");
 	printf("tools: on \"%s\", %s\n", ck->volume, line);
 
 	unsigned installed = 0, todo = 0;
@@ -251,19 +253,19 @@ static void say_found(struct install *in)
 	if (!installed) {
 		snprintf(in->question, sizeof in->question,
 			 "syshm's guest tools aren't installed on \"%s\". " ABOUT "%s", ck->volume, apple);
-		in->yes = "Install";
+		in->yes = "Install and Restart";
 		return;
 	}
 	if (!todo && ck->apple_restore) {
 		snprintf(in->question, sizeof in->question, "syshm's OpenGL libraries aren't on \"%s\", and Apple's are in "
 			 "\"" DISABLED_NAME "\": put Apple's back in \"" EXTENSIONS_NAME "\"?", ck->volume);
-		in->yes = "Put Back";
+		in->yes = "Put Back and Restart";
 		return;
 	}
 	if (!todo) {
 		snprintf(in->question, sizeof in->question, "Apple's OpenGL libraries are in \"" EXTENSIONS_NAME "\" on "
 			 "\"%s\" with syshm's: move Apple's to \"" DISABLED_NAME "\"?", ck->volume);
-		in->yes = "Move";
+		in->yes = "Move and Restart";
 		return;
 	}
 	char what[512] = "";
@@ -274,7 +276,7 @@ static void say_found(struct install *in)
 	snprintf(in->question, sizeof in->question, "syshm's guest tools on \"%s\" need updating: %s.%s%s", ck->volume,
 		 what, ck->apple_restore ? " Apple's OpenGL libraries go back to \"" EXTENSIONS_NAME "\"." : "",
 		 ck->apple_disable ? " Apple's OpenGL libraries go to \"" DISABLED_NAME "\"." : apple);
-	in->yes = "Update";
+	in->yes = "Update and Restart";
 }
 
 static const char *error_text(int16_t err, char *buf, size_t len)
@@ -317,11 +319,13 @@ enum {
 	R_PB = 0x0300,                  /* a parameter block (HParamBlockRec, CInfoPBRec) */
 	R_NAMEBUF = 0x0380,             /* a name (Str255) */
 	R_TEMP = 0x0480,                /* FSSpecs: the temporary file, */
-	R_OLD = 0x04D0,                 /* ... the copy it replaces, */
-	R_APP = 0x0520,                 /* ... syshm Enhancements */
+	R_OLD = 0x04D0,                 /* ... the copy it replaces */
 	R_NEWNAME = 0x0570,             /* (Str63) */
 	R_FINFO = 0x05B0,
-	R_LAUNCH = 0x05C0,              /* LaunchParamBlockRec */
+	R_PROCESS = 0x05C0,             /* the Process Manager's process serial number, */
+	R_ADDRESS = 0x05C8,             /* ... the Restart event's address (an AEDesc), */
+	R_EVENT = 0x05D0,               /* ... the event, */
+	R_REPLY = 0x05D8,               /* ... and its reply (none) */
 	R_FRAGMENT = 0x1000,            /* the installer's container */
 	R_BUFFER = 0x4000,              /* a fork, for FSWrite */
 };
@@ -333,7 +337,8 @@ _Static_assert(R_BUFFER + MAX_FORK <= INSTALL_REGION_SIZE, "room for a fork of a
 
 enum {
 	I_FIND_FOLDER, I_HGET_VINFO, I_GET_CAT_INFO, I_FSP_DELETE, I_FSP_CREATE, I_FSP_OPEN_DF, I_FSP_OPEN_RF,
-	I_FS_WRITE, I_FS_CLOSE, I_FSP_SET_FINFO, I_FSP_RENAME, I_LAUNCH, I_CAT_MOVE, I_COUNT,
+	I_FS_WRITE, I_FS_CLOSE, I_FSP_SET_FINFO, I_FSP_RENAME, I_CAT_MOVE, I_FLUSH_VOL, I_AE_CREATE_DESC,
+	I_AE_CREATE_APPLE_EVENT, I_AE_SEND, I_AE_DISPOSE_DESC, I_COUNT,
 };
 
 static const struct ndrv_import installer_imports[I_COUNT] = {
@@ -348,8 +353,12 @@ static const struct ndrv_import installer_imports[I_COUNT] = {
 	[I_FS_CLOSE] = { "InterfaceLib", "FSClose" },
 	[I_FSP_SET_FINFO] = { "InterfaceLib", "FSpSetFInfo" },
 	[I_FSP_RENAME] = { "InterfaceLib", "FSpRename" },
-	[I_LAUNCH] = { "InterfaceLib", "LaunchApplication" },
 	[I_CAT_MOVE] = { "InterfaceLib", "PBCatMoveSync" },
+	[I_FLUSH_VOL] = { "InterfaceLib", "FlushVol" },
+	[I_AE_CREATE_DESC] = { "InterfaceLib", "AECreateDesc" },
+	[I_AE_CREATE_APPLE_EVENT] = { "InterfaceLib", "AECreateAppleEvent" },
+	[I_AE_SEND] = { "InterfaceLib", "AESend" },
+	[I_AE_DISPOSE_DESC] = { "InterfaceLib", "AEDisposeDesc" },
 };
 
 static uint32_t at(uint32_t offset)
@@ -508,13 +517,17 @@ void install_init(struct install *in)
 void install_begin(struct install *in, const char *path, unsigned part, bool read_only)
 {
 	char err[HFSREAD_PATH_MAX + 128];
+	bool apple_kept = in->check.apple_kept;
 	install_init(in);
 	in->on = true;
+	in->check.apple_kept = apple_kept;
 	if (read_only) {
 		printf("tools: the startup disk (%s) is read-only: the guest tools aren't offered\n", path);
 		return;
 	}
-	if (install_check(path, part, &in->check, err, sizeof err)) {
+	int checked = install_check(path, part, &in->check, err, sizeof err);
+	in->check.apple_kept = apple_kept;
+	if (checked) {
 		printf("tools: %s\n", err);
 		return;
 	}
@@ -549,6 +562,18 @@ static bool finder_up(struct install *in, const struct install_idle *w)
 	return w->tb - in->quiet_tb >= FINDER_QUIET_TB(w->tb_hz) || w->tb - in->finder_tb >= FINDER_LONGEST_TB(w->tb_hz);
 }
 
+/* A running Enhancements that's to be replaced quits first (its file is in use while it runs): true if asked to */
+static bool ask_to_quit(struct install *in, struct helper *h)
+{
+	if (in->quit_asked || in->check.tool[TOOLS_ENHANCEMENTS].state != INSTALL_DIFFERS || !h->running)
+		return false;
+	h->quit = true;
+	in->quit_asked = true;
+	in->phase = INSTALL_QUITTING;
+	printf("tools: asking syshm Enhancements to quit, to replace it\n");
+	return true;
+}
+
 bool install_idle(struct install *in, const struct install_idle *w)
 {
 	if (in->phase == INSTALL_WAIT_FINDER && finder_up(in, w)) {
@@ -560,6 +585,8 @@ bool install_idle(struct install *in, const struct install_idle *w)
 			printf("tools: the Finder is up: asking (%s?)\n", in->yes);
 		}
 	}
+	if (in->phase == INSTALL_INJECT && ask_to_quit(in, w->helper))
+		return false;           /* (one that started after the answer) */
 	if (in->phase == INSTALL_QUITTING) {
 		if (!in->quit_tb)
 			in->quit_tb = w->tb;
@@ -602,12 +629,7 @@ void install_answer(struct install *in, bool yes, struct helper *h)
 		if (!yes) {
 			in->phase = INSTALL_DONE;
 			printf("tools: not now\n");
-		} else if (in->check.tool[TOOLS_ENHANCEMENTS].state == INSTALL_DIFFERS && h->running) {
-			h->quit = true;         /* (to replace it, it has to have quit) */
-			in->quit_asked = true;
-			in->phase = INSTALL_QUITTING;
-			printf("tools: asking syshm Enhancements to quit, to replace it\n");
-		} else {
+		} else if (!ask_to_quit(in, h)) {
 			in->phase = INSTALL_INJECT;
 		}
 		break;
@@ -642,10 +664,28 @@ void install_answer(struct install *in, bool yes, struct helper *h)
 #define PB_VDRV_INFO 66u
 #define ATTRIB_DIRECTORY 0x10u
 
+/*
+ * The Restart event (kCoreEventClass, kAERestart), sent to the Process
+ * Manager (the system process), which restarts as Special > Restart does:
+ * each program is asked to quit, and can ask to save its work first, or stop
+ * the restart. (The Finder ignores this one; its own is 'fndr' 'rest'.)
+ */
+#define TYPE_PROCESS_SERIAL_NUMBER FOURCC('p', 's', 'n', ' ')
+#define K_SYSTEM_PROCESS 1u
+#define K_CORE_EVENT_CLASS FOURCC('a', 'e', 'v', 't')
+#define K_AE_RESTART FOURCC('r', 'e', 's', 't')
+#define AUTO_GENERATE_RETURN_ID 0xFFFFFFFFu             /* (-1) */
+#define AE_NO_REPLY 0x01u
+#define AE_ALWAYS_INTERACT 0x30u
+#define AE_CAN_SWITCH_LAYER 0x40u
+#define AE_DEFAULT_TIMEOUT 0xFFFFFFFFu                  /* (-1) */
+#define AE_DESC_SIZE 8u
+
 enum {
 	S_FIND_FOLDER, S_VOLUME, S_EXT_NAME, S_SCAN, S_DELETE_TEMP, S_CREATE, S_OPEN_DF, S_WRITE_DF, S_CLOSE_DF,
-	S_OPEN_RF, S_WRITE_RF, S_CLOSE_RF, S_SET_INFO, S_DELETE_OLD, S_RENAME, S_LAUNCH, S_CLEANUP_CLOSE,
-	S_CLEANUP_DELETE, S_DISABLED_FOLDER, S_DISABLED_NAME, S_APPLE_MOVE,
+	S_OPEN_RF, S_WRITE_RF, S_CLOSE_RF, S_SET_INFO, S_DELETE_OLD, S_RENAME, S_CLEANUP_CLOSE, S_CLEANUP_DELETE,
+	S_DISABLED_FOLDER, S_DISABLED_NAME, S_APPLE_MOVE, S_FLUSH, S_RESTART_ADDRESS, S_RESTART_EVENT,
+	S_RESTART_SEND, S_DISPOSE_EVENT, S_DISPOSE_ADDRESS,
 };
 
 static void callout(struct install *in, struct ndrv_call *c, unsigned step, unsigned imp, uint32_t a0, uint32_t a1,
@@ -697,8 +737,8 @@ static void start_temp(struct install *in, struct ndrv_call *c)
 	callout(in, c, S_DELETE_TEMP, I_FSP_DELETE, at(R_TEMP), 0, 0, 0);       /* (one left over) */
 }
 
-static void report(struct install *in, struct ndrv_call *c, struct helper *h);
-static void next_tool(struct install *in, struct ndrv_call *c, struct helper *h);
+static void report(struct install *in, struct ndrv_call *c);
+static void next_tool(struct install *in, struct ndrv_call *c);
 
 /* The folder of one of syshm's tools once it's been written (or not): 0 if it isn't there */
 static uint32_t tool_dir(const struct install *in, unsigned t)
@@ -707,7 +747,7 @@ static uint32_t tool_dir(const struct install *in, unsigned t)
 }
 
 /* The next of Apple's OpenGL libraries to move (see install.h), or on to what's after them */
-static void apple_next(struct install *in, struct ndrv_call *c, struct helper *h)
+static void apple_next(struct install *in, struct ndrv_call *c)
 {
 	for (; in->apple < INSTALL_APPLE_GL; in->apple++) {
 		const struct install_apple *a = &in->check.apple[in->apple];
@@ -729,11 +769,11 @@ static void apple_next(struct install *in, struct ndrv_call *c, struct helper *h
 		callout(in, c, S_APPLE_MOVE, I_CAT_MOVE, pb, 0, 0, 0);
 		return;
 	}
-	next_tool(in, c, h);
+	next_tool(in, c);
 }
 
 /* syshm's tools written: Apple's OpenGL libraries to Extensions (Disabled) if syshm's are in Extensions, or back */
-static void apple_begin(struct install *in, struct ndrv_call *c, struct helper *h)
+static void apple_begin(struct install *in, struct ndrv_call *c)
 {
 	bool enabled = true, ours = false;
 	for (unsigned t = TOOLS_GL_FIRST; t < TOOLS_GL_FIRST + TOOLS_GL_FILES; t++) {
@@ -752,36 +792,39 @@ static void apple_begin(struct install *in, struct ndrv_call *c, struct helper *
 		c->out[4] = at(R_DIRID);
 		return;
 	}
-	apple_next(in, c, h);
+	apple_next(in, c);
 }
 
-static void next_tool(struct install *in, struct ndrv_call *c, struct helper *h)
+/* Whether everything asked for was done: then Mac OS restarts */
+static bool all_done(const struct install *in)
+{
+	bool any = false;
+	for (unsigned t = 0; t < TOOLS_FILES; t++)
+		any |= in->result[t].done;
+	for (unsigned k = 0; k < INSTALL_APPLE_GL; k++) {
+		if (in->apple_moved[k].error)
+			return false;
+		any |= in->apple_moved[k].moved;
+	}
+	return any && !in->error;
+}
+
+static void next_tool(struct install *in, struct ndrv_call *c)
 {
 	while (in->tool < TOOLS_FILES &&
 	       (in->check.tool[in->tool].state == INSTALL_CURRENT || !wanted(&in->check, in->tool)))
 		in->tool++;
 	in->replacing = in->temp_made = in->temp_open = in->old_deleted = false;
 	if (in->tool == TOOLS_FILES && !in->apple_done) {
-		apple_begin(in, c, h);
+		apple_begin(in, c);
 		return;
 	}
 	if (in->tool == TOOLS_FILES) {
-		/* Enhancements starts: the new one, or the old one again if it quit for nothing */
-		in->relaunch = !in->result[TOOLS_ENHANCEMENTS].done && in->quit_asked && in->old_found;
-		const bool start = in->relaunch ? in->old_dir == in->ext_dir :
-				   in->result[TOOLS_ENHANCEMENTS].done && in->result[TOOLS_ENHANCEMENTS].dir == in->ext_dir;
-		if (start && !h->running) {
-			uint32_t pb = at(R_LAUNCH);
-			memset(mem_ptr(c->mem, pb), 0, 44);
-			mem_w16(c->mem, pb + 6, 0x4C43);        /* extendedBlock */
-			mem_w32(c->mem, pb + 8, 32);            /* extendedBlockLen */
-			mem_w16(c->mem, pb + 14, 0x4000 | 0x0800 | 0x0200);    /* launchContinue, NoFileFlags, DontSwitch */
-			mem_w32(c->mem, pb + 16, at(R_APP));
-			in->launch_tried = true;
-			callout(in, c, S_LAUNCH, I_LAUNCH, pb, 0, 0, 0);
-			return;
-		}
-		report(in, c, h);
+		/* all in place: on the disk, then a restart, as Special > Restart (programs can save their work) */
+		if (all_done(in))
+			callout(in, c, S_FLUSH, I_FLUSH_VOL, 0, (uint32_t)(int32_t)in->vref, 0, 0);
+		else
+			report(in, c);
 		return;
 	}
 	const struct install_copy *cp = &in->check.tool[in->tool];
@@ -797,7 +840,7 @@ static void next_tool(struct install *in, struct ndrv_call *c, struct helper *h)
 }
 
 /* Something failed: no temporary file is left behind (unless it's all there is of the tool now) */
-static void stop(struct install *in, struct ndrv_call *c, struct helper *h, int16_t err, const char *doing)
+static void stop(struct install *in, struct ndrv_call *c, int16_t err, const char *doing)
 {
 	if (!in->error) {
 		in->error = err;
@@ -815,7 +858,7 @@ static void stop(struct install *in, struct ndrv_call *c, struct helper *h, int1
 		return;
 	}
 	in->tool = TOOLS_FILES;
-	next_tool(in, c, h);
+	next_tool(in, c);
 }
 
 /* Writes a fork of the tool into the open temporary file */
@@ -831,7 +874,7 @@ static void write_fork(struct install *in, struct ndrv_call *c, bool rsrc)
 		at(R_BUFFER), 0);
 }
 
-void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
+void install_call(struct install *in, struct ndrv_call *c)
 {
 	struct mem *m = c->mem;
 	struct hfs_file files[TOOLS_FILES];
@@ -843,7 +886,8 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 		}
 		in->phase = INSTALL_RUNNING;
 		in->tool = TOOLS_FILES;         /* (none yet) */
-		in->error = 0;
+		in->error = in->restart_error = 0;
+		in->restarting = false;
 		memset(in->result, 0, sizeof in->result);
 		in->apple_done = true;          /* (not until the tools are written) */
 		memset(in->apple_moved, 0, sizeof in->apple_moved);
@@ -860,7 +904,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 	switch (in->step) {
 	case S_FIND_FOLDER:
 		if (err) {
-			stop(in, c, h, err, "finding the Extensions folder");
+			stop(in, c, err, "finding the Extensions folder");
 			return;
 		}
 		in->vref = (int16_t)mem_r16(m, at(R_VREF));
@@ -870,11 +914,11 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 		return;
 	case S_VOLUME:
 		if (err)
-			stop(in, c, h, err, "looking at the startup disk");
+			stop(in, c, err, "looking at the startup disk");
 		else if (mem_r16(m, pb + PB_VATRB) & VOLUME_LOCKED)
-			stop(in, c, h, -44, "looking at the startup disk");
+			stop(in, c, -44, "looking at the startup disk");
 		else if (mem_r32(m, pb + PB_VFNDR_INFO) != in->check.system_dir || mem_r16(m, pb + PB_VDRV_INFO) != in->drive)
-			stop(in, c, h, WRONG_DISK, NULL);
+			stop(in, c, WRONG_DISK, NULL);
 		if (in->error)
 			return;
 		param_block(in, m);
@@ -889,7 +933,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 			roman_name(m, at(R_NAMEBUF), in->ext_name, sizeof in->ext_name);
 		in->tool = 0;
 		in->apple_done = false;
-		next_tool(in, c, h);
+		next_tool(in, c);
 		return;
 	case S_SCAN:
 		if (err == FNF_ERR && !in->scanned_ext) {       /* not there: in the Extensions folder now? */
@@ -901,17 +945,12 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 			in->dir = in->ext_dir;
 			start_temp(in, c);
 		} else if (err) {
-			stop(in, c, h, err, "looking for it");
+			stop(in, c, err, "looking for it");
 		} else if (!(mem_r8(m, pb + PB_ATTRIB) & ATTRIB_DIRECTORY) &&
 			   mem_r32(m, pb + PB_DIR_ID) == in->check.tool[in->tool].id) {
 			in->replacing = true;
 			in->dir = in->scan_dir;
 			put_fsspec(m, at(R_OLD), in->vref, in->dir, mem_ptr(m, at(R_NAMEBUF)));
-			if (in->tool == TOOLS_ENHANCEMENTS) {
-				in->old_found = true;
-				in->old_dir = in->dir;
-				put_fsspec(m, at(R_APP), in->vref, in->dir, mem_ptr(m, at(R_NAMEBUF)));
-			}
 			start_temp(in, c);
 		} else {
 			in->scan_index++;
@@ -923,7 +962,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 		return;
 	case S_CREATE:
 		if (err) {
-			stop(in, c, h, err, "making a file");
+			stop(in, c, err, "making a file");
 			return;
 		}
 		in->temp_made = true;
@@ -932,7 +971,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 	case S_OPEN_DF:
 	case S_OPEN_RF:
 		if (err) {
-			stop(in, c, h, err, "writing it");
+			stop(in, c, err, "writing it");
 			return;
 		}
 		in->refnum = (int16_t)mem_r16(m, at(R_REFNUM));
@@ -942,7 +981,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 	case S_WRITE_DF:
 	case S_WRITE_RF:
 		if (err) {
-			stop(in, c, h, err, "writing it");
+			stop(in, c, err, "writing it");
 			return;
 		}
 		callout(in, c, in->step == S_WRITE_DF ? S_CLOSE_DF : S_CLOSE_RF, I_FS_CLOSE, (uint32_t)(int32_t)in->refnum,
@@ -951,7 +990,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 	case S_CLOSE_DF:
 		in->temp_open = false;
 		if (err) {
-			stop(in, c, h, err, "writing it");
+			stop(in, c, err, "writing it");
 			return;
 		}
 		callout(in, c, S_OPEN_RF, I_FSP_OPEN_RF, at(R_TEMP), FS_RD_WR_PERM, at(R_REFNUM), 0);
@@ -959,7 +998,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 	case S_CLOSE_RF:
 		in->temp_open = false;
 		if (err) {
-			stop(in, c, h, err, "writing it");
+			stop(in, c, err, "writing it");
 			return;
 		}
 		tools_files(files);
@@ -971,7 +1010,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 		return;
 	case S_SET_INFO:
 		if (err) {
-			stop(in, c, h, err, "writing it");
+			stop(in, c, err, "writing it");
 			return;
 		}
 		if (in->replacing) {
@@ -983,7 +1022,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 		return;
 	case S_DELETE_OLD:
 		if (err) {
-			stop(in, c, h, err, "replacing the old copy");
+			stop(in, c, err, "replacing the old copy");
 			return;
 		}
 		in->old_deleted = true;
@@ -992,7 +1031,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 		return;
 	case S_RENAME: {
 		if (err) {
-			stop(in, c, h, err, "naming it");
+			stop(in, c, err, "naming it");
 			return;
 		}
 		unsigned t = in->tool;
@@ -1002,20 +1041,14 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 		memcpy(in->result[t].folder, in->dir == in->ext_dir ? in->ext_name : in->check.tool[t].folder,
 		       sizeof in->result[t].folder);
 		roman_name(m, at(R_NEWNAME), in->result[t].old_name, sizeof in->result[t].old_name);
-		if (t == TOOLS_ENHANCEMENTS)
-			put_fsspec(m, at(R_APP), in->vref, in->dir, mem_ptr(m, at(R_NEWNAME)));
 		in->temp_made = false;
 		in->tool++;
-		next_tool(in, c, h);
+		next_tool(in, c);
 		return;
 	}
-	case S_LAUNCH:
-		in->launch_error = err;
-		report(in, c, h);
-		return;
 	case S_CLEANUP_CLOSE:
 	case S_CLEANUP_DELETE:
-		stop(in, c, h, in->error, in->error_doing);
+		stop(in, c, in->error, in->error_doing);
 		return;
 	case S_DISABLED_FOLDER:
 		if (err) {
@@ -1023,7 +1056,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 				if (in->check.apple[k].found[0] && in->check.apple[k].dir[0] == in->ext_dir)
 					in->apple_moved[k].error = err;
 			in->apple = INSTALL_APPLE_GL;
-			apple_next(in, c, h);
+			apple_next(in, c);
 			return;
 		}
 		in->disabled_dir = mem_r32(m, at(R_DIRID));
@@ -1037,13 +1070,58 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 			snprintf(in->disabled_name, sizeof in->disabled_name, DISABLED_NAME);
 		else
 			roman_name(m, at(R_NAMEBUF), in->disabled_name, sizeof in->disabled_name);
-		apple_next(in, c, h);
+		apple_next(in, c);
 		return;
 	case S_APPLE_MOVE:
 		in->apple_moved[in->apple].moved = !err;
 		in->apple_moved[in->apple].error = err;
 		in->apple++;
-		apple_next(in, c, h);
+		apple_next(in, c);
+		return;
+	case S_FLUSH:
+		if (err) {
+			in->restart_error = err;
+			report(in, c);
+			return;
+		}
+		memset(mem_ptr(m, at(R_ADDRESS)), 0, 3 * AE_DESC_SIZE);        /* (null descriptors until made) */
+		mem_w32(m, at(R_PROCESS), 0);
+		mem_w32(m, at(R_PROCESS) + 4, K_SYSTEM_PROCESS);
+		callout(in, c, S_RESTART_ADDRESS, I_AE_CREATE_DESC, TYPE_PROCESS_SERIAL_NUMBER, at(R_PROCESS), 8,
+			at(R_ADDRESS));
+		return;
+	case S_RESTART_ADDRESS:
+		if (err) {
+			in->restart_error = err;
+			report(in, c);
+			return;
+		}
+		callout(in, c, S_RESTART_EVENT, I_AE_CREATE_APPLE_EVENT, K_CORE_EVENT_CLASS, K_AE_RESTART, at(R_ADDRESS),
+			AUTO_GENERATE_RETURN_ID);
+		c->out[4] = 0;                  /* kAnyTransactionID */
+		c->out[5] = at(R_EVENT);
+		return;
+	case S_RESTART_EVENT:
+		if (err) {
+			in->restart_error = err;
+			callout(in, c, S_DISPOSE_ADDRESS, I_AE_DISPOSE_DESC, at(R_ADDRESS), 0, 0, 0);
+			return;
+		}
+		/* (normal priority, the default timeout, no idle or filter routine) */
+		callout(in, c, S_RESTART_SEND, I_AE_SEND, at(R_EVENT), at(R_REPLY),
+			AE_NO_REPLY | AE_ALWAYS_INTERACT | AE_CAN_SWITCH_LAYER, 0);
+		c->out[4] = AE_DEFAULT_TIMEOUT;
+		return;
+	case S_RESTART_SEND:
+		in->restart_error = err;
+		in->restarting = !err;
+		callout(in, c, S_DISPOSE_EVENT, I_AE_DISPOSE_DESC, at(R_EVENT), 0, 0, 0);
+		return;
+	case S_DISPOSE_EVENT:
+		callout(in, c, S_DISPOSE_ADDRESS, I_AE_DISPOSE_DESC, at(R_ADDRESS), 0, 0, 0);
+		return;
+	case S_DISPOSE_ADDRESS:
+		report(in, c);
 		return;
 	default:
 		ndrv_finish(c, 0);
@@ -1052,7 +1130,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 }
 
 /* What was done, said once the installer has finished */
-static void report(struct install *in, struct ndrv_call *c, struct helper *h)
+static void report(struct install *in, struct ndrv_call *c)
 {
 	char *s = in->news, buf[64];
 	size_t len = sizeof in->news;
@@ -1084,6 +1162,7 @@ static void report(struct install *in, struct ndrv_call *c, struct helper *h)
 	unsigned moved = 0;
 	for (unsigned k = 0; k < INSTALL_APPLE_GL; k++)
 		moved += in->apple_moved[k].moved;
+	in->check.apple_kept |= moved && in->apple_restoring;  /* (the user's choice: see install_begin()) */
 	if (moved) {
 		add(s, len, "%s%s Apple's ", s[0] ? "; " : "", in->apple_restoring ? "put" : "moved");
 		for (unsigned k = 0, j = 0; k < INSTALL_APPLE_GL; k++)
@@ -1106,29 +1185,19 @@ static void report(struct install *in, struct ndrv_call *c, struct helper *h)
 		else
 			add(s, len, " (%s): %s", in->error_doing, error_text(in->error, buf, sizeof buf));
 	}
+	if (in->restart_error)
+		add(s, len, "%scouldn't restart Mac OS: %s", s[0] ? "; " : "", error_text(in->restart_error, buf, sizeof buf));
 	add(s, len, ".");
-	if (in->relaunch && in->launch_tried && !in->launch_error)
-		add(s, len, " The old syshm Enhancements is running again.");
-	else if (in->quit_asked && !r[TOOLS_ENHANCEMENTS].done)
+	const struct install_result *e = &r[TOOLS_ENHANCEMENTS];
+	if (e->done && e->dir != in->ext_dir)
+		add(s, len, " It stays in \"%s\": Mac OS starts syshm Enhancements only from \"%s\".", e->folder,
+		    in->ext_name);
+	if (in->restarting)
+		add(s, len, " Mac OS is restarting.");
+	else if (in->restart_error)
+		add(s, len, " Restart Mac OS to use them.");
+	else if (in->quit_asked || (e->done && e->dir == in->ext_dir))
 		add(s, len, " syshm Enhancements starts with Mac OS next time.");
-	if (r[TOOLS_ENHANCEMENTS].done) {
-		if (in->launch_tried && !in->launch_error)
-			add(s, len, " syshm Enhancements is running.");
-		else if (in->launch_tried)
-			add(s, len, " syshm Enhancements starts with Mac OS next time (it couldn't start now: %s).",
-			    error_text(in->launch_error, buf, sizeof buf));
-		else if (r[TOOLS_ENHANCEMENTS].dir != in->ext_dir)
-			add(s, len, " It stays in \"%s\": Mac OS starts syshm Enhancements only from \"%s\".",
-			    r[TOOLS_ENHANCEMENTS].folder, in->ext_name);
-		else if (h->running)
-			add(s, len, " (Another copy of syshm Enhancements is running.)");
-	}
-	const char *gl = r[TOOLS_GL_LIBRARY].done || r[TOOLS_GL_MEMORY].done || r[TOOLS_GL_UTILITY].done ?
-			 "syshm's OpenGL" : moved && in->apple_restoring ? "Apple's OpenGL" : NULL;
-	if (r[TOOLS_3D_ENGINE].done)
-		add(s, len, " Programs opened from now on find the 3D engine%s%s.", gl ? " and " : "", gl ? gl : "");
-	else if (gl)
-		add(s, len, " Programs opened from now on find %s.", gl);
 	finish_news(in);
 	ndrv_finish(c, 0);
 }

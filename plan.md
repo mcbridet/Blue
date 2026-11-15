@@ -556,16 +556,24 @@ the kernel); 8 onwards as the boot progresses.
   files of the tools' type and creator whose code makes the tool's host
   call; current if both forks are the bytes this syshm makes). Once the
   Finder is up, if one is missing or differs (and the disk is writable
-  and not locked), a box over the screen offers to install or update them;
-  Mac OS runs on meanwhile. On yes, Mac OS writes them itself: syshm
+  and not locked), a box over the screen offers to install or update them
+  ("Install and Restart", "Update and Restart"; Mac OS 9's "Move and
+  Restart" and "Put Back and Restart"); Mac OS runs on meanwhile. On yes,
+  Mac OS writes them itself: syshm
   diverts the Process Manager's next idle call (`_SynchIdleTime` before
   Mac OS 9, trap AAAA with $82F0 in D0 on 9.x) to a 68k bootstrap that
   prepares a
   generated installer fragment with the Code Fragment Manager and calls it
-  (see Findings). Input scripts answer with `tools install` or `tools
-  later` (and turn the check on without a window). `tests/test_install.c`
+  (see Findings). Once all is in place (and only then) the installer
+  flushes the volume and sends the Process Manager the Restart Apple event
+  (`aevt` `rest`), and Mac OS restarts as Special > Restart does; the
+  tools load as any extension at startup, and the check after the
+  restart finds them current. Input scripts answer with `tools install` or `tools
+  later` (and turn the check on without a window); `tools install`
+  restarts Mac OS too. `tests/test_install.c`
   covers the check on HFS volumes made with `hfs_build()`, the offer, and
-  the installer against a File Manager of its own. `--tools` is gone:
+  the installer against a File Manager of its own, the restart included.
+  `--tools` is gone:
   `syshm tools create FILE` makes the volume for installing them by hand
   (`--cdrom FILE`). Open: "don't ask again"; 9.1 on an installed disk.
 
@@ -589,7 +597,8 @@ the kernel); 8 onwards as the boot progresses.
   from the tools volume) and on a copy of an 8.5 install (Note Pad,
   Scrapbook, the Finder's names, Internet Explorer 4.01's address field);
   there `tools install` replaced the older Enhancements (`helper.quit`
-  takes the patches out too) and the new one pasted in Note Pad. Open:
+  takes the patches out too) and the new one pasted in Note Pad (then
+  started at once; installs restart Mac OS now). Open:
   pictures (see Findings), styles, applications that put their copy in the
   scrap only at a suspend, and the real host clipboard, which only a
   window run by hand uses.
@@ -1607,23 +1616,58 @@ Facts later tasks need, added as they are found.
   to native code as for any 68k caller, and back for each File Manager
   trap. Then CloseConnection, the registers, and a `jmp` to the trap's
   own routine. FindFolder, PBHGetVInfoSync, PBGetCatInfoSync, the FSp
-  calls, FSWrite and FSClose all work there, and so does
+  calls, FSWrite and FSClose all work there, and so did
   LaunchApplication (`launchContinue | launchNoFileFlags |
-  launchDontSwitch`) of a background-only application: Enhancements runs
-  at once (its launches count 2 in the run's statistics). Disk First Aid
+  launchDontSwitch`) of a background-only application: Enhancements ran
+  at once (its launches counted 2 in the run's statistics), until installs
+  restarted Mac OS instead (below). Disk First Aid
   finds the volume sound afterwards. (hfsutils' `hdel` on an installed
   8.6 disk leaves something it can't repair; `hattrib` doesn't.)
 - **A running Enhancements can't be replaced** (its resource fork is open:
   `fBsyErr`), so syshm has it quit first (`helper.quit`: its main
   routine returns at its next WaitNextEvent, as for a quit Apple event)
-  and goes on once it's gone (0.1 s later; 5 s at most), and starts it
-  again if it couldn't be replaced after all.
+  and goes on once it's gone (0.1 s later; 5 s at most). The restart
+  that follows an install doesn't change that (the file has to be
+  replaced before it): on 8.6, without the quit, FSpDelete of the running
+  older copy gave `fBsyErr` ("it's in use"), nothing was installed and
+  Mac OS didn't restart. 9.2.2 starts Enhancements only after the Finder
+  is up, so an input script's early `tools install` found it not yet
+  running at the answer, and it was running by the time the installer
+  went in (`fBsyErr` again); syshm now asks it again just before going
+  in. If it can't be replaced after it quit, it isn't started again
+  (Mac OS doesn't restart either): it starts with Mac OS next time.
+- **Restarting Mac OS after an install** (all three of 8.5, 8.6 and
+  9.2.2): the Process Manager takes the Restart Apple event (`aevt`
+  `rest`, kCoreEventClass and kAERestart) sent to the system process
+  (`typeProcessSerialNumber` {0, kSystemProcess}, `kAENoReply`), from the
+  installer in the idle trap's context, and restarts as Special > Restart
+  does: each program is asked to quit (SimpleText with a changed document
+  asked "Save changes to the document … before closing?"; Don't Save, and
+  the restart went on; Cancel, and Mac OS went on, the tools in place).
+  The Finder ignores `aevt` `rest` (nothing happened on any of the three),
+  but takes its own, `fndr` `rest` (its `aete`'s "restart", what
+  AppleScript sends) and the System 7 Finder Events' `FNDR` `rest`; the
+  Process Manager's doesn't need the Finder. 8.5 and 8.6 then restart
+  through RTAS `system-reboot`, 9.2.2 through the Cuda, and syshm starts
+  the machine over (`restart_machine()`): the check finds the tools
+  current, Enhancements runs (one launch), QuickDraw 3D's Teapot in
+  SimpleText calls the engine (19 calls on 8.5 and 8.6) and syshm's GL
+  Test draws with syshm's OpenGL (8.5, 8.6, 9.2.2). The installer flushes
+  the volume (FlushVol) before it asks, and asks only if everything
+  asked for was done. The box with the outcome stays through the restart,
+  until OK (a question is taken down: it belonged to that session). After
+  a Put Back, syshm's OpenGL isn't offered again in that run (the disk
+  looks just like a 9.2.2 whose tools came before syshm's OpenGL did), so
+  the restart doesn't bring the opposite offer straight back. Mac OS 9
+  ejects a CD that isn't the startup disk at the restart where its drive
+  is ejectable (window and real-time runs).
 - **RAVE finds engines per program:** QuickDraw 3D RAVE looks through the
   Extensions folder when a program loads it, so programs opened after the
   3D engine is installed find it without a restart, even after an earlier
   program loaded RAVE (SimpleText opening the Teapot from the QuickDraw 3D
   folder, quit, the engine installed, opened again: 19 calls to the
-  engine). Programs already running don't.
+  engine). Programs already running don't. (Installs restart Mac OS now
+  anyway, for Enhancements and OpenGL.)
 - **Mac OS 9 doesn't call `_SynchIdleTime`** (9.1 and 9.2.2 alike): its
   Process Manager idles natively, napping with `MPDelayUntil` (call 55),
   and its idle routine (68k, in the system heap) calls trap AAAA with
