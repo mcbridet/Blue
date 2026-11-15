@@ -3122,9 +3122,18 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 		}
 	}
 
-	/* exits to known pcs: ask C for a link the first time */
+	/*
+	 * Exits to known pcs: straight to the block there if there is one (this
+	 * one, perhaps), as C would link it; else ask C for a link the first time
+	 */
 	for (unsigned l = 0; l < t.nlinks && !t.x.overflow; l++) {
 		struct link *ln = &t.links[l];
+		const void *to = ln->target == pc0 ? (pc0 != j->linked_hook ? start : NULL) : *table_entry(j, ln->target);
+		if (to && to != j->miss_exit && to != j->hook_exit) {
+			x86_patch32(ln->site, to);
+			j->links++;
+			continue;
+		}
 		x86_patch32(ln->site, t.x.p);
 		x86_mov_ri(&t.x, T0, ln->target);
 		x86_lea(&t.x, 1, T1, x86_rip(ln->site));
