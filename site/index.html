@@ -87,6 +87,24 @@
       <path d="M13.5 2.5h5v7h4l-6.5 7-6.5-7h4Z" fill="#33aa33"/>
     </g>
   </symbol>
+  <symbol id="i-monitor" viewBox="0 0 32 32">
+    <g stroke="#000" stroke-linejoin="round">
+      <rect x="3.5" y="4.5" width="25" height="18" rx="1" fill="#ddd"/>
+      <rect x="6.5" y="7.5" width="19" height="12" fill="#6666cc"/>
+      <path d="M12.5 22.5h7l1.5 4h-10Z" fill="#bbb"/>
+      <rect x="8.5" y="26.5" width="15" height="2" fill="#ddd"/>
+    </g>
+  </symbol>
+  <symbol id="i-cd" viewBox="0 0 32 32">
+    <circle cx="16" cy="16" r="12.5" fill="#e6e6f2" stroke="#000"/>
+    <circle cx="16" cy="16" r="8" fill="none" stroke="#b8b8d8"/>
+    <circle cx="16" cy="16" r="3.5" fill="#fff" stroke="#000"/>
+  </symbol>
+  <symbol id="i-mouse" viewBox="0 0 32 32">
+    <path d="M16 2.5c0 2-1 2.5-1 4" fill="none" stroke="#000"/>
+    <rect x="8.5" y="6.5" width="15" height="23" rx="7.5" fill="#ddd" stroke="#000"/>
+    <path d="M8.5 15.5h15M16 6.5v9" stroke="#000"/>
+  </symbol>
 </svg>
 
 <ul class="desk-icons" aria-label="Links">
@@ -126,7 +144,7 @@
         <div class="doc how">
           <p>On a real Power Mac only the NanoKernel runs in supervisor mode. The 68k emulator, the Toolbox, applications and drivers all run in PowerPC user mode and reach the kernel through a small interface.</p>
           <p>syshm runs all of that Apple code unmodified, as the guest, and supplies everything below the interface as an ordinary program on the host.</p>
-          <p>Where Mac OS looks to the machine for drivers, syshm puts its own in the device tree, as a Mac’s firmware would. They’re thin: the work is done on the host. The system helpers, optional extras on a disk of their own, work the same way: guest enhancements that make the screen follow the window, and a 3D engine.</p>
+          <p>Where Mac OS looks to the machine for drivers, syshm puts its own in the device tree, as a Mac’s firmware would. They’re thin: the work is done on the host. The system helpers work the same way. Once the Finder is up, syshm offers to install them: guest enhancements that make the screen follow the window and share the clipboard, a 3D engine, and OpenGL.</p>
           <figure class="arch">
             <div class="zone guest">
               <p class="zone-label">Guest</p>
@@ -141,13 +159,13 @@
               </div>
               <div class="abox syshm guest-syshm">
                 <p class="abox-title">Drivers</p>
-                <span class="part">Display, disks and CDs, Ethernet</span>
+                <span class="part">Display, disks, CDs and floppies, Ethernet</span>
                 <p class="abox-foot">Built in, in the device tree</p>
               </div>
               <div class="abox syshm guest-syshm">
                 <p class="abox-title">System helpers</p>
-                <span class="part">Guest enhancements, 3D engine</span>
-                <p class="abox-foot">Optional, installed in Extensions</p>
+                <span class="part">Guest enhancements, 3D engine, OpenGL</span>
+                <p class="abox-foot">Offered once the Finder is up, installed in Extensions</p>
               </div>
             </div>
             <div class="iface">
@@ -169,17 +187,17 @@
                   <p class="abox-title">syshm</p>
                   <span class="part svc"><strong>CPU</strong> PowerPC JIT and interpreter</span>
                   <span class="part svc"><strong>Kernel</strong> Memory, interrupts, Multiprocessing Services</span>
-                  <span class="part svc"><strong>Devices</strong> An iMac’s: ADB, timers, sound, Ethernet, USB, NVRAM</span>
-                  <span class="part svc"><strong>Drivers</strong> Display, disks and CDs, Ethernet, 3D</span>
+                  <span class="part svc"><strong>Devices</strong> An iMac’s: ADB, timers, display interrupt, sound, Ethernet, USB, NVRAM</span>
+                  <span class="part svc"><strong>Drivers</strong> Display, disks, CDs and floppies, Ethernet, 3D, OpenGL</span>
                   <span class="part svc"><strong>Loader</strong> ROM and its parcels, tables, device tree</span>
                 </div>
                 <span class="arch-arrow" aria-hidden="true">→</span>
                 <div class="abox os">
                   <p class="abox-title">macOS or Linux</p>
-                  <span class="part svc"><strong>SDL2</strong> Window, input and sound</span>
+                  <span class="part svc"><strong>SDL2</strong> Window, input, sound and clipboard</span>
                   <span class="part svc"><strong>OpenGL</strong> 3D on the GPU (over Metal on Apple silicon)</span>
                   <span class="part svc"><strong>libslirp</strong> Network: NAT and DHCP</span>
-                  <span class="part svc"><strong>Files</strong> Disks, CDs and NVRAM</span>
+                  <span class="part svc"><strong>Files</strong> Disk, CD and floppy images, a shared folder, NVRAM</span>
                 </div>
               </div>
             </div>
@@ -197,28 +215,48 @@
       <button class="box shade" type="button" aria-expanded="true" aria-label="Collapse window"></button>
     </div>
     <div class="window-content">
-      <div class="finder-header"><span>7 items</span></div>
+      <div class="finder-header"><span>12 items</span></div>
       <div class="window-body list">
         <div class="list-head" aria-hidden="true"><span class="sorted">Name</span><span>Notes</span></div>
         <div class="row">
-          <span class="name"><svg aria-hidden="true"><use href="#i-sysfolder"/></svg>Mac OS 8.5–9.0.4</span>
-          <span class="notes">Working, on the NanoKernel v1 interface.</span>
-        </div>
-        <div class="row progress">
-          <span class="name"><svg aria-hidden="true"><use href="#i-sysfolder"/></svg>Mac OS 9.1–9.2.2</span>
-          <span class="notes">In progress. Both start up from their CDs to the Finder, on the NanoKernel v2 interface; installed systems are being tried.</span>
+          <span class="name"><svg aria-hidden="true"><use href="#i-sysfolder"/></svg>Mac OS 8.5–9.2.2</span>
+          <span class="notes">Working: 8.5–9.0.4 on the NanoKernel v1 interface, 9.1–9.2.2 on v2, with its Multiprocessing Services.</span>
         </div>
         <div class="row">
-          <span class="name"><svg aria-hidden="true"><use href="#i-speaker"/></svg>Sound and input</span>
-          <span class="notes">Sound output through an AWACS chip, as in the iMac. Keyboard and mouse over ADB.</span>
+          <span class="name"><svg aria-hidden="true"><use href="#i-monitor"/></svg>Display</span>
+          <span class="notes">In a window or full screen; with the guest tools, the screen follows the window’s size. A hardware cursor, and the iMac’s 60 Hz display interrupt.</span>
+        </div>
+        <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-speaker"/></svg>Sound</span>
+          <span class="notes">Output through an AWACS chip, as in the iMac, with CD audio.</span>
+        </div>
+        <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-mouse"/></svg>Keyboard &amp; Mouse</span>
+          <span class="notes">Over ADB.</span>
+        </div>
+        <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-doc"/></svg>Clipboard</span>
+          <span class="notes">Text shared with the host both ways, with the guest tools.</span>
+        </div>
+        <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-cd"/></svg>Disks, CDs and floppies</span>
+          <span class="notes">Disk, CD (also <code>.cue</code>/<code>.bin</code> with audio tracks) and floppy images; drop one on the window to change discs.</span>
+        </div>
+        <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-folder"/></svg>Shared folders</span>
+          <span class="notes">A folder of yours appears as a disk in Mac OS; its changes go back to the folder when Mac OS shuts down.</span>
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-globe"/></svg>Networking</span>
           <span class="notes">Built-in Ethernet (BMac+, as in the iMac) working, through the host’s connection. Needs libslirp.</span>
         </div>
         <div class="row">
-          <span class="name"><svg aria-hidden="true"><use href="#i-cube"/></svg>3D</span>
-          <span class="notes">QuickDraw 3D and RAVE working, through a RAVE engine games see as an ATI Rage 128. Drawn with OpenGL on the host’s GPU (over Metal on Apple silicon), or in software.</span>
+          <span class="name"><svg aria-hidden="true"><use href="#i-cube"/></svg>QuickDraw 3D</span>
+          <span class="notes">Working, accelerated through syshm’s RAVE engine.</span>
+        </div>
+        <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-cube"/></svg>RAVE &amp; OpenGL</span>
+          <span class="notes">Working, through a RAVE engine games see as an ATI Rage 128 and syshm’s own OpenGL libraries. Drawn with OpenGL on the host’s GPU (over Metal on Apple silicon), or in software.</span>
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-chip"/></svg>CPU</span>
@@ -242,7 +280,7 @@
     <div class="window-content">
       <div class="window-body">
         <div class="doc">
-          <p>syshm doesn’t include any Apple software. You’ll need an image of a Mac OS CD from 8.5 to 9.0.4. syshm starts the “Mac OS ROM” file from the CD or the installed disk, as an iMac’s firmware does.</p>
+          <p>syshm doesn’t include any Apple software. You’ll need an image of a Mac OS CD from 8.5 to 9.2.2. syshm starts the “Mac OS ROM” file from the CD or the installed disk, as an iMac’s firmware does.</p>
 
           <h3>Download</h3>
           <div class="downloads">
@@ -256,11 +294,11 @@
           <h3>Install Mac OS</h3>
 <pre class="code">./syshm disk create hd.img 2G "Macintosh HD"
 ./syshm boot --disk hd.img --cdrom 85.iso --window --nvram syshm.nvram</pre>
-          <p>In the installer’s Options, turn off “Update Apple Hard Disk Drivers”.</p>
+          <p>In the installer’s Options, turn off “Update Apple Hard Disk Drivers”. A 9.2.2 CD that restores an image with Apple Software Restore instead needs the new disk chosen as its destination.</p>
 
           <h3>Start up</h3>
 <pre class="code">./syshm boot --disk hd.img --window --nvram syshm.nvram</pre>
-          <p>In the window, once the Finder is up, syshm offers to install its guest tools (guest enhancements that make the screen follow the window and share the clipboard, and the 3D engine) on the startup disk. Add <code>--share DIR</code> to see a folder of yours as a disk in Mac OS. The <a href="https://github.com/__REPO__#readme">README</a> has the rest.</p>
+          <p>In the window, once the Finder is up, syshm offers to install its guest tools: guest enhancements that make the screen follow the window and share the clipboard, the 3D engine, and OpenGL. Add <code>--cdrom-drive</code> or <code>--floppy-drive</code> for an empty drive, and drop a CD or floppy image on the window to put it in; <code>--share DIR</code> shows a folder of yours as a disk in Mac OS. The <a href="https://github.com/__REPO__#readme">README</a> has the rest.</p>
         </div>
       </div>
     </div>
