@@ -425,7 +425,7 @@ class Guest:
                 length = pef_extent(blob, off)
             except struct.error:
                 continue
-            if off + length > len(blob):
+            if off + length > len(blob) or length > 64 << 20:
                 continue                        # (a header at the end of RAM, or not one)
             same = known.get(hashlib.sha1(blob[off:off + length]).digest())
             self.add_pef(blob, off, same.name if same else None,

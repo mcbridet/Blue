@@ -10,6 +10,8 @@ import sys
 KINDS = {0: 'code', 1: 'data', 2: 'pidata', 3: 'const', 4: 'loader', 5: 'debug',
          6: 'execdata', 7: 'exception', 8: 'traceback'}
 
+MAX_SECTION = 64 << 20          # (larger: not a real container, e.g. a stray header in a RAM dump)
+
 
 def pidata(packed, size):
     """Expands a pattern-initialized data section."""
@@ -38,12 +40,16 @@ def pidata(packed, size):
             p += n
         elif op == 2:
             reps = count() + 1
+            if n * reps > size - len(out):
+                raise ValueError('pidata larger than its section')
             out += packed[p:p + n] * reps
             p += n
         elif op in (3, 4):
             common = n
             custom = count()
             reps = count()
+            if (common + custom) * reps > size - len(out):
+                raise ValueError('pidata larger than its section')
             block = packed[p:p + common] if op == 3 else bytes(common)
             if op == 3:
                 p += common
@@ -67,6 +73,8 @@ class PEF:
         for k in range(nsec):
             h = blob[40 + 28 * k:68 + 28 * k]
             name, addr, total, unpacked, packed, off, kind, share, align, _ = struct.unpack('>iIIIIIBBBB', h)
+            if total > MAX_SECTION or unpacked > MAX_SECTION or packed > MAX_SECTION:
+                raise ValueError('section too large for a real container')
             raw = blob[off:off + packed]
             data = pidata(raw, unpacked) + bytes(total - unpacked) if kind == 2 else raw + bytes(max(0, total - len(raw)))
             self.sections.append(dict(kind=kind, addr=addr, total=total, unpacked=unpacked,
