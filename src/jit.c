@@ -8,7 +8,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef JIT_A64
+static const char *unavailable = "no JIT on this host";
+
+const char *jit_unavailable(void)
+{
+	return unavailable;
+}
+
+#ifdef JIT_HOST
 
 #include <signal.h>
 #include <sys/mman.h>
@@ -528,7 +535,7 @@ static void prof_start(struct jit *j, const char *window);
 
 struct jit *jit_create(struct mem *mem)
 {
-	struct jit *j = arch_alloc();
+	struct jit *j = arch_alloc(&unavailable);
 	if (!j)
 		return NULL;
 	void *pages = mmap(NULL, GUEST_PAGES * sizeof(struct jit_page *), PROT_READ | PROT_WRITE,
@@ -554,6 +561,7 @@ struct jit *jit_create(struct mem *mem)
 		free(j->code_pages);
 		free(j->page_pool);
 		arch_release(j);
+		unavailable = "no JIT: no memory for its tables";
 		return NULL;
 	}
 	j->mem = mem;

@@ -1,6 +1,6 @@
 /*
- * Translates guest PowerPC code into host (AArch64) code, block by block,
- * on Linux and macOS.
+ * Translates guest PowerPC code into host (AArch64 or x86-64) code, block
+ * by block, on Linux and macOS.
  *
  * A block is a straight run of instructions ending at a branch (or
  * following unconditional ones into the ROM). Guest registers are written
@@ -32,8 +32,9 @@
 
 struct jit;
 
-/* NULL if this host has no JIT or no executable memory can be had. */
+/* NULL if this host has no JIT or no executable memory can be had (jit_unavailable() says which). */
 struct jit *jit_create(struct mem *mem);
+const char *jit_unavailable(void);
 void jit_free(struct jit *j);
 
 enum ppc_exit jit_run(struct jit *j, struct ppc_cpu *c, uint64_t budget);

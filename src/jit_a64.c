@@ -3203,8 +3203,9 @@ void arch_init(struct jit *j)
 	code_write_end();
 }
 
-struct jit *arch_alloc(void)
+struct jit *arch_alloc(const char **why)
 {
+	*why = "no JIT: no memory for its code";
 	struct jit *j = calloc(1, sizeof *j);
 	if (!j)
 		return NULL;

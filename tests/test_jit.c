@@ -2,7 +2,8 @@
  * Differential test of the JIT: random programs run once by the interpreter
  * and once by the JIT must end in exactly the same state (registers, exit
  * reason, instruction count, memory), whatever the budget, and with hooks. Environment:
- * SYSHM_JIT_PROGRAMS (default 3000), SYSHM_JIT_SEED (first program).
+ * SYSHM_JIT_PROGRAMS (default 3000), SYSHM_JIT_SEED (first program);
+ * SYSHM_TEST_JIT=1 fails, rather than skips, without a JIT.
  *
  * Memory: code and data in RAM, and a read-only page whose neighbours in
  * the same 16 KB are unmapped, so that fastmem faults (genuinely, or just
@@ -419,8 +420,13 @@ static void check_fastmem(const struct jit *j)
 	const char *line = strstr(text, "fastmem: ");
 	if (mode && !strcmp(mode, "0"))
 		CHECK(line == NULL);
+#ifdef __x86_64__
+	else                    /* (x86-64's translator doesn't access memory itself yet) */
+		CHECK(line != NULL);
+#else
 	else
 		CHECK(line && strtoul(line + 9, NULL, 10) > 0);
+#endif
 	free(text);
 }
 
@@ -1107,8 +1113,19 @@ static void test_kcalls(void)
 
 void test_jit(void)
 {
-	const char *n = getenv("SYSHM_JIT_PROGRAMS");
+	const char *n = getenv("SYSHM_JIT_PROGRAMS"), *need = getenv("SYSHM_TEST_JIT");
 	unsigned programs = n ? (unsigned)strtoul(n, NULL, 0) : 3000;
+	if (need && !strcmp(need, "1")) {       /* (CI: a host that should have it) */
+		struct mem m;
+		CHECK_EQ(mem_init(&m), 0);
+		struct jit *j = jit_create(&m);
+		if (!j) {
+			fprintf(stderr, "jit: SYSHM_TEST_JIT=1, but %s\n", jit_unavailable());
+			test_failures++;
+		}
+		jit_free(j);
+		mem_free(&m);
+	}
 	test_quick_sc();
 	test_kcalls();
 	test_hostcall_fprs();

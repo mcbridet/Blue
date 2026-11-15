@@ -16,9 +16,15 @@
 
 #if defined(__aarch64__) && (defined(__linux__) || defined(__APPLE__))
 #define JIT_A64 1
+#elif defined(__x86_64__) && (defined(__linux__) || defined(__APPLE__))
+#define JIT_X86 1
 #endif
 
-#ifdef JIT_A64
+#if defined(JIT_A64) || defined(JIT_X86)
+#define JIT_HOST 1
+#endif
+
+#ifdef JIT_HOST
 
 #define CODE_SIZE (64u << 20)
 #define MAX_BLOCK_INSNS 128u
@@ -151,6 +157,8 @@ struct jit {
 #ifdef JIT_A64
 	const uint32_t *exit, *side_exit, *link, *link_branch, *lookup, *mmio_call, *settle;
 	bool sync_pending;              /* see icache_sync() */
+#else
+	const uint8_t *exit, *side_exit, *link, *link_branch, *lookup;
 #endif
 };
 
@@ -181,8 +189,8 @@ static inline void jit_add_site(struct jit *j, const void *at, const void *stub,
 
 /* ---- the translator, for the runtime (jit_a64.c, jit_x86.c) ---- */
 
-/* struct jit (zeroed) and its code buffer (code, code_end); NULL, having said why, if this host can't */
-struct jit *arch_alloc(void);
+/* struct jit (zeroed) and its code buffer (code, code_end); NULL, with why, if this host can't */
+struct jit *arch_alloc(const char **why);
 void arch_release(struct jit *j);
 
 /* The stubs (enter, miss_exit, hook_exit, blocks_start...) */
