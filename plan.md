@@ -2032,3 +2032,56 @@ Facts later tasks need, added as they are found.
   elsewhere in its startup's details (its timers' durations changed by
   0.6%) with the same screen, and 9.2.2's CD (3 billion) with the same
   screen but SimpleText's caret in the other phase of its blink.
+- **A movie's sound stuttered while the processor idled** (real time; the
+  user's "240x180 Uncompressed", a 15 s QuickTime movie of 61 MB, 4 MB/s,
+  44.1 kHz sound): disk transfers moved guest time on at once (20 MB/s, at
+  most a tick each), putting it ahead of the host clock, and idling makes
+  that up only while no sound plays. While sound plays, then, guest time
+  ran ahead for good, and the sound DMA, paced by guest time, gave the host
+  more frames than its device played: the queue filled to its 250 ms and
+  `audio.c` dropped whole chunks (256 frames, 5.8 ms each). Measured with
+  `SYSHM_LOG_AUDIO` (M5, in a window, 45 s runs, the movie played with the
+  space bar): 9.2.2's QuickTime Player from the shared folder read 4 MB/s
+  in 1 MB reads, each charged a tick, 83 ms of guest time a second: guest
+  time 8% fast, the queue full 2 s in, then 12 to 17 chunks dropped every
+  second (47,872 frames in all), the processor mostly idle. 8.5's
+  MoviePlayer (QuickTime 3) read 30 MB/s of host time from the disk image
+  and from the shared folder alike: QuickTime 3, or the File Manager under
+  it, reads the same 32 KB again and again (one block 136 times in turn,
+  into a ring of eight 32 KB buffers at 0x0708AD10, between 0.8 and 1 MB
+  reads of the frames), 13 MB/s of guest time for a 4 MB/s movie, so
+  transfers took 1.27 s of guest time a second: guest time at 2.27 times
+  the host clock, 100,000 frames a second from the guest, 56% of chunks
+  dropped (315,648 frames), and the movie over in 7 s instead of 15. Not
+  the host's sleeps: they overran by 0.1-0.25 ms on average, under 1 ms
+  nearly always (SDL_WaitEventTimeout overran by 10-77 ms a few times a
+  run, mostly as windows opened and applications started; the queue's
+  depth covers most of them).
+  Now (`drive_call()`, `transfer_wait()` in `src/nk.c`) while sound plays
+  in real time a transfer takes host time, all of it: the call leaves the
+  host call without moving the PC, the guest takes interrupts and makes
+  the call again, which naps until the transfer's time (as for the 3D
+  engine's frames); a call made while another waits (from an interrupt) or
+  by another task than the blue one moves guest time on as before
+  (interrupts are taken in the waits: 633 of 5,500 in the 9.2.2 run's,
+  1,322 of 18,500 in 8.5's). After:
+  guest time's lead stays put while the movie plays, 44,100 frames a
+  second, nothing dropped and no silence added during it, the movie in
+  15 s (its timecode at 4 s 22 frames 5 s after the space bar); 9.2.2
+  waited out 331 transfers (3.1 s), 8.5 4,052 (7.8 s; QuickTime 3's
+  re-reads take half of each second, and it keeps up). And the host's
+  queue (`audio_pace()` in `src/audio.c`) now resamples the guest's frames
+  to play up to 0.5% faster or slower as the queue, smoothed, is fuller or
+  emptier than its goal (60 ms plus half the device's 1024-frame buffer):
+  0.1% for each 10 ms off, so a device clock that drifts from the host's
+  (a fraction of a percent at most) no longer empties or fills it in time,
+  and the silence added after a stall of the host is played away within
+  seconds rather than kept as delay. Measured: within ±0.2% of real speed,
+  the queue 52-87 ms before each chunk (before: 41-70 on 9.2.2, 81-104 on
+  8.5, as each happened to start). Instruction-time runs are unchanged
+  (the wait is only in real time): the 8.5 and 9.2.2 CDs (3 billion
+  instructions) and 9.1's (4 billion) end exactly as before, and the 8.5
+  and 9.2.2 CDs' real-time startups take as long (1.2 and 1.0 s with fast
+  start; little sound plays then).
+  Tests: `tests/test_audio.c` (pass-through at the goal, the 0.5% bound, a
+  device 0.3% fast or slow for 5 minutes, recovery from 150 ms over).

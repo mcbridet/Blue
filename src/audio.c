@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "be.h"
+
 /* The parts of the SDL2 audio ABI we use (stable across SDL 2.x). */
 #define SDL_INIT_AUDIO 0x00000010u
 #define AUDIO_S16MSB 0x9010u
@@ -36,13 +38,34 @@ struct sdl_audio {
 #define TARGET_MS 60u                   /* queue kept at least this full ... */
 #define MAX_MS 250u                     /* ... and at most this */
 
+/*
+ * The guest's frames come at the pace of guest time, which in real time is
+ * the host clock's, and the device plays them by its own clock, which may
+ * differ by a fraction of a percent; a stall of the host (a sleep that
+ * overran, the window being dragged) also leaves the queue fuller once the
+ * guest has caught up, if it ran dry meanwhile. Either way the queue would
+ * drift from its target until it ran dry or overflowed, which is heard. So
+ * frames are resampled to play up to 0.5% faster or slower as the queue,
+ * smoothed, is fuller or emptier than its goal: its target plus half the
+ * device's buffer (the queue's level saws by that much as the device takes
+ * its buffers). A 10 ms difference plays at 0.1%, so it's made up in about
+ * 10 s; drifts of up to 0.5% stay within 50 ms of the goal.
+ */
+#define MAX_SKEW 0.005
+#define SKEW_PER_SECOND 0.1             /* skew per second of difference from the goal */
+#define LEVEL_CHUNKS 32u                /* the level is smoothed over about this many chunks */
+
 struct audio {
 	struct sdl_audio sdl;
 	uint32_t dev;
 	unsigned rate;                  /* of the open device (0: none) */
+	unsigned device_frames;         /* ... and its buffer */
 	uint8_t chunk[CHUNK_FRAMES * FRAME_BYTES];
 	unsigned frames;                /* in chunk */
+	struct audio_pace pace;
+	uint8_t paced[(CHUNK_FRAMES + CHUNK_FRAMES / 128 + 2) * FRAME_BYTES];
 	unsigned long dropped, padded;
+	struct audio_stats stats;
 };
 
 static bool load(struct sdl_audio *s)
@@ -120,7 +143,45 @@ static bool device_at(struct audio *a, unsigned rate)
 		return false;
 	}
 	a->sdl.PauseAudioDevice(a->dev, 0);
+	a->device_frames = have.samples ? have.samples : want.samples;
+	audio_pace_start(&a->pace, rate * TARGET_MS / 1000 + a->device_frames / 2);
 	return true;
+}
+
+void audio_pace_start(struct audio_pace *p, unsigned goal)
+{
+	memset(p, 0, sizeof *p);
+	p->goal = p->level = goal;
+	p->step = 1ull << 32;
+}
+
+static int sample_at(const struct audio_pace *p, const uint8_t *in, uint64_t k, unsigned c)
+{
+	return k ? (int16_t)be16(in + (k - 1) * FRAME_BYTES + 2 * c) : p->last[c];
+}
+
+unsigned audio_pace(struct audio_pace *p, unsigned queued, unsigned rate, const uint8_t *in, unsigned count,
+		    uint8_t *out)
+{
+	if (!count)
+		return 0;
+	p->level += ((double)queued - p->level) / LEVEL_CHUNKS;
+	double skew = (p->level - p->goal) / rate * SKEW_PER_SECOND;
+	skew = skew > MAX_SKEW ? MAX_SKEW : skew < -MAX_SKEW ? -MAX_SKEW : skew;
+	p->step = (uint64_t)((1 + skew) * (double)(1ull << 32) + 0.5);
+	/* frame k is `last` for 0, in[k - 1] after; a frame out between k and k + 1 is weighted by `at`'s fraction */
+	unsigned n = 0;
+	for (; p->at < (uint64_t)count << 32; p->at += p->step, n++) {
+		uint64_t k = p->at >> 32, w = p->at & 0xFFFFFFFFu;
+		for (unsigned c = 0; c < 2; c++) {
+			int64_t a = sample_at(p, in, k, c), b = sample_at(p, in, k + 1, c);
+			put_be16(out + n * FRAME_BYTES + 2 * c, (uint16_t)(a + ((b - a) * (int64_t)w >> 32)));
+		}
+	}
+	p->at -= (uint64_t)count << 32;
+	for (unsigned c = 0; c < 2; c++)
+		p->last[c] = (int16_t)be16(in + (count - 1) * FRAME_BYTES + 2 * c);
+	return n;
 }
 
 static void flush(struct audio *a)
@@ -129,17 +190,33 @@ static void flush(struct audio *a)
 		return;
 	uint32_t queued = a->sdl.GetQueuedAudioSize(a->dev) / FRAME_BYTES;
 	uint32_t target = a->rate * TARGET_MS / 1000, max = a->rate * MAX_MS / 1000;
+	struct audio_stats *s = &a->stats;
+	if (!s->flushes || queued < s->queued_min)
+		s->queued_min = queued;
+	if (queued > s->queued_max)
+		s->queued_max = queued;
 	if (queued == 0) {
 		/* (re)starting, or the guest fell behind: start again with some slack */
 		static const uint8_t silence[CHUNK_FRAMES * FRAME_BYTES];
-		for (uint32_t n = 0; n < target; n += CHUNK_FRAMES)
+		for (; queued < target; queued += CHUNK_FRAMES)
 			a->sdl.QueueAudio(a->dev, silence, sizeof silence);
-		a->padded += target;
+		a->padded += queued;
+		s->pads++;
+		audio_pace_start(&a->pace, target + a->device_frames / 2);
 	}
-	if (queued + a->frames > max)
+	unsigned n = audio_pace(&a->pace, queued, a->rate, a->chunk, a->frames, a->paced);
+	if (queued + n > max) {
 		a->dropped += a->frames;        /* far ahead of the device (not running in real time) */
-	else
-		a->sdl.QueueAudio(a->dev, a->chunk, a->frames * FRAME_BYTES);
+		s->drops++;
+	} else {
+		a->sdl.QueueAudio(a->dev, a->paced, n * FRAME_BYTES);
+	}
+	int skew = (int)(((int64_t)a->pace.step - (1ll << 32)) * 1000000 >> 32);       /* (ppm) */
+	if (!s->flushes || skew < s->skew_min)
+		s->skew_min = skew;
+	if (!s->flushes || skew > s->skew_max)
+		s->skew_max = skew;
+	s->flushes++;
 	a->frames = 0;
 }
 
@@ -172,4 +249,11 @@ unsigned long audio_dropped(const struct audio *a)
 unsigned long audio_padded(const struct audio *a)
 {
 	return a->padded;
+}
+
+void audio_take_stats(struct audio *a, struct audio_stats *s)
+{
+	*s = a->stats;
+	s->rate = a->rate;
+	memset(&a->stats, 0, sizeof a->stats);
 }
