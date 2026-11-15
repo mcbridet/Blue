@@ -860,7 +860,13 @@ software (on 8.6, an M5 Mac).
   NanoKernel ConfigInfo (memory map, low-memory init list).
 - User-mode PowerPC interpreter (integer, FP, string/multiple, reservations)
   with kernel exits for `sc`, traps, privileged instructions, faults and a
-  host-call opcode (primary opcode 6). AltiVec is not implemented.
+  host-call opcode (primary opcode 6). AltiVec is not implemented. Floating
+  point is the host's IEEE arithmetic, but NaN results are a 750's on
+  every host (the first NaN of frA, frB and frC, quieted, else
+  0x7FF8000000000000; never negated by `fnmadd`/`fnmsub`; cut to single
+  precision by single-precision operations and `frsp`), where hosts
+  differed (x86's default NaN is negative; each picked among NaN operands
+  its own way).
 - A JIT to AArch64 and x86-64, on Linux and macOS (`src/jit.c`, the
   runtime both share; `src/jit_a64.c` and `src/a64.h`, `src/jit_x86.c` and
   `src/x86.h`, the translators; `--interp` turns it off). What follows is
