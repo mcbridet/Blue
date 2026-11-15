@@ -304,7 +304,7 @@ static uint8_t *make_volume(bool plus, uint32_t blessed)
 	unsigned npieces = plus ? 12 : 7, first = plus ? 8 : 3;
 	uint8_t *vol = calloc(1, VOLUME_BYTES), rom[ROM_BYTES];
 	uint8_t *blocks = vol + (plus ? 0 : HFS_FIRST_BLOCK);
-	struct hfsread_extent ext[12], decoy = { 250, 1 };
+	struct hfsread_extent ext[12], decoy[8] = { { 250, 1 } };     /* (a record holds 3 or 8) */
 	static struct rec r[MAX_RECORDS];
 	char name[16];
 	unsigned n = 0;
@@ -316,11 +316,11 @@ static uint8_t *make_volume(bool plus, uint32_t blessed)
 		at--;
 	}
 	write_extents(blocks, ext, npieces, rom, ROM_BYTES);
-	memset(blocks + decoy.start * BLOCK, 0xEE, BLOCK);
+	memset(blocks + decoy[0].start * BLOCK, 0xEE, BLOCK);
 
 	r[n++] = folder_rec(plus, 1, "Test Volume", ROOT_ID);
 	r[n++] = thread_rec(plus, ROOT_ID, 1, "Test Volume");
-	r[n++] = file_rec(plus, ROOT_ID, "Decoy", 30, TBXI, BLOCK, &decoy);
+	r[n++] = file_rec(plus, ROOT_ID, "Decoy", 30, TBXI, BLOCK, decoy);
 	r[n++] = folder_rec(plus, ROOT_ID, "System Folder", SYSTEM_ID);
 	r[n++] = folder_rec(plus, ROOT_ID, "Zeta", OTHER_ID);
 	r[n++] = thread_rec(plus, SYSTEM_ID, ROOT_ID, "System Folder");
@@ -348,8 +348,8 @@ static uint8_t *make_volume(bool plus, uint32_t blessed)
 	e[0] = extents_rec(plus, ROM_ID, 0, later, ext + first, 3);
 	e[1] = extents_rec(plus, ROM_ID, 0, later + pieces[first] + pieces[first + 1] + pieces[first + 2], ext + first + 3,
 			   1);
-	e[2] = extents_rec(plus, ROM_ID, 0xFF, 0, &decoy, 1);
-	e[3] = extents_rec(plus, ROM_ID + 1, 0, 0, &decoy, 1);
+	e[2] = extents_rec(plus, ROM_ID, 0xFF, 0, decoy, 1);
+	e[3] = extents_rec(plus, ROM_ID + 1, 0, 0, decoy, 1);
 	struct tree xt = { plus, false, plus ? 1024 : 512, plus ? 10 : 7, calloc(MAX_NODES, 4096), 0 };
 	build_tree(&xt, e, 4, 2);
 	uint32_t xt_bytes = xt.count * xt.node_size;

@@ -143,10 +143,11 @@ static const char *const agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE] = {
  * told apart), the current context (glc_cc), where the next record goes
  * and where the buffer ends (see "recording"), the strings glGetString()
  * and aglErrorString() give; then, zero-filled, the contexts, pixel
- * formats, renderer infos and the recording buffer.
+ * formats, renderer infos, the recording buffer and words the Toolbox's
+ * calls write into (see "callouts").
  */
 #define DATA_MAGIC 0x7379474Cu          /* 'syGL' */
-#define DATA_VERSION 2u
+#define DATA_VERSION 3u
 enum { D_MAGIC = 0, D_VERSION = 4, D_CURRENT = OPENGL_DATA_CURRENT, D_RECORD = OPENGL_DATA_RECORD,
        D_RECORD_END = D_RECORD + 4, D_STRINGS = 20 };
 #define FORMATS 16
@@ -154,6 +155,7 @@ enum { D_MAGIC = 0, D_VERSION = 4, D_CURRENT = OPENGL_DATA_CURRENT, D_RECORD = O
 #define RENDERER_INFOS 4
 #define RENDERER_INFO_SIZE 16u
 #define FORMAT_MAGIC 0x73795046u        /* 'syPF' */
+#define SCRATCH_SIZE 32u
 #define RENDERER_INFO_MAGIC 0x73795249u /* 'syRI' */
 /* A pixel format's words: magic, next, flags, depth, stencil and pixel sizes, its device (a list of one) */
 enum { PF_MAGIC = 0, PF_NEXT = 4, PF_FLAGS = 8, PF_DEPTH = 12, PF_STENCIL = 16, PF_PIXEL = 20, PF_DEVICE = 24 };
@@ -170,7 +172,7 @@ static struct {
 	size_t len;
 	uint32_t vendor, renderer, version, extensions;
 	uint32_t agl_error[AGL_ERRORS - AGL_BAD_ATTRIBUTE], no_error, unknown_error;
-	uint32_t contexts, formats, renderer_infos, record, end;       /* the zero-filled parts */
+	uint32_t contexts, formats, renderer_infos, record, scratch, end;      /* the zero-filled parts */
 } lib;
 
 static uint32_t put_string(const char *s)
@@ -201,7 +203,8 @@ static void make_data(void)
 	lib.formats = lib.contexts + OPENGL_CONTEXTS * CONTEXT_SIZE;
 	lib.renderer_infos = lib.formats + FORMATS * FORMAT_SIZE;
 	lib.record = lib.renderer_infos + RENDERER_INFOS * RENDERER_INFO_SIZE;
-	lib.end = lib.record + OPENGL_RECORD_SIZE;
+	lib.scratch = lib.record + OPENGL_RECORD_SIZE;
+	lib.end = lib.scratch + SCRATCH_SIZE;
 }
 
 /* ---- recording ---------------------------------------------------------------------- */
@@ -502,6 +505,40 @@ static size_t record_code(uint32_t *w, size_t room, uint32_t at, unsigned fn, bo
 	return n;
 }
 
+/*
+ * What OpenGLLibrary calls (as Apple's does): the Display Manager's mode
+ * switch, for aglSetFullScreen; QuickDraw's fonts and offscreen worlds, for
+ * aglUseFont's glyphs
+ */
+enum { LI_DM_SET_DISPLAY_MODE, LI_REAL_FONT, LI_GET_GWORLD, LI_SET_GWORLD, LI_NEW_GWORLD, LI_DISPOSE_GWORLD,
+       LI_GET_GWORLD_PIXMAP, LI_LOCK_PIXELS, LI_GET_PIX_BASE_ADDR, LI_TEXT_FONT, LI_TEXT_FACE, LI_TEXT_SIZE, LI_TEXT_MODE,
+       LI_GET_FONT_INFO, LI_CHAR_WIDTH, LI_ERASE_RECT, LI_MOVE_TO, LI_DRAW_CHAR, LI_COUNT };
+static const struct ndrv_import library_imports[LI_COUNT] = {
+	[LI_DM_SET_DISPLAY_MODE] = { "InterfaceLib", "DMSetDisplayMode" },
+	[LI_REAL_FONT] = { "InterfaceLib", "RealFont" },
+	[LI_GET_GWORLD] = { "InterfaceLib", "GetGWorld" },
+	[LI_SET_GWORLD] = { "InterfaceLib", "SetGWorld" },
+	[LI_NEW_GWORLD] = { "InterfaceLib", "NewGWorld" },
+	[LI_DISPOSE_GWORLD] = { "InterfaceLib", "DisposeGWorld" },
+	[LI_GET_GWORLD_PIXMAP] = { "InterfaceLib", "GetGWorldPixMap" },
+	[LI_LOCK_PIXELS] = { "InterfaceLib", "LockPixels" },
+	[LI_GET_PIX_BASE_ADDR] = { "InterfaceLib", "GetPixBaseAddr" },
+	[LI_TEXT_FONT] = { "InterfaceLib", "TextFont" },
+	[LI_TEXT_FACE] = { "InterfaceLib", "TextFace" },
+	[LI_TEXT_SIZE] = { "InterfaceLib", "TextSize" },
+	[LI_TEXT_MODE] = { "InterfaceLib", "TextMode" },
+	[LI_GET_FONT_INFO] = { "InterfaceLib", "GetFontInfo" },
+	[LI_CHAR_WIDTH] = { "InterfaceLib", "CharWidth" },
+	[LI_ERASE_RECT] = { "InterfaceLib", "EraseRect" },
+	[LI_MOVE_TO] = { "InterfaceLib", "MoveTo" },
+	[LI_DRAW_CHAR] = { "InterfaceLib", "DrawChar" },
+};
+
+const char *opengl_library_import(unsigned k)
+{
+	return k < LI_COUNT ? library_imports[k].name : NULL;
+}
+
 size_t opengl_build_library(uint8_t *out, size_t size, struct ndrv_layout *layout)
 {
 	static struct ndrv_export exports[F_LIBRARY + 1];
@@ -519,6 +556,8 @@ size_t opengl_build_library(uint8_t *out, size_t size, struct ndrv_layout *layou
 		.exports = exports,
 		.export_count = F_LIBRARY + 1,
 		.hostcall = HOSTCALL_TOOLS_GL,
+		.imports = library_imports,
+		.import_count = LI_COUNT,
 		.extra = lib.data,
 		.extra_len = lib.len,
 		.zero_len = lib.end - (uint32_t)lib.len,
@@ -755,7 +794,14 @@ static void lose_gpu(struct opengl *o)
 
 /* ---- drawables ---------------------------------------------------------------------- */
 
-enum { DRAWABLE_NONE, DRAWABLE_PORT, DRAWABLE_OFFSCREEN };
+enum { DRAWABLE_NONE, DRAWABLE_PORT, DRAWABLE_OFFSCREEN, DRAWABLE_FULL_SCREEN };
+
+#define LM_MAIN_DEVICE 0x08A4u
+
+static uint32_t main_device(const struct mem *m)
+{
+	return readable(m, LM_MAIN_DEVICE, 4) ? mem_r32(m, LM_MAIN_DEVICE) : 0;
+}
 
 /* A color port's pixmap: base, row bytes, bounds (top, left, bottom, right), bits a pixel; false if none */
 static bool port_pixmap(const struct mem *m, uint32_t port, uint32_t *base, uint32_t *row_bytes, int bounds[4],
@@ -764,6 +810,29 @@ static bool port_pixmap(const struct mem *m, uint32_t port, uint32_t *base, uint
 	if (!readable(m, port, 32) || (mem_r16(m, port + 6) & 0xC000) != 0xC000)
 		return false;
 	uint32_t pmh = mem_r32(m, port + 2);
+	if (!readable(m, pmh, 4))
+		return false;
+	uint32_t pm = mem_r32(m, pmh);
+	if (!readable(m, pm, 36))
+		return false;
+	*base = mem_r32(m, pm);
+	*row_bytes = mem_r16(m, pm + 4) & 0x3FFF;
+	for (int k = 0; k < 4; k++)
+		bounds[k] = (int16_t)mem_r16(m, pm + 6 + 2 * k);
+	*bits = mem_r16(m, pm + 32);
+	return true;
+}
+
+/* A device's pixmap (the screen's): as port_pixmap()'s */
+static bool device_pixmap(const struct mem *m, uint32_t gdh, uint32_t *base, uint32_t *row_bytes, int bounds[4],
+			  unsigned *bits)
+{
+	if (!readable(m, gdh, 4))
+		return false;
+	uint32_t gd = mem_r32(m, gdh);
+	if (!readable(m, gd, 26))
+		return false;
+	uint32_t pmh = mem_r32(m, gd + 22);
 	if (!readable(m, pmh, 4))
 		return false;
 	uint32_t pm = mem_r32(m, pmh);
@@ -881,6 +950,12 @@ static void show(struct opengl *o, struct opengl_context *x)
 		d.right = x->width;
 		d.bottom = x->height;
 		d.alpha = true;
+	} else if (x->kind == DRAWABLE_FULL_SCREEN) {   /* (all of the screen: no regions) */
+		int bounds[4];
+		if (!device_pixmap(o->mem, x->device, &d.base, &d.row_bytes, bounds, &d.bits))
+			return;
+		d.right = bounds[3] - bounds[1];
+		d.bottom = bounds[2] - bounds[0];
 	} else {
 		int bounds[4];
 		if (!port_pixmap(o->mem, x->port, &d.base, &d.row_bytes, bounds, &d.bits))
@@ -1012,7 +1087,12 @@ static void set_attrib(struct opengl *o, struct opengl_context *x, unsigned fn, 
 	case A_FOGCOORD: st->fog_coord = v[0]; break;
 	case A_INDEX: break;                    /* (there's no color index mode) */
 	case A_RASTERPOS: glf_raster_pos(st, v); break;
-	default: not_yet(o, fn); break;         /* (evaluators) */
+	case A_EVALCOORD: {
+		struct gl_target t = target_of(x);
+		glf_eval_coord(st, &t, at->count, v[0], v[1]);
+		break;
+	}
+	default: not_yet(o, fn); break;
 	}
 }
 
@@ -1308,11 +1388,29 @@ static unsigned name_size(uint32_t type)
 	}
 }
 
+/*
+ * glMap1's and glMap2's control points: how many values from the first's
+ * to the last's end, by the strides and orders (0: they're wrong, an error)
+ */
+static size_t map_values(unsigned fn, const union gl_arg *a)
+{
+	bool two = fn == F_glMap2f || fn == F_glMap2d;
+	unsigned dims, k = glf_map_components(a[0].u, &dims);
+	int32_t ustride = a[3].i, uorder = a[4].i, vstride = two ? a[7].i : 0, vorder = two ? a[8].i : 1;
+	if (!k || dims != (two ? 2u : 1u) || uorder < 1 || uorder > GLF_EVAL_ORDER || vorder < 1 ||
+	    vorder > GLF_EVAL_ORDER || ustride < (int32_t)k || (two && vstride < (int32_t)k) || ustride > (1 << 20) ||
+	    vstride > (1 << 20))
+		return 0;
+	return (size_t)(uorder - 1) * (size_t)ustride + (size_t)(vorder - 1) * (size_t)vstride + k;
+}
+
 /* The bytes a call's pointer argument points to that a list keeps (0: none, or not known) */
 static size_t data_len(const struct opengl_context *x, unsigned fn, const union gl_arg *a)
 {
 	const struct gl_pixel_store *ps = &x->st.unpack;
 	switch (fn) {
+	case F_glMap1f: case F_glMap2f: return 4 * map_values(fn, a);
+	case F_glMap1d: case F_glMap2d: return 8 * map_values(fn, a);
 	case F_glTexParameteriv: case F_glTexParameterfv: case F_glTexEnviv: case F_glTexEnvfv:
 		return 4 * vector_values(a[1].u);
 	case F_glLightModelfv: case F_glLightModeliv: case F_glFogfv: case F_glFogiv:
@@ -1850,6 +1948,73 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 		glf_read_pixels(st, &t, a[0].i, a[1].i, a[2].i, a[3].i, a[4].u, a[5].u, mem_ptr(m, a[6].u));
 		return 0;
 	}
+	/* selection and feedback (glselect.c): the records into the program's buffer as glRenderMode leaves a mode */
+	case F_glRenderMode: {
+		uint32_t at = 0;
+		const uint32_t *words;
+		size_t count;
+		int32_t r = glf_render_mode(st, a[0].u, &at, &words, &count);
+		if (count && count <= (16u << 20) && writable(m, at, 4 * (uint32_t)count))
+			for (size_t k = 0; k < count; k++)
+				mem_w32(m, at + 4 * (uint32_t)k, words[k]);
+		return (uint32_t)r;
+	}
+	case F_glSelectBuffer: glf_select_buffer(st, a[0].i, a[1].u); return 0;
+	case F_glFeedbackBuffer: glf_feedback_buffer(st, a[0].i, a[1].u, a[2].u); return 0;
+	case F_glInitNames: glf_init_names(st); return 0;
+	case F_glLoadName: glf_load_name(st, a[0].u); return 0;
+	case F_glPushName: glf_push_name(st, a[0].u); return 0;
+	case F_glPopName: glf_pop_name(st); return 0;
+	case F_glPassThrough: glf_pass_through(st, a[0].f); return 0;
+	/* evaluators (gleval.c): the control points packed, [v][u][component] */
+	case F_glMap1f: case F_glMap1d: case F_glMap2f: case F_glMap2d: {
+		bool two = fn == F_glMap2f || fn == F_glMap2d, dbl = fn == F_glMap1d || fn == F_glMap2d;
+		double domain[4] = { 0, 1, 0, 1 };
+		static const unsigned at[4] = { 1, 2, 5, 6 };
+		for (unsigned k = 0; k < (two ? 4u : 2u); k++)
+			domain[k] = dbl ? a[at[k]].d : a[at[k]].f;
+		int32_t ustride = a[3].i, uorder = a[4].i, vstride = two ? a[7].i : 0, vorder = two ? a[8].i : 1;
+		size_t n = map_values(fn, a);
+		const uint8_t *p = n ? in_data(o, x, a[two ? 9 : 5].u, n * (dbl ? 8 : 4)) : NULL;
+		float points[GLF_EVAL_ORDER * GLF_EVAL_ORDER * 4];
+		unsigned dims, k = glf_map_components(a[0].u, &dims);       /* (p: k is right) */
+		for (int32_t j = 0; p && j < vorder; j++)
+			for (int32_t i = 0; i < uorder; i++)
+				for (unsigned c = 0; c < k; c++) {
+					size_t from = (size_t)i * (size_t)ustride + (size_t)j * (size_t)vstride + c;
+					uint32_t w = dbl ? 0 : be32(p + 4 * from);
+					float *to = &points[((size_t)j * (size_t)uorder + (size_t)i) * k + c];
+					if (dbl)
+						*to = (float)be_double(p + 8 * from);
+					else
+						memcpy(to, &w, 4);
+				}
+		glf_map(st, two ? 2 : 1, a[0].u, domain, ustride, uorder, vstride, vorder, p ? points : NULL);
+		return 0;
+	}
+	case F_glMapGrid1f: glf_map_grid1(st, a[0].i, a[1].f, a[2].f); return 0;
+	case F_glMapGrid1d: glf_map_grid1(st, a[0].i, (float)a[1].d, (float)a[2].d); return 0;
+	case F_glMapGrid2f: glf_map_grid2(st, a[0].i, a[1].f, a[2].f, a[3].i, a[4].f, a[5].f); return 0;
+	case F_glMapGrid2d:
+		glf_map_grid2(st, a[0].i, (float)a[1].d, (float)a[2].d, a[3].i, (float)a[4].d, (float)a[5].d);
+		return 0;
+	case F_glEvalMesh1: case F_glEvalMesh2: case F_glEvalPoint1: case F_glEvalPoint2: {
+		struct gl_target t = target_of(x);
+		if (fn == F_glEvalMesh1)
+			glf_eval_mesh(st, &t, 1, a[0].u, a[1].i, a[2].i, 0, 0);
+		else if (fn == F_glEvalMesh2)
+			glf_eval_mesh(st, &t, 2, a[0].u, a[1].i, a[2].i, a[3].i, a[4].i);
+		else
+			glf_eval_point(st, &t, fn == F_glEvalPoint1 ? 1 : 2, a[0].i, fn == F_glEvalPoint1 ? 0 : a[1].i);
+		return 0;
+	}
+	case F_glGetMapdv: case F_glGetMapfv: case F_glGetMapiv: {
+		double v[GLF_EVAL_ORDER * GLF_EVAL_ORDER * 4];
+		unsigned n = glf_get_map(st, a[0].u, a[1].u, v);
+		if (n)
+			put_values(m, a[2].u, fn == F_glGetMapdv ? 'd' : fn == F_glGetMapfv ? 'f' : 'i', 0, v, n);
+		return 0;
+	}
 	/* pixels: at the raster position, the pixel transfer, into textures */
 	case F_glBitmap: {
 		size_t bytes = a[0].i > 0 && a[1].i > 0 ? glf_image_bytes(&st->unpack, GL_COLOR_INDEX, GL_BITMAP, a[0].i,
@@ -2074,11 +2239,8 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 	case F_glGetPointerv: {
 		uint32_t p;
 		if (!glf_get_pointer(st, a[0].u, &p)) {
-			if (a[0].u != 0x0DF0 && a[0].u != 0x0DF3) {     /* (feedback and selection buffers: none) */
-				glf_error(st, GL_INVALID_ENUM);
-				return 0;
-			}
-			p = 0;
+			glf_error(st, GL_INVALID_ENUM);
+			return 0;
 		}
 		if (writable(m, a[1].u, 4))
 			mem_w32(m, a[1].u, p);
@@ -2279,19 +2441,11 @@ static void agl_error(struct opengl_instance *in, uint32_t e)
 /* A device's depth (bits a pixel), or 0 */
 static unsigned device_depth(const struct mem *m, uint32_t gdh)
 {
-	if (!readable(m, gdh, 4))
-		return 0;
-	uint32_t gd = mem_r32(m, gdh);
-	if (!readable(m, gd, 26))
-		return 0;
-	uint32_t pmh = mem_r32(m, gd + 22);
-	if (!readable(m, pmh, 4))
-		return 0;
-	uint32_t pm = mem_r32(m, pmh);
-	return readable(m, pm, 34) ? mem_r16(m, pm + 32) : 0;
+	uint32_t base, row_bytes;
+	int bounds[4];
+	unsigned bits;
+	return device_pixmap(m, gdh, &base, &row_bytes, bounds, &bits) ? bits : 0;
 }
-
-#define LM_MAIN_DEVICE 0x08A4u
 
 /* The pixel format at this address (in this instance), or 0 */
 static uint32_t format_at(struct opengl *o, struct opengl_instance *in, uint32_t pf)
@@ -2400,7 +2554,7 @@ static uint32_t choose_pixel_format(struct opengl *o, struct opengl_instance *in
 			device = device ? device : gdh;
 		}
 	} else {
-		device = readable(m, LM_MAIN_DEVICE, 4) ? mem_r32(m, LM_MAIN_DEVICE) : 0;
+		device = main_device(m);
 		unsigned bits = device_depth(m, device);
 		if (bits && bits != 16 && bits != 32 && !(flags & (PF_FULLSCREEN | PF_OFFSCREEN)))
 			return 0;
@@ -2501,6 +2655,7 @@ static struct opengl_context *new_context(struct opengl *o, struct opengl_instan
 	x->depth_bits = mem_r32(m, pf + PF_DEPTH);
 	x->stencil_bits = mem_r32(m, pf + PF_STENCIL);
 	x->pixel_size = mem_r32(m, pf + PF_PIXEL);
+	x->device = mem_r32(m, pf + PF_DEVICE);
 	x->swap_interval = 0;
 	glf_init(&x->st);
 	if (!glf_attach(&x->st, share ? &share->st : NULL)) {
@@ -2515,6 +2670,359 @@ static struct opengl_context *new_context(struct opengl *o, struct opengl_instan
 		mem_w32(m, guest + library_functions[f].offset, in->toc + o->library.entry[E_TABLE + f]);
 	o->contexts++;
 	return x;
+}
+
+/* ---- callouts -------------------------------------------------------------------------- */
+
+/*
+ * aglSetFullScreen, aglUseFont and what leaves a full screen call the
+ * Toolbox through the library's imports: a job of the instance's, a step
+ * at a time (each callout's result back as NDRV_ENTRY_RESUME), the call's
+ * result at the end. What their arguments point at (a depth mode, a
+ * rectangle, a GWorld, a port, font info) is in the instance's scratch
+ * words.
+ */
+enum { JOB_NONE, JOB_FULL_SCREEN, JOB_RESTORE, JOB_FONT };
+enum { SC_DEPTH = 0, SC_PORT = 0, SC_DEVICE = 4, SC_RECT = 8, SC_GWORLD = 16, SC_INFO = 20 };
+_Static_assert(SC_INFO + 8 <= SCRATCH_SIZE, "room for the font's info");
+
+static void callout(struct opengl *o, struct ndrv_call *c, unsigned import, uint32_t a0, uint32_t a1, uint32_t a2,
+		    uint32_t a3)
+{
+	ndrv_callout(c, ndrv_import(c, &o->library, import), a0, a1, a2, a3);
+	o->calling_out = true;
+}
+
+/* DMSetDisplayMode(device, mode, &depth mode, 0, 0), the depth mode in the scratch words */
+static void set_display_mode(struct opengl *o, struct ndrv_call *c, struct opengl_instance *in, uint32_t device,
+			     uint32_t mode, uint32_t depth)
+{
+	uint32_t at = data_of(o, in) + lib.scratch + SC_DEPTH;
+	put_word(o->mem, at, depth);
+	callout(o, c, LI_DM_SET_DISPLAY_MODE, device, mode, at, 0);
+	c->out[4] = 0;
+}
+
+/* The context's drawable all of its device's screen, w x h; the viewport all of it (as Apple's does) */
+static bool attach_full_screen(struct opengl *o, struct opengl_context *x, int32_t w, int32_t h)
+{
+	x->kind = DRAWABLE_FULL_SCREEN;
+	x->port = 0;
+	x->width = w;                   /* (fit_drawable() takes these) */
+	x->height = h;
+	x->origin_x = x->origin_y = 0;
+	if (x->has_surface && (x->surface.target.width != w || x->surface.target.height != h)) {
+		surface_free(&x->surface);
+		x->has_surface = false;
+	}
+	if (!fit_drawable(o, x)) {
+		x->kind = DRAWABLE_NONE;
+		return false;
+	}
+	glf_viewport(&x->st, 0, 0, w, h);
+	return true;
+}
+
+/*
+ * aglSetFullScreen(): the screen of the pixel format's device, w x h (0 x
+ * 0: as it is) at the pixel format's depth; if it isn't, the Display
+ * Manager switches it to the mode of that size (the AGL reference's
+ * aglSetFullScreen: an exact match, the frequency left to the mode) and
+ * the mode it was in is kept, to go back to when the context's drawable
+ * goes. Otherwise AGL_BAD_FULLSCREEN.
+ */
+static uint32_t set_full_screen(struct opengl *o, struct ndrv_call *c, struct opengl_instance *in,
+				struct opengl_context *x, int32_t w, int32_t h)
+{
+	uint32_t device = x->device ? x->device : main_device(o->mem), base, row_bytes, mode, depth;
+	int bounds[4];
+	unsigned bits;
+	if (!(x->format & PF_FULLSCREEN) || w < 0 || h < 0 ||
+	    !device_pixmap(o->mem, device, &base, &row_bytes, bounds, &bits)) {
+		agl_error(in, AGL_BAD_FULLSCREEN);
+		return 0;
+	}
+	int32_t now_w = bounds[3] - bounds[1], now_h = bounds[2] - bounds[0];
+	if (!w && !h) {
+		w = now_w;
+		h = now_h;
+	}
+	if (w == now_w && h == now_h && bits == x->pixel_size) {
+		if (attach_full_screen(o, x, w, h))
+			return 1;
+		agl_error(in, AGL_BAD_ALLOC);
+		return 0;
+	}
+	if (!o->video || !video_mode_for(o->video, (unsigned)w, (unsigned)h, x->pixel_size, &mode, &depth)) {
+		agl_error(in, AGL_BAD_FULLSCREEN);
+		return 0;
+	}
+	in->job = (struct opengl_job){ .kind = JOB_FULL_SCREEN, .context = x->guest, .width = w, .height = h,
+				       .device = device };
+	video_mode_now(o->video, &in->job.mode, &in->job.depth);
+	set_display_mode(o, c, in, device, mode, depth);
+	return 0;
+}
+
+/*
+ * A full screen context's drawable has gone (another drawable, none, the
+ * context, its process): the screen goes back to the mode it was in, then
+ * the call returns `result`. False if there's no going back to do.
+ */
+static bool full_screen_gone(struct opengl *o, struct ndrv_call *c, struct opengl_instance *in, uint32_t context,
+			     uint32_t result)
+{
+	if (!o->fs_saved || o->fs_toc != in->toc || (context && o->fs_context != context))
+		return false;
+	o->fs_saved = false;
+	in->job = (struct opengl_job){ .kind = JOB_RESTORE, .result = result };
+	set_display_mode(o, c, in, o->fs_device, o->fs_mode, o->fs_depth);
+	return true;
+}
+
+/*
+ * aglUseFont(), as Apple's: QuickDraw measures the font (the font, face and
+ * size set in a small offscreen world: GetFontInfo), then draws each glyph
+ * in a 1-bit one (EraseRect, MoveTo, DrawChar), black on white, the pen
+ * at (e, ascent + e), where e is half the size if the face isn't plain (to
+ * hold what slants or thickens), else 0; its bits, rows from the bottom,
+ * are glBitmap's in list base + i: (CharWidth + 2e) x (ascent + descent +
+ * 2e), from (e, descent + e - 1), moving CharWidth on. Errors: a list being
+ * made, AGL_BAD_STATE; no such font, AGL_BAD_VALUE; no memory for the
+ * offscreen worlds, AGL_BAD_ALLOC.
+ */
+enum { UF_REAL_FONT = 1, UF_GOT_WORLD, UF_MADE_TEMP, UF_SET_TEMP, UF_TEMP_FONT, UF_TEMP_FACE, UF_TEMP_SIZE, UF_INFO,
+       UF_UNSET_TEMP, UF_TEMP_GONE, UF_MADE, UF_SET, UF_MODE, UF_FONT, UF_FACE, UF_SIZE, UF_PIXMAP, UF_LOCKED,
+       UF_BASE, UF_ERASED, UF_MOVED, UF_WIDTH, UF_DRAWN, UF_UNSET, UF_GONE };
+
+static uint32_t use_font(struct opengl *o, struct ndrv_call *c, struct opengl_instance *in, struct opengl_context *x,
+			 const union gl_arg *a)
+{
+	if (x->list_name) {
+		agl_error(in, AGL_BAD_STATE);
+		return 0;
+	}
+	in->job = (struct opengl_job){ .kind = JOB_FONT, .step = UF_REAL_FONT, .context = x->guest,
+				       .font = (int16_t)a[1].u, .face = (int32_t)(a[2].u & 0xFF), .size = (int16_t)a[3].u,
+				       .first = a[4].i, .count = a[5].i, .base = a[6].i };
+	callout(o, c, LI_REAL_FONT, (uint32_t)in->job.font, (uint32_t)in->job.size, 0, 0);
+	return 0;
+}
+
+/* The glyph just drawn (the 1-bit world's rows, from the top) as list base + i: glBitmap's, its rows from the bottom */
+static void glyph_list(struct opengl *o, struct opengl_context *x, const struct opengl_job *j)
+{
+	size_t row = j->row_bytes, len = row * (size_t)j->height;
+	const uint8_t *top = len && len <= (1u << 20) && readable(o->mem, j->pixels, (uint32_t)len) ?
+			     mem_ptr(o->mem, j->pixels) : NULL;
+	uint8_t *bits = top ? malloc(len) : NULL;
+	if (!bits) {
+		glf_error(&x->st, GL_OUT_OF_MEMORY);
+		return;
+	}
+	for (int32_t r = 0; r < j->height; r++)
+		memcpy(bits + (size_t)r * row, top + (size_t)(j->height - 1 - r) * row, row);
+	int32_t w = j->char_width + 2 * j->extra, most = (int32_t)(8 * row);
+	union gl_arg a[7];
+	a[0].i = w < most ? (w > 0 ? w : 0) : most;
+	a[1].i = j->height;
+	a[2].f = (float)j->extra;
+	a[3].f = (float)(j->descent + j->extra - 1);
+	a[4].f = (float)j->char_width;
+	a[5].f = 0;
+	a[6].u = j->pixels;                     /* (the list keeps the bits: see call_list()) */
+	struct gl_pixel_store unpack = x->st.unpack;
+	memset(&x->st.unpack, 0, sizeof x->st.unpack);
+	x->st.unpack.alignment = 1;
+	x->st.unpack.row_length = most;
+	put_entry(x, F_glBitmap, a, 7, true, bits, len);
+	x->st.unpack = unpack;
+	free(bits);
+	if (x->list && !glf_define_list(&x->st, (uint32_t)(j->base + j->glyph), x->list, x->list_len))
+		glf_error(&x->st, GL_OUT_OF_MEMORY);
+	x->list = NULL;
+	x->list_len = x->list_cap = 0;
+}
+
+/* A job's next step, after a callout returned r */
+static void resume(struct opengl *o, struct ndrv_call *c, struct opengl_instance *in, uint32_t r)
+{
+	struct mem *m = o->mem;
+	struct opengl_job *j = &in->job;
+	struct opengl_context *x = j->context ? context_at(o, in, j->context) : NULL;
+	uint32_t scratch = data_of(o, in) + lib.scratch;
+	switch (j->kind) {
+	case JOB_FULL_SCREEN:           /* (DMSetDisplayMode's done: its OSErr) */
+		j->kind = JOB_NONE;
+		if ((int16_t)r || !x) {
+			agl_error(in, AGL_BAD_FULLSCREEN);
+			ndrv_finish(c, 0);
+			return;
+		}
+		if (!o->fs_saved) {
+			o->fs_saved = true;
+			o->fs_mode = j->mode;
+			o->fs_depth = j->depth;
+			o->fs_device = j->device;
+		}
+		o->fs_toc = in->toc;
+		o->fs_context = x->guest;
+		if (!attach_full_screen(o, x, j->width, j->height)) {
+			agl_error(in, AGL_BAD_ALLOC);
+			ndrv_finish(c, 0);
+			return;
+		}
+		ndrv_finish(c, 1);
+		return;
+	case JOB_RESTORE:
+		j->kind = JOB_NONE;
+		ndrv_finish(c, j->result);
+		if (j->terminating)
+			memset(in, 0, sizeof *in);
+		return;
+	case JOB_FONT:
+		break;
+	default:
+		ndrv_finish(c, 0);
+		return;
+	}
+
+	/* aglUseFont's steps: each callout's result, then the next */
+	unsigned step = j->step++;
+	if (!x && step < UF_UNSET) {            /* (the context's gone) */
+		j->result = 0;
+		step = j->gworld ? UF_DRAWN : UF_GONE;
+		j->glyph = j->count;
+	}
+	switch (step) {
+	case UF_REAL_FONT:
+		if (!(r & 0xFF)) {
+			agl_error(in, AGL_BAD_VALUE);
+			break;
+		}
+		callout(o, c, LI_GET_GWORLD, scratch + SC_PORT, scratch + SC_DEVICE, 0, 0);
+		return;
+	case UF_GOT_WORLD:
+		j->port = mem_r32(m, scratch + SC_PORT);
+		j->device = mem_r32(m, scratch + SC_DEVICE);
+		mem_w32(m, scratch + SC_RECT, 0);               /* (top, left; bottom, right) */
+		mem_w32(m, scratch + SC_RECT + 4, 4u << 16 | 4);
+		callout(o, c, LI_NEW_GWORLD, scratch + SC_GWORLD, 1, scratch + SC_RECT, 0);
+		c->out[4] = c->out[5] = 0;
+		return;
+	case UF_MADE_TEMP:
+	case UF_MADE:
+		j->gworld = (int16_t)r ? 0 : mem_r32(m, scratch + SC_GWORLD);
+		if (!j->gworld) {
+			agl_error(in, AGL_BAD_ALLOC);
+			break;
+		}
+		callout(o, c, LI_SET_GWORLD, j->gworld, 0, 0, 0);
+		return;
+	case UF_SET_TEMP:
+	case UF_SET:
+		if (step == UF_SET) {
+			callout(o, c, LI_TEXT_MODE, 0, 0, 0, 0);        /* (srcCopy) */
+			return;
+		}
+		/* fall through */
+	case UF_MODE:
+		callout(o, c, LI_TEXT_FONT, (uint32_t)j->font, 0, 0, 0);
+		return;
+	case UF_TEMP_FONT:
+	case UF_FONT:
+		callout(o, c, LI_TEXT_FACE, (uint32_t)j->face, 0, 0, 0);
+		return;
+	case UF_TEMP_FACE:
+	case UF_FACE:
+		callout(o, c, LI_TEXT_SIZE, (uint32_t)j->size, 0, 0, 0);
+		return;
+	case UF_TEMP_SIZE:
+		callout(o, c, LI_GET_FONT_INFO, scratch + SC_INFO, 0, 0, 0);
+		return;
+	case UF_INFO: {
+		j->ascent = (int16_t)mem_r16(m, scratch + SC_INFO);
+		j->descent = (int16_t)mem_r16(m, scratch + SC_INFO + 2);
+		int32_t wid_max = (int16_t)mem_r16(m, scratch + SC_INFO + 4);
+		j->extra = j->face ? j->size >> 1 : 0;
+		j->width = wid_max + 2 * j->extra;
+		j->height = j->ascent + j->descent + 2 * j->extra;
+		callout(o, c, LI_SET_GWORLD, j->port, j->device, 0, 0);
+		return;
+	}
+	case UF_UNSET_TEMP:
+		callout(o, c, LI_DISPOSE_GWORLD, j->gworld, 0, 0, 0);
+		j->gworld = 0;
+		return;
+	case UF_TEMP_GONE:
+		if (j->width <= 0 || j->height <= 0 || j->width > 2048 || j->height > 2048) {
+			agl_error(in, AGL_BAD_VALUE);
+			break;
+		}
+		mem_w32(m, scratch + SC_RECT, 0);
+		mem_w32(m, scratch + SC_RECT + 4, (uint32_t)j->height << 16 | (uint32_t)j->width);
+		callout(o, c, LI_NEW_GWORLD, scratch + SC_GWORLD, 1, scratch + SC_RECT, 0);
+		c->out[4] = c->out[5] = 0;
+		return;
+	case UF_SIZE:
+		callout(o, c, LI_GET_GWORLD_PIXMAP, j->gworld, 0, 0, 0);
+		return;
+	case UF_PIXMAP:
+		j->pixmap = r;
+		callout(o, c, LI_LOCK_PIXELS, r, 0, 0, 0);
+		return;
+	case UF_LOCKED:
+		if (!(r & 0xFF) || !readable(m, j->pixmap, 4) || !readable(m, mem_r32(m, j->pixmap), 6)) {
+			agl_error(in, AGL_BAD_ALLOC);
+			j->step = UF_UNSET;
+			callout(o, c, LI_SET_GWORLD, j->port, j->device, 0, 0);
+			return;
+		}
+		j->row_bytes = mem_r16(m, mem_r32(m, j->pixmap) + 4) & 0x3FFF;
+		callout(o, c, LI_GET_PIX_BASE_ADDR, j->pixmap, 0, 0, 0);
+		return;
+	case UF_BASE:
+		j->pixels = r;
+		j->result = 1;
+		j->glyph = -1;
+		/* fall through */
+	case UF_DRAWN:
+		if (step == UF_DRAWN && x)
+			glyph_list(o, x, j);
+		if (++j->glyph < j->count) {
+			j->step = UF_ERASED;
+			callout(o, c, LI_ERASE_RECT, scratch + SC_RECT, 0, 0, 0);
+		} else {
+			j->step = UF_UNSET;
+			callout(o, c, LI_SET_GWORLD, j->port, j->device, 0, 0);
+		}
+		return;
+	case UF_ERASED:
+		callout(o, c, LI_MOVE_TO, (uint32_t)j->extra, (uint32_t)(j->ascent + j->extra), 0, 0);
+		return;
+	case UF_MOVED:
+		callout(o, c, LI_CHAR_WIDTH, (uint32_t)(j->first + j->glyph) & 0xFFFF, 0, 0, 0);
+		return;
+	case UF_WIDTH:
+		j->char_width = (int16_t)r;
+		callout(o, c, LI_DRAW_CHAR, (uint32_t)(j->first + j->glyph) & 0xFFFF, 0, 0, 0);
+		return;
+	case UF_UNSET:
+		callout(o, c, LI_DISPOSE_GWORLD, j->gworld, 0, 0, 0);
+		return;
+	default:                                /* (UF_GONE: done) */
+		j->kind = JOB_NONE;
+		ndrv_finish(c, j->result);
+		return;
+	}
+	/* an error before anything was drawn: the port back, the world gone, if there's one */
+	if (j->gworld) {
+		j->step = UF_UNSET;
+		callout(o, c, LI_SET_GWORLD, j->port, j->device, 0, 0);
+		return;
+	}
+	j->kind = JOB_NONE;
+	ndrv_finish(c, 0);
 }
 
 static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_instance *in, unsigned fn,
@@ -2637,14 +3145,6 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 		}
 		put_word(m, data + D_CURRENT, a[0].u);
 		return 1;
-	case F_aglUseFont:
-	case F_aglSetFullScreen:
-		if (!o->unimplemented[fn]) {
-			o->unimplemented[fn] = 1;
-			printf("opengl: %s isn't done yet\n", library_functions[fn].name);
-			fflush(stdout);
-		}
-		break;                  /* (checks the context, then fails) */
 	default:
 		break;
 	}
@@ -2655,13 +3155,14 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 		agl_error(in, AGL_BAD_CONTEXT);
 		return 0;
 	}
+	uint32_t guest = x->guest;
 	switch (fn) {
 	case F_aglDestroyContext:
 		if (readable(m, data + D_CURRENT, 4) && mem_r32(m, data + D_CURRENT) == x->guest)
 			put_word(m, data + D_CURRENT, 0);
 		put_word(m, x->guest, 0);
 		free_context(o, x);
-		return 1;
+		return full_screen_gone(o, c, in, guest, 1) ? 0 : 1;
 	case F_aglCopyContext:
 		if (!context_at(o, in, a[1].u)) {
 			agl_error(in, AGL_BAD_CONTEXT);
@@ -2677,7 +3178,7 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 		if (!a[1].u) {
 			x->kind = DRAWABLE_NONE;
 			x->port = 0;
-			return 1;
+			return full_screen_gone(o, c, in, guest, 1) ? 0 : 1;
 		}
 		{
 			int r[4];
@@ -2692,9 +3193,10 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 			x->kind = DRAWABLE_NONE;
 			x->port = 0;
 			agl_error(in, AGL_BAD_ALLOC);
+			full_screen_gone(o, c, in, guest, 0);
 			return 0;
 		}
-		return 1;
+		return full_screen_gone(o, c, in, guest, 1) ? 0 : 1;
 	case F_aglSetOffScreen:
 		if (a[1].i <= 0 || a[2].i <= 0 || (uint32_t)a[3].i < (uint32_t)a[1].i * x->pixel_size / 8 || !a[4].u) {
 			agl_error(in, AGL_BAD_OFFSCREEN);
@@ -2716,10 +3218,11 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 			agl_error(in, AGL_BAD_ALLOC);
 			return 0;
 		}
-		return 1;
+		return full_screen_gone(o, c, in, guest, 1) ? 0 : 1;
 	case F_aglSetFullScreen:
-		agl_error(in, AGL_BAD_FULLSCREEN);
-		return 0;
+		return set_full_screen(o, c, in, x, a[1].i, a[2].i);
+	case F_aglUseFont:
+		return use_font(o, c, in, x, a);
 	case F_aglGetDrawable:
 		return x->kind == DRAWABLE_PORT ? x->port : 0;
 	case F_aglSetVirtualScreen:
@@ -2732,7 +3235,8 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 		return 0;
 	case F_aglSwapBuffers:
 		show(o, x);
-		if (x->kind == DRAWABLE_PORT) {         /* (for the screen: paced by its refresh, see nk.c) */
+		/* (for the screen: paced by its refresh, see nk.c) */
+		if (x->kind == DRAWABLE_PORT || x->kind == DRAWABLE_FULL_SCREEN) {
 			o->shown = 1 + (unsigned)(in - o->inst) * OPENGL_CONTEXTS + (unsigned)(x - in->ctx);
 			o->shown_id = x->guest;
 		}
@@ -2787,9 +3291,7 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 			fit_drawable(o, x);
 		return 1;
 	}
-	case F_aglUseFont:
 	default:
-		(void)c;
 		return 0;
 	}
 }
@@ -2801,18 +3303,53 @@ static void finish_call(struct ndrv_call *c, const char *result, uint32_t v)
 	ndrv_finish(c, result[0] == 'v' ? 0 : result[0] == 'B' ? (v ? 1 : 0) : v);
 }
 
+/* Whether the instance's library is this syshm's: its data's magic and version where this one's are */
+static bool library_current(struct opengl *o, const struct opengl_instance *in)
+{
+	uint32_t data = data_of(o, in);
+	return readable(o->mem, data, 8) && mem_r32(o->mem, data + D_MAGIC) == DATA_MAGIC &&
+	       mem_r32(o->mem, data + D_VERSION) == DATA_VERSION;
+}
+
 void opengl_library_call(struct opengl *o, struct ndrv_call *c)
 {
 	o->calls++;
 	o->shown = 0;
+	o->calling_out = false;
+	if (c->entry == NDRV_ENTRY_RESUME) {            /* (a call's callout's done: see "callouts") */
+		struct opengl_instance *in = instance_of(o, c->toc, false);
+		if (in && in->job.kind != JOB_NONE)
+			resume(o, c, in, c->arg[0]);
+		else
+			ndrv_finish(c, 0);
+		return;
+	}
 	if (c->entry == E_INIT || c->entry == E_TERM) {
-		/* CFM's initialization (a new process: its instance from scratch) and termination */
+		/*
+		 * CFM's initialization (a new process: its instance from scratch,
+		 * unless its library's an older syshm's) and termination (the
+		 * screen's mode back, if it switched it)
+		 */
 		struct opengl_instance *in = instance_of(o, c->toc, c->entry == E_INIT);
 		if (in) {
 			uint32_t toc = c->toc;
 			free_instance(o, in);
-			if (c->entry == E_INIT) {
-				in->toc = toc;
+			in->toc = toc;
+			if (c->entry == E_TERM) {
+				if (full_screen_gone(o, c, in, 0, 0)) {
+					in->job.terminating = true;
+					return;
+				}
+				in->toc = 0;
+			} else if (!library_current(o, in)) {
+				in->stale = true;
+				if (!o->told_stale)
+					printf("opengl: the guest's syshm OpenGL is older than this syshm: update it (syshm "
+					       "offers to, in a window), or by hand from a volume made with \"syshm tools "
+					       "create\" into Extensions\n");
+				o->told_stale = true;
+				fflush(stdout);
+			} else {
 				put_word(o->mem, data_of(o, in) + D_CURRENT, 0);
 				record_start(o, in);
 			}
@@ -2829,7 +3366,7 @@ void opengl_library_call(struct opengl *o, struct ndrv_call *c)
 		return;
 	}
 	struct opengl_instance *in = instance_of(o, c->toc, true);
-	if (!in) {
+	if (!in || in->stale) {
 		ndrv_finish(c, 0);
 		return;
 	}
@@ -2850,11 +3387,14 @@ void opengl_library_call(struct opengl *o, struct ndrv_call *c)
 	uint32_t result = fn >= GL_FUNCTIONS ? agl_call(o, c, in, fn, a) : x ? gl_call(o, x, fn, a) : 0;
 	if (o->log) {
 		char what[32] = "";
-		if (f->result[0] != 'v')
+		if (o->calling_out)
+			snprintf(what, sizeof what, ": calling the Toolbox");
+		else if (f->result[0] != 'v')
 			snprintf(what, sizeof what, " = 0x%X", result);
 		log_call("gl", f->name, f->args, a, n, what);
 	}
-	finish_call(c, f->result, result);
+	if (!o->calling_out)
+		finish_call(c, f->result, result);
 }
 
 /* OpenGLMemory: blocks from the Memory Manager (state word 0: the step; 1, 2: the call's) */

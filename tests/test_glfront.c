@@ -11,7 +11,9 @@
  * (each kind of light, two sides, separate specular, the color material),
  * generated texture coordinates, clip planes and fog; polygon modes and
  * offset; the stencil's state and clears; the attribute stacks; client
- * arrays (types, indices, bounds, interleaved); queries.
+ * arrays (types, indices, bounds, interleaved); queries. Selection and
+ * feedback where Mesa's depart from OpenGL 1.2's; evaluators' maps, errors,
+ * values, normals and current values.
  */
 #include <math.h>
 #include <stdlib.h>
@@ -1400,10 +1402,8 @@ static void test_raster_pos(void)
 
 static void test_draw_pixels(void)
 {
-	start();
-	ortho();
 	/* a zoomed image's texel (i, j) covers the pixels whose centers are in its rectangle (OpenGL 1.2's
-	 * 3.6.4), from the raster position rounded to a pixel's corner */
+	 * 3.6.4), from the raster position rounded to a pixel's corner; zoomed backwards, the other way */
 	static uint8_t image[4 * 3 * 4];
 	for (int k = 0; k < 12; k++) {
 		image[4 * k] = (uint8_t)(20 * k + 10);
@@ -1411,21 +1411,27 @@ static void test_draw_pixels(void)
 		image[4 * k + 2] = 0;
 		image[4 * k + 3] = 255;
 	}
-	const float z[2] = { 1.6f, -1.7f };
-	glf_pixel_zoom(&st, z[0], z[1]);
-	raster_pos(10.3f, 30.4f, 0);
-	glf_draw_pixels(&st, &target, 4, 3, GL_RGBA, GL_UNSIGNED_BYTE, image);
-	drawn();
-	unsigned wrong = 0, covered = 0;
-	for (int y = 20; y < 32; y++)
-		for (int x = 8; x < 20; x++) {
-			double i = floor((x + 0.5 - 10) / z[0]), j = floor((y + 0.5 - 30) / z[1]);
-			bool in = i >= 0 && i < 4 && j >= 0 && j < 3;
-			uint32_t want = in ? argb(20 * (int)(j * 4 + i) + 10, (int)(j * 4 + i), 0, 255) : 0;
-			wrong += pixel(x, y) != want;
-			covered += in;
-		}
-	CHECK(wrong == 0 && covered == 6 * 5);
+	static const float zooms[2][2] = { { 1.6f, -1.7f }, { -1.5f, 1.3f } };
+	static const unsigned covering[2] = { 6 * 5, 6 * 4 };
+	for (int n = 0; n < 2; n++) {
+		start();
+		ortho();
+		const float *z = zooms[n];
+		glf_pixel_zoom(&st, z[0], z[1]);
+		raster_pos(10.3f, 30.4f, 0);
+		glf_draw_pixels(&st, &target, 4, 3, GL_RGBA, GL_UNSIGNED_BYTE, image);
+		drawn();
+		unsigned wrong = 0, covered = 0;
+		for (int y = 18; y < 40; y++)
+			for (int x = 0; x < 24; x++) {
+				double i = floor((x + 0.5 - 10) / z[0]), j = floor((y + 0.5 - 30) / z[1]);
+				bool in = i >= 0 && i < 4 && j >= 0 && j < 3;
+				uint32_t want = in ? argb(20 * (int)(j * 4 + i) + 10, (int)(j * 4 + i), 0, 255) : 0;
+				wrong += pixel(x, y) != want;
+				covered += in;
+			}
+		CHECK(wrong == 0 && covered == covering[n]);
+	}
 	glf_pixel_zoom(&st, 1, 1);
 	/* the transfer: scale and bias, then the maps (each component through its own) */
 	start();
@@ -1601,6 +1607,334 @@ static void test_copy_get_tex_image(void)
 	CHECK_EQ(error(), GL_INVALID_ENUM);
 }
 
+/* ---- selection and feedback --------------------------------------------------------------- */
+
+static int32_t render_mode(uint32_t mode, const uint32_t **words, size_t *count)
+{
+	uint32_t buffer;
+	return glf_render_mode(&st, mode, &buffer, words, count);
+}
+
+static float word_float(uint32_t w)
+{
+	float f;
+	memcpy(&f, &w, 4);
+	return f;
+}
+
+static void test_select_feedback(void)
+{
+	start();
+	ortho();
+	const uint32_t *w;
+	size_t n;
+	/* errors: a mode without its buffer, a bad mode or type, a buffer changed in its mode; the name stack's */
+	CHECK_EQ(render_mode(GL_SELECT, &w, &n), 0);
+	CHECK_EQ(error(), GL_INVALID_OPERATION);
+	render_mode(0x1234, &w, &n);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	glf_feedback_buffer(&st, 10, 0x0605, 0x1000);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	glf_select_buffer(&st, 64, 0x2000);
+	glf_load_name(&st, 1);                  /* (rendering: name stack calls ignored) */
+	CHECK_EQ(error(), GL_NO_ERROR);
+	CHECK_EQ(render_mode(GL_SELECT, &w, &n), 0);
+	double v[4];
+	CHECK(glf_get(&st, 0x0C40, v) == 1 && v[0] == GL_SELECT);
+	glf_select_buffer(&st, 64, 0x2000);
+	CHECK_EQ(error(), GL_INVALID_OPERATION);
+	glf_load_name(&st, 1);
+	CHECK_EQ(error(), GL_INVALID_OPERATION);
+	glf_pop_name(&st);
+	CHECK_EQ(error(), GL_STACK_UNDERFLOW);
+	for (unsigned k = 0; k <= GLF_NAME_STACK; k++)
+		glf_push_name(&st, k);
+	CHECK_EQ(error(), GL_STACK_OVERFLOW);
+	CHECK(glf_get(&st, 0x0D70, v) == 1 && v[0] == GLF_NAME_STACK);
+	glf_init_names(&st);
+	/* selecting: nothing drawn or cleared; a hit's record when the names change, and as the mode's left */
+	glf_push_name(&st, 7);
+	glf_begin(&st, GL_TRIANGLES);
+	vertex(10, 10, 0.5f);
+	vertex(20, 10, -0.5f);
+	vertex(15, 20, 0);
+	glf_end(&st, &target);
+	glf_clear(&st, &target, GL_COLOR_BUFFER_BIT);
+	CHECK_EQ(ncmds(), 0);
+	glf_push_name(&st, 8);                  /* (a record: one name; nothing hit since: none) */
+	glf_push_name(&st, 9);
+	glf_raster_pos(&st, (const float[4]){ 30, 30, 0, 1 });
+	glf_bitmap(&st, &target, 0, 0, 0, 0, 2, 0, NULL);
+	CHECK_EQ(render_mode(GL_RENDER, &w, &n), 2);
+	CHECK(n == 4 + 6 && w[0] == 1 && w[3] == 7 && w[4] == 3 && w[7] == 7 && w[8] == 8 && w[9] == 9);
+	CHECK(w[1] == 0x3FFFFFFFu && w[2] == 0xBFFFFFFFu);      /* (depths 0.25 and 0.75, of 2^32 - 1) */
+	CHECK(w[5] == 0x7FFFFFFFu && w[6] == 0x7FFFFFFFu);
+	CHECK(near(st.rpos.win[0], 32, 1e-5f));                 /* (bitmaps still move it) */
+	CHECK(glf_get(&st, 0x0D70, v) == 1 && v[0] == 0);       /* (the stack emptied) */
+	CHECK(glf_get(&st, 0x0DF4, v) == 1 && v[0] == 64);
+	uint32_t p;
+	CHECK(glf_get_pointer(&st, 0x0DF3, &p) && p == 0x2000);
+	/* overflow: -1, and what fitted */
+	glf_select_buffer(&st, 2, 0x2000);
+	render_mode(GL_SELECT, &w, &n);
+	glf_push_name(&st, 1);
+	glf_begin(&st, GL_POINTS);
+	vertex(5, 5, 0);
+	glf_end(&st, &target);
+	CHECK(render_mode(GL_RENDER, &w, &n) == -1 && n == 2);
+
+	/* feedback (OpenGL 1.2's 5.3, where Mesa's departs): lines reset the stipple at each strip's start
+	 * and each separate line, polygons outlined at each polygon; flat shading's colors */
+	glf_feedback_buffer(&st, 256, 0x0602, 0x3000);           /* GL_3D_COLOR */
+	CHECK_EQ(render_mode(GL_FEEDBACK, &w, &n), 0);
+	glf_begin(&st, GL_LINE_STRIP);
+	vertex(1, 1, 0);
+	vertex(5, 1, 0);
+	vertex(5, 5, 0);
+	glf_end(&st, &target);
+	glf_begin(&st, GL_LINES);
+	for (int k = 0; k < 4; k++)
+		vertex(10 + (float)k, 2, 0);
+	glf_end(&st, &target);
+	glf_polygon_mode(&st, GL_FRONT_AND_BACK, GL_LINE);
+	glf_begin(&st, GL_QUADS);
+	vertex(20, 20, 0);
+	vertex(30, 20, 0);
+	vertex(30, 30, 0);
+	vertex(20, 30, 0);
+	glf_end(&st, &target);
+	glf_polygon_mode(&st, GL_FRONT_AND_BACK, GL_FILL);
+	glf_shade_model(&st, GL_FLAT);
+	glf_begin(&st, GL_TRIANGLES);
+	color(1, 0, 0);
+	vertex(40, 40, 0);
+	color(0, 1, 0);
+	vertex(50, 40, 0);
+	color(0, 0, 1);
+	vertex(45, 46, 0);
+	glf_end(&st, &target);
+	glf_shade_model(&st, GL_SMOOTH);
+	glf_pass_through(&st, 2.5f);
+	int32_t values = render_mode(GL_RENDER, &w, &n);
+	CHECK(values > 0 && (size_t)values == n && ncmds() == 0);
+	uint32_t tokens[16];
+	unsigned nt = 0;
+	for (size_t i = 0; i < n && nt < 16;) {            /* (3D_COLOR: 7 values a vertex) */
+		uint32_t tok = (uint32_t)word_float(w[i]);
+		tokens[nt++] = tok;
+		if (tok == GL_POLYGON_TOKEN) {
+			CHECK_EQ(word_float(w[i + 1]), 3);
+			for (int k = 0; k < 3; k++)             /* (each the last vertex's color) */
+				CHECK(word_float(w[i + 2 + 7 * k + 3]) == 0 && word_float(w[i + 2 + 7 * k + 5]) == 1);
+			i += 2 + 21;
+		} else if (tok == GL_PASS_THROUGH_TOKEN) {
+			CHECK_EQ(word_float(w[i + 1]), 2.5f);
+			i += 2;
+		} else {
+			i += 1 + 14;
+		}
+	}
+	static const uint32_t want[] = { GL_LINE_RESET_TOKEN, GL_LINE_TOKEN, GL_LINE_RESET_TOKEN, GL_LINE_RESET_TOKEN,
+					 GL_LINE_RESET_TOKEN, GL_LINE_TOKEN, GL_LINE_TOKEN, GL_LINE_TOKEN,
+					 GL_POLYGON_TOKEN, GL_PASS_THROUGH_TOKEN };
+	CHECK_EQ(nt, sizeof want / sizeof want[0]);
+	for (unsigned k = 0; k < nt && k < sizeof want / sizeof want[0]; k++)
+		CHECK_EQ(tokens[k], want[k]);
+	CHECK_EQ(error(), GL_NO_ERROR);
+}
+
+/* ---- evaluators -------------------------------------------------------------------------- */
+
+enum { MAP1_COLOR_4 = 0x0D90, MAP1_NORMAL = 0x0D92, MAP1_VERTEX_3 = 0x0D97, MAP1_VERTEX_4, MAP2_COLOR_4 = 0x0DB0,
+       MAP2_VERTEX_3 = 0x0DB7, AUTO_NORMAL = 0x0D80, Q_COEFF = 0x0A00, Q_ORDER, Q_DOMAIN, EVAL_BIT = 0x10000,
+       FEEDBACK_3D_COLOR = 0x0602 };
+
+/* What's fed back (GL_3D_COLOR) of points drawn by draw(): x, y, z, r, g, b, a each into p; how many */
+static unsigned fed_back_points(void (*draw)(void), float p[][7], unsigned max)
+{
+	const uint32_t *w;
+	size_t n;
+	glf_feedback_buffer(&st, 1024, FEEDBACK_3D_COLOR, 0x3000);
+	render_mode(GL_FEEDBACK, &w, &n);
+	draw();
+	render_mode(GL_RENDER, &w, &n);
+	unsigned points = 0;
+	for (size_t i = 0; i + 8 <= n && points < max; i += 8) {
+		CHECK_EQ(word_float(w[i]), GL_POINT_TOKEN);
+		for (int k = 0; k < 7; k++)
+			p[points][k] = word_float(w[i + 1 + (size_t)k]);
+		points++;
+	}
+	return points;
+}
+
+static void eval_curve(void)
+{
+	glf_begin(&st, GL_POINTS);
+	glf_eval_coord(&st, &target, 1, 3, 0);
+	glf_end(&st, &target);
+	glf_eval_mesh(&st, &target, 1, GL_POINT, 0, 3, 0, 0);
+}
+
+static void eval_patch(void)
+{
+	glf_begin(&st, GL_POINTS);
+	glf_eval_coord(&st, &target, 2, 0.5f, 0.5f);
+	glf_end(&st, &target);
+}
+
+static void test_evaluators(void)
+{
+	start();
+	ortho();
+	double v[GLF_EVAL_ORDER * GLF_EVAL_ORDER * 4];
+	static const double unit[4] = { 0, 1, 0, 1 };
+	/* the maps and grids at first */
+	CHECK(glf_get_map(&st, MAP1_VERTEX_3, Q_ORDER, v) == 1 && v[0] == 1);
+	CHECK(glf_get_map(&st, MAP2_COLOR_4, Q_DOMAIN, v) == 4 && v[0] == 0 && v[1] == 1 && v[2] == 0 && v[3] == 1);
+	CHECK(glf_get_map(&st, MAP2_COLOR_4, Q_COEFF, v) == 4 && v[0] == 1 && v[1] == 1 && v[2] == 1 && v[3] == 1);
+	CHECK(glf_get_map(&st, MAP1_NORMAL, Q_COEFF, v) == 3 && v[0] == 0 && v[1] == 0 && v[2] == 1);
+	CHECK(glf_get_map(&st, MAP1_VERTEX_4, Q_COEFF, v) == 4 && v[0] == 0 && v[2] == 0 && v[3] == 1);
+	CHECK(glf_get(&st, 0x0DD0, v) == 2 && v[0] == 0 && v[1] == 1);         /* GL_MAP1_GRID_DOMAIN */
+	CHECK(glf_get(&st, 0x0DD3, v) == 2 && v[0] == 1 && v[1] == 1);         /* GL_MAP2_GRID_SEGMENTS */
+	CHECK(glf_get(&st, 0x0D30, v) == 1 && v[0] == GLF_EVAL_ORDER);
+	CHECK_EQ(error(), GL_NO_ERROR);
+
+	/* errors (the map as it was) */
+	static const float none[GLF_EVAL_ORDER * GLF_EVAL_ORDER * 4];
+	glf_map(&st, 1, MAP2_VERTEX_3, unit, 3, 2, 0, 1, none);                /* (a 2D map's target to glMap1) */
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	glf_map(&st, 1, 0x0D99, unit, 3, 2, 0, 1, none);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	glf_map(&st, 1, MAP1_VERTEX_3, (const double[4]){ 2, 2, 0, 1 }, 3, 2, 0, 1, none);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_map(&st, 2, MAP2_VERTEX_3, (const double[4]){ 0, 1, 3, 3 }, 3, 2, 6, 2, none);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_map(&st, 1, MAP1_VERTEX_3, unit, 3, 0, 0, 1, none);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_map(&st, 1, MAP1_VERTEX_3, unit, 3, GLF_EVAL_ORDER + 1, 0, 1, none);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_map(&st, 1, MAP1_VERTEX_3, unit, 2, 2, 0, 1, none);                /* (strides below the components) */
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_map(&st, 2, MAP2_VERTEX_3, unit, 3, 2, 2, 2, none);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_active_texture(&st, GL_TEXTURE0_ARB + 1);                           /* (as Mesa: unit 0's) */
+	glf_map(&st, 1, MAP1_VERTEX_3, unit, 3, 2, 0, 1, none);
+	CHECK_EQ(error(), GL_INVALID_OPERATION);
+	glf_active_texture(&st, GL_TEXTURE0_ARB);
+	glf_map_grid1(&st, 0, 0, 1);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_map_grid2(&st, 1, 0, 1, 0, 0, 1);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_eval_mesh(&st, &target, 1, GL_FILL, 0, 1, 0, 0);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	glf_eval_mesh(&st, &target, 2, 0x1B03, 0, 1, 0, 1);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	CHECK_EQ(glf_get_map(&st, MAP1_VERTEX_3, 0x0A03, v), 0);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	CHECK(glf_get_map(&st, MAP1_VERTEX_3, Q_ORDER, v) == 1 && v[0] == 1);
+	CHECK(glf_get_map(&st, MAP2_VERTEX_3, Q_ORDER, v) == 2 && v[0] == 1 && v[1] == 1);
+
+	/* a 2D map's control points as packed ([v][u]): glGetMap gives them u by u along each v (its page's order) */
+	float packed[2 * 3 * 3];
+	for (int k = 0; k < 18; k++)
+		packed[k] = (float)(100 * (k / 9) + 10 * (k / 3 % 3) + k % 3);
+	glf_map(&st, 2, MAP2_VERTEX_3, (const double[4]){ 0, 1, 2, 4 }, 3, 3, 9, 2, packed);
+	CHECK_EQ(error(), GL_NO_ERROR);
+	CHECK(glf_get_map(&st, MAP2_VERTEX_3, Q_ORDER, v) == 2 && v[0] == 3 && v[1] == 2);
+	CHECK(glf_get_map(&st, MAP2_VERTEX_3, Q_DOMAIN, v) == 4 && v[1] == 1 && v[2] == 2 && v[3] == 4);
+	CHECK_EQ(glf_get_map(&st, MAP2_VERTEX_3, Q_COEFF, v), 18);
+	unsigned wrong = 0;
+	for (int k = 0; k < 18; k++)
+		wrong += v[k] != packed[k];
+	CHECK_EQ(wrong, 0);
+
+	/*
+	 * A quadratic curve (domain 2 to 4), colored by a map: at u = 3, the
+	 * points' (1/4, 1/2, 1/4) blend; a grid's last point u2's own; the
+	 * current color, normal and texture coordinates as they were
+	 */
+	static const float curve[3 * 3] = { 10, 10, 0, 30, 40, 0, 50, 10, 0 }, ramp[2 * 4] = { 1, 0, 0, 1, 0, 0, 1, 1 };
+	glf_map(&st, 1, MAP1_VERTEX_3, (const double[4]){ 2, 4 }, 3, 3, 0, 1, curve);
+	glf_map(&st, 1, MAP1_COLOR_4, (const double[4]){ 2, 4 }, 4, 2, 0, 1, ramp);
+	glf_enable(&st, MAP1_VERTEX_3, true);
+	glf_enable(&st, MAP1_COLOR_4, true);
+	glf_map_grid1(&st, 3, 2, 4);
+	color(0.2f, 0.4f, 0.6f);
+	static const float normal[3] = { 0.1f, 0.2f, 0.3f }, tex[4] = { 5, 6, 7, 8 };
+	memcpy(st.normal, normal, sizeof normal);
+	memcpy(st.tex[0], tex, sizeof tex);
+	float p[8][7];
+	CHECK_EQ(fed_back_points(eval_curve, p, 8), 5);
+	CHECK(near(p[0][0], 30, 1e-4f) && near(p[0][1], 25, 1e-4f));
+	CHECK(near(p[0][3], 0.5f, 1e-6f) && p[0][4] == 0 && near(p[0][5], 0.5f, 1e-6f) && p[0][6] == 1);
+	CHECK(near(p[2][0], 210.0f / 9, 1e-4f) && near(p[2][1], 210.0f / 9, 1e-4f));
+	CHECK(p[1][0] == 10 && p[1][1] == 10 && p[4][0] == 50 && p[4][1] == 10 && p[4][5] == 1);
+	CHECK(st.color[0] == 0.2f && st.color[1] == 0.4f && st.color[2] == 0.6f && st.color[3] == 1);
+	CHECK(!memcmp(st.normal, normal, sizeof normal) && !memcmp(st.tex[0], tex, sizeof tex));
+	glf_enable(&st, MAP1_VERTEX_3, false);                                  /* (no vertex map: nothing) */
+	CHECK_EQ(fed_back_points(eval_curve, p, 8), 0);
+	glf_enable(&st, MAP1_VERTEX_4, true);                   /* (the 4D map: (0, 0, 0, 1) at first) */
+	CHECK(fed_back_points(eval_curve, p, 8) == 5 && p[4][0] == 0 && p[4][1] == 0);
+	glf_enable(&st, MAP1_VERTEX_4, false);
+	glf_enable(&st, MAP1_COLOR_4, false);
+
+	/*
+	 * GL_AUTO_NORMAL: dp/du x dp/dv, normalized: lit from (0, 0, 1), a flat
+	 * patch facing it is bright, and dark with its u domain run backwards
+	 * (that turns dp/du round: Mesa's derivatives are in u', and don't)
+	 */
+	static const float flat[2 * 2 * 3] = { 0, 0, 0, 40, 0, 0, 0, 40, 0, 40, 40, 0 };
+	static const float toward[4] = { 0, 0, 1, 0 }, white[4] = { 1, 1, 1, 1 }, black[4] = { 0, 0, 0, 1 };
+	glf_enable(&st, GL_LIGHTING, true);
+	glf_enable(&st, GL_LIGHT0, true);
+	glf_light(&st, GL_LIGHT0, GL_POSITION, toward);
+	glf_material(&st, GL_FRONT_AND_BACK, GL_DIFFUSE, white);
+	glf_material(&st, GL_FRONT_AND_BACK, GL_AMBIENT, black);
+	glf_enable(&st, MAP2_VERTEX_3, true);
+	glf_enable(&st, AUTO_NORMAL, true);
+	glf_map(&st, 2, MAP2_VERTEX_3, unit, 3, 2, 6, 2, flat);
+	CHECK(fed_back_points(eval_patch, p, 8) == 1 && near(p[0][0], 20, 1e-4f) && p[0][3] > 0.99f);
+	glf_map(&st, 2, MAP2_VERTEX_3, (const double[4]){ 1, 0, 0, 1 }, 3, 2, 6, 2, flat);
+	CHECK(fed_back_points(eval_patch, p, 8) == 1 && near(p[0][0], 20, 1e-4f) && p[0][3] < 0.01f);
+	glf_enable(&st, GL_LIGHTING, false);
+	CHECK(!memcmp(st.normal, normal, sizeof normal));
+
+	/* a filled mesh is quad strips (5.1's): outlined, each quad's four edges, no diagonals */
+	const uint32_t *w;
+	size_t n;
+	glf_enable(&st, AUTO_NORMAL, false);
+	glf_map(&st, 2, MAP2_VERTEX_3, unit, 3, 2, 6, 2, flat);
+	glf_map_grid2(&st, 2, 0, 1, 1, 0, 1);
+	glf_polygon_mode(&st, GL_FRONT_AND_BACK, GL_LINE);
+	glf_feedback_buffer(&st, 1024, 0x0600, 0x3000);         /* GL_2D */
+	render_mode(GL_FEEDBACK, &w, &n);
+	glf_eval_mesh(&st, &target, 2, GL_FILL, 0, 2, 0, 1);
+	render_mode(GL_RENDER, &w, &n);
+	glf_polygon_mode(&st, GL_FRONT_AND_BACK, GL_FILL);
+	unsigned lines = 0;
+	for (size_t i = 0; i + 5 <= n; i += 5) {
+		uint32_t tok = (uint32_t)word_float(w[i]);
+		lines += tok == GL_LINE_TOKEN || tok == GL_LINE_RESET_TOKEN;
+	}
+	CHECK(lines == 8 && n == 8 * 5);
+
+	/* GL_EVAL_BIT: the grids and the enables as they were, not the maps */
+	glf_enable(&st, AUTO_NORMAL, true);
+	glf_push_attrib(&st, EVAL_BIT);
+	glf_map_grid2(&st, 5, -1, 2, 7, 3, 4);
+	glf_enable(&st, AUTO_NORMAL, false);
+	glf_enable(&st, MAP2_COLOR_4, true);
+	glf_map(&st, 2, MAP2_VERTEX_3, unit, 3, 2, 6, 2, flat);
+	glf_pop_attrib(&st);
+	CHECK(glf_get(&st, 0x0DD2, v) == 4 && v[0] == 0 && v[1] == 1);         /* GL_MAP2_GRID_DOMAIN */
+	CHECK(glf_get(&st, 0x0DD3, v) == 2 && v[0] == 2 && v[1] == 1);         /* GL_MAP2_GRID_SEGMENTS */
+	CHECK(glf_get(&st, 0x0DD1, v) == 1 && v[0] == 3);                      /* GL_MAP1_GRID_SEGMENTS */
+	CHECK(glf_is_enabled(&st, AUTO_NORMAL) == 1 && glf_is_enabled(&st, MAP2_COLOR_4) == 0);
+	CHECK(glf_get_map(&st, MAP2_VERTEX_3, Q_DOMAIN, v) == 4 && v[0] == 0 && v[1] == 1);
+	CHECK_EQ(error(), GL_NO_ERROR);
+}
+
 void test_glfront(void)
 {
 	test_sincos();
@@ -1627,6 +1961,8 @@ void test_glfront(void)
 	test_bitmap();
 	test_depth_stencil_pixels();
 	test_copy_get_tex_image();
+	test_select_feedback();
+	test_evaluators();
 	surface_free(&surf);
 	glf_detach(&st, NULL);
 }

@@ -8,7 +8,8 @@
  * JIT), recording calls. OpenGLUtility's. Scenes drawn through it all in
  * software and on the GPU, and (on Linux) by Mesa's OpenGL in its
  * compatibility profile, the reference (and SGI's GLU, Mesa's libGLU, if
- * SYSHM_TEST_GLU is where it is).
+ * SYSHM_TEST_GLU is where it is); selection's and feedback's records,
+ * against Mesa's too.
  */
 #include <math.h>
 #include <stdlib.h>
@@ -834,7 +835,9 @@ static const uint8_t *image(unsigned k, int w, int h)
 enum { ARR_MESH_POS, ARR_MESH_NORMAL, ARR_MESH_INDEX, ARR_SHORT_POS, ARR_UBYTE_COLOR, ARR_DOUBLE_POS, ARR_FLOAT_RGB,
        ARR_BYTE_INDEX, ARR_INTERLEAVED, ARR_UINT_INDEX, ARR_SECONDARY, ARR_BYTE_NORMAL, ARR_LIST_UBYTE,
        ARR_LIST_2BYTES, ARR_LIST_FLOAT, ARR_PIX_RGBA, ARR_PIX_RGB, ARR_PIX_LUM, ARR_MAP4, ARR_BITMAP, ARR_PIX_DEPTH,
-       ARR_PIX_STENCIL, ARR_MAP_IDENTITY, ARR_VOLUME, ARR_SLICE, ARR_MIP, ARRAYS };
+       ARR_PIX_STENCIL, ARR_MAP_IDENTITY, ARR_VOLUME, ARR_SLICE, ARR_MIP, ARR_EVAL_CURVE, ARR_EVAL_COLORS,
+       ARR_EVAL_ARC, ARR_EVAL_PATCH, ARR_EVAL_BENT, ARR_EVAL_PATCH_COLORS, ARR_EVAL_PATCH_TEX, ARR_EVAL_BUMPS,
+       ARR_EVAL_CYLINDER, ARR_EVAL_FLAT, ARR_EVAL_NORMALS, ARRAYS };
 #define MESH_X 9                /* (a mesh's vertices: a bent sheet, its normals) */
 #define MESH_Y 7
 #define MESH_INDICES ((MESH_X - 1) * (MESH_Y - 1) * 6)
@@ -1057,6 +1060,99 @@ static size_t array_bytes(unsigned k, bool big, uint8_t *out)
 		PUT(GL_FLOAT, 2);
 		PUT(GL_FLOAT, 0);
 		break;
+	/* evaluators' control points: [v][u], each padded to 4 values if it's fewer (and as the scenes' strides say) */
+	case ARR_EVAL_CURVE: {                  /* (a cubic curve, x y z) */
+		static const double xy[4][2] = { { 4.3, 40.2 }, { 20.1, 70.4 }, { 40.7, 40.3 }, { 58.6, 66.8 } };
+		for (int i = 0; i < 4; i++) {
+			PUT(GL_FLOAT, xy[i][0]);
+			PUT(GL_FLOAT, xy[i][1]);
+			PUT(GL_FLOAT, 0.1 * i);
+			PUT(GL_FLOAT, 99);
+		}
+		break;
+	}
+	case ARR_EVAL_COLORS:                   /* (red, green, blue) */
+		for (int i = 0; i < 3; i++)
+			for (int c = 0; c < 4; c++)
+				PUT(GL_FLOAT, c == i || c == 3 ? 1 : 0.1);
+		break;
+	case ARR_EVAL_ARC: {                    /* (doubles: a quarter circle, rational, x y z w) */
+		const double w = sqrt(0.5);
+		static const double xy[3][2] = { { 90.3, 45.2 }, { 90.3, 70.2 }, { 65.3, 70.2 } };
+		for (int i = 0; i < 3; i++) {
+			double wi = i == 1 ? w : 1;
+			PUT(GL_DOUBLE, xy[i][0] * wi);
+			PUT(GL_DOUBLE, xy[i][1] * wi);
+			PUT(GL_DOUBLE, 0);
+			PUT(GL_DOUBLE, wi);
+		}
+		break;
+	}
+	/*
+	 * (4 x 4, x y z: in window coordinates, x and y on a grid (so a function
+	 * of u and v as linear as the color and texture maps': whichever way a
+	 * quad's split, they're interpolated alike), z bent; bent all over; in
+	 * ORTHO_UNITS', bumpy)
+	 */
+	case ARR_EVAL_PATCH:
+	case ARR_EVAL_BENT:
+	case ARR_EVAL_BUMPS:
+		for (int j = 0; j < 4; j++)
+			for (int i = 0; i < 4; i++) {
+				static const double z[4][4] = { { 0, 0.1, 0, -0.1 }, { 0.2, 0.9, -0.5, 0 },
+								 { 0, -0.6, 0.8, 0.1 }, { -0.1, 0, 0.2, 0 } };
+				if (k == ARR_EVAL_PATCH) {
+					PUT(GL_FLOAT, 5.27 + 12.1 * i + 2.3 * j);     /* (grid points off edges) */
+					PUT(GL_FLOAT, 3.63 + 1.2 * i + 9.7 * j);
+					PUT(GL_FLOAT, z[j][i]);
+				} else if (k == ARR_EVAL_BENT) {
+					PUT(GL_FLOAT, 5.3 + 12.1 * i + (j == 1 || j == 2 ? 2.2 : 0));
+					PUT(GL_FLOAT, 3.6 + 9.7 * j + (i == 1 ? 3.1 : i == 2 ? -2.4 : 0));
+					PUT(GL_FLOAT, (i + j) & 1 ? 0.4 : -0.3);
+				} else {
+					PUT(GL_FLOAT, -1.5 + 0.4 * i);
+					PUT(GL_FLOAT, -1.043 + 0.647 * j);
+					PUT(GL_FLOAT, z[j][i]);
+				}
+			}
+		break;
+	case ARR_EVAL_PATCH_COLORS: {           /* (2 x 2, r g b a: linear in u and v) */
+		static const double rgb[4][3] = { { 0.9, 0.2, 0.2 }, { 0.5, 0.9, 0.2 }, { 0.5, 0.2, 0.9 },
+						  { 0.1, 0.9, 0.9 } };
+		for (int i = 0; i < 4; i++) {
+			for (int c = 0; c < 3; c++)
+				PUT(GL_FLOAT, rgb[i][c]);
+			PUT(GL_FLOAT, 1);
+		}
+		break;
+	}
+	case ARR_EVAL_PATCH_TEX:                /* (2 x 2, s t) */
+		for (int i = 0; i < 4; i++) {
+			PUT(GL_FLOAT, i & 1 ? 2 : 0);
+			PUT(GL_FLOAT, i & 2 ? 2 : 0);
+		}
+		break;
+	case ARR_EVAL_CYLINDER: {               /* (doubles, 3 x 2: a quarter of a cylinder, rational, x y z w) */
+		const double w = sqrt(0.5);
+		static const double xz[3][2] = { { -0.4, 0 }, { -0.4, 0.6 }, { 0.2, 0.6 } };
+		for (int j = 0; j < 2; j++)
+			for (int i = 0; i < 3; i++) {
+				double wi = i == 1 ? w : 1;
+				PUT(GL_DOUBLE, xz[i][0] * wi);
+				PUT(GL_DOUBLE, (j ? 0.9 : -0.9) * wi);
+				PUT(GL_DOUBLE, xz[i][1] * wi);
+				PUT(GL_DOUBLE, wi);
+			}
+		break;
+	}
+	case ARR_EVAL_FLAT:                     /* (2 x 2, x y z: flat) */
+	case ARR_EVAL_NORMALS:                  /* (2 x 2, x y z: not unit length) */
+		for (int i = 0; i < 4; i++) {
+			PUT(GL_FLOAT, k == ARR_EVAL_FLAT ? 0.9 + 0.6 * (i & 1) : (i & 1 ? 0.6 : -0.6));
+			PUT(GL_FLOAT, k == ARR_EVAL_FLAT ? -1.1 + 2.2 * (i >> 1) : (i & 2 ? 0.5 : -0.5));
+			PUT(GL_FLOAT, k == ARR_EVAL_FLAT ? 0 : 2);
+		}
+		break;
 	case ARR_SECONDARY:                     /* (rgb, a stride of 4) */
 		for (int v = 0; v < 8; v++) {
 			PUT(GL_UNSIGNED_BYTE, v & 1 ? 0 : 90);
@@ -1076,7 +1172,7 @@ static bool takes_array(const char *name)
 	return strstr(name, "Pointer") || !strcmp(name, "glInterleavedArrays") || !strcmp(name, "glDrawElements") ||
 	       !strcmp(name, "glDrawRangeElements") || !strcmp(name, "glCallLists") || !strcmp(name, "glDrawPixels") ||
 	       !strcmp(name, "glBitmap") || !strcmp(name, "glPixelMapfv") || !strcmp(name, "glTexImage3D") ||
-	       !strcmp(name, "glTexSubImage3D");
+	       !strcmp(name, "glTexSubImage3D") || !strncmp(name, "glMap1", 6) || !strncmp(name, "glMap2", 6);
 }
 
 /* A parameter vector's values (from a[first]): as doubles for glClipPlane, else floats */
@@ -1397,10 +1493,10 @@ static const struct op scene_lists[] = {
  * Pixel rectangles: images of each kind of format at the raster position,
  * zoomed by whole numbers (once upside down: Mesa's fractional zooms put
  * rows where neither OpenGL 1.2's rectangles nor rounding would, see
- * test_glfront.c), through the pixel transfer's scales and biases
- * (Mesa's pixel maps quantize: those are checked in test_pixel_maps()); bitmaps
- * moving the raster position; a copy of what's drawn; a depth image tested
- * against, a stencil image stenciled by
+ * test_glfront.c), through the pixel transfer's scales and biases (no
+ * maps: see mesa_invoke(); test_glfront.c checks them); bitmaps moving the
+ * raster position; a copy of what's drawn; a depth image tested against, a
+ * stencil image stenciled by
  */
 enum { GL_RGBA_T = 0x1908, GL_RGB_T = 0x1907, GL_LUMINANCE_T = 0x1909, GL_RED_SCALE = 0x0D14, GL_BLUE_SCALE = 0x0D1A,
        GL_BLUE_BIAS = 0x0D1B, GL_ALPHA_SCALE = 0x0D1C, GL_COLOR_T = 0x1800, GL_DEPTH_COMPONENT_T = 0x1902,
@@ -1535,6 +1631,83 @@ static const struct op scene_glu[] = {
  * the next at different points in Mesa's and ours (only the lines differ:
  * the quadrics' filled faces are drawn alike).
  */
+/*
+ * Evaluators: a curve's points colored by a color map, then the current
+ * color as it was; a rational curve (doubles, a domain run backwards) at
+ * coordinates and grid points; a patch colored and textured by maps, its
+ * grid's points over it; a list's map (the patch's control points the
+ * other way round: v along the array) and part of its mesh. (Filled
+ * meshes are quad strips, as OpenGL 1.2's 5.1 has them, where Mesa's are
+ * triangle strips: a quad split the other way. So x, y, colors and
+ * texture coordinates go linearly with u and v here, and fb_eval compares
+ * curved ones' values exactly. The current color is set with all four
+ * components: see fb_eval.)
+ */
+#define MAP1(target, u1, u2, stride, order, arr) { "glMap1f", { target, u1, u2, stride, order, arr } }
+#define MAP2(target, u1, u2, us, uo, v1, v2, vs, vo, arr) { "glMap2f", { target, u1, u2, us, uo, v1, v2, vs, vo, arr } }
+enum { GL_MAP1_COLOR_4_T = 0x0D90, GL_MAP1_VERTEX_3_T = 0x0D97, GL_MAP1_VERTEX_4_T, GL_MAP2_COLOR_4_T = 0x0DB0,
+       GL_MAP2_NORMAL_T = 0x0DB2, GL_MAP2_TEXTURE_COORD_2_T = 0x0DB4, GL_MAP2_VERTEX_3_T = 0x0DB7, GL_MAP2_VERTEX_4_T,
+       GL_AUTO_NORMAL_T = 0x0D80, GL_POINT_T = 0x1B00, GL_LINE_T, GL_FILL_T };
+static const struct op scene_eval[] = {
+	ORTHO, CLEAR(0.15, 0.1, 0.1),
+	MAP1(GL_MAP1_VERTEX_3_T, 0, 1, 4, 4, ARR_EVAL_CURVE), MAP1(GL_MAP1_COLOR_4_T, 0, 1, 4, 3, ARR_EVAL_COLORS),
+	EN(GL_MAP1_VERTEX_3_T), EN(GL_MAP1_COLOR_4_T), C4(1, 1, 1, 1),
+	{ "glMapGrid1f", { 30, 0, 1 } }, { "glEvalMesh1", { GL_POINT_T, 0, 30 } }, DIS(GL_MAP1_COLOR_4_T),
+	{ "glTranslatef", { 0.3, -4.3, 0 } }, { "glEvalMesh1", { GL_POINT_T, 2, 28 } }, { "glLoadIdentity", { 0 } },
+	{ "glMap1d", { GL_MAP1_VERTEX_4_T, 2, -1, 4, 3, ARR_EVAL_ARC } }, EN(GL_MAP1_VERTEX_4_T),
+	{ "glPointSize", { 3 } },
+	C3(1, 1, 0.3), BEGIN(GL_POINTS), { "glEvalCoord1d", { 2 } }, { "glEvalCoord1d", { 1.5 } },
+	{ "glEvalCoord1f", { 0.7 } }, { "glEvalCoord1d", { -1 } }, END,
+	{ "glMapGrid1f", { 6, -1, 2 } }, C3(0.3, 1, 1), BEGIN(GL_POINTS), { "glEvalPoint1", { 1 } },
+	{ "glEvalPoint1", { 3 } }, END, { "glPointSize", { 1 } }, DIS(GL_MAP1_VERTEX_4_T), DIS(GL_MAP1_VERTEX_3_T),
+	MAP2(GL_MAP2_VERTEX_3_T, 0, 1, 3, 4, 0, 1, 12, 4, ARR_EVAL_PATCH),
+	MAP2(GL_MAP2_COLOR_4_T, 0, 1, 4, 2, 0, 1, 8, 2, ARR_EVAL_PATCH_COLORS),
+	MAP2(GL_MAP2_TEXTURE_COORD_2_T, 0, 1, 2, 2, 0, 1, 4, 2, ARR_EVAL_PATCH_TEX),
+	EN(GL_MAP2_VERTEX_3_T), EN(GL_MAP2_COLOR_4_T), EN(GL_MAP2_TEXTURE_COORD_2_T),
+	EN(GL_TEXTURE_2D), { "glBindTexture", { 0x0DE1, 1 } }, TEX(1, 8, 8, IMAGE_CHECKER),
+	TEXP(GL_TEXTURE_MIN_FILTER, GL_LINEAR), TEXP(GL_TEXTURE_MAG_FILTER, GL_LINEAR),
+	{ "glMapGrid2f", { 8, 0, 1, 6, 0, 1 } }, { "glEvalMesh2", { GL_FILL_T, 0, 8, 0, 6 } },
+	DIS(GL_TEXTURE_2D), DIS(GL_MAP2_COLOR_4_T), C3(1, 1, 1), { "glEvalMesh2", { GL_POINT_T, 0, 8, 0, 6 } },
+	EN(GL_MAP2_COLOR_4_T),
+	LIST(1, GL_COMPILE), MAP2(GL_MAP2_VERTEX_3_T, 0, 1, 12, 4, 0, 1, 3, 4, ARR_EVAL_PATCH),
+	{ "glMapGrid2f", { 6, 0, 1, 5, 0, 1 } }, { "glEvalMesh2", { GL_FILL_T, 1, 5, 0, 5 } }, ENDLIST,
+	{ "glTranslatef", { 48, 0, 0 } }, CALLLIST(1),
+	{ NULL, { 0 } },
+};
+
+/*
+ * Evaluators, lit: a bumpy patch's normals made (GL_AUTO_NORMAL; its grid
+ * points in triangle strips), a rational one's (a quarter of a cylinder,
+ * doubles: GL_MAP2_VERTEX_4 over GL_MAP2_VERTEX_3; lit alike along v, so
+ * however its quads are split), a flat one's normals mapped (normalized),
+ * its points at coordinates
+ */
+#define EP2(i, j) { "glEvalPoint2", { i, j } }
+#define EVAL_STRIP(j) BEGIN(GL_TRIANGLE_STRIP), EP2(0, j), EP2(0, j + 1), EP2(1, j), EP2(1, j + 1), EP2(2, j), \
+	EP2(2, j + 1), EP2(3, j), EP2(3, j + 1), EP2(4, j), EP2(4, j + 1), EP2(5, j), EP2(5, j + 1), EP2(6, j), \
+	EP2(6, j + 1), END
+static const struct op scene_eval_lit[] = {
+	ORTHO_UNITS, CLEAR(0.05, 0.05, 0.1), EN(GL_DEPTH_TEST), EN(GL_LIGHTING), EN(GL_LIGHT0),
+	LIGHTV(GL_LIGHT0, GL_POSITION, 0.3, 0.5, 1, 0), LIGHTV(GL_LIGHT0, GL_DIFFUSE, 0.8, 0.8, 0.7, 1),
+	LIGHTV(GL_LIGHT0, GL_SPECULAR, 0.5, 0.5, 0.5, 1),
+	MATV(GL_FRONT, GL_DIFFUSE, 0.6, 0.6, 0.5, 1), MATV(GL_FRONT, GL_SPECULAR, 0.6, 0.6, 0.6, 1),
+	{ "glMaterialf", { GL_FRONT, GL_SHININESS, 20 } },
+	MAP2(GL_MAP2_VERTEX_3_T, 0, 1, 3, 4, 0, 1, 12, 4, ARR_EVAL_BUMPS), EN(GL_MAP2_VERTEX_3_T), EN(GL_AUTO_NORMAL_T),
+	{ "glMapGrid2f", { 6, 0, 1, 6, 0, 1 } }, EVAL_STRIP(0), EVAL_STRIP(1), EVAL_STRIP(2), EVAL_STRIP(3),
+	EVAL_STRIP(4), EVAL_STRIP(5),
+	{ "glMap2d", { GL_MAP2_VERTEX_4_T, 0, 1, 4, 3, 0, 1, 12, 2, ARR_EVAL_CYLINDER } }, EN(GL_MAP2_VERTEX_4_T),
+	MATV(GL_FRONT, GL_DIFFUSE, 0.3, 0.7, 0.9, 1),
+	{ "glMapGrid2d", { 8, 0, 1, 4, 0, 1 } }, { "glEvalMesh2", { GL_FILL_T, 0, 8, 0, 4 } },
+	DIS(GL_MAP2_VERTEX_4_T), DIS(GL_AUTO_NORMAL_T), EN(GL_NORMALIZE),
+	MAP2(GL_MAP2_VERTEX_3_T, 0, 1, 3, 2, 0, 1, 6, 2, ARR_EVAL_FLAT),
+	MAP2(GL_MAP2_NORMAL_T, 0, 1, 3, 2, 0, 1, 6, 2, ARR_EVAL_NORMALS), EN(GL_MAP2_NORMAL_T),
+	MATV(GL_FRONT, GL_DIFFUSE, 0.9, 0.5, 0.3, 1),
+	BEGIN(GL_TRIANGLES), { "glEvalCoord2f", { 0, 0 } }, { "glEvalCoord2f", { 1, 0 } },
+	{ "glEvalCoord2f", { 1, 1 } }, { "glEvalCoord2f", { 0, 0 } }, { "glEvalCoord2f", { 1, 1 } },
+	{ "glEvalCoord2f", { 0, 1 } }, END,
+	{ NULL, { 0 } },
+};
+
 static const struct {
 	const char *name;
 	const struct op *ops;
@@ -1548,10 +1721,45 @@ static const struct {
 	{ "texgen", scene_texgen, 4, 2 }, { "arrays", scene_arrays, 4, 2 }, { "stencil", scene_stencil, 4, 2 },
 	{ "offset", scene_offset, 4, 2 }, { "clip", scene_clip, 4, 2 }, { "lists", scene_lists, 4, 2 },
 	{ "pixels", scene_pixels, 4, 2 }, { "texture3d", scene_texture3d, 4, 2 }, { "glu", scene_glu, 40, 40 },
+	{ "eval", scene_eval, 0, 0 }, { "eval_lit", scene_eval_lit, 0, 0 },
 };
 #define SCENES (sizeof scenes / sizeof scenes[0])
 
 static uint32_t images[2][SCENES][SW * SH];     /* drawn in software, on the GPU: 0xAARRGGBB, rows top first */
+
+/*
+ * Selection and feedback: what each glRenderMode returned, and the program's
+ * buffer then (the words it holds, up to FB_WORDS; set to FB_UNSET first),
+ * ours and Mesa's, to be compared
+ */
+#define FBBUF 0x1A0000u                 /* (ours: in the guest's memory) */
+#define FB_WORDS 1024
+#define FB_SNAPS 8
+#define FB_UNSET 0x7FC0DEADu
+struct fb_snap {
+	int32_t result;
+	uint32_t mode;                          /* (the mode it left) */
+	uint32_t words[FB_WORDS];
+};
+static struct {
+	struct fb_snap snap[FB_SNAPS];
+	unsigned n, size;
+	uint32_t mode;
+} fb[2];
+
+/* A glRenderMode's result, and the buffer as it left the mode */
+static void fb_snapshot(unsigned side, int32_t result, uint32_t new_mode, const uint32_t *words)
+{
+	if (fb[side].n < FB_SNAPS) {
+		struct fb_snap *s = &fb[side].snap[fb[side].n++];
+		s->result = result;
+		s->mode = fb[side].mode ? fb[side].mode : GL_RENDER;
+		memcpy(s->words, words, fb[side].size * sizeof *words);
+		for (unsigned k = fb[side].size; k < FB_WORDS; k++)
+			s->words[k] = FB_UNSET;
+	}
+	fb[side].mode = new_mode;
+}
 
 /* A scene's call to OpenGLUtility (a quadric's: the scene's quadric's) */
 static uint32_t scene_quadric;
@@ -1559,7 +1767,7 @@ static uint32_t scene_quadric;
 static void glu_invoke(const struct op *op)
 {
 	const char *sig = glu_functions[glu_entry(op->name)].args;
-	uint32_t w[16] = { 0 };
+	uint32_t w[24] = { 0 };                 /* (gluLookAt's nine doubles take 18 words) */
 	double f[13];
 	unsigned nw = 0, nf = 0;
 	for (const char *c = sig; *c; c++) {
@@ -1593,6 +1801,25 @@ static void our_invoke(const struct op *op)
 	CHECK(fn >= 0);
 	if (fn < 0)
 		return;
+	bool select = !strcmp(op->name, "glSelectBuffer"), feedback = !strcmp(op->name, "glFeedbackBuffer");
+	if (select || feedback) {               /* (the buffer at FBBUF, unset) */
+		fb[0].size = op->a[0] < FB_WORDS ? (unsigned)op->a[0] : FB_WORDS;
+		for (unsigned k = 0; k < FB_WORDS; k++)
+			mem_w32(&mem, FBBUF + 4 * k, FB_UNSET);
+		if (select)
+			call_entry((unsigned)fn, WORDS((uint32_t)op->a[0], FBBUF), NULL, 0);
+		else
+			call_entry((unsigned)fn, WORDS((uint32_t)op->a[0], (uint32_t)op->a[1], FBBUF), NULL, 0);
+		return;
+	}
+	if (!strcmp(op->name, "glRenderMode")) {
+		uint32_t words[FB_WORDS];
+		int32_t r = (int32_t)call_entry((unsigned)fn, WORDS((uint32_t)op->a[0]), NULL, 0);
+		for (unsigned k = 0; k < FB_WORDS; k++)
+			words[k] = mem_r32(&mem, FBBUF + 4 * k);
+		fb_snapshot(0, r, (uint32_t)op->a[0], words);
+		return;
+	}
 	if (!strcmp(op->name, "glTexImage2D")) {
 		int w = (int)op->a[3], h = (int)op->a[4];
 		memcpy(mem_ptr(&mem, TEXDATA), image((unsigned)op->a[5], w, h), (size_t)(w * h * 4));
@@ -2189,11 +2416,38 @@ static void mesa_invoke(const struct op *op)
 		mesa_glu_invoke(op);
 		return;
 	}
+	/*
+	 * Mesa 25.2's glDrawPixels with GL_MAP_COLOR on frees a block it goes on
+	 * using: its blue and alpha come out as garbage (identity maps too), and
+	 * when the context goes it writes into the block, corrupting the heap
+	 * (glibc aborts on a later free, or something crashes: in some runs,
+	 * as threads' allocations fall)
+	 */
+	if (!strcmp(op->name, "glPixelTransferi") && op->a[0] == 0x0D10 && op->a[1] != 0) {
+		CHECK(!"GL_MAP_COLOR in a scene drawn by Mesa");
+		return;
+	}
 	int fn = opengl_entry(op->name);
 	void (*p)(void) = fn >= 0 ? mesa_fn(op->name) : NULL;
 	CHECK(p != NULL);
 	if (!p)
 		return;
+	static uint32_t fbbuf[FB_WORDS];        /* (the program's selection or feedback buffer) */
+	if (!strcmp(op->name, "glSelectBuffer") || !strcmp(op->name, "glFeedbackBuffer")) {
+		fb[1].size = op->a[0] < FB_WORDS ? (unsigned)op->a[0] : FB_WORDS;
+		for (unsigned k = 0; k < FB_WORDS; k++)
+			fbbuf[k] = FB_UNSET;
+		if (!strcmp(op->name, "glSelectBuffer"))
+			((void (*)(int32_t, uint32_t *))p)((int32_t)op->a[0], fbbuf);
+		else
+			((void (*)(int32_t, uint32_t, void *))p)((int32_t)op->a[0], (uint32_t)op->a[1], fbbuf);
+		return;
+	}
+	if (!strcmp(op->name, "glRenderMode")) {
+		int32_t r = ((int32_t (*)(uint32_t))p)((uint32_t)op->a[0]);
+		fb_snapshot(1, r, (uint32_t)op->a[0], fbbuf);
+		return;
+	}
 	const char *sig = functions[fn].args;
 	const double *a = op->a;
 	if (!strcmp(op->name, "glTexImage2D")) {
@@ -2300,6 +2554,25 @@ static void mesa_invoke(const struct op *op)
 	else if (!strcmp(sig, "iiii"))
 		((void (*)(int32_t, int32_t, int32_t, int32_t))p)((int32_t)a[0], (int32_t)a[1], (int32_t)a[2],
 								 (int32_t)a[3]);
+	else if (!strcmp(sig, "Iffiip"))
+		((void (*)(uint32_t, float, float, int32_t, int32_t, const void *))p)(U(0), F(1), F(2), I(3), I(4), hp);
+	else if (!strcmp(sig, "Iddiip"))
+		((void (*)(uint32_t, double, double, int32_t, int32_t, const void *))p)(U(0), a[1], a[2], I(3), I(4),
+											 hp);
+	else if (!strcmp(sig, "Iffiiffiip"))
+		((void (*)(uint32_t, float, float, int32_t, int32_t, float, float, int32_t, int32_t, const void *))p)(
+			U(0), F(1), F(2), I(3), I(4), F(5), F(6), I(7), I(8), hp);
+	else if (!strcmp(sig, "Iddiiddiip"))
+		((void (*)(uint32_t, double, double, int32_t, int32_t, double, double, int32_t, int32_t,
+			   const void *))p)(U(0), a[1], a[2], I(3), I(4), a[5], a[6], I(7), I(8), hp);
+	else if (!strcmp(sig, "iff"))
+		((void (*)(int32_t, float, float))p)(I(0), F(1), F(2));
+	else if (!strcmp(sig, "iffiff"))
+		((void (*)(int32_t, float, float, int32_t, float, float))p)(I(0), F(1), F(2), I(3), F(4), F(5));
+	else if (!strcmp(sig, "iddidd"))
+		((void (*)(int32_t, double, double, int32_t, double, double))p)(I(0), a[1], a[2], I(3), a[4], a[5]);
+	else if (!strcmp(sig, "Iiiii"))
+		((void (*)(uint32_t, int32_t, int32_t, int32_t, int32_t))p)(U(0), I(1), I(2), I(3), I(4));
 	else
 		CHECK(!"a signature mesa_invoke doesn't take");
 #undef U
@@ -2404,6 +2677,558 @@ static void test_mesa(void)
 }
 #endif
 
+/* ---- aglSetFullScreen and aglUseFont: the Toolbox's calls answered by fakes ----------------------- */
+
+#define TOOLBOX_TV 0x7100u      /* (import k's fake TVector: TOOLBOX_TV + 16 k) */
+#define FS_DEVICE_H 0x50600u    /* a device for full screens, its pixmap; its screen at FS_PIXELS */
+#define FS_DEVICE 0x50610u
+#define FS_PIXMAP_H 0x50700u
+#define FS_PIXMAP 0x50710u
+#define FS_PIXELS 0x400000u     /* (the fake screen's framebuffer: 1280 x 1024 x 32 bits at most) */
+#define FS_SIZE 0x500000u
+#define FONT_PORT 0x51000u      /* the port aglUseFont's caller has; the offscreen worlds, their pixmap, pixels */
+#define FONT_DEVICE 0x51100u
+#define FONT_WORLD 0x51200u
+#define FONT_PIXMAP_H 0x51300u
+#define FONT_PIXMAP 0x51310u
+#define FONT_PIXELS 0x52000u
+
+static struct video vid;
+static struct {
+	unsigned calls[32];                     /* (each import's) */
+	unsigned switches;                      /* DMSetDisplayMode's: the last's mode and depth mode */
+	uint32_t mode, depth;
+	bool fail_switch, fail_world;           /* (the next DMSetDisplayMode fails; NewGWorld does) */
+	uint32_t port, device;                  /* SetGWorld's */
+	unsigned worlds, disposed;
+	int size, pen_h, pen_v, width, height, row_bytes;
+} tb;
+
+/* The fake screen's device in the fake display's mode (as the Display Manager leaves it) */
+static void fs_device(void)
+{
+	unsigned w = video_width(&vid), h = video_height(&vid), bits = video_bpp(&vid);
+	mem_w32(&mem, FS_DEVICE_H, FS_DEVICE);
+	mem_w32(&mem, FS_DEVICE + 22, FS_PIXMAP_H);
+	mem_w32(&mem, FS_PIXMAP_H, FS_PIXMAP);
+	mem_w32(&mem, FS_PIXMAP, FS_PIXELS);
+	mem_w16(&mem, FS_PIXMAP + 4, (uint16_t)(0x8000 | w * bits / 8));
+	const uint16_t bounds[4] = { 0, 0, (uint16_t)h, (uint16_t)w };
+	for (int k = 0; k < 4; k++)
+		mem_w16(&mem, FS_PIXMAP + 6 + 2 * k, bounds[k]);
+	mem_w16(&mem, FS_PIXMAP + 32, (uint16_t)bits);
+}
+
+/* The fake glyph of character c drawn with the pen at (h, v): a stem, the baseline's row, a dot by c */
+static bool fake_glyph(int c, int h, int v, int x, int y)
+{
+	int ascent = tb.size * 3 / 4, descent = tb.size / 4, width = 4 + c % 3;
+	return (x == h && y >= v - ascent && y < v + descent) || (y == v - 1 && x >= h && x < h + width) ||
+	       (x == h + 1 + c % 3 && y == v - ascent);
+}
+
+/* Import k's fake: its result */
+static uint32_t toolbox(unsigned k, const uint32_t *a)
+{
+	const char *name = opengl_library_import(k);
+	tb.calls[k]++;
+	if (!strcmp(name, "DMSetDisplayMode")) {
+		CHECK_EQ(a[0], FS_DEVICE_H);
+		if (tb.fail_switch) {
+			tb.fail_switch = false;
+			return 0xFFFFFFFFu;
+		}
+		tb.switches++;
+		tb.mode = a[1];
+		tb.depth = mem_r32(&mem, a[2]);
+		vid.mode = tb.mode - 1;
+		vid.depth = tb.depth - 0x80;
+		fs_device();
+	} else if (!strcmp(name, "RealFont")) {
+		return a[0] == 3;
+	} else if (!strcmp(name, "GetGWorld")) {
+		mem_w32(&mem, a[0], FONT_PORT);
+		mem_w32(&mem, a[1], FONT_DEVICE);
+	} else if (!strcmp(name, "SetGWorld")) {
+		tb.port = a[0];
+		tb.device = a[1];
+	} else if (!strcmp(name, "NewGWorld")) {
+		CHECK_EQ(a[1], 1);
+		if (tb.fail_world)
+			return 0xFFFFFF94u;     /* (memFullErr) */
+		tb.worlds++;
+		tb.width = (int16_t)mem_r16(&mem, a[2] + 6) - (int16_t)mem_r16(&mem, a[2] + 2);
+		tb.height = (int16_t)mem_r16(&mem, a[2] + 4) - (int16_t)mem_r16(&mem, a[2]);
+		tb.row_bytes = (tb.width + 31) / 32 * 4;
+		mem_w32(&mem, FONT_PIXMAP_H, FONT_PIXMAP);
+		mem_w16(&mem, FONT_PIXMAP + 4, (uint16_t)(0x8000 | tb.row_bytes));
+		mem_w32(&mem, a[0], FONT_WORLD);
+	} else if (!strcmp(name, "DisposeGWorld")) {
+		CHECK_EQ(a[0], FONT_WORLD);
+		CHECK(tb.port != FONT_WORLD);
+		tb.disposed++;
+	} else if (!strcmp(name, "GetGWorldPixMap")) {
+		return FONT_PIXMAP_H;
+	} else if (!strcmp(name, "LockPixels")) {
+		return 1;
+	} else if (!strcmp(name, "GetPixBaseAddr")) {
+		return FONT_PIXELS;
+	} else if (!strcmp(name, "TextSize")) {
+		tb.size = (int16_t)a[0];
+	} else if (!strcmp(name, "GetFontInfo")) {
+		mem_w16(&mem, a[0], (uint16_t)(tb.size * 3 / 4));      /* ascent, descent, widest, leading */
+		mem_w16(&mem, a[0] + 2, (uint16_t)(tb.size / 4));
+		mem_w16(&mem, a[0] + 4, (uint16_t)(tb.size * 3 / 5));
+		mem_w16(&mem, a[0] + 6, 1);
+	} else if (!strcmp(name, "CharWidth")) {
+		return 4 + a[0] % 3;
+	} else if (!strcmp(name, "EraseRect")) {
+		CHECK_EQ(tb.port, FONT_WORLD);
+		memset(mem_ptr(&mem, FONT_PIXELS), 0, (size_t)(tb.row_bytes * tb.height));
+	} else if (!strcmp(name, "MoveTo")) {
+		tb.pen_h = (int16_t)a[0];
+		tb.pen_v = (int16_t)a[1];
+	} else if (!strcmp(name, "DrawChar")) {
+		for (int y = 0; y < tb.height; y++)
+			for (int x = 0; x < tb.width; x++)
+				if (fake_glyph((int)a[0], tb.pen_h, tb.pen_v, x, y)) {
+					uint32_t at = FONT_PIXELS + (uint32_t)(y * tb.row_bytes + x / 8);
+					mem_w8(&mem, at, (uint8_t)(mem_r8(&mem, at) | 0x80 >> (x % 8)));
+				}
+	}
+	return 0;
+}
+
+/* The library's imports resolved to the fakes */
+static void toolbox_load(void)
+{
+	for (unsigned k = 0; opengl_library_import(k); k++)
+		mem_w32(&mem, TOC + gl.library.import[k], TOOLBOX_TV + 16 * k);
+}
+
+/* A call whose callouts the fakes answer */
+static uint32_t call_toolbox(unsigned entry, const uint32_t *w, unsigned nw)
+{
+	struct ndrv_call c;
+	memset(&c, 0, sizeof c);
+	c.mem = &mem;
+	c.entry = entry;
+	c.toc = TOC;
+	c.frame = FRAME;
+	for (unsigned j = 0; j < nw && j < 8; j++)
+		c.arg[j] = w[j];
+	opengl_library_call(&gl, &c);
+	for (unsigned n = 0; !c.done && n < 10000; n++) {
+		unsigned k = (c.tvector - TOOLBOX_TV) / 16;
+		CHECK(c.tvector >= TOOLBOX_TV && k < 32 && opengl_library_import(k));
+		if (!(c.tvector >= TOOLBOX_TV && k < 32 && opengl_library_import(k)))
+			break;
+		uint32_t r = toolbox(k, c.out);
+		c.entry = NDRV_ENTRY_RESUME;
+		c.arg[0] = r;
+		opengl_library_call(&gl, &c);
+	}
+	CHECK(c.done);
+	return c.result;
+}
+
+#define TOOLBOX(name, ...) call_toolbox((unsigned)opengl_entry(#name), (const uint32_t[]){ __VA_ARGS__ }, \
+					sizeof (uint32_t[]){ __VA_ARGS__ } / 4)
+enum { AGL_FULLSCREEN = 54, AGL_BAD_STATE = 10007, AGL_BAD_VALUE = 10008, AGL_BAD_FULLSCREEN = 10012,
+       AGL_BAD_ALLOC = 10016 };
+
+/*
+ * aglSetFullScreen: the screen as it is; a size that's no mode's; a switch
+ * that fails; one to a size (and the pixel format's depth), the frame then
+ * on the whole screen; the mode back when the drawable goes, and when the
+ * process does
+ */
+static void test_full_screen(void)
+{
+	mem_map(&mem, FS_PIXELS, FS_SIZE, MEM_RW);
+	call_entry(OPENGL_ENTRY_INIT, NULL, 0, NULL, 0);
+	toolbox_load();
+	make_port(32);
+	video_init(&vid, &mem, FS_PIXELS, FS_SIZE, 1000000);
+	vid.depth = 5;                                          /* (32 bits a pixel) */
+	gl.video = &vid;
+	fs_device();
+	memset(&tb, 0, sizeof tb);
+	uint32_t was_mode, was_depth, w = video_width(&vid), h = video_height(&vid);
+	video_mode_now(&vid, &was_mode, &was_depth);
+	const uint32_t window[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_NONE };
+	put_attribs(window, 3);
+	uint32_t windowed = CALL(aglCreateContext, CALL(aglChoosePixelFormat, 0, 0, ATTRIBS), 0);
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, windowed, 0, 0, 0, 0), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_FULLSCREEN);
+	mem_w32(&mem, OUT + 16, FS_DEVICE_H);
+	const uint32_t full[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_FULLSCREEN, AGL_NONE };
+	put_attribs(full, 4);
+	uint32_t pf = CALL(aglChoosePixelFormat, OUT + 16, 1, ATTRIBS), ctx = CALL(aglCreateContext, pf, 0);
+	CHECK(pf && ctx);
+	CHECK_EQ(CALL(aglSetCurrentContext, ctx), 1);
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, ctx, 0, 0, 0, 0), 1);
+	CHECK_EQ(tb.switches, 0);
+	CALL(glGetIntegerv, GL_VIEWPORT, OUT);
+	CHECK(mem_r32(&mem, OUT + 8) == w && mem_r32(&mem, OUT + 12) == h);
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, ctx, 700, 500, 0, 0), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_FULLSCREEN);
+	tb.fail_switch = true;
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, ctx, 640, 480, 0, 0), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_FULLSCREEN);
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, ctx, 640, 480, 75, 0), 1);
+	CHECK(tb.switches == 1 && tb.mode == 1 && tb.depth == 0x85);
+	CHECK(video_width(&vid) == 640 && video_height(&vid) == 480);
+	CALL(glGetIntegerv, GL_VIEWPORT, OUT);
+	CHECK(mem_r32(&mem, OUT + 8) == 640 && mem_r32(&mem, OUT + 12) == 480);
+	CALL_F(glClearColor, 1.0, 0.5, 0.0, 1.0);
+	CALL(glClear, 0x4000);
+	CALL(aglSwapBuffers, ctx);
+	CHECK_EQ(mem_r32(&mem, FS_PIXELS) & 0xFFFFFF, 0xFF8000);
+	CHECK_EQ(mem_r32(&mem, FS_PIXELS + 4 * (640 * 480 - 1)) & 0xFFFFFF, 0xFF8000);
+	CHECK_EQ(CALL(aglGetDrawable, ctx), 0);
+	CHECK_EQ(TOOLBOX(aglSetDrawable, ctx, 0), 1);           /* (the mode back) */
+	CHECK(tb.switches == 2 && tb.mode == was_mode && tb.depth == was_depth);
+	CHECK_EQ(TOOLBOX(aglSetDrawable, ctx, 0), 1);           /* (nothing to go back to) */
+	CHECK_EQ(tb.switches, 2);
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, ctx, 1024, 768, 0, 0), 1);
+	CHECK(tb.switches == 3 && video_width(&vid) == 1024);
+	CHECK_EQ(TOOLBOX(aglSetFullScreen, ctx, 640, 480, 0, 0), 1);   /* (from one full screen to another) */
+	call_toolbox(OPENGL_ENTRY_TERM, NULL, 0);               /* (the process goes: the first mode back) */
+	CHECK(tb.switches == 5 && tb.mode == was_mode && tb.depth == was_depth);
+	gl.video = NULL;
+}
+
+/*
+ * aglUseFont: no such font, a list being made, no memory; a plain font's
+ * glyphs and a styled one's (each taller and wider by half its size), as
+ * QuickDraw (here, the fakes) draws them, drawn by glCallLists from a
+ * raster position
+ */
+static void test_use_font(void)
+{
+	call_entry(OPENGL_ENTRY_INIT, NULL, 0, NULL, 0);
+	toolbox_load();
+	make_port(32);
+	memset(&tb, 0, sizeof tb);
+	enum { W = 64, H = 32 };
+	const uint32_t attribs[] = { AGL_RGBA, AGL_NONE };
+	put_attribs(attribs, 2);
+	uint32_t ctx = CALL(aglCreateContext, CALL(aglChoosePixelFormat, 0, 0, ATTRIBS), 0);
+	CHECK_EQ(CALL(aglSetOffScreen, ctx, W, H, W * 4, OFFSCREEN), 1);
+	CHECK_EQ(CALL(aglSetCurrentContext, ctx), 1);
+	CHECK_EQ(TOOLBOX(aglUseFont, ctx, 99, 0, 12, 'A', 3, 100), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_VALUE);
+	CALL(glNewList, 7, 0x1300);
+	CHECK_EQ(TOOLBOX(aglUseFont, ctx, 3, 0, 12, 'A', 3, 100), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_STATE);
+	CALL0(glEndList);
+	tb.fail_world = true;
+	CHECK_EQ(TOOLBOX(aglUseFont, ctx, 3, 0, 12, 'A', 3, 100), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_ALLOC);
+	CHECK_EQ(tb.port, 0);                                   /* (no world: the port as it was) */
+	tb.fail_world = false;
+	CHECK_EQ(TOOLBOX(aglUseFont, ctx, 3, 0, 12, 'A', 3, 100), 1);
+	CHECK(tb.worlds == 2 && tb.disposed == 2 && tb.port == FONT_PORT && tb.device == FONT_DEVICE);
+	CHECK(tb.width == 7 && tb.height == 12);                /* (the widest by ascent + descent) */
+	CHECK_EQ(TOOLBOX(aglUseFont, ctx, 3, 1, 12, 'a', 2, 200), 1);
+	CHECK(tb.width == 7 + 12 && tb.height == 12 + 12);
+	CHECK(CALL(glIsList, 100) && CALL(glIsList, 102) && CALL(glIsList, 201) && !CALL(glIsList, 103));
+	CHECK_EQ(CALL0(glGetError), 0);
+
+	/* drawn: the plain ones from (4.5, 20.5), the styled ones from (30.5, 9.5) */
+	CALL(glMatrixMode, 0x1701);
+	CALL0(glLoadIdentity);
+	CALL_F(glOrtho, 0.0, W, 0.0, H, -1.0, 1.0);
+	CALL(glMatrixMode, 0x1700);
+	CALL0(glLoadIdentity);
+	CALL_F(glClearColor, 0.0, 0.0, 0.0, 1.0);
+	CALL(glClear, 0x4000);
+	CALL_F(glColor3f, 1.0, 1.0, 1.0);
+	static const uint8_t names[3] = { 0, 1, 2 };
+	memcpy(mem_ptr(&mem, ARRAY), names, 3);
+	CALL_F(glRasterPos2f, 4.5, 20.5);
+	CALL(glListBase, 100);
+	CALL(glCallLists, 3, 0x1401, ARRAY);
+	CALL_F(glRasterPos2f, 30.5, 9.5);
+	CALL(glListBase, 200);
+	CALL(glCallLists, 2, 0x1401, ARRAY);
+	CALL(aglSwapBuffers, ctx);
+	static bool want[H][W];
+	memset(want, 0, sizeof want);
+	for (int s = 0; s < 2; s++) {
+		int e = s ? 6 : 0, ascent = 9, descent = 3, height = ascent + descent + 2 * e, x = s ? 30 : 4;
+		int y = s ? 9 : 20;
+		for (int g = 0; g < (s ? 2 : 3); g++) {
+			int c = (s ? 'a' : 'A') + g, cw = 4 + c % 3;
+			int x0 = x - e, y0 = y - (descent + e - 1);     /* (the bitmap's bottom left: the origin's) */
+			for (int j = 0; j < height; j++)
+				for (int i = 0; i < cw + 2 * e; i++)
+					if (fake_glyph(c, e, ascent + e, i, height - 1 - j) && y0 + j >= 0 && y0 + j < H &&
+					    x0 + i >= 0 && x0 + i < W)
+						want[y0 + j][x0 + i] = true;
+			x += cw;
+		}
+	}
+	unsigned wrong = 0, lit = 0;
+	for (int y = 0; y < H; y++)
+		for (int x = 0; x < W; x++) {
+			bool on = (mem_r32(&mem, OFFSCREEN + 4 * (uint32_t)((H - 1 - y) * W + x)) & 0xFFFFFF) == 0xFFFFFF;
+			wrong += on != want[y][x];
+			lit += on;
+		}
+	CHECK_EQ(wrong, 0);
+	CHECK(lit > 60);
+	CHECK_EQ(TOOLBOX(aglUseFont, 0x1234, 3, 0, 12, 'A', 1, 300), 0);
+	CHECK_EQ(CALL0(aglGetError), AGL_BAD_CONTEXT);
+	CALL(aglDestroyContext, ctx);
+
+	/* a library an older syshm made (its data's version another one's): left alone */
+	uint32_t version = TOC + gl.library.extra + 4;
+	mem_w32(&mem, version, mem_r32(&mem, version) - 1);
+	call_entry(OPENGL_ENTRY_INIT, NULL, 0, NULL, 0);
+	CHECK_EQ(CALL(aglChoosePixelFormat, 0, 0, ATTRIBS), 0);
+	CHECK_EQ(CALL0(aglGetError), 0);
+	call_entry(OPENGL_ENTRY_TERM, NULL, 0, NULL, 0);
+	mem_w32(&mem, version, mem_r32(&mem, version) + 1);
+}
+
+/* ---- selection and feedback, against Mesa's ---------------------------------------------- */
+
+enum { GL_2D_T = 0x0600, GL_3D_T, GL_3D_COLOR_T, GL_3D_COLOR_TEXTURE_T, GL_4D_COLOR_TEXTURE_T };
+#define RENDER(mode) { "glRenderMode", { mode } }
+
+/*
+ * Feedback in window coordinates: triangles, a quad, a polygon, a triangle
+ * clipped, strips and a fan, lines of each kind, points (one outside), a
+ * pass-through token, a polygon outlined, a back face culled, the raster
+ * position's tokens. (Mesa's feedback departs from OpenGL 1.2's in two
+ * ways test_glfront.c checks instead: it gives lines' segments
+ * GL_LINE_TOKEN where the stipple was reset, and with flat shading each
+ * vertex its own color.)
+ */
+static const struct op fb_window[] = {
+	ORTHO, { "glFeedbackBuffer", { 1024, GL_3D_COLOR_TEXTURE_T } }, RENDER(GL_FEEDBACK),
+	BEGIN(GL_TRIANGLES), C3(1, 0, 0), TC(0.25, 0.5), V3(10.5, 10.25, 0.5), C3(0, 1, 0), TC(0.75, 0.5),
+	V3(30.5, 12.25, -0.25), C3(0, 0, 1), TC(0.5, 1), V3(20.5, 30.25, 0), END,
+	BEGIN(GL_QUADS), C3(1, 1, 0), V2(40.5, 10.5), V2(60.5, 10.5), V2(60.5, 30.5), V2(40.5, 30.5), END,
+	BEGIN(GL_POLYGON), C3(0, 1, 1), V2(70.5, 10.5), V2(90.5, 12.5), V2(92.5, 25.5), V2(80.5, 34.5), V2(68.5, 25.5),
+	END,
+	BEGIN(GL_TRIANGLES), C3(1, 0, 1), V2(-10.5, 40.5), V2(20.5, 42.5), V2(5.5, 60.5), END,
+	BEGIN(GL_TRIANGLE_STRIP), C3(0.5, 0.5, 1), V2(2.5, 2.5), V2(4.5, 8.5), V2(8.5, 2.5), V2(9.5, 7.5), END,
+	BEGIN(GL_TRIANGLE_FAN), V2(32.5, 2.5), V2(38.5, 3.5), V2(37.5, 8.5), V2(31.5, 8.5), END,
+	BEGIN(GL_QUAD_STRIP), V2(62.5, 2.5), V2(62.5, 8.5), V2(66.5, 2.5), V2(66.5, 8.5), V2(70.5, 3.5),
+	V2(70.5, 7.5), END,
+	BEGIN(GL_LINE_STRIP), V2(30.5, 40.5), V2(40.5, 50.5), V2(50.5, 40.5), END,
+	BEGIN(GL_LINES), V2(55.5, 40.5), V2(65.5, 50.5), V2(56.5, 45.5), V2(66.5, 55.5), END,
+	BEGIN(GL_LINE_LOOP), V2(70.5, 40.5), V2(80.5, 41.5), V2(75.5, 50.5), END,
+	BEGIN(GL_POINTS), V2(5.5, 65.5), V2(-3.5, 65.5), V2(15.5, 66.5), END,
+	{ "glPassThrough", { 7.5 } },
+	{ "glPolygonMode", { GL_FRONT_AND_BACK, GL_LINE } },
+	BEGIN(GL_TRIANGLES), V2(30.5, 60.5), V2(40.5, 60.5), V2(35.5, 68.5), END,
+	{ "glPolygonMode", { GL_FRONT_AND_BACK, GL_FILL } },
+	EN(GL_CULL_FACE), BEGIN(GL_TRIANGLES), V2(45.5, 60.5), V2(50.5, 68.5), V2(55.5, 60.5), V2(60.5, 60.5),
+	V2(70.5, 60.5), V2(65.5, 68.5), END, DIS(GL_CULL_FACE),
+	C3(0.5, 0.25, 1), RPOS(40.5, 35.5), { "glBitmap", { 16, 8, 0, 0, 5, 1, ARR_BITMAP } },
+	DRAWPIX(8, 6, GL_RGB_T, GL_UNSIGNED_BYTE, ARR_PIX_RGB), { "glCopyPixels", { 0, 0, 4, 4, GL_COLOR_T } },
+	RENDER(GL_RENDER),
+	{ NULL, { 0 } },
+};
+
+/* Feedback in perspective, with w: depths, a triangle through the near plane, offset, lines */
+static const struct op fb_perspective[] = {
+	FRUSTUM, { "glFeedbackBuffer", { 1024, GL_4D_COLOR_TEXTURE_T } }, RENDER(GL_FEEDBACK),
+	BEGIN(GL_TRIANGLES), C3(1, 0.5, 0), TC(0.1, 0.2), V3(-0.5, -0.4, -2), TC(0.9, 0.3), V3(0.6, -0.3, -3),
+	TC(0.4, 0.8), V3(0, 0.5, -5), END,
+	BEGIN(GL_TRIANGLES), V3(-0.3, -0.2, -0.5), V3(0.4, -0.1, -3), V3(0.1, 0.4, -2.5), END,
+	{ "glPolygonOffset", { 1, 2 } }, EN(GL_POLYGON_OFFSET_FILL),
+	BEGIN(GL_TRIANGLES), V3(-0.2, -0.2, -2), V3(0.3, -0.25, -4), V3(0.1, 0.3, -3), END, DIS(GL_POLYGON_OFFSET_FILL),
+	BEGIN(GL_LINES), C3(0.2, 0.9, 0.4), V3(-0.4, 0.2, -1.5), V3(0.5, 0.3, -6), END,
+	RENDER(GL_RENDER),
+	{ NULL, { 0 } },
+};
+
+/* Feedback past the buffer's end: -1; then the same mode again, from the start */
+static const struct op fb_overflow[] = {
+	ORTHO, { "glFeedbackBuffer", { 10, GL_2D_T } }, RENDER(GL_FEEDBACK),
+	BEGIN(GL_TRIANGLES), V2(10.5, 10.5), V2(20.5, 10.5), V2(15.5, 20.5), V2(30.5, 10.5), V2(40.5, 10.5),
+	V2(35.5, 20.5), END,
+	RENDER(GL_FEEDBACK), BEGIN(GL_POINTS), V2(5.5, 5.5), END, RENDER(GL_RENDER),
+	{ NULL, { 0 } },
+};
+
+/*
+ * Selection: the name stack loaded, pushed and popped between primitives in
+ * perspective (one outside the view: no hit), a raster position's; then a
+ * buffer too small for the hits
+ */
+static const struct op fb_select[] = {
+	FRUSTUM, { "glSelectBuffer", { 256 } }, RENDER(GL_SELECT), { "glInitNames", { 0 } },
+	{ "glPushName", { 1 } }, BEGIN(GL_TRIANGLES), V3(-0.5, -0.4, -2), V3(0.6, -0.3, -3), V3(0, 0.5, -5), END,
+	{ "glLoadName", { 2 } }, BEGIN(GL_TRIANGLES), V3(10, 10, -2), V3(11, 10, -2), V3(10, 11, -2), END,
+	{ "glPushName", { 3 } }, BEGIN(GL_LINES), V3(-0.4, 0.2, -1.5), V3(0.5, 0.3, -6), END,
+	BEGIN(GL_POINTS), V3(0, 0, -8), END, { "glPopName", { 0 } }, { "glLoadName", { 4 } },
+	{ "glRasterPos3f", { 0.1, 0.1, -4 } }, { "glBitmap", { 16, 8, 0, 0, 5, 1, ARR_BITMAP } },
+	RENDER(GL_RENDER),
+	{ "glSelectBuffer", { 4 } }, RENDER(GL_SELECT), { "glInitNames", { 0 } }, { "glPushName", { 5 } },
+	{ "glPushName", { 6 } }, BEGIN(GL_TRIANGLES), V3(-0.5, -0.4, -2), V3(0.6, -0.3, -3), V3(0, 0.5, -5), END,
+	{ "glPopName", { 0 } }, RENDER(GL_RENDER),
+	{ NULL, { 0 } },
+};
+
+/*
+ * Evaluators' values fed back (filled meshes aside: see scene_eval): a
+ * curve's points and lines, colored; a rational curve's points (a domain
+ * run backwards); a bent patch's points and lines, colored and textured
+ * (the texture coordinates' domain another one). (The current color set
+ * first, all four components: once a color map has been evaluated, Mesa
+ * 25.2 loses the current color's components the last glColor didn't set,
+ * all of them if it was never called: vertices after the map's turned off
+ * come out (0, 0, 0, 0), or with alpha 0 after glColor3.)
+ */
+static const struct op fb_eval[] = {
+	ORTHO, { "glFeedbackBuffer", { 1024, GL_4D_COLOR_TEXTURE_T } }, RENDER(GL_FEEDBACK), C4(0.8, 0.7, 0.6, 1),
+	MAP1(GL_MAP1_VERTEX_3_T, 0, 1, 4, 4, ARR_EVAL_CURVE), MAP1(GL_MAP1_COLOR_4_T, 0, 1, 4, 3, ARR_EVAL_COLORS),
+	EN(GL_MAP1_VERTEX_3_T), EN(GL_MAP1_COLOR_4_T), { "glMapGrid1f", { 5, 0, 1 } },
+	{ "glEvalMesh1", { GL_POINT_T, 0, 5 } }, { "glEvalMesh1", { GL_LINE_T, 1, 4 } }, DIS(GL_MAP1_COLOR_4_T),
+	{ "glMap1d", { GL_MAP1_VERTEX_4_T, 2, -1, 4, 3, ARR_EVAL_ARC } }, EN(GL_MAP1_VERTEX_4_T),
+	BEGIN(GL_POINTS), { "glEvalCoord1d", { 2 } }, { "glEvalCoord1d", { 1.5 } }, { "glEvalCoord1f", { -0.25 } }, END,
+	DIS(GL_MAP1_VERTEX_4_T), DIS(GL_MAP1_VERTEX_3_T),
+	MAP2(GL_MAP2_VERTEX_3_T, 0, 1, 3, 4, 0, 1, 12, 4, ARR_EVAL_BENT),
+	MAP2(GL_MAP2_COLOR_4_T, 0, 1, 4, 2, 0, 1, 8, 2, ARR_EVAL_PATCH_COLORS),
+	MAP2(GL_MAP2_TEXTURE_COORD_2_T, 0.5, 1.5, 2, 2, 0, 1, 4, 2, ARR_EVAL_PATCH_TEX),
+	EN(GL_MAP2_VERTEX_3_T), EN(GL_MAP2_COLOR_4_T), EN(GL_MAP2_TEXTURE_COORD_2_T),
+	{ "glMapGrid2f", { 3, 0, 1, 2, 0, 1 } }, { "glEvalMesh2", { GL_POINT_T, 0, 3, 0, 2 } },
+	{ "glEvalMesh2", { GL_LINE_T, 0, 2, 0, 1 } },
+	RENDER(GL_RENDER),
+	{ NULL, { 0 } },
+};
+
+/* ... lit: the colors of the bumpy patch's points, the cylinder's (rational), the flat one's (normals mapped) */
+static const struct op fb_eval_lit[] = {
+	ORTHO_UNITS, { "glFeedbackBuffer", { 1024, GL_3D_COLOR_T } }, RENDER(GL_FEEDBACK),
+	EN(GL_LIGHTING), EN(GL_LIGHT0), LIGHTV(GL_LIGHT0, GL_POSITION, 0.3, 0.5, 1, 0),
+	LIGHTV(GL_LIGHT0, GL_DIFFUSE, 0.8, 0.8, 0.7, 1), LIGHTV(GL_LIGHT0, GL_SPECULAR, 0.5, 0.5, 0.5, 1),
+	MATV(GL_FRONT, GL_DIFFUSE, 0.6, 0.6, 0.5, 1), MATV(GL_FRONT, GL_SPECULAR, 0.6, 0.6, 0.6, 1),
+	{ "glMaterialf", { GL_FRONT, GL_SHININESS, 20 } },
+	MAP2(GL_MAP2_VERTEX_3_T, 0, 1, 3, 4, 0, 1, 12, 4, ARR_EVAL_BUMPS), EN(GL_MAP2_VERTEX_3_T), EN(GL_AUTO_NORMAL_T),
+	{ "glMapGrid2f", { 5, 0, 1, 5, 0, 1 } }, { "glEvalMesh2", { GL_POINT_T, 0, 5, 0, 5 } },
+	{ "glMap2d", { GL_MAP2_VERTEX_4_T, 0, 1, 4, 3, 0, 1, 12, 2, ARR_EVAL_CYLINDER } }, EN(GL_MAP2_VERTEX_4_T),
+	{ "glMapGrid2d", { 4, 0, 1, 2, 0, 1 } }, { "glEvalMesh2", { GL_POINT_T, 0, 4, 0, 2 } },
+	DIS(GL_MAP2_VERTEX_4_T), DIS(GL_AUTO_NORMAL_T), EN(GL_NORMALIZE),
+	MAP2(GL_MAP2_VERTEX_3_T, 0, 1, 3, 2, 0, 1, 6, 2, ARR_EVAL_FLAT),
+	MAP2(GL_MAP2_NORMAL_T, 0, 1, 3, 2, 0, 1, 6, 2, ARR_EVAL_NORMALS), EN(GL_MAP2_NORMAL_T),
+	{ "glMapGrid2f", { 2, 0, 1, 2, 0, 1 } }, { "glEvalMesh2", { GL_POINT_T, 0, 2, 0, 2 } },
+	RENDER(GL_RENDER),
+	{ NULL, { 0 } },
+};
+
+static const struct {
+	const char *name;
+	const struct op *ops;
+} fb_scenes[] = {
+	{ "window", fb_window }, { "perspective", fb_perspective }, { "overflow", fb_overflow },
+	{ "select", fb_select }, { "eval", fb_eval }, { "eval_lit", fb_eval_lit },
+};
+
+#ifdef __linux__
+/* Whether a word of ours is Mesa's: as floats (feedback), or as a selection's record's part (k: which) */
+static bool fb_word_same(uint32_t mode, uint32_t a, uint32_t b, unsigned part)
+{
+	if (a == FB_UNSET || b == FB_UNSET)
+		return a == b;
+	if (mode == GL_FEEDBACK) {
+		float x, y;
+		memcpy(&x, &a, 4);
+		memcpy(&y, &b, 4);
+		bool lx = x == GL_LINE_TOKEN || x == GL_LINE_RESET_TOKEN, ly = y == GL_LINE_TOKEN || y == GL_LINE_RESET_TOKEN;
+		if (lx && ly)
+			return true;            /* (see fb_window) */
+		return fabsf(x - y) <= 1e-3f + 1e-5f * fabsf(y);
+	}
+	if (part == 1 || part == 2)             /* (depths: within a millionth) */
+		return (a > b ? a - b : b - a) <= 4295u;
+	return a == b;
+}
+
+/* Ours (fb[0]) against Mesa's (fb[1]): the same results, the same records */
+static void fb_compare(const char *name)
+{
+	CHECK_EQ(fb[0].n, fb[1].n);
+	for (unsigned k = 0; k < fb[0].n && k < fb[1].n; k++) {
+		const struct fb_snap *a = &fb[0].snap[k], *b = &fb[1].snap[k];
+		CHECK_EQ(a->mode, b->mode);
+		CHECK_EQ(a->result, b->result);
+		unsigned wrong = 0, first = FB_WORDS;
+		for (unsigned i = 0, part = 0, names = 0; i < FB_WORDS; i++) {
+			if (!fb_word_same(a->mode, a->words[i], b->words[i], part)) {
+				wrong++;
+				first = first < i ? first : i;
+			}
+			if (a->mode == GL_SELECT) {     /* (records: names, least and greatest depth, the names) */
+				if (part == 0)
+					names = b->words[i];
+				part = part < 2 + names ? part + 1 : 0;
+			}
+		}
+		if (wrong) {
+			printf("opengl: feedback %s, mode %u: %u words differ, the first at %u:", name, k, wrong,
+			       first);
+			for (unsigned i = first; i < first + 8 && i < FB_WORDS; i++)
+				printf(" %08X/%08X", a->words[i], b->words[i]);
+			printf("\n");
+			if (getenv("SYSHM_TEST_FB_DUMP"))
+				for (unsigned i = 0; i < FB_WORDS; i++) {
+					if (a->words[i] == FB_UNSET && b->words[i] == FB_UNSET)
+						break;
+					float x, y;
+					memcpy(&x, &a->words[i], 4);
+					memcpy(&y, &b->words[i], 4);
+					printf("  %4u %12g %12g%s\n", i, (double)x, (double)y,
+					       fb_word_same(a->mode, a->words[i], b->words[i], 0) ? "" : "  <");
+				}
+		}
+		CHECK_EQ(wrong, 0);
+	}
+}
+#endif
+
+#define FB_SCENES (sizeof fb_scenes / sizeof fb_scenes[0])
+static struct fb_saved {
+	struct fb_snap snap[FB_SNAPS];
+	unsigned n;
+} fb_ours[FB_SCENES];
+
+/* Ours: each scene's records (compared with Mesa's in test_mesa_feedback()) */
+static void test_feedback(void)
+{
+	static uint32_t img[SW * SH];
+	for (unsigned k = 0; k < FB_SCENES; k++) {
+		memset(fb, 0, sizeof fb);
+		our_scene(fb_scenes[k].ops, img);
+		CHECK(fb[0].n >= 1);
+		memcpy(fb_ours[k].snap, fb[0].snap, sizeof fb_ours[k].snap);
+		fb_ours[k].n = fb[0].n;
+	}
+}
+
+#ifdef __linux__
+static void test_mesa_feedback(void)
+{
+	static uint32_t img[SW * SH];
+	for (unsigned k = 0; k < FB_SCENES; k++) {
+		memset(fb, 0, sizeof fb);
+		memcpy(fb[0].snap, fb_ours[k].snap, sizeof fb_ours[k].snap);
+		fb[0].n = fb_ours[k].n;
+		CHECK(mesa_scene(fb_scenes[k].ops, img));
+		fb_compare(fb_scenes[k].name);
+		if (verbose())
+			printf("opengl: feedback %-11s against Mesa: %u glRenderMode results, their records compared\n",
+			       fb_scenes[k].name, fb[1].n);
+	}
+}
+#endif
+
 static void run(struct gpu *gpu)
 {
 	if (mem_init(&mem)) {
@@ -2422,6 +3247,10 @@ static void run(struct gpu *gpu)
 	test_recording(true);
 	test_lists();
 	test_glu();
+	test_full_screen();
+	test_use_font();
+	if (!gpu)
+		test_feedback();
 	test_scenes(gpu != NULL);
 	opengl_free(&gl);
 	mem_free(&mem);
@@ -2445,5 +3274,6 @@ void test_opengl(void)
 	gpu_close(g);
 #ifdef __linux__
 	test_mesa();
+	test_mesa_feedback();
 #endif
 }

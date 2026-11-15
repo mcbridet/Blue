@@ -254,6 +254,47 @@ struct gl_pixel_map {
 struct gl_saved;                                /* (glPushAttrib's) */
 struct gl_client_saved;
 
+/*
+ * Evaluators (OpenGL 1.2's 5.1, gleval.c): each kind's one- and
+ * two-dimensional map (in GL_MAP1_COLOR_4's order: color, index, normal,
+ * texture coordinates of 1 to 4 components, vertex of 3 and 4), its order
+ * in u and v (1 in v for a 1D map), domain and control points, [v][u][k];
+ * made when first needed. The grids are in gl_state.
+ */
+#define GLF_EVAL_ORDER 8
+#define GLF_EVAL_KINDS 9
+struct gl_map {
+	int32_t order[2];
+	float domain[4];                        /* u1, u2, v1, v2 */
+	float points[GLF_EVAL_ORDER * GLF_EVAL_ORDER * 4];
+};
+struct gl_eval {
+	struct gl_map map[2][GLF_EVAL_KINDS];   /* 1D, 2D */
+};
+
+/*
+ * Selection and feedback (OpenGL 1.2's 5.2 and 5.3, glselect.c): the render
+ * mode, the program's buffers as given (opengl.c writes the records into
+ * them when glRenderMode leaves the mode), the records so far (words:
+ * integers when selecting, floats' bits for feedback; those past the
+ * buffer's size counted, not kept), the name stack and the hit so far
+ */
+#define GLF_NAME_STACK 64
+struct gl_select {
+	uint32_t mode;                          /* GL_RENDER, GL_SELECT or GL_FEEDBACK */
+	uint32_t select_buffer, feedback_buffer;
+	int32_t select_size, feedback_size;     /* (words) */
+	uint32_t feedback_type;
+	uint32_t *words;
+	size_t count, cap;
+	uint32_t names[GLF_NAME_STACK];
+	unsigned depth;
+	bool hit;
+	float zmin, zmax;
+	uint32_t hits;
+	bool line_reset;                        /* (the next line fed back resets the stipple: GL_LINE_RESET_TOKEN) */
+};
+
 struct gl_state {
 	uint32_t error;                         /* the first since glGetError() */
 	uint8_t caps[GLF_CAPS];                 /* enabled (per texture unit ones: bit k for unit k) */
@@ -337,6 +378,11 @@ struct gl_state {
 	const struct gl_texture *raster_tex[GLF_TEXTURE_UNITS];        /* (the textures it has, and their serials) */
 	unsigned raster_serial[GLF_TEXTURE_UNITS];
 	unsigned long primitives;               /* triangles, lines and points handed to the backend */
+	struct gl_select select;
+	/* evaluators: the maps (NULL: none yet, the initial ones), the grids (glMapGrid's) */
+	struct gl_eval *eval;
+	int32_t grid1_n, grid2_n[2];
+	float grid1[2], grid2[4];
 };
 
 /* Where a context's drawing goes: its buffers (NULL: nowhere), their size, the pixel format's bits */
@@ -667,5 +713,78 @@ void glf_copy_pixels(struct gl_state *st, const struct gl_target *t, int32_t x, 
 
 /* The raster state drawing in the target takes now (glfront.c's) */
 const struct raster_state *glf_raster_state(struct gl_state *st, const struct gl_target *t);
+
+/* ---- evaluators (gleval.c) ---- */
+
+/* A map's target's components (0: not a map's target): 1D's or 2D's (*dims) */
+unsigned glf_map_components(uint32_t target, unsigned *dims);
+
+/*
+ * glMap1 and glMap2 (dims): the domain (u1, u2, v1, v2), the strides and
+ * orders as given (for the errors), the control points packed ([v][u][k],
+ * as many as the orders take; NULL: not there, nothing done but the errors)
+ */
+void glf_map(struct gl_state *st, unsigned dims, uint32_t target, const double domain[4], int32_t ustride,
+	     int32_t uorder, int32_t vstride, int32_t vorder, const float *points);
+
+/* glMapGrid1 and 2 */
+void glf_map_grid1(struct gl_state *st, int32_t n, float u1, float u2);
+void glf_map_grid2(struct gl_state *st, int32_t un, float u1, float u2, int32_t vn, float v1, float v2);
+
+/* glEvalCoord1 and 2 (dims), glEvalPoint1 and 2, glEvalMesh1 and 2 */
+void glf_eval_coord(struct gl_state *st, const struct gl_target *t, unsigned dims, float u, float v);
+void glf_eval_point(struct gl_state *st, const struct gl_target *t, unsigned dims, int32_t i, int32_t j);
+void glf_eval_mesh(struct gl_state *st, const struct gl_target *t, unsigned dims, uint32_t mode, int32_t i1,
+		   int32_t i2, int32_t j1, int32_t j2);
+
+/*
+ * glGetMap: a map's coefficients, orders or domain (GL_COEFF, GL_ORDER,
+ * GL_DOMAIN) into v (room for GLF_EVAL_ORDER^2 x 4); how many (0: an error)
+ */
+unsigned glf_get_map(struct gl_state *st, uint32_t target, uint32_t query, double *v);
+
+/* ---- selection and feedback (glselect.c) ---- */
+
+enum { GL_RENDER = 0x1C00, GL_FEEDBACK, GL_SELECT };
+enum { GL_PASS_THROUGH_TOKEN = 0x0700, GL_POINT_TOKEN, GL_LINE_TOKEN, GL_POLYGON_TOKEN, GL_BITMAP_TOKEN,
+       GL_DRAW_PIXEL_TOKEN, GL_COPY_PIXEL_TOKEN, GL_LINE_RESET_TOKEN };
+
+/* glSelectBuffer, glFeedbackBuffer (buffer: the program's address, kept as given) */
+void glf_select_buffer(struct gl_state *st, int32_t size, uint32_t buffer);
+void glf_feedback_buffer(struct gl_state *st, int32_t size, uint32_t type, uint32_t buffer);
+
+/*
+ * glRenderMode: the result for the mode left (hits or values; -1 if they
+ * overflowed the buffer), and the records to go into the program's buffer
+ * (*buffer; *words, *count of them, the front end's until the next call)
+ */
+int32_t glf_render_mode(struct gl_state *st, uint32_t mode, uint32_t *buffer, const uint32_t **words, size_t *count);
+
+/* The name stack; glPassThrough */
+void glf_init_names(struct gl_state *st);
+void glf_load_name(struct gl_state *st, uint32_t name);
+void glf_push_name(struct gl_state *st, uint32_t name);
+void glf_pop_name(struct gl_state *st);
+void glf_pass_through(struct gl_state *st, float token);
+
+/* A vertex as feedback gives it: window coordinates (y up) and clip w, its color, unit 0's texture coordinates */
+struct glf_fb_vertex {
+	float win[4];
+	float color[4];
+	float tex[4];
+};
+
+/*
+ * Instead of drawing (the render mode isn't GL_RENDER): a primitive, clipped
+ * (a point, a line or a polygon's token, or a raster position's: n 1), a
+ * hit, or fed back
+ */
+void glf_select_primitive(struct gl_state *st, uint32_t token, const struct glf_fb_vertex *v, unsigned n);
+
+/* Whether drawing goes to selection or feedback instead */
+static inline bool glf_selecting(const struct gl_state *st)
+{
+	return st->select.mode != GL_RENDER;
+}
 
 #endif

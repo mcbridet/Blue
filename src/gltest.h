@@ -4,7 +4,8 @@
  * scene in it through the guest's OpenGLLibrary and OpenGLUtility, by
  * callouts to what it imports from them (so through the Code Fragment
  * Manager's linking, as a game would), and draws it again at each update
- * event. For checking the
+ * event (some scenes set things up first, or draw after every event).
+ * For checking the
  * libraries by screenshots, in instruction time: `syshm tools create` puts
  * it on the tools volume with SYSHM_TOOLS_GL_TEST=1 (put it in Startup
  * Items to run it), SYSHM_GL_TEST_SCENE names the scene and
@@ -13,6 +14,7 @@
 #ifndef SYSHM_GLTEST_H
 #define SYSHM_GLTEST_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -23,6 +25,9 @@ struct gltest {
 	struct ndrv_layout layout;
 	const struct gltest_step *steps;        /* the scene's */
 	unsigned nsteps;
+	const struct gltest_step *setup;        /* (what it does first, once) */
+	unsigned nsetup;
+	bool every_event;                       /* (it draws again after each event) */
 	unsigned depth;                         /* the screen's (SYSHM_GL_TEST_DEPTH) */
 	unsigned long frames;
 };

@@ -162,7 +162,11 @@ void glf_copy(struct gl_state *to, const struct gl_state *from)
 	unsigned depth = to->attrib_depth, client_depth = to->client_depth;
 	memcpy(stack, to->attrib_stack, sizeof stack);
 	memcpy(client, to->client_stack, sizeof client);
+	struct gl_select select = to->select;   /* (and its render mode and records) */
+	struct gl_eval *eval = to->eval;        /* (evaluators' control points: in no attribute group) */
 	*to = *from;
+	to->select = select;
+	to->eval = eval;
 	memcpy(to->attrib_stack, stack, sizeof stack);
 	memcpy(to->client_stack, client, sizeof client);
 	to->attrib_depth = depth;

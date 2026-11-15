@@ -280,6 +280,30 @@ void video_request_done(struct video *v)
 	v->switching = -1;
 }
 
+void video_mode_now(const struct video *v, uint32_t *mode_id, uint32_t *depth_mode)
+{
+	*mode_id = v->mode + 1;
+	*depth_mode = VIDEO_FIRST_DEPTH_MODE + v->depth;
+}
+
+bool video_mode_for(const struct video *v, unsigned width, unsigned height, unsigned bits, uint32_t *mode_id,
+		    uint32_t *depth_mode)
+{
+	unsigned depth = 0;
+	while (depth < VIDEO_DEPTHS && depth_bits[depth] != bits)
+		depth++;
+	for (unsigned mode = 0; depth < VIDEO_DEPTHS && mode < video_mode_count + VIDEO_CUSTOM_MODES; mode++) {
+		const struct video_mode *vm = mode_at(v, mode);
+		if (vm->width == width && vm->height == height && (mode < video_mode_count || mode == v->mode) &&
+		    mode_fits(v, mode, depth)) {
+			*mode_id = mode + 1;
+			*depth_mode = VIDEO_FIRST_DEPTH_MODE + depth;
+			return true;
+		}
+	}
+	return false;
+}
+
 /* Depth mode (0x80-based) to depth index; -1 if invalid. */
 static int depth_index(uint32_t depth_mode)
 {

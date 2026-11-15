@@ -14,14 +14,115 @@ It should come first (see Order).
 
 Milestones 0 (the groundwork, shared with Glide), 1 (AGL and a clear), 2
 (a triangle), 3 (textures, and Unreal Tournament's OpenGL build), 4
-(arrays, fog, lighting and the rest of the common state) and 5 (display
-lists, pixel paths, 3D textures, OpenGLUtility) are built; Quake III
-Arena's demo plays. Of what milestone 5 listed, selection and feedback,
-`aglUseFont`, `aglSetFullScreen`, and S3TC and paletted textures are still
-to do, and milestone 6 is. The user chose OpenGL before Glide, and
-accepted the proposed decisions below for now (replacing the libraries,
-recording in guest memory, fixed function in C on the host, frames read
-back into guest memory, a Rage 128's identity).
+(arrays, fog, lighting and the rest of the common state), 5 (display
+lists, pixel paths, 3D textures, OpenGLUtility) and 6 (completeness:
+selection and feedback, evaluators, `aglSetFullScreen`, `aglUseFont`) are
+built; Quake III Arena's demo plays. S3TC and paletted textures are left
+out: Apple's Mac OS 9.2.2 doesn't offer them for a Rage 128. Milestone 7
+(performance) is next. The user chose OpenGL before Glide, and accepted
+the proposed decisions below for now (replacing the libraries, recording
+in guest memory, fixed function in C on the host, frames read back into
+guest memory, a Rage 128's identity).
+
+Milestone 6:
+
+- **Selection and feedback** (`src/glselect.c`): `glRenderMode`,
+  `glSelectBuffer`, `glFeedbackBuffer` (each type, 2D to 4D with colors
+  and texture coordinates), the name stack (64 deep), `glPassThrough`, the
+  queries and buffer pointers. The front end clips primitives to the view
+  volume (not the guard band) and, instead of drawing them, makes hit
+  records (depths as 0 to 2^32 - 1) or feedback tokens: polygons as
+  triangles in Mesa's order (a polygon, or a clipped one, as (v[i],
+  v[i + 1], v[0])), outlined ones' edges and points, lines with
+  `GL_LINE_RESET_TOKEN` where the stipple is reset, the raster position's
+  bitmap, draw and copy tokens (bitmaps still move it). Nothing is drawn or
+  cleared meanwhile. The records stay on the host until `glRenderMode`
+  leaves the mode, then go into the program's buffer (what overflowed it
+  counted: -1).
+- **Evaluators** (`src/gleval.c`): `glMap1` and `glMap2` of each kind,
+  float and double, with any strides (lists keep their control points),
+  `glMapGrid`, `glEvalCoord`, `glEvalPoint` and `glEvalMesh` as OpenGL
+  1.2's 5.1 has them (filled meshes as quad strips), orders to 8,
+  rational vertices, `GL_AUTO_NORMAL` (the normal of the point divided by
+  w, normalized), `glGetMap`, `GL_EVAL_BIT`. Like Mesa, a vertex's
+  evaluated color, normal and texture coordinates don't become the current
+  ones, and maps are unit 0's (`glMap` with another unit active is
+  `GL_INVALID_OPERATION`).
+- **`aglSetFullScreen`**: a context of a full screen pixel format draws
+  to its device's whole screen. Asked for another size (0 x 0: the
+  screen's as it is) or the screen at another depth than the pixel
+  format's, the library switches the display with the Display Manager
+  (`DMSetDisplayMode`, by a callout) to the mode of exactly that size, as
+  the AGL reference has it (else `AGL_BAD_FULLSCREEN`); the viewport
+  becomes the screen's, as Apple's 9.2.2 does. The mode it was in comes
+  back when that context's drawable goes (another drawable, none, the
+  context destroyed, the process quitting). Frames go to the screen
+  unclipped, paced by its refresh as a window's. The menu bar and other
+  windows are left as they are (they may draw over it, as on a Mac).
+- **`aglUseFont`**, as Apple's 9.2.2 does it (disassembled): QuickDraw
+  draws each glyph (the font, face and size set in a 1-bit offscreen
+  world, measured by `GetFontInfo`), by callouts; the host turns its bits
+  into list base + i, a `glBitmap` of (CharWidth + 2e) x (ascent +
+  descent + 2e) from (e, descent + e - 1), moving CharWidth on, where e
+  is half the size for a styled face (else 0). Errors as Apple's: a list
+  being made, `AGL_BAD_STATE`; no such font, `AGL_BAD_VALUE`; no memory,
+  `AGL_BAD_ALLOC`.
+- **The library's imports:** OpenGLLibrary imports what those call from
+  InterfaceLib (`DMSetDisplayMode`, `RealFont`, `NewGWorld` and the like,
+  all in Apple's import list but the first). That moves its data, so its
+  version is 3: one installed by an older syshm is left alone (every call
+  fails, and syshm says to update it), not misread.
+- **S3TC and paletted textures:** left out. In Mac OS 9.2.2,
+  OpenGLEngine, OpenGLRendererATI and the software renderer list neither
+  `GL_EXT_texture_compression_s3tc` (or `GL_S3_s3tc`) nor
+  `GL_EXT_paletted_texture`; only the "NVIDIA OpenGL" engine on that disk
+  (for GeForce cards) does.
+- **Checked against Mesa** (`tests/test_opengl.c`, on Linux): two more
+  scenes, and selection's and feedback's records:
+
+  | scene | GPU | Mesa |
+  |---|---|---|
+  | eval (a curve's points by a color map, a rational curve, a patch colored and textured by maps, a list's map) | 0 (2) | 0 (2) |
+  | eval_lit (a bumpy patch's made normals in triangle strips of grid points, a rational cylinder's, a flat patch's mapped normals) | 0 (0) | 0 (1) |
+
+  Six feedback and selection scenes (window coordinates and perspective
+  of every kind of primitive, clipped, outlined, culled; the raster
+  position's tokens; a buffer overflowed; the name stack's hits; two of
+  evaluators: curves', patches' points and lines with their colors and
+  texture coordinates, lit ones' colors) give Mesa's records, within
+  1e-3. Where Mesa departs from OpenGL 1.2 (see Findings in plan.md), the
+  scenes avoid it and `tests/test_glfront.c` checks OpenGL's way: line
+  reset tokens, flat shading's colors in feedback, the current values after
+  evaluation, `glGetMap`'s order, a backwards domain's normals, filled
+  meshes' quads; and the errors, defaults, grids and `GL_EVAL_BIT`.
+  `tests/test_opengl.c` runs `aglSetFullScreen` and `aglUseFont` with the
+  Toolbox's calls answered by fakes (mode switches and their failures, the
+  mode back when the drawable or the process goes; glyphs drawn by
+  `glCallLists` against the fake font's, plain and styled; the errors).
+- **The test application:** scene `fullscreen` (a full screen context,
+  640 x 480 from 800 x 600, the triangle scene drawn on the whole screen)
+  and `font` (Times 24 and Geneva 18 bold through `aglUseFont`, a line of
+  each by `glCallLists`). On installed 8.5 in instruction time: the same
+  screenshots on macOS and Linux, and on the GPU (Metal) within 2 of
+  them; the older scenes' screenshots are as they were.
+- **Games:** Quake III Arena's demo and Unreal Tournament's OpenGL build
+  play as before, but the library's new imports (the Code Fragment
+  Manager resolving them, its data moved) change how many instructions
+  the guest spends before the games start, so in instruction time they
+  play out differently from main: Quake III's `demo001` is at another
+  moment 17 billion instructions in (305,904 calls and 4,500 frames, the
+  same frame on macOS and Linux, on the GPU the same calls and frames),
+  and UT's match spawns elsewhere (34,142 calls, 1,742 frames). Built
+  without the imports (the old layout), this milestone's syshm gives
+  main's runs exactly: Quake III's frame (306,893 calls, 4,511 frames, on
+  the GPU too), UT's eight screenshots, 34,035 calls and 1,547 frames.
+  The 3D engine's pixels are main's (software and GPU), and the 8.5 and
+  9.1 CDs boot to main's screenshots.
+- Not yet: OpenGLUtility's tessellators and NURBS (their objects and
+  properties only: until a program needs them), the accumulation buffer
+  (pixel formats asking for one are refused), logic ops; line and polygon
+  stipples are kept but not drawn; lines and points aren't textured; smooth
+  points and lines are drawn as aliased ones.
 
 Milestone 5:
 
@@ -90,9 +191,11 @@ Milestone 5:
   drawn alike. "glu" is compared when `SYSHM_TEST_GLU` names Mesa's
   libGLU (`libGLU.so.1`). Unit tests (`tests/test_glfront.c`,
   `tests/test_opengl.c`) check what Mesa can't: OpenGL 1.2's rectangles
-  for fractional and negative zooms, pixel maps, color indices, depth and
-  stencil images read and drawn, OpenGLUtility's matrices, projections,
-  images, objects, strings and errors.
+  for fractional and negative zooms, pixel maps (Mesa 25.2's corrupt its
+  heap: see Findings in plan.md; that was milestone 5's intermittent crash
+  in the tests), color indices, depth and stencil images read and drawn,
+  OpenGLUtility's matrices, projections, images, objects, strings and
+  errors.
 - **The test application** imports OpenGLUtility now. Scene `lists`: a
   sphere, a sphere as lines and a ring under a call to the first made into
   lists through OpenGLUtility (`gluPerspective`, `gluLookAt`, quadrics),
@@ -478,7 +581,7 @@ Milestone 2:
 - Not yet: pacing swaps to the display's refresh as the 3D engine's frames
   are (with milestone 3, for Unreal Tournament); `GL_CLAMP` against Mesa
   (with textures); transform still runs at the drain on the emulation
-  thread (the Host side section's backend thread is for milestone 6).
+  thread (the Host side section's backend thread is for milestone 7, performance).
 
 Milestone 1:
 
@@ -1110,17 +1213,17 @@ call, and in CI on Linux, Mesa's compatibility profile serves as an
 oracle: the tests draw the same command streams through syshm's front end
 and through Mesa, and compare (`(i)` as a test, not as the product).
 
-What's not planned: evaluators (`glMap*`, `glEvalCoord*`), the
-accumulation buffer and the imaging subset's convolution, histogram and
-minmax (they get `GL_INVALID_OPERATION`, and `GL_ARB_imaging` isn't
-advertised); selection and feedback get a simple implementation (from
-the front end's output) when a program needs them.
+What's not planned: the accumulation buffer and the imaging subset's
+convolution, histogram and minmax (they get `GL_INVALID_OPERATION`, and
+`GL_ARB_imaging` isn't advertised). (Evaluators weren't planned at first,
+and selection and feedback were to be simple; milestone 6 did both, from
+the front end's output.)
 
 **Extensions to offer:** the engine's list above (all of it is within
-reach), plus the secondary color and compressed texture extensions whose
-functions are exported anyway, `GL_EXT_texture_compression_s3tc` and
-`GL_EXT_paletted_texture` (decoded to RGBA8 on upload), and
-`GL_EXT_texture_filter_anisotropic`. Limits: 2 or 4 texture units, 8
+reach), plus the secondary color extension whose functions are exported
+anyway, and `GL_EXT_texture_filter_anisotropic`. (S3TC and paletted
+textures were proposed too, but Apple's 9.2.2 offers neither for a Rage
+128: see milestone 6.) Limits: 2 or 4 texture units, 8
 lights, 6 clip planes, 8 stencil bits, 16/24-bit depth, textures to 1024
 or 2048 (see Identity).
 
@@ -1146,9 +1249,12 @@ or 2048 (see Identity).
   takes width, height, row bytes and a base address in guest memory.
   `AGL_BUFFER_RECT` and `AGL_SWAP_RECT` restrict to a rectangle.
 - **Full screen:** `aglSetFullScreen(ctx, width, height, freq, device)`
-  switches the display mode through the Display Manager (callouts, as the
-  syshm Enhancements helper switches modes) and draws to the whole screen;
-  destroying the context or setting another drawable switches back. Most
+  switches the display mode through the Display Manager (a callout of the
+  library's, as the syshm Enhancements helper switches modes) and draws to
+  the whole screen; destroying the context, setting another drawable or
+  the process quitting switches back. (As built: see milestone 6. Apple's
+  9.2.2 hands the size to its engine and renderer, which import no
+  Display Manager call; syshm does what the AGL reference says.) Most
   games go full screen with DrawSprocket instead and attach to its front
   buffer's port, as UT does; that already works for RAVE.
 - **Reading frames back** (the default): at a swap (or `glFlush` and
@@ -1177,7 +1283,7 @@ or 2048 (see Identity).
   frames a second anyway (`display_frame()`).
 - **`aglUseFont`:** each glyph is drawn into a GWorld with QuickDraw
   through callouts (as Apple's library does) and becomes a display list of
-  `glBitmap`.
+  `glBitmap` (as built: see milestone 6).
 
 ### Identity
 
@@ -1293,10 +1399,13 @@ Shared pieces may already exist from Glide.
    Quake III Arena (if the user has it) plays.
 5. **The rest of GL 1.2 and AGL.** Display lists, pixel paths
    (`glDrawPixels`, `glBitmap`, `glCopyPixels`, `glCopyTexImage*`),
-   3D textures, selection and feedback, `aglUseFont`, offscreen and full
-   screen drawables, GLU on the host, S3TC and paletted textures.
-6. **Performance:** direct presentation for full-screen contexts; reading
+   3D textures, offscreen drawables, GLU on the host.
+6. **Completeness:** `aglSetFullScreen`, `aglUseFont`, selection and
+   feedback, evaluators; S3TC and paletted textures only if Apple's 9.2.2
+   listed them for the Rage 128 (it doesn't).
+7. **Performance:** direct presentation for full-screen contexts; reading
    back only what changed; transform in a vertex shader; bigger batches.
+   The same checks, with Quake III's demo and UT as the game tests.
 
 ## Tests
 
@@ -1363,7 +1472,11 @@ Shared pieces may already exist from Glide.
   `glc_cc` or the context's table? (Apple's OpenGLUtility reads `glc_cc`:
   it imports it.)
 - Which games use `aglSetFullScreen` rather than DrawSprocket, and what
-  Apple's did with the menu bar and other applications' windows.
+  Apple's did with the menu bar and other applications' windows (and how
+  its renderers switched modes, if they did: none of its libraries
+  imports the Display Manager).
+- OpenGLUtility's tessellators and NURBS renderers keep their objects and
+  properties but draw nothing: left until a program needs them.
 - Which folder Apple's engine searches for renderers (the `FindFolder`
   argument wasn't checked): only matters for option (b).
 - Whether to offer Apple's own OpenGL on 9.x later through the RAVE engine
