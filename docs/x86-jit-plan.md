@@ -1,9 +1,9 @@
 # Plan: a JIT for x86_64 hosts
 
-Guest PowerPC code runs in syshm's interpreter on every host, and on
+Guest PowerPC code runs in Blue's interpreter on every host, and on
 AArch64 hosts in a JIT (`src/jit.c`, `src/a64.h`): about 200 million guest
 instructions a second against the JIT's 2.5-5 billion. x86_64 hosts, where
-syshm will be used most, only interpret. This plan adds an x86-64 backend
+Blue will be used most, only interpret. This plan adds an x86-64 backend
 to the JIT, as exact as the AArch64 one (results, instruction counts, exits
 and faults bit for bit the interpreter's) and as fast as x86 allows,
 sharing everything that isn't about the host's instructions.
@@ -21,7 +21,7 @@ The x86-64 JIT is complete: milestone 5 (performance) done.
   the process's other threads). A map from each translated block (each
   guest instruction's host code and kind) and an interpreted run's guest
   instructions by kind divide QEMU's count by guest instruction, kind,
-  out-of-line code, stubs and syshm's functions (Findings: the method).
+  out-of-line code, stubs and Blue's functions (Findings: the method).
   Instruction counts steered; the real processor's times decided.
 - **What changed**: CR fields from CMOVs of constants in memory, XER's SO
   tested out of line, CA from SBB, OV out of line on JO (`addco.`, 96
@@ -52,7 +52,7 @@ The x86-64 JIT is complete: milestone 5 (performance) done.
 
   | | 8.5 | 9.1 | 9.2.2 |
   |---|---|---|---|
-  | x86, milestone 4 | 7.53 (translated 5.53, syshm 1.85) | 8.79 (5.30, 3.42) | 7.65 (5.56, 2.01) |
+  | x86, milestone 4 | 7.53 (translated 5.53, Blue 1.85) | 8.79 (5.30, 3.42) | 7.65 (5.56, 2.01) |
   | x86, now | 6.30 (4.57, 1.59) | 7.21 (4.54, 2.59) | 6.43 (4.68, 1.67) |
   | AArch64 | 5.98 (4.51, 1.46) | 6.91 (4.47, 2.44) | 5.84 (4.27, 1.56) |
 
@@ -67,7 +67,7 @@ The x86-64 JIT is complete: milestone 5 (performance) done.
   (x86 has five fixed, AArch64 eight).
 - **Fastmem off** (a commit of its own, both translators): a load from a
   readable page below an unreadable one no longer goes to the
-  interpreter. With `SYSHM_JIT_FASTMEM=0` the 9.1 and 9.2.2 boots' exits
+  interpreter. With `BLUE_JIT_FASTMEM=0` the 9.1 and 9.2.2 boots' exits
   to the interpreter fell from 146.6 and 48.2 million to 31,609 and
   24,652 on AArch64 (x86: 31,148 and 24,058), the 9.1 boot from 7.8 to
   1.6 s. AArch64 does it only without fastmem: with fastmem its code is
@@ -123,10 +123,10 @@ Milestone 4 done (the rest):
   device registers in a loop by both engines, the JIT going to the
   interpreter at most once per access instruction (its first fastmem
   fault); all three fail with milestone 3's translator. The fuzzer passes
-  400,000 programs under Rosetta (100,000 with `SYSHM_JIT_FASTMEM=0`) and
+  400,000 programs under Rosetta (100,000 with `BLUE_JIT_FASTMEM=0`) and
   30,000 under QEMU; all of `make test` on macOS and Linux, both
   architectures. The three CD boots end exactly as on AArch64 (under
-  Rosetta with `SYSHM_JIT_FASTMEM=0` too; the 8.5 CD under QEMU), and so
+  Rosetta with `BLUE_JIT_FASTMEM=0` too; the 8.5 CD under QEMU), and so
   do (by hand, under Rosetta, from APFS clones of the user's disks) an
   installed 9.2.2's start to the Finder (6 billion instructions) and
   Unreal Tournament launched from the 8.6 disk through its intro (30
@@ -140,7 +140,7 @@ Milestone 4 done (the rest):
   what went is the round trip through the interpreter around each; the
   kernel's own exits (1.1 million in 8.5's boot, 8 million in Unreal
   Tournament's run) remain, as on AArch64. Under Rosetta about 30% of a
-  boot goes on its handling of syshm's writes to code that has run
+  boot goes on its handling of Blue's writes to code that has run
   (Findings).
 
 Milestone 3 done (floating point):
@@ -166,9 +166,9 @@ Milestone 3 done (floating point):
   with `stw` put together from the registers. Anything else goes out of
   line to the interpreter.
 - **Checks**: the fuzzer passes 400,000 programs under Rosetta (100,000
-  with `SYSHM_JIT_FASTMEM=0`) and 30,000 under QEMU; all of `make test` on
+  with `BLUE_JIT_FASTMEM=0`) and 30,000 under QEMU; all of `make test` on
   macOS and Linux, both architectures. The three CD boots end exactly as
-  on AArch64 under Rosetta (with `SYSHM_JIT_FASTMEM=0` too), and the 8.5
+  on AArch64 under Rosetta (with `BLUE_JIT_FASTMEM=0` too), and the 8.5
   CD under QEMU. AArch64's generated code is byte for byte as before.
 - **Speed** under Rosetta on the M5, milestone 2's build against this
   one, alternating (medians of 5): the 8.5 CD 5.8 → 5.9 s, 9.1's 4.6 →
@@ -200,7 +200,7 @@ Milestone 2 done (memory):
 - **Checks**: the fuzzer (now requiring fastmem faults on x86-64 too)
   passes 100,000 programs under Rosetta and 30,000 more under QEMU; all of
   `make test` on both; the three CD boots end exactly as on AArch64,
-  under Rosetta, with `SYSHM_JIT_FASTMEM=0` too, and the 8.5 CD under
+  under Rosetta, with `BLUE_JIT_FASTMEM=0` too, and the 8.5 CD under
   QEMU (1,273 fastmem faults, fewer than AArch64's 1,893: 4 KB host
   pages). AArch64's generated code is still byte for byte what it was
   before the split (the hashes over the fuzzer and the boots).
@@ -214,7 +214,7 @@ Milestone 1 done (the split, then the integer core):
 - **The split**: `jit.c` holds the runtime, `jit_a64.c` the AArch64
   translator, `jit_int.h` what they share. AArch64's generated code is
   byte for byte the same: a hash of every block over the fuzzer's programs
-  (with `SYSHM_JIT_FAR` and `SYSHM_JIT_FASTMEM=0` too) and over the 8.5,
+  (with `BLUE_JIT_FAR` and `BLUE_JIT_FASTMEM=0` too) and over the 8.5,
   9.1 and 9.2.2 CD boots came out equal, and so did timings. The fuzzer's
   programs went into guest memory with stack garbage after them, which
   blocks translated past the final `sc` read, so a seed didn't always make
@@ -232,8 +232,8 @@ Milestone 1 done (the split, then the integer core):
   against 374, FP 63 against 98 (memory and FP still call the
   interpreter).
 - **Elsewhere**: `jit_unavailable()` gives the reason there's no JIT, and
-  syshm says it; CI fuzzes and benchmarks the JIT on all four targets
-  (`SYSHM_TEST_JIT=1`); `tools/jit-timing.sh` (below) times a machine.
+  Blue says it; CI fuzzes and benchmarks the JIT on all four targets
+  (`BLUE_TEST_JIT=1`); `tools/jit-timing.sh` (below) times a machine.
 
 Checked on the development machine before starting (Apple M5, macOS 27.2, with Rosetta 2
 and podman):
@@ -427,11 +427,11 @@ lines, and the instructions it emits are unchanged.
 For the split, a temporary hash (FNV over each block's code, printed with
 the JIT's statistics, not committed) must come out equal before and after.
 It's checked over the fuzzer's default programs (fixed seeds), with
-`SYSHM_JIT_FAR` and `SYSHM_JIT_FASTMEM=0`, and over the 8.5, 9.1 and 9.2.2
+`BLUE_JIT_FAR` and `BLUE_JIT_FASTMEM=0`, and over the 8.5, 9.1 and 9.2.2
 CD boots in instruction time. Generated code holds no host addresses, so
 the hashes don't depend on where things are mapped. Timings, medians of
 alternating runs before and after: the 8.5 CD to 4 billion, the 9.1 and
-9.2.2 CDs, and `SYSHM_JIT_PROGRAMS=20000`. After the split,
+9.2.2 CDs, and `BLUE_JIT_PROGRAMS=20000`. After the split,
 `jit_a64.c` changes only if a later milestone finds a shared bug.
 
 ## x86-64 code generation
@@ -542,7 +542,7 @@ Notes on the table:
   dirty upper state) are as on AArch64. So are `stw, stw, lfd` built from
   the stored registers: x86 can't forward two stores into one load either.
 - **Checked accesses**: after a fault at that instruction, or always with
-  `SYSHM_JIT_FASTMEM=0`. They test the page-flag byte (`MEM_FAST_R`,
+  `BLUE_JIT_FASTMEM=0`. They test the page-flag byte (`MEM_FAST_R`,
   `MEM_FAST_W`, `MEM_CODE`) and go through C's base, with slow stores to
   code pages and the mmio hook's path as on AArch64. A load that
   `MEM_FAST_R` turns away (it asks for the next page too) and that stays
@@ -562,7 +562,7 @@ Notes on the table:
 
 - **The mapping**: 64 MB RWX, as on AArch64 Linux, after `struct jit`'s
   64 KB. macOS x86_64 adds `MAP_JIT`. Intel Macs need it only under the
-  hardened runtime (syshm's builds aren't hardened), and then the
+  hardened runtime (Blue's builds aren't hardened), and then the
   allow-jit entitlement is all that's missing. Intel has no per-thread
   write protection to switch.
 - **No cache maintenance**: x86 keeps instruction fetch coherent with the
@@ -659,9 +659,9 @@ candidate if profiles ask for it.
 ### macOS x86_64 under Rosetta
 
 - **Build**: `make BUILD=build/x86 CC='cc -arch x86_64' CXX='c++ -arch
-  x86_64' all build/x86/syshm-tests` (inside `build/`, so it's ignored;
+  x86_64' all build/x86/blue-tests` (inside `build/`, so it's ignored;
   native objects stay in `build/`).
-- **Run**: `ROSETTA_ADVERTISE_AVX=1 arch -x86_64 build/x86/syshm-tests
+- **Run**: `ROSETTA_ADVERTISE_AVX=1 arch -x86_64 build/x86/blue-tests
   jit`, and the boots likewise.
 - **Uses**: correctness (fuzzer, `make test`, boots in instruction time)
   and rough timing. Rosetta translates generated code too, and charges
@@ -683,7 +683,7 @@ candidate if profiles ask for it.
 
 - **The JIT fuzz job runs on all four targets**, x86_64 too, from
   milestone 1 on.
-- **`SYSHM_TEST_JIT=1`** (new, like `SYSHM_TEST_GPU`) makes "no JIT" a
+- **`BLUE_TEST_JIT=1`** (new, like `BLUE_TEST_GPU`) makes "no JIT" a
   failure rather than a skip.
 - **The Toolchain step prints the CPU's features**, so a runner without
   x86-64-v3 shows why.
@@ -694,7 +694,7 @@ candidate if profiles ask for it.
 
 ### Speed without x86 hardware
 
-- **A synthetic benchmark** (`SYSHM_JIT_BENCH=1 build/syshm-tests jit`,
+- **A synthetic benchmark** (`BLUE_JIT_BENCH=1 build/blue-tests jit`,
   not part of `make test`) runs a few PowerPC kernels for a fixed number of
   instructions, interpreted and translated, and prints guest instructions
   a second:
@@ -712,12 +712,12 @@ candidate if profiles ask for it.
   divided by guest instruction kind with a map the translators write in a
   measuring build (Findings: counting host instructions without the
   host). That replaced the counters in generated code planned here
-  (`SYSHM_JIT_COUNT=1`): exact for every instruction, C's included, and
+  (`BLUE_JIT_COUNT=1`): exact for every instruction, C's included, and
   nothing in the tree.
 - **Rosetta timings** of the CD boots per milestone, against the
   interpreter's 22.2 s.
 - **Real hardware**: if the user has an x86 machine (an Intel Mac or a
-  Linux PC), `SYSHM_PERF=1` on Linux gives the real instructions and
+  Linux PC), `BLUE_PERF=1` on Linux gives the real instructions and
   cycles per guest instruction.
 
 ## Findings
@@ -746,7 +746,7 @@ candidate if profiles ask for it.
   boundaries as they fall, as they always have.
 - **Under Rosetta, writing to code that has run costs about 13 µs a
   write**, as the plan's first checks found (14 µs): the profiler
-  (`SYSHM_JIT_PROFILE=1`) on the 8.5 CD boot put 30% of its samples on
+  (`BLUE_JIT_PROFILE=1`) on the 8.5 CD boot put 30% of its samples on
   three stores, each the first write to a page of code: a new block's
   first instruction (2,740 samples, 14%; 53,000 blocks, 13 µs each), a
   link's patch (2,642; 49,000 links) and a retired block's entry (375).
@@ -768,7 +768,7 @@ candidate if profiles ask for it.
   went to the interpreter**, on both hosts: the check is MEM_FAST_R, which
   asks for the next page too (for an access that might cross), and
   `mmio()` then declined an access that was fine. With
-  `SYSHM_JIT_FASTMEM=0`, 9.1's and 9.2.2's CD boots left 147 and 48
+  `BLUE_JIT_FASTMEM=0`, 9.1's and 9.2.2's CD boots left 147 and 48
   million times for the interpreter (47 million of 9.2.2's: D-form loads
   with the next page unreadable). Fixed in milestone 5 (`slow_loads()`
   in both translators; on AArch64 only without fastmem, so that its code
@@ -798,7 +798,7 @@ candidate if profiles ask for it.
   30 s for an 8.5 CD boot on the M5. The tools (in the scratch area, not
   the tree): QEMU 9.2.2 built with `--enable-plugins` for the
   x86_64-linux-user and aarch64-linux-user targets, the plugin (per
-  instruction address: the block's count), a measuring build of syshm
+  instruction address: the block's count), a measuring build of Blue
   writing a map (each block's host range, each guest instruction's
   start, kind and word, where the main line ends, the stubs, the text's
   address, the process's mappings), an interpreted run counting guest
@@ -816,23 +816,23 @@ does everything and writes it to `jit-timing-<host>-<date>.txt` to send
 back:
 
 - the processor and the commit;
-- the synthetic benchmark (`SYSHM_JIT_BENCH=1`);
+- the synthetic benchmark (`BLUE_JIT_BENCH=1`);
 - each CD boot whose files it finds, in instruction time (the same guest
   work on every host): `runs` times with the JIT (3 by default) and once
   interpreted, with the JIT's statistics; and the processor's counters,
   host instructions and cycles per guest instruction: on Linux for the
-  emulation thread (`SYSHM_PERF=1`, where `perf_event_paranoid` allows),
+  emulation thread (`BLUE_PERF=1`, where `perf_event_paranoid` allows),
   on macOS for the whole process (`/usr/bin/time -l`; under Rosetta, the
   ARM instructions it runs).
 
 The counts compare with Status's (QEMU's, Linux x86_64): 6.24, 7.09
 and 6.28 host instructions per guest instruction for the 8.5, 9.1 and
-9.2.2 boots. QEMU counts the whole process; `SYSHM_PERF` counts the
+9.2.2 boots. QEMU counts the whole process; `BLUE_PERF` counts the
 emulation thread, which is nearly all of it.
 
 The ROM and CD images are looked for at the top of the tree (`MOS.rom`,
-`85.iso`, `91.iso`, `922.iso`) or where `SYSHM_ROM`, `SYSHM_85_ISO`,
-`SYSHM_91_ISO` and `SYSHM_922_ISO` point; without them only the benchmark
+`85.iso`, `91.iso`, `922.iso`) or where `BLUE_ROM`, `BLUE_85_ISO`,
+`BLUE_91_ISO` and `BLUE_922_ISO` point; without them only the benchmark
 runs. A full run takes a few minutes, most of it the interpreted boots.
 
 ## Milestones
@@ -869,7 +869,7 @@ statistics (the JIT's own line aside).
    - Fastmem loads and stores, all sizes and forms; `lmw`/`stmw`, `dcbz`.
    - The fault handler on Linux and macOS (with the profiler's context
      pc).
-   - Checked accesses after faults and with `SYSHM_JIT_FASTMEM=0`.
+   - Checked accesses after faults and with `BLUE_JIT_FASTMEM=0`.
    - Device registers and stores to code pages leave for the interpreter
      at the instruction.
 
@@ -926,8 +926,8 @@ statistics (the JIT's own line aside).
   - branches, plain `b` into ROM-like code, hooks;
   - kernel calls and `sc` in place.
 
-  It must pass 100,000 programs on each target, `SYSHM_JIT_FAR` and
-  `SYSHM_JIT_FASTMEM=0` included.
+  It must pass 100,000 programs on each target, `BLUE_JIT_FAR` and
+  `BLUE_JIT_FASTMEM=0` included.
 - **The encoder**: a table of instructions and their bytes, from clang's
   x86-64 assembler, checked into `test_jit.c` (as `test_logic_imm()`
   checks `a64.h`). It covers:
@@ -938,7 +938,7 @@ statistics (the JIT's own line aside).
   - 8- and 32-bit displacements and immediates, the 16-bit prefix;
   - two- and three-byte VEX with each map and W;
   - MOVBE, LZCNT, BMI1/2 and FMA3 forms.
-- **`SYSHM_TEST_JIT=1`**: fail rather than skip without a JIT (CI).
+- **`BLUE_TEST_JIT=1`**: fail rather than skip without a JIT (CI).
 - **The CPU check**: an environment variable that can only hide features
   (never add them) has the JIT decline, with its message.
 - **By hand, per milestone**:
@@ -970,7 +970,7 @@ statistics (the JIT's own line aside).
   and the message says why.
 - **The split could disturb AArch64**: the byte-identical hash and the
   timing comparison guard it.
-- **Hardened runtime** if syshm is ever notarized: `MAP_JIT` is already
+- **Hardened runtime** if Blue is ever notarized: `MAP_JIT` is already
   used; the entitlement would be added then.
 - **The interpreter's host-dependent NaNs** (above): a difference between
   hosts and from a 750, not between the JIT and the interpreter.
@@ -996,7 +996,7 @@ statistics (the JIT's own line aside).
    - `mem.c` (milestone 5's guard below the view).
 
    Any objection?
-4. **`SYSHM_TEST_JIT=1` on the x86 CI runners** fails the job if a runner
+4. **`BLUE_TEST_JIT=1` on the x86 CI runners** fails the job if a runner
    lacks x86-64-v3. Acceptable, or skip there?
 5. **Real hardware** (for the user): is there an x86 machine (Intel Mac
    or Linux PC) to time boots on later?
@@ -1015,7 +1015,7 @@ Rough, with tests:
 | Memory, faults, checked paths | 600 |
 | Floating point, settle stubs | 1,100 |
 | Kernel calls, `sc`, mmio, code stores, match hook, profiler | 400 |
-| Tests (encoder table, benchmark, `SYSHM_TEST_JIT`) | 600 |
+| Tests (encoder table, benchmark, `BLUE_TEST_JIT`) | 600 |
 | CI, Makefile, README, plan.md | 150 |
 
 About 5,500 lines, nearly all new. Milestone 1 is about half of that.

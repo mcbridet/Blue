@@ -1,4 +1,4 @@
-\ Make QEMU's g3beige device tree look enough like a Blue & White G3 (PowerMac1,1)
+\ Make QEMU's g3beige device tree look enough like a B&W G3 (PowerMac1,1)
 \ for the Trampoline in 1.x NewWorld "Mac OS ROM" files. Lines starting with a
 \ backslash are dropped by run.sh; everything else is joined into boot-command.
 dev /

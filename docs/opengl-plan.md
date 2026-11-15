@@ -1,9 +1,9 @@
 # Plan: OpenGL for Mac OS 9 games
 
 Mac OS 9 games draw with Apple's OpenGL 1.x through AGL, its Mac binding.
-This plan gives syshm OpenGL libraries of its own, generated like the other
+This plan gives Blue OpenGL libraries of its own, generated like the other
 guest tools: they record the game's calls in guest memory and hand them to
-the host in batches, where syshm does OpenGL's fixed-function work and
+the host in batches, where Blue does OpenGL's fixed-function work and
 draws with the 3D backend the RAVE engine already uses, on the GPU in real
 time and in software otherwise, so instruction-time runs stay reproducible.
 
@@ -27,7 +27,7 @@ on the host, frames read back into guest memory, a Rage 128's identity).
 
 Milestone 7:
 
-- **Measuring** (`SYSHM_GL_PROFILE=FILE`, in `src/opengl.c`; `src/nk.c`,
+- **Measuring** (`BLUE_GL_PROFILE=FILE`, in `src/opengl.c`; `src/nk.c`,
   `src/surface.c` and `src/gpu.c` count their parts): a line for each
   frame shown on the screen with the host time since the one before and
   where it went: the libraries' host calls (the front end: everything in
@@ -38,7 +38,7 @@ Milestone 7:
   GPU thread's time drawing and reading back, the textures it made; and a
   line at each update of the window. Real-time runs on the shared host
   were noisy (other work on it, and in GPU runs macOS clocking the
-  processor and GPU down, as syshm sleeps more than half of each frame),
+  processor and GPU down, as Blue sleeps more than half of each frame),
   so the rasterizer was measured by replaying batches captured from the
   games (a scratch tool, not kept: every frame drawn again and checked
   against the captured one's hash, best of three) and counting
@@ -63,7 +63,7 @@ Milestone 7:
   is a small part of the guest's time: about 15 PowerPC instructions a
   record, some 0.3 ms a frame in UT and less in Quake III. On the GPU
   every frame is ready in time, with 7-10 ms to spare: reading back is
-  the biggest of syshm's own costs, but it's mostly the GPU finishing the
+  the biggest of Blue's own costs, but it's mostly the GPU finishing the
   frame at the low clocks macOS gives it between frames (replayed at full
   clocks a whole frame, drawn and read back, takes 0.5-0.9 ms). In
   software the rasterizer is the cost: inside it, unpacking pixels to
@@ -73,7 +73,7 @@ Milestone 7:
 - **The rasterizer** (`src/raster.c`), its pixels the same bit for bit:
   pixels unpacked and packed as whole vectors (each lane the same IEEE
   operation as one at a time; NaN packs to 0, as converting it one at a
-  time gives on the hosts syshm runs on), the blend factors as vectors,
+  time gives on the hosts Blue runs on), the blend factors as vectors,
   blending by one and zero (adding) skipped (the color as it is, but -0
   for +0, which packs the same), bilinear texel addresses without the
   float clamping and floor when the coordinates are below 2^24 (then they
@@ -182,9 +182,10 @@ Milestone 6:
   `AGL_BAD_ALLOC`.
 - **The library's imports:** OpenGLLibrary imports what those call from
   InterfaceLib (`DMSetDisplayMode`, `RealFont`, `NewGWorld` and the like,
-  all in Apple's import list but the first). That moves its data, so its
-  version is 3: one installed by an older syshm is left alone (every call
-  fails, and syshm says to update it), not misread.
+  all in Apple's import list but the first). That moved its data, so its
+  version went to 3 (and to 4 when the version string became "1.2 Blue"):
+  one installed by an older version of Blue is left alone (every call
+  fails, and Blue says to update it), not misread.
 - **S3TC and paletted textures:** left out. In Mac OS 9.2.2,
   OpenGLEngine, OpenGLRendererATI and the software renderer list neither
   `GL_EXT_texture_compression_s3tc` (or `GL_S3_s3tc`) nor
@@ -226,7 +227,7 @@ Milestone 6:
   moment 17 billion instructions in (305,904 calls and 4,500 frames, the
   same frame on macOS and Linux, on the GPU the same calls and frames),
   and UT's match spawns elsewhere (34,142 calls, 1,742 frames). Built
-  without the imports (the old layout), this milestone's syshm gives
+  without the imports (the old layout), this milestone's Blue gives
   main's runs exactly: Quake III's frame (306,893 calls, 4,511 frames, on
   the GPU too), UT's eight screenshots, 34,035 calls and 1,547 frames.
   The 3D engine's pixels are main's (software and GPU), and the 8.5 and
@@ -301,7 +302,7 @@ Milestone 5:
 
   In "glu", Mesa's lines at any slope step to the next pixel at other
   points than ours (30 pixels drawn by one only); its filled quadrics are
-  drawn alike. "glu" is compared when `SYSHM_TEST_GLU` names Mesa's
+  drawn alike. "glu" is compared when `BLUE_TEST_GLU` names Mesa's
   libGLU (`libGLU.so.1`). Unit tests (`tests/test_glfront.c`,
   `tests/test_opengl.c`) check what Mesa can't: OpenGL 1.2's rectangles
   for fractional and negative zooms, pixel maps (Mesa 25.2's corrupt its
@@ -322,10 +323,10 @@ Milestone 5:
 - **Quake III Arena's demo** (id's Mac demo of December 1999, from
   archive.org's mirror of id's FTP site; kept out of the tree): its
   installer (Installer VISE) installs it on a clone of the 8.6 disk with
-  syshm's libraries, and it plays: the menus, and `demo001` in q3dm7 with
+  Blue's libraries, and it plays: the menus, and `demo001` in q3dm7 with
   its lightmaps, models, effects and HUD (scripted in instruction time:
   the Finder opens it, the menus are driven by keys and mouse motion). It
-  calls no gl function syshm doesn't do. With `TZ=UTC` the same frame
+  calls no gl function Blue doesn't do. With `TZ=UTC` the same frame
   comes out on macOS and Linux 17 billion instructions in; on the GPU,
   the same calls and frames (306,893 and 4,511 by then), and pixels mostly
   within a step of the 16-bit screen (200 differ by more, at edges and in
@@ -486,7 +487,7 @@ Milestone 3:
   8 bits a component whatever internal format is asked for.
 - **`glReadPixels`** (what's recorded drawn first; every format and type,
   the pack stores), and the extensions string: Mac OS 9.2.2's engine's
-  extensions in its order, less what syshm doesn't do (`GL_APPLE_packed_pixel
+  extensions in its order, less what Blue doesn't do (`GL_APPLE_packed_pixel
   GL_ARB_transpose_matrix GL_EXT_clip_volume_hint GL_ARB_multitexture
   GL_ARB_texture_env_add GL_EXT_blend_color GL_EXT_blend_minmax
   GL_EXT_blend_subtract GL_EXT_texture_env_add GL_EXT_abgr GL_EXT_bgra
@@ -498,25 +499,25 @@ Milestone 3:
   instruction time guest time moves on. Offscreen swaps aren't paced. In
   instruction time UT's OpenGL and RAVE builds draw the same number of
   frames (639 by 44 billion instructions); before, the OpenGL build drew
-  as fast as the host could. `SYSHM_GL_FPS=1` prints the frame rate.
+  as fast as the host could. `BLUE_GL_FPS=1` prints the frame rate.
 - **Installing** (`src/install.c`): the three libraries are guest tools
   like the others, offered with them, and put in Extensions. On Mac OS 9,
-  Apple's are enabled exactly while syshm's aren't: once syshm's are all
+  Apple's are enabled exactly while Blue's aren't: once Blue's are all
   in Extensions, the installer moves Apple's (files named OpenGLLibrary,
-  OpenGLMemory and OpenGLUtility, of type `shlb` and not syshm's creator,
+  OpenGLMemory and OpenGLUtility, of type `shlb` and not Blue's creator,
   in Extensions) to Extensions (Disabled) with `PBCatMoveSync` (the folder
-  made if there's none: `FindFolder`'s `extD`), and says so; if syshm's
+  made if there's none: `FindFolder`'s `extD`), and says so; if Blue's
   are gone (none of them anywhere: deleted by hand, as there's no
   uninstall) while Apple's are only in Extensions (Disabled), the offer is
-  "Put Back" instead, and nothing of syshm's OpenGL is installed. Apple's
-  in Extensions with syshm's already there gives "Move". The other tools'
+  "Put Back" instead, and nothing of Blue's OpenGL is installed. Apple's
+  in Extensions with Blue's already there gives "Move". The other tools'
   offers and messages are as before. On a clone of the user's 9.2.2:
-  `tools: installed syshm OpenGL Library, syshm OpenGL Memory and syshm
+  `tools: installed Blue OpenGL Library, Blue OpenGL Memory and Blue
   OpenGL Utility in "MacOS9Lives:System Folder:Extensions"; moved Apple's
   OpenGLLibrary, OpenGLMemory and OpenGLUtility to "MacOS9Lives:System
-  Folder:Extensions (Disabled)". Programs opened from now on find syshm's
+  Folder:Extensions (Disabled)". Programs opened from now on find Blue's
   OpenGL.`, and UT's OpenGL build, opened in that same session, drew with
-  syshm's; with syshm's three deleted, the next start put Apple's back.
+  Blue's; with Blue's three deleted, the next start put Apple's back.
 - **Unreal Tournament's OpenGL build** (the UT CD's `Extras:OpenGL
   UT.sea`: an application and `OpenGLDrv.ini`), on a clone of the 8.6 disk
   with UT installed, the libraries in Extensions and
@@ -530,7 +531,7 @@ Milestone 3:
   RAVE build at the same instruction counts (both paced, they show the
   same intro frames at 38.75 and 41.25 billion): the same pictures, the
   OpenGL build's lightmapped walls a little brighter. That wasn't traced
-  further; UT's two renderers light differently, and syshm's drawing of
+  further; UT's two renderers light differently, and Blue's drawing of
   what OpenGL asks matches Mesa's in the scenes below. In real time on an
   M5 Mac: on the GPU 60 frames a second (the
   display's refresh) throughout, drawing 13-28% of the time; in software
@@ -706,7 +707,7 @@ Milestone 1:
   from Mac OS 9.2.2's libraries (the exports, and the dispatch table's
   offset each gl wrapper calls through, read from its code) and the macOS
   SDK's headers (signatures; AGL's and OpenGLMemory's, which macOS lacks,
-  are in the script). They're on the tools volume as "syshm OpenGL
+  are in the script). They're on the tools volume as "Blue OpenGL
   Library", "... Memory" and "... Utility" (type `shlb`, creator `syGL`);
   the installer doesn't offer them yet. Each process gets its own
   instance of OpenGLLibrary's data, which has its contexts, pixel formats
@@ -719,7 +720,7 @@ Milestone 1:
   order of Mac OS X's `GLIFunctionDispatch` (`gliDispatch.h`) but for
   +0x544, `blend_func_separate` there, which Mac OS 9 doesn't export, and
   +0x650 and +0x654, which are `glBlendColor` and `glBlendEquation` rather
-  than Mac OS X's vertex array range functions. syshm's contexts are laid
+  than Mac OS X's vertex array range functions. Blue's contexts are laid
   out so (their handle is their own address), and each slot calls the gl
   function with the handle first.
 - **AGL:** one renderer (ID 0x00021000, accelerated, 32 MB of video and
@@ -745,14 +746,14 @@ Milestone 1:
   `glViewport` and `glScissor` (set to the drawable's size when first
   attached), `glEnable`/`glDisable`/`glIsEnabled` (the scissor test),
   `glColorMask`, `glDepthMask`, `glGetString` (vendor "ATI Technologies
-  Inc.", renderer "Rage 128 OpenGL Engine", version "1.2 syshm", no
+  Inc.", renderer "Rage 128 OpenGL Engine", version "1.2 Blue", no
   extensions yet), `glGetError`, `glGet*` for those and a few limits,
   `glFlush`, `glFinish`. OpenGLMemory: `glmMalloc` and the rest through
   `NewPtr`, `NewPtrClear`, `GetPtrSize` and `DisposePtr`; the fills and
   copies on the host; modes and settings accepted. OpenGLUtility: nothing
   yet.
-- **The test application** (`src/gltest.c`, "syshm GL Test", on the tools
-  volume with `SYSHM_TOOLS_GL_TEST=1`): logic in C on the host making
+- **The test application** (`src/gltest.c`, "Blue GL Test", on the tools
+  volume with `BLUE_TOOLS_GL_TEST=1`): logic in C on the host making
   callouts through its imports (InterfaceLib's, OpenGLLibrary's), so the
   Code Fragment Manager links it to the libraries as a game. It sets the
   screen's depth, opens a 320x240 window, makes a double-buffered context
@@ -763,7 +764,7 @@ Milestone 1:
   the application in Startup Items, put there with hfsutils on APFS
   clones), in instruction time: the window's pixels exact (0x4080BF and
   0xFF8000 at 32 bits; at 16 bits their 5-bit forms), the screenshot the
-  same in two runs, with `SYSHM_GPU=1`, and on Linux (Mesa) as on macOS.
+  same in two runs, with `BLUE_GPU=1`, and on Linux (Mesa) as on macOS.
 - **Tests:** `tests/test_opengl.c` (the fragments; AGL's formats, renderer
   info, errors and strings; a context's layout; a clear and a scissored
   one swapped into a window's port through a `clipRgn` with a hole, at 32
@@ -827,16 +828,16 @@ build imports every library with versions 0 and 0, so any version will do.
 
 ## Decisions (accepted for now)
 
-- **Replace the libraries:** syshm provides OpenGLLibrary (gl and agl),
+- **Replace the libraries:** Blue provides OpenGLLibrary (gl and agl),
   OpenGLMemory and OpenGLUtility (glu) under Apple's fragment names, with
-  the same exports, and they forward to the host. syshm doesn't load
+  the same exports, and they forward to the host. Blue doesn't load
   Apple's OpenGL engine or its renderers. This works the same on 8.5 and
   8.6, which have no OpenGL, as on 9.x.
 - **Record in the guest:** most calls (vertices, colors, state) are stored
   in a buffer in guest memory by a few generated PowerPC instructions, with
   no kernel exit. A host call drains the buffer when it fills, and for any
   call that returns something or reads client memory.
-- **Fixed function in syshm, in C:** the host tracks the GL state and does
+- **Fixed function in Blue, in C:** the host tracks the GL state and does
   transform, lighting, texture coordinate generation and clipping itself,
   then hands screen-space primitives with their fragment state to the
   existing backends, `raster.c` (software, the reference) and `gpu.c`
@@ -844,14 +845,14 @@ build imports every library with versions 0 and 0, so any version will do.
   No compatibility-profile context on the host.
 - **Frames go back into guest memory**, into the drawable (window, memory
   or the whole screen), as the RAVE engine does. Presenting full-screen
-  contexts straight in syshm's window comes later, as an optimization.
+  contexts straight in Blue's window comes later, as an optimization.
 - **Identity:** an ATI renderer, "Rage 128 OpenGL Engine" with ATI's
   vendor string, as the RAVE engine reports one (see Identity).
 - **First target:** Unreal Tournament's OpenGL build, on the UT CD, which
   needs 45 functions.
 - **Order:** OpenGL first (the user's choice; this plan proposed Glide
   first, see Order). Milestone 0's groundwork is Glide's too.
-- **Installation:** on 9.x syshm's libraries replace Apple's (moved to
+- **Installation:** on 9.x Blue's libraries replace Apple's (moved to
   "Extensions (Disabled)" when they're installed); on 8.5 and 8.6 they're
   added.
 
@@ -859,7 +860,7 @@ build imports every library with versions 0 and 0, so any version will do.
 
 ### Where it is (verified)
 
-- **Mac OS 9.1 CD (`91.iso`):** the bootable System Folder (what syshm
+- **Mac OS 9.1 CD (`91.iso`):** the bootable System Folder (what Blue
   starts from the CD) has no OpenGL. The installer's archive, "Installation
   Tome" (`Software Installers:System Software:Mac OS 9.1`, 46,787,286
   bytes, type `idcp` creator `kakc`), holds six OpenGL files, all modified
@@ -871,7 +872,7 @@ build imports every library with versions 0 and 0, so any version will do.
   the first 48 KB or so.
 - **The 8.6 install (`hd86.img`):** no OpenGL. Its Extensions have
   QuickDraw 3D and RAVE, ATI's RAVE engine ("ATI 3D Accelerator", 26 March
-  1999), the Game Sprockets and syshm's 3D engine.
+  1999), the Game Sprockets and Blue's 3D engine.
 - **The Unreal Tournament CD (`ut.iso`):** `Extras:OpenGL UT.sea`, a
   Compact Pro archive with an OpenGL build of the game (13 December 1999)
   and instructions: copy it and `OpenGLDrv.ini` into the game's folder and
@@ -962,9 +963,9 @@ GLRendererIndex8D32, GLRendererRGB555A8D16 and GLRendererRGB555A8D32.
   functions it calls; 1005, flags). It sets about 50 private ATI
   draw-context tags (1000-1094, mostly through `setInt`, a few through
   `setFloat` and `setPtr`; 1002-1009 carry fog), reads tags 1011 and 1021
-  (the hardware generation and ATI's extension table, which syshm's engine
+  (the hardware generation and ATI's extension table, which Blue's engine
   answers for UT), and uses RAVE's `accessDrawBuffer` and `accessZBuffer`,
-  which syshm's engine doesn't support. Its strings: vendor "ATI
+  which Blue's engine doesn't support. Its strings: vendor "ATI
   Technologies Inc."; renderers "Rage II OpenGL Engine", "Rage Pro OpenGL
   Engine", "Rage Mobility OpenGL Engine", "Rage 128 OpenGL Engine", "ATI
   Radeon OpenGL Engine", "ATI 3DRage OpenGL Engine"; version
@@ -1065,16 +1066,16 @@ be learned from them, at a cost (option (b) below).
 
 ## Options
 
-**(a) Replace the libraries (recommended).** syshm generates OpenGLLibrary,
+**(a) Replace the libraries (recommended).** Blue generates OpenGLLibrary,
 OpenGLMemory and OpenGLUtility with Apple's fragment names and exports;
 their calls go to the host, which does everything.
 
 - For: speed (no OpenGL engine running as emulated PowerPC code; vertices
   transformed by the host); works on 8.5 and 8.6 without Apple's OpenGL,
-  so UT's OpenGL build would run on the user's 8.6 install as is; syshm
+  so UT's OpenGL build would run on the user's 8.6 install as is; Blue
   controls the identity, extensions and limits; one deterministic software
   path; the same backend as RAVE and Glide.
-- Against: syshm implements OpenGL 1.2's fixed-function semantics itself,
+- Against: Blue implements OpenGL 1.2's fixed-function semantics itself,
   the largest part of the work; Apple's own OpenGL is set aside on 9.x.
 
 **(b) A renderer under Apple's engine.** A `shlb` of creator `gld1` that
@@ -1086,11 +1087,11 @@ Apple's engine loads like ATI's, exporting the 22 `gld` functions.
   table, textures, drawables); transform and lighting stay in emulated
   PowerPC code; 9.x only (or wherever Apple's OpenGL is installed).
 
-**(c) Apple's OpenGL over syshm's RAVE engine.** Apple's ATI renderer
-already turns OpenGL into RAVE calls; syshm's engine would have to pass for
+**(c) Apple's OpenGL over Blue's RAVE engine.** Apple's ATI renderer
+already turns OpenGL into RAVE calls; Blue's engine would have to pass for
 an ATI engine to it.
 
-- For: no new library; syshm's RAVE path is deterministic already.
+- For: no new library; Blue's RAVE path is deterministic already.
 - Against: much private ATI interface to learn (gestalts 1001, 1002 and its
   function table, 1005; some 50 private tags; `accessDrawBuffer` and
   `accessZBuffer`), from ATI's RAVE engines on the 9.1 CD; OpenGL limited
@@ -1109,8 +1110,8 @@ program; nothing in (a) gets in its way.
 
 ### Installation and coexistence
 
-- The libraries join the guest tools volume as one folder ("syshm OpenGL":
-  three files with syshm's own creator and file names, fragment names
+- The libraries join the guest tools volume as one folder ("Blue OpenGL":
+  three files with Blue's own creator and file names, fragment names
   OpenGLLibrary, OpenGLMemory and OpenGLUtility, `cfrg` versions as
   Apple's: current 1, oldest compatible 0, so programs linked against
   Apple's, including Apple's OpenGLUtility, accept them). The install
@@ -1120,13 +1121,13 @@ program; nothing in (a) gets in its way.
   picks (an open question to test), the install prompt moves Apple's
   OpenGLLibrary, OpenGLMemory and OpenGLUtility to "Extensions
   (Disabled)", saying so, and moves them back on uninstall (as built:
-  syshm has no uninstall, so once syshm's are deleted the offer is to put
+  Blue has no uninstall, so once Blue's are deleted the offer is to put
   Apple's back; see Status). Apple's engine
   and renderers are then never loaded (only Apple's OpenGLLibrary loads
   the engine).
 - As with the 3D engine, the library's data carries its version, so one
-  installed by an older syshm is noticed and the user told to install it
-  again.
+  installed by an older version of Blue is noticed and the user told to
+  install it again.
 - 8.5 and 8.6: the same files, nothing to disable.
 
 ## Design
@@ -1276,7 +1277,7 @@ profile on Linux, and let the driver do fixed function.
   need fixed function written anyway. Two semantics (the driver's in real
   time, something else in software).
 
-**(ii) Fixed function in syshm, on the core path (recommended).**
+**(ii) Fixed function in Blue, on the core path (recommended).**
 
 - **The front end, in C** (new, `src/glfront.c` or so), runs on the
   backend thread: vertex assembly (immediate mode, arrays, `GL_QUADS`,
@@ -1323,7 +1324,7 @@ Why (ii):
 The price is the fixed-function semantics: this is most of the size
 estimate. Two things contain it: milestones follow what the target games
 call, and in CI on Linux, Mesa's compatibility profile serves as an
-oracle: the tests draw the same command streams through syshm's front end
+oracle: the tests draw the same command streams through Blue's front end
 and through Mesa, and compare (`(i)` as a test, not as the product).
 
 What's not planned: the accumulation buffer and the imaging subset's
@@ -1363,11 +1364,11 @@ or 2048 (see Identity).
   `AGL_BUFFER_RECT` and `AGL_SWAP_RECT` restrict to a rectangle.
 - **Full screen:** `aglSetFullScreen(ctx, width, height, freq, device)`
   switches the display mode through the Display Manager (a callout of the
-  library's, as the syshm Enhancements helper switches modes) and draws to
+  library's, as the Blue Enhancements helper switches modes) and draws to
   the whole screen; destroying the context, setting another drawable or
   the process quitting switches back. (As built: see milestone 6. Apple's
   9.2.2 hands the size to its engine and renderer, which import no
-  Display Manager call; syshm does what the AGL reference says.) Most
+  Display Manager call; Blue does what the AGL reference says.) Most
   games go full screen with DrawSprocket instead and attach to its front
   buffer's port, as UT does; that already works for RAVE.
 - **Reading frames back** (the default): at a swap (or `glFlush` and
@@ -1382,7 +1383,7 @@ or 2048 (see Identity).
   found nearly free to read back with Apple silicon's shared memory (and
   366 frames a second at 640x480, read back each time).
 - **Presenting directly** (later, real time only): for a context covering
-  the whole screen (full screen, or DrawSprocket's front buffer), syshm's
+  the whole screen (full screen, or DrawSprocket's front buffer), Blue's
   window shows the backend's image itself, read back into host memory and
   handed to `display.c`, skipping the conversion into guest memory and the
   region clipping. Screenshots then take that image. Measured against
@@ -1416,14 +1417,14 @@ What games look at, from memory unless verified:
 Proposed strings: `GL_VENDOR` "ATI Technologies Inc." and `GL_RENDERER`
 "Rage 128 OpenGL Engine" (Apple's own strings, verified), like the RAVE
 engine, which tells UT it's a Rage 128; `GL_VERSION` "1.2" followed by
-syshm's version (Apple's ATI renderer said `1.1.ATI-%d.%d`; programs parse
+Blue's version (Apple's ATI renderer said `1.1.ATI-%d.%d`; programs parse
 the leading number); `GL_MAX_TEXTURE_SIZE` 1024 and 2 texture units, as a
 Rage 128 had (from memory); and the extension list above, which is more
 than a Rage 128 had.
 The alternative is "ATI Radeon OpenGL Engine" (2048 textures, more units),
-for later games that expect a Radeon; or honest syshm strings, which
+for later games that expect a Radeon; or honest Blue strings, which
 games of the time don't know. **The user decides.** Whatever is chosen,
-`GL_EXTENSIONS` describes what syshm really does.
+`GL_EXTENSIONS` describes what Blue really does.
 
 ### Targets
 
@@ -1450,7 +1451,7 @@ software one at all.
 **Test programs:** Apple's OpenGL SDK for Mac OS 9 (from memory: GLUT 3.7
 for Mac OS and sample code; a Carbon version of Apple's "SetupGL" sample
 is in MacGLide's repository, verified in its file tree) and GLUT demos.
-syshm's own: a test application generated like syshm Enhancements, whose
+Blue's own: a test application generated like Blue Enhancements, whose
 logic is C on the host making callouts into the guest's OpenGLLibrary
 (through the real CFM linkage), drawing known scenes and checked by
 screenshots in instruction time. And UT's OpenGL build, a real game the
@@ -1543,12 +1544,12 @@ Shared pieces may already exist from Glide.
   registers, including stack and float arguments.
 - **In the guest:** the generated test application in an instruction-time
   run, screenshots byte for byte the same across runs and across x86_64
-  and AArch64 (CI); and the same with `SYSHM_GPU=1` within tolerance.
+  and AArch64 (CI); and the same with `BLUE_GPU=1` within tolerance.
 - **Determinism:** a scripted UT OpenGL session in instruction time twice,
   identical screenshots and instruction counts.
 - **By hand:** UT's OpenGL build in a window and full screen, resolution
   changes, Restart in the middle, two OpenGL programs at once,
-  `SYSHM_GPU_FAIL` falling back to software.
+  `BLUE_GPU_FAIL` falling back to software.
 
 ## Risks
 
@@ -1572,16 +1573,16 @@ Shared pieces may already exist from Glide.
   let compilers contract or reorder float operations (and `raster.c`,
   which doesn't pin `FP_CONTRACT` today, should be checked the same way).
 - **Memory:** UT's notes ask 40-80 MB more for OpenGL with Apple's
-  implementation; syshm's libraries keep textures on the host, so the
+  implementation; Blue's libraries keep textures on the host, so the
   guest needs less, but games size their partitions by their own rules.
 
 ## Open questions
 
-- Identity: Rage 128, Radeon, or syshm's own strings? (User.)
+- Identity: Rage 128, Radeon, or Blue's own strings? (User.)
 - Which of two same-named fragments in Extensions CFM picks (not tried).
   Disabling Apple's is enough on 9.2.2 (verified: UT's OpenGL build then
-  links to syshm's, even in the session that moved Apple's); 9.1 isn't
-  tried (installing 9.1 onto a disk image isn't done yet in syshm).
+  links to Blue's, even in the session that moved Apple's); 9.1 isn't
+  tried (installing 9.1 onto a disk image isn't done yet in Blue).
 - Did a Mac OS 9 `aglMacro.h` exist, and does any target call through
   `glc_cc` or the context's table? (Apple's OpenGLUtility reads `glc_cc`:
   it imports it.)
@@ -1594,7 +1595,7 @@ Shared pieces may already exist from Glide.
 - Which folder Apple's engine searches for renderers (the `FindFolder`
   argument wasn't checked): only matters for option (b).
 - Whether to offer Apple's own OpenGL on 9.x later through the RAVE engine
-  (option (c)), for programs syshm's libraries get wrong.
+  (option (c)), for programs Blue's libraries get wrong.
 
 ## Size
 

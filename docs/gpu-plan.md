@@ -56,9 +56,9 @@ they change.
 - **When it's used:** automatically in real-time runs (`--window`,
   `--realtime`) when the host has hardware-accelerated OpenGL 3.3.
   Instruction-time runs keep the software rasterizer, so they stay exactly
-  reproducible on every host. `--no-gpu` turns it off; `SYSHM_GPU=1`
+  reproducible on every host. `--no-gpu` turns it off; `BLUE_GPU=1`
   forces it on in any run, accepting software OpenGL too (for tests and
-  comparisons); `SYSHM_GPU=0` is the same as `--no-gpu`.
+  comparisons); `BLUE_GPU=0` is the same as `--no-gpu`.
 - **Invisible to the guest except for the pixels:** the engine fragment,
   its gestalt answers (ATI vendor, engine 5, features, texture memory) and
   every method behave the same with either backend.
@@ -223,8 +223,8 @@ Every symbol is looked up up front; a missing one means no GPU.
 `nk_boot()` starts the GPU when:
 
 ```
---no-gpu or SYSHM_GPU=0   → never
-SYSHM_GPU=1               → in any run, software OpenGL accepted
+--no-gpu or BLUE_GPU=0   → never
+BLUE_GPU=1               → in any run, software OpenGL accepted
 otherwise                 → in real-time runs, hardware OpenGL only
 ```
 
@@ -237,7 +237,7 @@ The GPU thread then accepts the context only if all of these hold:
    `Apple Software Renderer`, `SwiftShader`; zink on lavapipe shows as
    `llvmpipe` too). Virtual GPUs that pass drawing to the host's
    (`virgl`, VMware's `SVGA3D`, Parallels) count as hardware. Skipped
-   with `SYSHM_GPU=1`.
+   with `BLUE_GPU=1`.
 3. Limits: `GL_MAX_TEXTURE_SIZE` and `GL_MAX_RENDERBUFFER_SIZE` of at
    least 4096 (the largest context and image RAVE allows), and 32-bit
    float depth renderbuffers that make complete framebuffers.
@@ -417,7 +417,7 @@ presented rectangle comes later (see Performance).
   - On `gpu_failed()` or a failing `gpu_read()`: free every GPU target,
     set `r->gpu` to NULL, print once, and go on in software (that frame is
     lost; the next `renderStart` clears as usual).
-  - The `SYSHM_RAVE_FPS` line names the backend.
+  - The `BLUE_RAVE_FPS` line names the backend.
 - **`src/nk.h`, `src/nk.c`:**
   - `bool no_gpu` in `nk_boot_options`.
   - `struct machine` gets `struct gpu *gpu`, opened in `nk_boot()` before
@@ -433,17 +433,17 @@ presented rectangle comes later (see Performance).
   `test_rave.c` runs its frames with each backend there is.
 - **`.github/workflows/ci.yml`:** on Linux, install Mesa's EGL and
   software drivers (`libegl1 libegl-mesa0 libgl1-mesa-dri`) and run the
-  tests with `SYSHM_TEST_GPU=1`, so the backend is exercised on llvmpipe
+  tests with `BLUE_TEST_GPU=1`, so the backend is exercised on llvmpipe
   on every push and a missing context fails instead of skipping. macOS
   runners run the GPU tests if they can open a context and skip them
   otherwise.
 - **`README.md`:** the 3D engine paragraph (drawn with OpenGL when
-  available, and when it isn't), `--no-gpu` and `SYSHM_GPU`, Next steps,
+  available, and when it isn't), `--no-gpu` and `BLUE_GPU`, Next steps,
   Layout, Build and test.
 
 ## Known differences from the software renderer
 
-Real-time runs only, unless `SYSHM_GPU=1`:
+Real-time runs only, unless `BLUE_GPU=1`:
 
 1. **Triangle edges:** GPUs snap vertices to a subpixel grid (typically
    1/256 pixel) and evaluate edges in fixed point, as `raster.c` does too
@@ -474,22 +474,22 @@ Real-time runs only, unless `SYSHM_GPU=1`:
 - During initialization: any failure leaves `gpu_ready()` false with a
   reason, printed once; every context draws in software.
 - At run time: `glGetError` after every job, and framebuffer completeness
-  when a target is made (`SYSHM_GPU_DEBUG=1` also logs each job and
+  when a target is made (`BLUE_GPU_DEBUG=1` also logs each job and
   shader logs). An error marks the GPU failed; `rave.c` switches to
   software as above. The context isn't used again for the rest of the
   run, restarts included.
-- `SYSHM_GPU_FAIL=N` (testing only) fails the Nth job, so the fallback
+- `BLUE_GPU_FAIL=N` (testing only) fails the Nth job, so the fallback
   path can be tested.
 - The JIT's fastmem `SIGSEGV` handler passes on faults that aren't its
   own, but a driver that installed its own handler after it could swallow
   them. (Not done yet:) after `gpu_ready()`, `nk.c` should check the
   `SIGSEGV` handler is still the JIT's and say so if not (with the same
-  advice as for gdb: `SYSHM_JIT_FASTMEM=0`).
+  advice as for gdb: `BLUE_JIT_FASTMEM=0`).
 
 ## Testing
 
 `tests/test_gpu.c`, run when a context opens (`allow_software`, so Mesa's
-llvmpipe counts) and skipped otherwise, except that `SYSHM_TEST_GPU=1`
+llvmpipe counts) and skipped otherwise, except that `BLUE_TEST_GPU=1`
 makes no context a failure:
 
 - **Exact**, using whole-pixel geometry where GPUs agree with `raster.c`:
@@ -507,14 +507,14 @@ makes no context a failure:
   image. Thresholds to be tuned on llvmpipe and real GPUs, then fixed.
 - **`test_rave`** runs both frames (texture orientation, 1,500 triangles
   over several batches) with each backend.
-- **Fallback:** with `SYSHM_GPU_FAIL`, a frame after the failure comes out
+- **Fallback:** with `BLUE_GPU_FAIL`, a frame after the failure comes out
   of the software backend.
 
 By hand, with Bugdom:
 
-- `SYSHM_RAVE_FPS=1` with and without `--no-gpu`, at 640x480 and at
-  1024x768 or more (the guest tools' syshm Enhancements lets the window set the size).
-- The same scripted instruction-time run with and without `SYSHM_GPU=1`,
+- `BLUE_RAVE_FPS=1` with and without `--no-gpu`, at 640x480 and at
+  1024x768 or more (the guest tools' Blue Enhancements lets the window set the size).
+- The same scripted instruction-time run with and without `BLUE_GPU=1`,
   comparing screenshots (for example with ImageMagick's
   `compare -metric AE`): differences should be at edges only.
 - Fog, water and other transparency, the HUD (bitmaps), menus, changing
@@ -525,7 +525,7 @@ By hand, with Bugdom:
 Each one leaves the tree working, with `make test` passing on Linux and
 macOS.
 
-0. **Baseline.** `SYSHM_RAVE_FPS=1` numbers for Bugdom in software at two
+0. **Baseline.** `BLUE_RAVE_FPS=1` numbers for Bugdom in software at two
    resolutions, and screenshots from a scripted instruction-time run, to
    compare against throughout.
 1. **The seam, no change in behaviour.** Backend calls in `rave.c` with
@@ -534,9 +534,9 @@ macOS.
    baseline screenshots come out identical, byte for byte.
 2. **Loading, context, thread, acceptance.** `gpu.c` opens and checks a
    context on macOS and Linux and prints the result; `--no-gpu`,
-   `SYSHM_GPU`; nothing drawn on the GPU yet. Done when the message is
+   `BLUE_GPU`; nothing drawn on the GPU yet. Done when the message is
    right on an Apple Silicon Mac, on Linux with a GPU, on Linux with only
-   llvmpipe (rejected without `SYSHM_GPU=1`), and over SSH with no
+   llvmpipe (rejected without `BLUE_GPU=1`), and over SSH with no
    display.
 3. **Drawing.** In this order, each with its tests: targets, clears and
    reading back; untextured triangles and depth (both modes); textures,
@@ -547,9 +547,9 @@ macOS.
 4. **Integration.** `nk.c` wiring, restarts, run-time fallback, the
    summary line. Done when Bugdom plays on the GPU, looks like the
    software renderer, runs at least as fast, survives Restart, and falls
-   back cleanly with `SYSHM_GPU_FAIL`.
+   back cleanly with `BLUE_GPU_FAIL`.
 5. **CI and documentation.** Mesa in the Linux jobs with
-   `SYSHM_TEST_GPU=1`; README and usage text.
+   `BLUE_TEST_GPU=1`; README and usage text.
 6. **Performance**, measured against the baseline (below).
 
 Rough size: `gpu.c` around 1,500 lines including the ABI declarations and

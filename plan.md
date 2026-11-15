@@ -3,7 +3,7 @@
 Mac OS 9.1, 9.2 and 9.2.2 need the "Mac OS ROM" file from their own CD,
 and that ROM wants a NanoKernel 2 underneath: a kernel with
 Multiprocessing Services built in, that runs Mac OS as one task (the "blue
-task") among others it schedules. syshm implements the NanoKernel v1
+task") among others it schedules. Blue implements the NanoKernel v1
 interface natively (`src/nk.c`). This plan adds the parts of the NanoKernel
 2 interface Mac OS 9.1 uses, one piece at a time, without changing what
 8.5–9.0.4 see.
@@ -17,7 +17,7 @@ to check it, and what to hand back.
 Done:
 
 - **Parcels** (`src/parcels.c`, `src/rom.c`): 9.1's ROM file keeps its
-  contents in parcels. syshm loads them, takes the 4 MB Toolbox image from
+  contents in parcels. Blue loads them, takes the 4 MB Toolbox image from
   the `'rom '` parcel, and puts the `'node'` parcels' libraries
   (`AAPL,CodePrepare`: MotherBoardHAL, TimeManagerLib, NVRAMServicesLib,
   RTCServicesLib; `AAPL,CodeRegister`: NativePowerMgrLib, StartLib) and the
@@ -26,7 +26,7 @@ Done:
   MOS91.rom` lists them.
 - **Address space** (`default_regions()` in `src/nk.c`): 9.1's ConfigInfo
   has no page map (the Trampoline in the same file hands the kernel one),
-  so syshm lays out the 8.5 ROM's map at the logical addresses ConfigInfo
+  so Blue lays out the 8.5 ROM's map at the logical addresses ConfigInfo
   still gives.
 - **A blue task** (`init_info_records()`): for ROM files with parcels
   (`m->mp_kernel`), NanoKernelInfo's version 2 fields name a blue process
@@ -41,7 +41,7 @@ Done:
   the page ager's (82, 100), timers (40, 41, 30, 31, 32), delays (33, and
   55 for tasks), processes (3, 4, 5, 6, 99, 116), the CPU plugin (2, 46,
   in `nk.c`), and `sc` with r0 -1 and -2 (`system_call()`: is the current
-  task the blue one). `SYSHM_LOG_MP=1` logs each, the task switches,
+  task the blue one). `BLUE_LOG_MP=1` logs each, the task switches,
   timers firing and software interrupts raised.
 - **Tasks** (Task 1): tasks other than the blue one are made, started,
   terminated and deleted, and run on the one processor: registers saved
@@ -79,7 +79,7 @@ Done:
   it at once instead of after 25 s. See Findings, "The Start Manager's
   wait".
 - **Floppies** (`--floppy`, `--floppy-drive`; `src/floppy.c`, the
-  removable drive in `src/disk.c`): a floppy drive of syshm's own disk
+  removable drive in `src/disk.c`): a floppy drive of Blue's own disk
   driver at PCI device 7, for raw and Disk Copy 4.2 images, whose disk
   comes and goes: put in from the window's menu, by dropping an image on
   the window, or from scripts (`floppy insert`, `floppy eject`); ejected
@@ -91,7 +91,7 @@ Done:
   2.28's (HWInfo 0x0108 with CascadeInfo, ProcessorInfo 0x0112, SystemInfo
   0x0107); the kernel has the coherence group and processor objects, and
   calls 44, 45, 62 and 132; kernel call 7 answers unknown selectors; the
-  floppy controller's Mac I/O cell reads as zeros; syshm's lanLib stays in
+  floppy controller's Mac I/O cell reads as zeros; Blue's lanLib stays in
   the Ethernet node. See Findings, "Mac OS 9.2.2: the CD" and after.
 - **CD swapping** (`--cdrom`, `--cdrom-drive`; removable CD-ROM drives in
   `src/disk.c`, where images go and the menu in `src/drives.c`): CD-ROM
@@ -126,7 +126,7 @@ Done:
   against Mesa's OpenGL. Unreal Tournament's OpenGL build plays on the GPU
   and in software, and so does Quake III Arena's demo; the installer
   offers the libraries, and on Mac OS 9 moves Apple's to Extensions
-  (Disabled) while syshm's are there.
+  (Disabled) while Blue's are there.
   The groundwork (milestone 0):
   the 3D backend's texture units and stages, blend equations and color
   masks, with RAVE drawing through them, pixels unchanged; the software
@@ -137,7 +137,7 @@ Done:
 Where it stops:
 
 ```
-build/syshm boot --cdrom 91.iso --max 20000000000
+build/blue boot --cdrom 91.iso --max 20000000000
 stopped: instruction limit reached (system context)
 ```
 
@@ -158,7 +158,7 @@ after 16 s of guest time (1.3 s on the host; it was 41 s before the
 startup disk was found at once), against 13.8 s for the 8.5 CD: what's
 left is mostly AppleTalk on Ethernet (5 s) and the CD's transfers.
 
-The 9.2.2 CD (`build/syshm boot --cdrom 922.iso --max 4000000000`) has the
+The 9.2.2 CD (`build/blue boot --cdrom 922.iso --max 4000000000`) has the
 Finder up by instruction 1.5 billion, with the CD's Read Me open in
 SimpleText (as under QEMU), and idles there; two runs are identical. In
 real time with fast start the Finder is up after 13.4-13.7 s of guest time
@@ -184,14 +184,14 @@ scheduling around a sleep that doesn't happen; the system carries on.
 - **Don't change 8.5–9.0.4.** Everything new is for NanoKernel 2 ROMs only,
   behind `m->mp_kernel` (true for ROM files with parcels). Before handing
   back, check that the 8.5 CD still reaches the Finder:
-  `build/syshm boot --rom MOS.rom --cdrom 85.iso --max 4000000000 --screenshot
+  `build/blue boot --rom MOS.rom --cdrom 85.iso --max 4000000000 --screenshot
   /tmp/85.png` (only the menu-bar clock may differ between runs).
 - **Stay reproducible.** Runs in instruction time (no `--window` or
   `--realtime`) must stay exactly reproducible: guest tasks run on the one
   host thread, scheduled at instruction counts and guest timebase values,
   never by host time.
-- **The 9.1 check:** `build/syshm boot --cdrom 91.iso --max
-  20000000000` (a few seconds). Add `SYSHM_LOG_MP=1` for the calls, and
+- **The 9.1 check:** `build/blue boot --cdrom 91.iso --max
+  20000000000` (a few seconds). Add `BLUE_LOG_MP=1` for the calls, and
   `--screenshot f.png` once something may be on screen. Report the new
   stopping point (the last lines of output).
 - **Leave the user's files alone.** `hd.img`, `hd86.img`, `86update.img`
@@ -238,18 +238,18 @@ scheduling around a sleep that doesn't happen; the system carries on.
   in a dump (`--find ADDR`: the block an address is in). disasm.py
   needs capstone: a Python virtual environment with `pip install capstone
   machfs` in a temporary directory (machfs reads the CDs' HFS volumes).
-  `build/syshm rom extract MOS91.rom img91.bin` writes the 4 MB image
+  `build/blue rom extract MOS91.rom img91.bin` writes the 4 MB image
   (address `0xFFC00000 + offset`), `--dump-ram FILE` saves RAM.
 - **Tracing a run:** `--trace-from N --trace-reg 24 --interp` (r24 is the
   68k PC), `--traps N` (68k traps), `--watch ADDR`, `--trace-range LO:HI`.
   Instruction counts are the same with and without the JIT.
 
-## How syshm's kernel works (what the tasks build on)
+## How Blue's kernel works (what the tasks build on)
 
 - `nk_boot()`'s loop in `src/nk.c` runs guest code with `ppc_run()` in
   chunks and handles each exit: kernel calls (`twi` → `kernel_call()`),
   `sc` (→ `kcall_mp_dispatch()` when `mp_kernel`), faults, host calls for
-  syshm's drivers. Devices and interrupts are updated every `SYNC_INSNS`
+  Blue's drivers. Devices and interrupts are updated every `SYNC_INSNS`
   instructions and at real exits.
 - Mac OS (the blue task) runs as NanoKernel 1 contexts: the System context
   (Apple's 68k emulator) and an alternate context (native code), switched
@@ -328,7 +328,7 @@ the kernel); 8 onwards as the boot progresses.
   5. Until task 2 exists, run a new task when the blue task next polls
      (gets `kMPBlueBlockingErr`) or naps, until it blocks or ends.
 - **Done when:** the 9.1 check gets past call 7 (and the start call), the
-  new task runs (log the switches with `SYSHM_LOG_MP`), and the boot stops
+  new task runs (log the switches with `BLUE_LOG_MP`), and the boot stops
   somewhere later. Note what the task does first (likely waiting on a
   queue).
 
@@ -431,7 +431,7 @@ the kernel); 8 onwards as the boot progresses.
 - **Owns:** `tools/qemu-ref/` (new files only), a notes file
   `docs/nk2-reference.md`.
 - **Goal:** what Apple's 9.1 Trampoline and NanoKernel 2 really do, to
-  check syshm against: the page map they build (and the areas from it),
+  check Blue against: the page map they build (and the areas from it),
   the device tree after the Trampoline (parcel properties applied), the
   first IDs and NanoKernelInfo, the sequence of MP calls during startup
   (a breakpoint on the system call vector, `0xC00`). `tools/qemu-ref/`
@@ -474,10 +474,10 @@ the kernel); 8 onwards as the boot progresses.
   - The parcels' libraries being prepared and registered (the 68k code at
     `0xFFC015E0`/`0xFFC016B0` walks `Devices:device-tree:AAPL,CodePrepare`
     and `AAPL,CodeRegister`): check they load.
-  - The parcels' drivers against syshm's devices: the Cuda library, the
+  - The parcels' drivers against Blue's devices: the Cuda library, the
     RTC driver under via-cuda, and NVRAM (done: the ROM's driver for
-    `mac-io/nvram` drives syshm's `nvram` node; see Findings).
-  - The display, disk and Ethernet drivers syshm makes (NDRVs, lanLib)
+    `mac-io/nvram` drives Blue's `nvram` node; see Findings).
+  - The display, disk and Ethernet drivers Blue makes (NDRVs, lanLib)
     under 9.1, and idle (does 9.1's Process Manager still nap through
     call 55 and `_SynchIdleTime`?), fast start.
 - **Done when:** the 9.1 CD reaches the Finder; then its installer puts
@@ -503,7 +503,7 @@ the kernel); 8 onwards as the boot progresses.
   `MPStopScheduling` (45), `NKSetClockDriftCorrection` (132) in `mp.c`;
   CacheDispatch (kernel call 7) for selectors above 2 (`kernel_call()`);
   the floppy controller's cell (`empty_cell_ops`, `setup_machine()`);
-  syshm's lanLib kept over the ROM file's `bmac+` one (`build_tree()`).
+  Blue's lanLib kept over the ROM file's `bmac+` one (`build_tree()`).
   `tests/test_mp.c` and `tests/test_nvram.c` cover them. Open: Apple's own
   9.2/9.2.2 CDs (not tried: none here). Interrupt sets for the USB
   controller, the sound chip and lanLib on 9.2.2 (`AAPL,interrupt-index`
@@ -517,7 +517,7 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 11. ROM from the startup disk
 
-- **Status:** done. Without `--rom`, `syshm boot` takes the "Mac OS ROM"
+- **Status:** done. Without `--rom`, `blue boot` takes the "Mac OS ROM"
   file from the startup disk, as a New World Mac's firmware does: the first
   drive in command-line order (partitions in map order) whose blessed
   System Folder (Finder info word 0) holds a file of type `tbxi`, the first
@@ -535,7 +535,7 @@ the kernel); 8 onwards as the boot progresses.
   order), file data read from the host's files on demand, Mac OS's writes
   in an overlay; written back at the end of the run if Mac OS put the
   volume away, the host's deleted or replaced files moved to
-  `DIR/.syshm-recovery/<date>/`, else the volume kept there as an image.
+  `DIR/.blue-recovery/<date>/`, else the volume kept there as an image.
   The disk driver takes a `struct disk_backend` (read and write callbacks)
   in place of a file. `hfsread` reads through a callback too, and walks
   the whole catalog (`hfsread_walk()`). `tests/test_share.c` covers names,
@@ -550,16 +550,16 @@ the kernel); 8 onwards as the boot progresses.
 
 - **Status:** done (8.5, 8.6, 9.2.2; 9.1 by the same path, tried as far
   as its CD allows: no installed 9.1 image). In
-  window runs, syshm looks for the guest tools in the startup disk's
+  window runs, Blue looks for the guest tools in the startup disk's
   System Folder before Mac OS starts (`install_check()` in
   `src/install.c`: the System Folder's folders, whatever their names, for
   files of the tools' type and creator whose code makes the tool's host
-  call; current if both forks are the bytes this syshm makes). Once the
-  Finder is up, if one is missing or differs (and the disk is writable
+  call; current if both forks are the bytes this version of Blue makes).
+  Once the Finder is up, if one is missing or differs (and the disk is writable
   and not locked), a box over the screen offers to install or update them
   ("Install and Restart", "Update and Restart"; Mac OS 9's "Move and
   Restart" and "Put Back and Restart"); Mac OS runs on meanwhile. On yes,
-  Mac OS writes them itself: syshm
+  Mac OS writes them itself: Blue
   diverts the Process Manager's next idle call (`_SynchIdleTime` before
   Mac OS 9, trap AAAA with $82F0 in D0 on 9.x) to a 68k bootstrap that
   prepares a
@@ -574,17 +574,17 @@ the kernel); 8 onwards as the boot progresses.
   covers the check on HFS volumes made with `hfs_build()`, the offer, and
   the installer against a File Manager of its own, the restart included.
   `--tools` is gone:
-  `syshm tools create FILE` makes the volume for installing them by hand
+  `blue tools create FILE` makes the volume for installing them by hand
   (`--cdrom FILE`). Open: "don't ask again"; 9.1 on an installed disk.
 
 ### 14. Clipboard
 
 - **Status:** done. Text is shared by Mac OS and the host's clipboard in
   window runs in real time: `src/clip.c` (conversions; which side's text
-  is newer), syshm Enhancements in `src/tools.c` (the guest side), and
+  is newer), Blue Enhancements in `src/tools.c` (the guest side), and
   SDL2's text clipboard in `src/display.c`, on the window's thread, which
   is the emulation's. Enhancements (version 2 in its data: the installer
-  tells an older copy on disk by its bytes, the version tells syshm where
+  tells an older copy on disk by its bytes, the version tells Blue where
   a running older copy's data is, which still switches modes) writes
   routine descriptors for ZeroScrap and PutScrap into the trap table and
   puts a GetNextEvent filter in `jGNEFilter`; when the host's text changes
@@ -593,7 +593,7 @@ the kernel); 8 onwards as the boot progresses.
   `clipboard` and `print-clipboard` stand in for the host's clipboard.
   `tests/test_clip.c` covers the conversions, echoes and held keys,
   `tests/test_tools.c` the patches. Scripted both ways on the 8.5 and 9.1
-  CDs (SimpleText; `SYSHM_TOOLS_APPL=1` lets the Finder open Enhancements
+  CDs (SimpleText; `BLUE_TOOLS_APPL=1` lets the Finder open Enhancements
   from the tools volume) and on a copy of an 8.5 install (Note Pad,
   Scrapbook, the Finder's names, Internet Explorer 4.01's address field);
   there `tools install` replaced the older Enhancements (`helper.quit`
@@ -631,7 +631,7 @@ the kernel); 8 onwards as the boot progresses.
   (`src/cdimage.c`: `.bin` in raw, 2048- or 2336-byte sectors, `MOTOROLA`,
   WAVE and AIFF tracks, `INDEX 00` and `PREGAP`/`POSTGAP`, sessions; the
   table of contents, the data track's 2048 bytes a sector as a
-  `disk_backend`, raw sectors, the Q and P-W subchannel; `syshm disk toc`
+  `disk_backend`, raw sectors, the Q and P-W subchannel; `blue disk toc`
   lists it). The drive's player (`src/cdaudio.c`): ranges or the driver's
   play lists, pause, stop, scan, volume, channel routing, its position a
   function of guest time; frames in a FIFO taken by the sound chip's analog
@@ -654,7 +654,7 @@ the kernel); 8 onwards as the boot progresses.
   calls on a cue sheet's disc). Checked on an installed 8.5 with the real
   Quake CD (`Quake [1996].cue`): the ISO 9660 data track mounts
   (QUAKE106), AppleCD Audio Player lists the 10 audio tracks with their
-  lengths and plays, shuffles and scans them; `SYSHM_SOUND_WAV` holds
+  lengths and plays, shuffles and scans them; `BLUE_SOUND_WAV` holds
   track 2's samples bit for bit (scaled by Mac OS's volume), in
   instruction time (reproducibly) and in real time; a synthetic audio disc
   mounts as "Audio CD 1", and MoviePlayer's conversion of a track to AIFF
@@ -716,7 +716,7 @@ the kernel); 8 onwards as the boot progresses.
 
 - **Status:** milestones 0 to 7 done (docs/opengl-plan.md has the plan,
   its milestones and what's built). Milestone 7, performance: measured
-  first (`SYSHM_GL_PROFILE`: where each frame's host time goes), in real
+  first (`BLUE_GL_PROFILE`: where each frame's host time goes), in real
   time on an M5 at 640 x 480. On the GPU, Quake III's demo and UT run at
   60 frames a second with 7-10 ms of each frame to spare (the guest 3-5
   ms, the front end 0.3-1.8, reading back 1.6-2.3, mostly the GPU
@@ -745,14 +745,14 @@ the kernel); 8 onwards as the boot progresses.
   library's callouts) and `aglUseFont` (as Apple's: QuickDraw draws each
   glyph into an offscreen world, the host makes it a list's `glBitmap`).
   OpenGLLibrary now imports those calls from InterfaceLib, so its data
-  moved: an older syshm's copy is left alone, with a message to update
+  moved: an older version's copy is left alone, with a message to update
   it. S3TC and paletted textures are left out: Mac OS 9.2.2's engine and
   ATI renderer don't offer them. Feedback and selection give Mesa's
   records, the evaluators' two new scenes Mesa's pixels (within 2), and
   the test application's `fullscreen` and `font` scenes are the same
   screenshots on macOS and Linux. Quake III's demo and UT play, but at
   other moments than main's in instruction time: the library's imports
-  shift when they start (built without them, the milestone's syshm gives
+  shift when they start (built without them, the milestone's Blue gives
   main's runs exactly). Milestone 5: display lists (kept with
   the bytes their calls' pointers pointed to, arrays' draws as the
   attribute calls they make; nested, shared), the raster position,
@@ -788,7 +788,7 @@ the kernel); 8 onwards as the boot progresses.
   `glReadPixels`, the extensions string; swaps to a port paced by the
   display's refresh as the 3D engine's frames are; the installer offers
   the libraries, and on Mac OS 9 moves Apple's to Extensions (Disabled)
-  once syshm's are in Extensions, or offers to put them back if syshm's
+  once Blue's are in Extensions, or offers to put them back if Blue's
   are gone (checked on a clone of 9.2.2). Unreal Tournament's OpenGL build
   plays (the intro and a match on 8.6, the intro on 9.2.2), on the GPU (60
   frames a second in real time) and in software (about 50), its pictures
@@ -810,9 +810,9 @@ the kernel); 8 onwards as the boot progresses.
   (`src/opengl.c`, from the table `tools/gltable.py` made of Apple's),
   AGL, contexts laid out as Apple's with their dispatch tables, swaps into
   a window's port clipped to its regions (`src/surface.c`), clears; a test
-  application of syshm's own (`src/gltest.c`) whose window, cleared through
+  application of Blue's own (`src/gltest.c`) whose window, cleared through
   the guest's OpenGL on installed 8.5 and 8.6, gives the same screenshot on
-  macOS and Linux, in software and on the GPU. Milestone 0: syshm's own OpenGLLibrary, OpenGLMemory and
+  macOS and Linux, in software and on the GPU. Milestone 0: Blue's own OpenGLLibrary, OpenGLMemory and
   OpenGLUtility, recording calls in guest memory, with OpenGL's fixed
   function in C on the host, drawn by `raster.c` and `gpu.c`. Done: the
   3D backend's richer vertices and states (three colors, a fog coordinate,
@@ -899,10 +899,10 @@ Facts later tasks need, added as they are found.
 - **Pixel rectangles in Mesa** (OpenGL, milestone 5): Mesa 25.2 (llvmpipe)
   draws an image from the raster position rounded to the nearest pixel
   corner (`lroundf`), where OpenGL 1.2's 3.6.4 takes the position as it is
-  (the same pixels at a zoom of 1 but at half-way positions); syshm rounds
+  (the same pixels at a zoom of 1 but at half-way positions); Blue rounds
   as Mesa does. For fractional and negative zooms, Mesa's rows and columns
   fall where neither OpenGL 1.2's rectangles nor that rounding put them:
-  syshm keeps OpenGL 1.2's rectangles (checked in `tests/test_glfront.c`),
+  Blue keeps OpenGL 1.2's rectangles (checked in `tests/test_glfront.c`),
   and the scenes compared with Mesa zoom by whole numbers. Mesa's pixel
   maps don't work: see the next item.
 - **Mesa 25.2's pixel maps corrupt its heap** (OpenGL, milestone 5): its
@@ -911,15 +911,15 @@ Facts later tasks need, added as they are found.
   maps, and when the context goes, Mesa reads the block and writes 4 bytes
   into it (valgrind: freed in `glDrawPixels`, read and written in
   `eglDestroyContext`). A program of a few calls to Mesa alone, without
-  syshm, aborts every time ("corrupted double-linked list"). In
+  Blue, aborts every time ("corrupted double-linked list"). In
   `tests/test_opengl.c` it was the intermittent crash during milestone 5
   (an abort or a segfault in about a third of the runs, depending on how
   the threads' allocations fell; a sanitized build and `MALLOC_CHECK_`
-  changed that, and AddressSanitizer found nothing in syshm's code). It
+  changed that, and AddressSanitizer found nothing in Blue's code). It
   stopped once the scene compared with Mesa used no maps, and wasn't
   understood until it was reproduced, after the milestone, by putting the
   maps back (10 crashes in 30 runs; none with a negative zoom but no
-  maps). syshm's GPU backend never uses Mesa's maps (the pixel transfer
+  maps). Blue's GPU backend never uses Mesa's maps (the pixel transfer
   is the front end's, on the host). The Mesa harness now fails a scene that turns
   `GL_MAP_COLOR` on, rather than run it.
 - **SGI's GLU, 1.2 and 1.3** (OpenGL, milestone 5): Apple's OpenGLUtility
@@ -932,14 +932,14 @@ Facts later tasks need, added as they are found.
   within a level where there's no scaling). `gluScaleImage` and 1D
   mipmaps are the same in both. Both read normals they never computed for
   quadrics drawn as points or silhouettes with flat normals (stale stack
-  memory: Mesa's libGLU gave a previous call's); syshm gives the smooth
+  memory: Mesa's libGLU gave a previous call's); Blue gives the smooth
   ones there.
 - **Mesa 25.2's feedback and evaluators** (OpenGL, milestone 6): its
   feedback gives `GL_LINE_TOKEN` where OpenGL 1.2's 5.3 has
   `GL_LINE_RESET_TOKEN` (each separate line, each strip's first segment,
   each polygon's outline's), and, flat shaded, each vertex's own color
   rather than the provoking vertex's; it gives polygons as triangles
-  (v[i], v[i + 1], v[0]), which syshm follows (the order is OpenGL's to
+  (v[i], v[i + 1], v[0]), which Blue follows (the order is OpenGL's to
   choose). Its evaluators: once a color map has been evaluated, the
   current color loses the components the last `glColor` didn't set (all
   four if it was never called), so later vertices come out (0, 0, 0, 0),
@@ -948,7 +948,7 @@ Facts later tasks need, added as they are found.
   a quad, where they aren't linear in u and v); `glGetMap`'s coefficients
   come v fastest (its manual page: u fastest); `GL_AUTO_NORMAL`'s
   derivatives are in u' and v', so a domain run backwards doesn't turn the
-  normal round as 5.1's dp/du x dp/dv does. syshm keeps OpenGL's way in
+  normal round as 5.1's dp/du x dp/dv does. Blue keeps OpenGL's way in
   each; the scenes compared with Mesa avoid them.
 - **Apple's `aglUseFont` and `aglSetFullScreen`** (OpenGL, milestone 6,
   disassembled from Mac OS 9.2.2's OpenGLLibrary): `aglUseFont` fails with
@@ -960,7 +960,7 @@ Facts later tasks need, added as they are found.
   (CharWidth + 2e) wide, from (e, descent + e - 1), moving CharWidth on,
   with the unpacking it sets (and puts back). It draws white on black
   after `SetPort` (not `SetGWorld`, so the colors are the screen's
-  device's); syshm uses `SetGWorld` and the world's own black on white, so
+  device's); Blue uses `SetGWorld` and the world's own black on white, so
   the glyphs are its 1 bits whatever the screen's depth. `aglSetFullScreen`
   keeps the size, frequency and
   device, attaches the drawable through its engine and sets the viewport
@@ -1085,14 +1085,14 @@ Facts later tasks need, added as they are found.
   terminated is a flag. New tasks have weight 100, priority nominal (2),
   like the blue task (weight 200), so starting one doesn't preempt the blue
   task. NanoKernel 2's `CreateTask` also makes a page-fault semaphore (an ID)
-  per task; syshm doesn't, so later IDs differ from NanoKernel 2's.
+  per task; Blue doesn't, so later IDs differ from NanoKernel 2's.
 - **MPLibrary's tasks:** the ROM's internal create (`0xFFCE03EC`, behind the
   exported `MPCreateTask` at `0xFFCE061C`) puts a 0x14C-byte record at the
   top of the stack block (the task's r1 and r3, and its call-12 word) and
   starts every task at a wrapper, `0xFFCE03A0`, that calls the entry point
   (record +0x28, parameter +0x2C) and then `MPTerminateTask` (`0xFFCE0230`,
   call 9) on itself with the result. So entry points don't return to their
-  LR; syshm still starts LR at the kernel data page (`mp.task_return`),
+  LR; Blue still starts LR at the kernel data page (`mp.task_return`),
   where a return faults and ends the task.
 - **Startup's tasks:** 0x001F0001 'deth' waits on queue 0x001C0001 (the
   blue process's termination queue, every task's); 0x00210001 'dbgr' waits
@@ -1109,7 +1109,7 @@ Facts later tasks need, added as they are found.
   supervisor mode (not seen). Any other r0 is an MP call; out-of-range ones
   return -4. MixedMode uses `sc` -1 (`0xFFCF8DB4`, after
   `MPCallUniversalProc`).
-- **Task switching in syshm (`nk.c`):** while a task other than the blue
+- **Task switching in Blue (`nk.c`):** while a task other than the blue
   one runs, the blue task's NanoKernel 1 state (`m->context`, `m->system`,
   `m->flags`, `m->enables`) stays as it was; `update_interrupts()` posts to
   the System context's CR wherever it is (`system_cr()`: the blue task's
@@ -1119,11 +1119,11 @@ Facts later tasks need, added as they are found.
   loop after an exit is handled, when `mp.yield` is set (see the
   scheduler's finding below).
 - **Timers:** 40 makes one (ID in r4), 30 sets what firing does (as 66
-  does for notifications), 31 arms it (options: see "Timers in syshm"
+  does for notifications), 31 arms it (options: see "Timers in Blue"
   below), 32 returns the time left in r4:r5 and disarms. TimeManagerLib's
   timers set event group 0x160001, the level-1 software interrupt group,
   when they fire (Task 5 delivers the interrupt).
-- **The scheduler in syshm (Task 2, `mp.c`):** one ready queue in arrival
+- **The scheduler in Blue (Task 2, `mp.c`):** one ready queue in arrival
   order (`mp->ready`, the blue task included when it's ready but not
   running); `mp_next()` (NanoKernel 2's `SchEval`) keeps the running task
   unless a ready one is strictly more urgent, else takes the first of the
@@ -1172,8 +1172,8 @@ Facts later tasks need, added as they are found.
   but come back a critical slice later (the decrementer skips
   `TimerDispatch`: no time slices or timers while the 68k has interrupts
   off). Mask at or above the ECB's PriorityShifty level (+0xCC, low
-  nybble; 0 in syshm, so 2; nothing in the run writes it): latency-protected.
-  In syshm's run the mask is 7 from instruction 1.1 million to about 53.88
+  nybble; 0 in Blue, so 2; nothing in the run writes it): latency-protected.
+  In Blue's run the mask is 7 from instruction 1.1 million to about 53.88
   million, right after TimeManagerLib arms its timers. No kernel call 4
   comes with it (the real one comes because an interrupt is pending).
 - **PriorityShifty's other bits** (Task 5, `set_shifty()` in `nk.c`): the
@@ -1187,7 +1187,7 @@ Facts later tasks need, added as they are found.
   evaluation clear it and leave the blue task's priority alone.
   Evaluations are `mp_next()` (SchEval) and an `mp_tick()` that ends
   something (`mp_fires()`: the decrementer), not every `mp_tick()` (every
-  MP call makes one due). syshm's run makes call 13 about as the real one
+  MP call makes one due). Blue's run makes call 13 about as the real one
   does: twice at the start, then once per Time Manager interrupt (after its
   `MPArmTimer`). The yield when the mask drops to 0 at 53.88 million leaves
   the blue task nominal at the front, so it keeps the processor to the end
@@ -1242,7 +1242,7 @@ Facts later tasks need, added as they are found.
   0x8000 the page is held (get says 0, set fails with
   `kMPInsufficientResourcesErr`). NanoKernel 2's 94 also takes the page out
   of the hash table, and the next use of the page (a hash-table miss)
-  halves its age; syshm has no hash table, so ages only grow.
+  halves its age; Blue has no hash table, so ages only grow.
   `MPFindVictimPage` (95) takes the oldest; nothing calls it while the free
   page count stays at `mp->free_pages`.
 - **The page ager:** `MPGetFreePageCount` (100) returns `mp->free_pages`,
@@ -1260,7 +1260,7 @@ Facts later tasks need, added as they are found.
   with process 0 and returns `kMPInvalidIDErr`, as on the real kernel;
   other uses are unimplemented. NanoKernelInfo.TaskCount starts at 2
   (`mp->tasks`), so the page-fault queue's reserves are 2, 3, 4, 5.
-- **Timers in syshm (Task 3):** timer objects and blocked tasks' deadlines
+- **Timers in Blue (Task 3):** timer objects and blocked tasks' deadlines
   (`task.deadline`: a timeout, a delay's end, the blue task's nap) end in
   `mp_tick()`, earliest first and, among those due together, in the order
   they were armed or blocked (`mp->queued`), as NanoKernel 2's sorted timer
@@ -1274,12 +1274,12 @@ Facts later tasks need, added as they are found.
   Duration, to ticks; 2 adds the timer's last time (the time it was made,
   for a new one); without 2 the result is an absolute time, even for a
   Duration. TimeManagerLib arms all its timers with option 1 (kept). The
-  first timer of syshm's run fires at instruction 54,160,000, its time
+  first timer of Blue's run fires at instruction 54,160,000, its time
   54,143,452: deadlines are seen at the next sync point or exit (every
   20,000 instructions at most, about 1.2 ms of guest time), never while the
   blue task runs with its 68k interrupts masked.
 - **Reference run** (`docs/nk2-reference.md`, QEMU `mac99`): up to call 7
-  the real sequence is syshm's, plus a first MPYieldWithHint (13) from the
+  the real sequence is Blue's, plus a first MPYieldWithHint (13) from the
   emulator. Right after the third task is named, Mixed Mode starts making
   `sc` with r0 = -1 (53k per boot): not an MP call; the kernel sets r0 =
   0x00200000 (CR0 GT) for the blue task, 0 (CR0 EQ) otherwise, and changes
@@ -1298,7 +1298,7 @@ Facts later tasks need, added as they are found.
   machine's processors (starting others, their clocks, power and
   temperature). Before one is registered, `MPCpuPlugin` (46: selector r3,
   arguments r4-r10) returns -29286; Mac OS's probes make it with selector 0
-  (two of them on syshm, from candidate plugins: a 9500/9600 one looking
+  (two of them on Blue, from candidate plugins: a 9500/9600 one looking
   for Hammerhead, then the one that registers). `MPRegisterCpuPlugin` (2:
   coherence group r3, 0 the machine's; code r4 and size r5, page-aligned;
   descriptor r6 inside it: +0 a table of stacks by processor, +0x1C the
@@ -1311,16 +1311,16 @@ Facts later tasks need, added as they are found.
   2's SIGP runs a routine at once, in supervisor mode with interrupts off,
   on the processor's stack, r3 the processor's index, returning to the
   emulator's ReturnFromException trap; the routine's r3/r4 are the call's.
-  An exception in it gives -29285, a selector out of range -29287. syshm
+  An exception in it gives -29285, a selector out of range -29287. Blue
   runs it in an inner loop (`cpu_plugin_run()`): no interrupts, timers or
   task switches meanwhile; mfmsr and device registers work, any other
   privileged instruction counts as an exception. The kernel's own SIGPs
   (12 from the idle task, 4060 per boot on QEMU; those for other
-  processors) don't happen in syshm (no idle task, one processor). After
+  processors) don't happen in Blue (no idle task, one processor). After
   registering, Mac OS calls selector 0 once more, then `MPProcessors` (3:
   r3 0 all, else scheduled; the count in r3, 1).
 - **Processes** (Task 8): `MPCreateProcess` (4: address space r3, 0 the
-  system's → r5) makes one late in startup (0x01B40001 in syshm,
+  system's → r5) makes one late in startup (0x01B40001 in Blue,
   0x01C00001 on QEMU), and `MPSetBlueProcessID` (99: process r3, word r4;
   blue task only, else `kMPInsufficientResourcesErr`) moves the blue task
   into it, twice (r4 0x00AAF520, r5 'MACS', then a pointer): it sets the
@@ -1356,7 +1356,7 @@ Facts later tasks need, added as they are found.
   0x92, through the trap table at 0x648 with `CallOSTrapUniversalProc`)
   with a pseudo packet, 3 to get the time and 9 to set it (seconds since
   1904, local time); the ROM's 68k Cuda Manager (`0xFFC09C00`) sends it
-  over the VIA, and syshm's Cuda answers from the guest clock (SET_TIME
+  over the VIA, and Blue's Cuda answers from the guest clock (SET_TIME
   moves its offset until the next restart). With the `nvram` node below,
   the run makes one more Cuda packet (the get) and the clock is right;
   Date & Time (8.6's, from a second disk) sets it with one more.
@@ -1373,11 +1373,11 @@ Facts later tasks need, added as they are found.
   and Restart (`0xFFC2E7F0`, from `0xFFC2DEF8` and `0xFFC2E028`). Its
   table at ExpandMem +0x2FC: +0xC NVRAMRead, +0x10 NVRAMWrite, +0x14
   NVRAMFlush. The 68k PRAM routines (`0xFFC08230` read, `0xFFC082A0` write)
-  use offset NKHWInfo +0x3C (0x1400, as syshm gives 8.5's ROM) plus the
+  use offset NKHWInfo +0x3C (0x1400, as Blue gives 8.5's ROM) plus the
   PRAM address, so 9.1 keeps PRAM where 8.5 does through RTAS, and one
   `--nvram` file serves both (each started from the other's file without
   reinitializing PRAM). A boot reads 0x1400-0x151F and 0x0000-0x001F (the
-  partition header NVRAMFindPartition looks at; syshm's NVRAM has no
+  partition header NVRAMFindPartition looks at; Blue's NVRAM has no
   partitions, and nothing seen depends on them). A first boot on a blank
   file writes PRAM's 256 bytes at shutdown; later ones the blocks that
   changed. The real node (a beige G3's Open Firmware listing; the iMac's
@@ -1385,7 +1385,7 @@ Facts later tasks need, added as they are found.
   powermac nvram.c
   takes the stride from the one `reg` range (0x20000 / 8 KB), QEMU's
   macio NVRAM is `addr >> 4 & (size - 1)`, and OpenBIOS gives `#bytes`
-  0x2000, `reg` 0x60000 0x20000. syshm's node and chip are only in trees
+  0x2000, `reg` 0x60000 0x20000. Blue's node and chip are only in trees
   for ROM files with parcels; RTAS keeps the bytes (`src/nvram.c` points
   at them).
 - **Task 4** (exceptions in tasks other than the blue one) wasn't needed
@@ -1401,7 +1401,7 @@ Facts later tasks need, added as they are found.
   `MOS.rom` doesn't; the Component Manager registers it (the 'thng' loop at
   `0xFFC517E0`, then `0xFFC4F87E`) and copies its ComponentDescription onto
   itself: five stores at 68k pc `0xFFC4F8A6`, from instruction 321,370,799
-  of a `--fixed-time` CD boot. syshm faulted on the first (exception 21, a
+  of a `--fixed-time` CD boot. Blue faulted on the first (exception 21, a
   68k bus error during Starting Up). `quiet_store()` in `nk.c` now runs
   such a store with the page writable and puts the page back, so the rest
   of the instruction (update forms, other pages) happens as under MemRetry.
@@ -1428,17 +1428,17 @@ Facts later tasks need, added as they are found.
   StartLib adds 1; any other qualifier: any partition). The drive matches
   when the node is the same, the bootpath's last unit address is the
   drive's unit, and the partitions agree. The driver needs the
-  DriverGestalt bit in its DCE's flags, which NDRVs have. syshm's tree had
+  DriverGestalt bit in its DCE's flags, which NDRVs have. Blue's tree had
   no /chosen, so nothing matched until the 25 s were up. Now, for ROM
   files with parcels, `/chosen` has `bootpath`
-  `/pci/syshm,disk@<PCI device>:<map entry>,\\:tbxi` (no number for a
+  `/pci/blue,disk@<PCI device>:<map entry>,\\:tbxi` (no number for a
   disk without a map) for the partition the ROM file came from if it has
   boot blocks ('LK'), else the first partition with them, disks in
   command-line order (`build_tree()` in `bootinfo.c`, chosen in
   `setup_machine()`), and the disk driver answers 'nmrg' (the RegEntryID
   from Initialize), 'intf' 'scsi', 'dvrf' target = its PCI device number,
   and 'ofpt' (`status()` in `disk.c`); earlier ROMs see none of it. A path
-  ending in a unit-only node under the disk's (`/pci/syshm,disk@2/@0:3`,
+  ending in a unit-only node under the disk's (`/pci/blue,disk@2/@0:3`,
   with 'intf' 'ata ') didn't match (the disk nodes have no children). The
   Finder is then up at instruction 1.05 billion instead of 1.68 (with
   `--fixed-time`), and in real time after 16 s of guest time (1.3 s). Of
@@ -1573,7 +1573,7 @@ Facts later tasks need, added as they are found.
   ("No Problems Found"), Disk First Aid 8.5 and Linux's `fsck.hfs` find
   nothing wrong, on that copy too, in instruction time and real time; but
   for the dates they found nothing before either. A Macintosh HD made later
-  than such a run's clock is flagged the same way (`syshm disk create`
+  than such a run's clock is flagged the same way (`blue disk create`
   dates it then). Mac OS 8.5's Disk Initialization of a volume the share's
   size gives the same geometry (63,569 blocks of 16,896 bytes from sector
   19, the alternate MDB right after the last), but 1 MB B-trees. FileSaver
@@ -1595,14 +1595,14 @@ Facts later tasks need, added as they are found.
 - **Keys in input scripts:** in 9.1's Finder, Return held for 10 million
   instructions didn't start editing an icon's name; held for 1 million it
   does (8.5 took Command-D held 20 million).
-- **Running code of syshm's in Mac OS on demand** (installing the guest
+- **Running code of Blue's in Mac OS on demand** (installing the guest
   tools): the Toolbox trap table is in low memory as on 68k Macs (entry
   `0x0E00 + 4 × (trap & 0x3FF)`), and the 68k emulator dispatches through
   it on every call, interpreted or recompiled. `_SynchIdleTime` (ABF7),
   where the idle hook stops, is called from a `_SystemTask` patch in the
   system heap (r24 points 8 bytes into `_SystemTask`'s entry, on 8.5 and
   8.6): application time, in the current application's context (often
-  the Finder's), inside its WaitNextEvent. At that hook syshm points the
+  the Finder's), inside its WaitNextEvent. At that hook Blue points the
   entry at 68k code of its own, in 64 KB it maps at `0x5E000000`, outside
   everything Mac OS knows of; the dispatch under way goes there. The code
   puts the entry back first, saves d0-d7/a0-a6, and calls
@@ -1624,7 +1624,7 @@ Facts later tasks need, added as they are found.
   finds the volume sound afterwards. (hfsutils' `hdel` on an installed
   8.6 disk leaves something it can't repair; `hattrib` doesn't.)
 - **A running Enhancements can't be replaced** (its resource fork is open:
-  `fBsyErr`), so syshm has it quit first (`helper.quit`: its main
+  `fBsyErr`), so Blue has it quit first (`helper.quit`: its main
   routine returns at its next WaitNextEvent, as for a quit Apple event)
   and goes on once it's gone (0.1 s later; 5 s at most). The restart
   that follows an install doesn't change that (the file has to be
@@ -1633,7 +1633,7 @@ Facts later tasks need, added as they are found.
   Mac OS didn't restart. 9.2.2 starts Enhancements only after the Finder
   is up, so an input script's early `tools install` found it not yet
   running at the answer, and it was running by the time the installer
-  went in (`fBsyErr` again); syshm now asks it again just before going
+  went in (`fBsyErr` again); Blue now asks it again just before going
   in. If it can't be replaced after it quit, it isn't started again
   (Mac OS doesn't restart either): it starts with Mac OS next time.
 - **Restarting Mac OS after an install** (all three of 8.5, 8.6 and
@@ -1648,16 +1648,16 @@ Facts later tasks need, added as they are found.
   but takes its own, `fndr` `rest` (its `aete`'s "restart", what
   AppleScript sends) and the System 7 Finder Events' `FNDR` `rest`; the
   Process Manager's doesn't need the Finder. 8.5 and 8.6 then restart
-  through RTAS `system-reboot`, 9.2.2 through the Cuda, and syshm starts
+  through RTAS `system-reboot`, 9.2.2 through the Cuda, and Blue starts
   the machine over (`restart_machine()`): the check finds the tools
   current, Enhancements runs (one launch), QuickDraw 3D's Teapot in
-  SimpleText calls the engine (19 calls on 8.5 and 8.6) and syshm's GL
-  Test draws with syshm's OpenGL (8.5, 8.6, 9.2.2). The installer flushes
+  SimpleText calls the engine (19 calls on 8.5 and 8.6) and Blue's GL
+  Test draws with Blue's OpenGL (8.5, 8.6, 9.2.2). The installer flushes
   the volume (FlushVol) before it asks, and asks only if everything
   asked for was done. The box with the outcome stays through the restart,
   until OK (a question is taken down: it belonged to that session). After
-  a Put Back, syshm's OpenGL isn't offered again in that run (the disk
-  looks just like a 9.2.2 whose tools came before syshm's OpenGL did), so
+  a Put Back, Blue's OpenGL isn't offered again in that run (the disk
+  looks just like a 9.2.2 whose tools came before Blue's OpenGL did), so
   the restart doesn't bring the opposite offer straight back. Mac OS 9
   ejects a CD that isn't the startup disk at the restart where its drive
   is ejectable (window and real-time runs).
@@ -1748,7 +1748,7 @@ Facts later tasks need, added as they are found.
   heap, and the low-memory scrap globals (`0x960`) are switched with it;
   the Process Manager hands the front application's scrap to the next one
   brought to the front. A background application never sees another's
-  copy: after SimpleText's Copy on the 8.5 CD, syshm Enhancements'
+  copy: after SimpleText's Copy on the 8.5 CD, Blue Enhancements'
   InfoScrap count and size were as before. So Enhancements can't poll the
   scrap: it sees copies in PutScrap, and puts the host's text into the
   front application's scrap in that application's context.
@@ -1847,7 +1847,7 @@ Facts later tasks need, added as they are found.
   driver's: the library fills the ColorSpecs after its 8-byte header, not
   the header) and hardwareCursor (the driver's buffer, rows of the
   descriptor's width). The library in 8.5-9.1 converts to 2, 4 and 8 bits
-  a pixel; 1 and 32 (direct) fail. syshm asks for 8: 254 colours (the
+  a pixel; 1 and 32 (direct) fail. Blue asks for 8: 254 colours (the
   value is the colour's index), 254 transparent, 255 inverting. The
   I-beam is all inverting pixels; the watch has two (its crown) and
   animates through SetHardwareCursor; ObscureCursor (typing) hides it
@@ -1885,7 +1885,7 @@ Facts later tasks need, added as they are found.
   offset +0xAF, the RAM disk's size, and +0xB1) and a long at +0x12A for the
   RAM disk. ProcessorInfo 0x0112 adds ClockRates at +0x60 (CPU, bus,
   decrementer Hz; the kernel copies them from +0x04-+0x0C; call 108 sets
-  other steps). For ROM files with parcels syshm now gives those versions
+  other steps). For ROM files with parcels Blue now gives those versions
   and lengths, still in its one page (HWInfo at +0xE60, ProcessorInfo at
   +0xF20, the rest where NanoKernel 1's are), CascadeInfo with no
   controllers (boot-info area +0x51100), the checksum and RAM disk fields 0,
@@ -1893,7 +1893,7 @@ Facts later tasks need, added as they are found.
 - **What 9.2.2's ROM reads there:** its 68k startup (`0xFFC0F0AC`, the
   only new use of NKHWInfoPtr) does `movea.l ([$68FFEFD0],$A8),a1; tst.l
   (a1)`, and with a count patches handlers from a table ProductInfo +0x50
-  leads to. With syshm's HWInfo 0x0103/0xA0, +0xA8 was SystemInfo's
+  leads to. With Blue's HWInfo 0x0103/0xA0, +0xA8 was SystemInfo's
   logical RAM size, read as a pointer: exception 18 at the end of RAM at
   instruction 954,597. A System fragment checks ProcessorInfo's version
   (at least 0x0111) before starting 'accu' (below).
@@ -1903,16 +1903,16 @@ Facts later tasks need, added as they are found.
   last, r4 left), 132 `NKSetClockDriftCorrection` (parts per billion r3; 0
   turns it off: then nothing but noErr; else the kernel's drift timer steps
   the timebase by one tick every so often; kMPInsufficientResourcesErr
-  without that timer or with more than one processor scheduled. syshm's
+  without that timer or with more than one processor scheduled. Blue's
   timebase keeps time: noErr), 95 `MPFindVictimPage` (86 times: QEMU's free
-  page count went low; syshm's doesn't), and `sc` -3 (16,815 times, all
+  page count went low; Blue's doesn't), and `sc` -3 (16,815 times, all
   from the kernel's own code at physical `0x00F15920`). No 11
   (`MPIsTaskBlue`): Mixed Mode's `sc` -1 does it. Later, idle, 44 and 45.
 - **The startup objects** (`NKInit.s`, and QEMU's index): process 1,
   coherence group 0x00010001, CPU 0x00020001 (Flags 0xF: scheduled, and
   bit 31, the processor the kernel started on), address space 0x00030001,
   page queue 0x00040001, blue task 0x00050001, then semaphores, the idle
-  task, another address space and the areas. syshm now makes the first six
+  task, another address space and the areas. Blue now makes the first six
   so (`mp_init()`); MPRegisterCpuPlugin takes the group's ID as well as 0.
   `MPStopScheduling` (45) on the starting processor is
   kMPInsufficientResourcesErr; `MPStartScheduling` (44) on a scheduled one
@@ -1927,19 +1927,19 @@ Facts later tasks need, added as they are found.
   counter at mac-io +0x15038 (`lwbrx`, KeyLargo's timer), and when the
   counter has moved, sets a correction in ppb against ProcessorInfo's
   decrementer rate; else it sets 0. On an iMac's Paddington that address is
-  in the floppy controller's (SWIM3) cell. syshm had nothing there: the
+  in the floppy controller's (SWIM3) cell. Blue had nothing there: the
   task faulted (exception 18 in a task: Task 4). The cell now reads zeros
   (`setup_machine()`, `empty_cell_ops`, for ROM files with parcels).
 - **The ROM file's lanLib for `bmac+`** (9.2.2's parcel flags 0xC, blob
-  flags 6, not keep-existing) took the place of syshm's in the Ethernet
+  flags 6, not keep-existing) took the place of Blue's in the Ethernet
   node, and its first store to the BMAC registers (Mac I/O +0x11180) made
-  the Finder quit. `build_tree()` puts syshm's back after the parcels.
+  the Finder quit. `build_tree()` puts Blue's back after the parcels.
 - **The power manager when idle** (9.2.2's CD): after half an hour of guest
   time without input, PowerDispatch 9 once, then PowerDispatch 1 (doze
   until an interrupt) in a loop, with CacheDispatch (kernel call 7) and r3
   = 4 now and then. Both NanoKernels (`MOS.rom` `0xFFF15F78`, 10.2f1
   `0xFFF1A8CC`) answer a selector above 2 with -2 in the low half, the high
-  half being the caller's r23's (their return path ANDs it in); syshm does
+  half being the caller's r23's (their return path ANDs it in); Blue does
   the same, and still stops for 0-2 (the caches; not seen). At 55 minutes
   the 'powr' task calls 62, 45 (refused), 62, 44, as around a sleep; no
   PowerDispatch 8 comes, and the system carries on (input brings it back
@@ -1961,22 +1961,22 @@ Facts later tasks need, added as they are found.
   mask (TestIntMaskInit 0x00200000, cr2.eq) doesn't stop it for a software
   interrupt (cr2.lt), on NanoKernel 2 too, and NanoKernel 2 delivers the
   same way (SetEvent flags the blue task; SchEval ORs the bits into the
-  running emulator's CR). What differs is likely when timers fire (syshm:
+  running emulator's CR). What differs is likely when timers fire (Blue:
   at sync points, every 20,000 instructions) and that a real iMac has a
   periodic external interrupt, the display's VBL, which would end the
-  native code within 16 ms, while syshm's VBL is a Driver Services timer
+  native code within 16 ms, while Blue's VBL is a Driver Services timer
   that itself needs the Time Manager. Options: a VBL interrupt from the
   display device (`video.c`, its node's interrupt set), or timers firing at
   their exact time in instruction time. **Resolved** by the first (Task
   17); see the next.
 - **The display's interrupt** (Task 17): on the iMac the ATI chip's PCI
   interrupt goes to Paddington's source 22 (MAME's `imacg3.cpp` wires its
-  Rage IIc there; its OHCI is source 28, as syshm's, and NetBSD on a Bondi
+  Rage IIc there; its OHCI is source 28, as Blue's, and NetBSD on a Bondi
   iMac says the same of the OHCI; QEMU's g3beige wires Grackle's four PCI
   lines to Heathrow's 21-24). Real NDRVs install their handler in the
   node's `driver-ist` set and either call VSLDoInterruptService there
   (QemuMacDrivers' QemuVga, `USE_PCI_IRQ`) or from a secondary handler, as
-  syshm's does; VSLDoInterruptService runs the screen's VBL tasks (the
+  Blue's does; VSLDoInterruptService runs the screen's VBL tasks (the
   cursor's) and was called from a Driver Services timer's secondary
   handler before, so either level works. Mac OS 9.2's ROM file (10.2f1)
   has no InterruptTreeNew: DriverServicesLib builds the sets itself
@@ -2040,7 +2040,7 @@ Facts later tasks need, added as they are found.
   registration, from code it puts in RAM and runs in the System context:
   r5 0xC010 (EE PR DR off), r7 0; then `mtmsr` DR on, a subroutine that
   stores L2CR and HID0 at 0xA78 and 0xA7C, `mtmsr` DR off, `mtmsr` with
-  0xC010 ORed back in, and back into the emulator (r30 | 0x6084). syshm's
+  0xC010 ORed back in, and back into the emulator (r30 | 0x6084). Blue's
   processor still runs it in user mode: the kernel keeps the blue task's
   MSR (`m->priv`; 0xD032 otherwise, and always for other tasks) and,
   while it has PR clear, does the privileged instructions that exit to it
@@ -2114,7 +2114,7 @@ Facts later tasks need, added as they are found.
   (GetVirtualIDInfo) and then the old SCSI Manager, bus 0 ID 0 when that
   fails: SCSIGet and SCSISelect (5 tries) for an INQUIRY, a MODE SENSE of
   pages 3 and 4 (geometry), the capacity from PBXGetVolInfo. Every select
-  fails at once on syshm (no bus), so the drives show as SCSI 0.0.0 with
+  fails at once on Blue (no bus), so the drives show as SCSI 0.0.0 with
   no vendor or model; a real iMac's CD answers `atpi` (StartLib needs
   `scsi`, see "The Start Manager's wait"). It finds its CD by a file on
   it. The test completes: 8.5 1,442 (16.6 MIPS), 9.2.2 1,185 (16.6 MIPS),
@@ -2152,7 +2152,7 @@ Facts later tasks need, added as they are found.
   VectorLookupTable, counted from 0 as sources are first met (escc and
   escc-legacy share 3-5; the table: 0x2F, 0x37, 0x19, 0x25, 4, 5, 0x24, 6,
   7, 0xD, 2, 0xE, 3, 0x1C, 0x1E; usb's source 0x1C is slot 0xD, the
-  ethernet's 0x1E slot 0xE). syshm's table maps slot n to source n, so its
+  ethernet's 0x1E slot 0xE). Blue's table maps slot n to source n, so its
   index is the source. The sound chip (17, 8, 9), the USB controller (28)
   and the Ethernet node (its receive DMA channel, 3, as before) now have
   it when `rom_interrupt_index()` finds the name in the ROM file's
@@ -2169,7 +2169,7 @@ Facts later tasks need, added as they are found.
   tests bit 22 (MASK_VALID in Linux's `awacs.h`, whose
   `snd_pmac_screamer_wait()` waits for it, 1 ms at a time); while it's
   clear the event is queued again, about a thousand times, then dropped.
-  syshm's codec never set it. Two plug-in instances poll on 9.2.2 (1,025
+  Blue's codec never set it. Two plug-in instances poll on 9.2.2 (1,025
   and 1,015 polls, from instructions 0.90 and 0.98 billion), each 1.3 ms
   of guest time apart in instruction time; in real time with fast start
   (a guest processor ten times slower in guest time) about 8 ms apart, 17
@@ -2235,7 +2235,7 @@ Facts later tasks need, added as they are found.
   the volume unmounted. The Setup Assistant's first screen quits with
   Command-Q and a click on Quit.
 - **MacBench's Floating Point test** (M5; profiles in instruction time
-  with `clock 1000`, which runs the same code, `SYSHM_JIT_PROFILE=FROM:TO`
+  with `clock 1000`, which runs the same code, `BLUE_JIT_PROFILE=FROM:TO`
   over one part): five parts of about 10 s of guest time, each counting
   iterations: an FFT (MacBench's code at 0x06D17xxx in that run), an LU
   decomposition (0x06D18xxx), MathLib's functions with NaNs and infinities
@@ -2309,7 +2309,7 @@ Facts later tasks need, added as they are found.
   game's one-second timer counts the match's Elapsed Time and time limit
   down) and everything moving run fast: 400 frames a second, twice the
   speed. Measured (M5, headless, practice DeathMatch on DM-Barricade, the
-  scoreboard's Elapsed Time over 30 s of host time, `SYSHM_RAVE_FPS`):
+  scoreboard's Elapsed Time over 30 s of host time, `BLUE_RAVE_FPS`):
   9.2.2 at 640x480 490 frames a second, 66 s; at 1024x768 (the user's
   ini later) 290, 40 s; 8.6 at 1024x768 340, 46 s. A real iMac drew UT at
   well under 60. Now (`frame_shown()`, `frame_wait()` in `src/nk.c`,
@@ -2333,7 +2333,7 @@ Facts later tasks need, added as they are found.
   the bus clock: that from Gestalt `bclk` (`0xFFD1C794`; ProcessorInfo's
   BusClockRateHz without it), the RTC's for a 601. 9.1's image has the
   same code (`0xFFD276B0`); 8.5's and 8.6's don't, and their Microseconds
-  is the Time Manager's, from VIA timer 2. syshm's bus was 66 MHz and its
+  is the Time Manager's, from VIA timer 2. Blue's bus was 66 MHz and its
   timebase 16.6 MHz, so 9.x's Microseconds and AbsoluteToNanoseconds ran
   0.6% fast (factor 1/16.5; Unreal Tournament's clock 1.006 of guest time,
   measured in real time). The bus is now four times the timebase, 66.4 MHz
@@ -2351,7 +2351,7 @@ Facts later tasks need, added as they are found.
   ran ahead for good, and the sound DMA, paced by guest time, gave the host
   more frames than its device played: the queue filled to its 250 ms and
   `audio.c` dropped whole chunks (256 frames, 5.8 ms each). Measured with
-  `SYSHM_LOG_AUDIO` (M5, in a window, 45 s runs, the movie played with the
+  `BLUE_LOG_AUDIO` (M5, in a window, 45 s runs, the movie played with the
   space bar): 9.2.2's QuickTime Player from the shared folder read 4 MB/s
   in 1 MB reads, each charged a tick, 83 ms of guest time a second: guest
   time 8% fast, the queue full 2 s in, then 12 to 17 chunks dropped every

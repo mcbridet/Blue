@@ -1,10 +1,10 @@
 # Future features
 
 Ideas worth doing some day, not planned yet. Each says what the real iMac
-had, what it would be good for under syshm, and what it would take.
+had, what it would be good for under Blue, and what it would take.
 
 The modem, a serial port and infrared all need the same thing first: a
-serial controller that carries data. syshm's Z8530 SCC (`src/scc.c`) has
+serial controller that carries data. Blue's Z8530 SCC (`src/scc.c`) has
 nothing attached today: what Mac OS sends vanishes, the receiver always sees
 an idle line, and it raises no interrupts. It would need data both ways, its
 interrupts (receive, transmit, status changes), the handshake and
@@ -23,17 +23,17 @@ only, as with Ethernet, with input-script commands for reproducible tests.
 - **What for:** not the Internet (Ethernet already reaches it, far faster),
   but software that only knows modems: terminal programs such as ZTerm
   calling telnet BBSes (many still run), head-to-head modem games of the
-  90s between two syshm windows or over the Internet, and old dial-up
+  90s between two Blue windows or over the Internet, and old dial-up
   clients.
 - **How:** as DOSBox and 86Box do, the modem talks over TCP. `ATDT
   host:port` (or a number from a small phonebook) connects there and answers
   `CONNECT 56000`; hanging up closes the connection. An option such as
   `--modem-listen PORT` makes an incoming connection ring, for `ATA` or
-  auto-answer (S0), so two syshm instances can call each other. The usual
+  auto-answer (S0), so two Blue instances can call each other. The usual
   Hayes behaviour: the command set Mac OS's script sends, `+++` with its
   guard time, result codes, and carrier detect following the connection.
 - **For fun:** the real modem fed its speaker (dialling, the handshake) into
-  the sound chip; syshm could play that while connecting.
+  the sound chip; Blue could play that while connecting.
 - **Size:** moderate, nearly all of it in the serial controller; the modem
   and TCP parts are small.
 
@@ -49,12 +49,12 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   - devices of the time through a USB-serial adapter on the host: syncing a
     Newton with Newton Connection Utilities or a Palm with HotSync, or a
     terminal program on a router's or retro computer's console;
-  - a null-modem link between two syshm windows, for file transfer
+  - a null-modem link between two Blue windows, for file transfer
     programs and games that offer a serial or modem link;
   - a host program at the other end of a pseudo-terminal, for scripted
     tests.
 - **How:** an option such as `--serial PATH` (a host serial device or a
-  pseudo-terminal syshm creates and names) or `--serial tcp:HOST:PORT` (and
+  pseudo-terminal Blue creates and names) or `--serial tcp:HOST:PORT` (and
   a listening form), used instead of the modem on that channel. For a host
   device, the bit rate, parity and stop bits Mac OS sets go to it through
   termios, and the handshake lines (DTR, RTS, CTS, DCD) through its
@@ -75,7 +75,7 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   the ROM's tree.
 - **What for:** little today. macOS never had IrDA, and Linux removed its
   stack in 4.17, so there is nothing on the host to talk to. What could
-  work is a virtual beam: two syshm instances joined over TCP, so the
+  work is a virtual beam: two Blue instances joined over TCP, so the
   Infrared control panel's file exchange (and whatever runs over it) works
   between two emulated iMacs. Mostly for completeness and curiosity.
 - **How:** the serial controller above in IrDA mode, with the frames
@@ -94,7 +94,7 @@ only, as with Ethernet, with input-script commands for reproducible tests.
 - **The iMac's SRS "3D Surround Sound":** a stereo-widening effect in the
   iMac's audio hardware, after the sound chip, turned on and off in
   Monitors & Sound (Sound, "Enabled"; Apple advised turning it off for
-  headphones). Under syshm the switch does nothing, and it isn't known
+  headphones). Under Blue the switch does nothing, and it isn't known
   whether the checkbox even appears (that depends on what the emulated sound
   hardware reports). To do it: find which codec or GPIO bit the iMac's
   sound driver sets for it, then widen the host's output while it's on.
@@ -110,7 +110,7 @@ only, as with Ethernet, with input-script commands for reproducible tests.
 - **What for:** recording in Mac OS's own programs (SimpleSound, alert
   sounds, sound editors), PlainTalk speech recognition and Speakable Items
   with the host's microphone, and games or programs that listen.
-- **Where syshm is:** the codec's input DMA channel (9) runs at the right
+- **Where Blue is:** the codec's input DMA channel (9) runs at the right
   pace but records silence, and the sound node declares output hardware
   only (`hardware-types` 2), because Mac OS 9's AWACS input component
   ('sind' 'awgc') has a bug in its close routine that corrupts the system
@@ -119,7 +119,7 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   without the bug (8.5 and 8.6 use another sound stack; check which have
   it), make the bug harmless (a RAM patch of the component, with the
   injection the guest-tools installer brings), or give Mac OS 9 its input
-  another way, as an emulated USB audio device on syshm's USB controller
+  another way, as an emulated USB audio device on Blue's USB controller
   (like Griffin's iMic, which iMac owners used), where Mac OS 9's USB audio
   support handles it; whether 8.5 and 8.6 have USB audio support is to be
   checked.
@@ -138,7 +138,7 @@ only, as with Ethernet, with input-script commands for reproducible tests.
 
 ## AltiVec
 
-- **The iMac's:** none. Its PowerPC 750 (G3) has no vector unit, and syshm
+- **The iMac's:** none. Its PowerPC 750 (G3) has no vector unit, and Blue
   reports that processor (PVR 0x00080301); an AltiVec instruction (primary
   opcode 4) stops with "unimplemented". Mac OS 9 software checks for AltiVec
   (Gestalt `ppcf`, or the processor type) and takes its ordinary code
@@ -149,11 +149,11 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   software (which would also need a DVD drive), Final Cut Pro's real-time
   effects, iDVD (with a SuperDrive), some late plug-ins and encoders. Speed:
   on a G4, AltiVec made Photoshop filters, QuickTime codecs, MP3 encoding
-  and Mac OS 9.1's own BlockMove 2-4 times faster or more. syshm already
+  and Mac OS 9.1's own BlockMove 2-4 times faster or more. Blue already
   runs scalar code at about 2.5 billion instructions a second (about ten
   times the iMac, in the range of the fastest G4s that ran Mac OS 9 before
   their AltiVec), so this would mostly speed up vector-heavy work.
-- **Identity:** no G3 iMac had AltiVec. Either syshm reports a G4 (a 7400
+- **Identity:** no G3 iMac had AltiVec. Either Blue reports a G4 (a 7400
   PVR; Mac OS 8.5 predates the G4, which shipped with 8.6) or it keeps the
   G3 and only says it has a vector unit where Mac OS asks (programs that go
   by the processor type then don't use it). Either way it's an option, off
@@ -194,13 +194,13 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   Utility makes an LPR desktop printer).
 - **What for:** printing from Mac programs to a PDF on the host, or to the
   host's printer.
-- **How:** syshm's network gateway (10.0.2.2) answers LPR (port 515);
-  Mac OS's LaserWriter 8 sends it PostScript, and syshm writes the job out
+- **How:** Blue's network gateway (10.0.2.2) answers LPR (port 515);
+  Mac OS's LaserWriter 8 sends it PostScript, and Blue writes the job out
   as a PDF in a folder (an option, the Desktop by default) with
   Ghostscript's pdfwrite (found at run time; recent macOS no longer
   converts PostScript itself), or hands it to the host's printing system
   (`lp`: CUPS, on macOS and Linux). Without Ghostscript the PostScript file
-  is kept and syshm says so. The guest tools carry a PPD for a "syshm PDF
+  is kept and Blue says so. The guest tools carry a PPD for a "Blue PDF
   Printer" (paper sizes, colour), and the install prompt could set up the
   desktop printer. Programs that draw with QuickDraw print too: LaserWriter
   8 turns QuickDraw into PostScript. The NAT has to accept connections to
@@ -208,7 +208,7 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   networking.
 - **Alternatives:** a LaserWriter on AppleTalk (PAP) at the gateway, which
   needs AppleTalk to get past the NAT (only IP does today), or a printer
-  driver of syshm's own in the Chooser (far more work).
+  driver of Blue's own in the Chooser (far more work).
 - **Size:** moderate: an LPD listener in the NAT, the job handling, the PPD.
 
 ## Game controllers
@@ -217,7 +217,7 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   MacAlly iShock, Thrustmaster and others) were used through InputSprocket
   (Game Sprockets), with drivers from their makers or a generic USB HID
   driver.
-- **Where syshm is:** the host's gamepads don't reach Mac OS; games see the
+- **Where Blue is:** the host's gamepads don't reach Mac OS; games see the
   keyboard and mouse only.
 - **What for:** games with InputSprocket support, which most Mac action
   games of the late 90s have (Unreal Tournament among them).
@@ -226,13 +226,13 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   Xbox, PlayStation and Switch pads), in window runs only, with script
   commands for tests.
 - **Guest side, options:**
-  - An InputSprocket driver among the guest tools, its logic in syshm
+  - An InputSprocket driver among the guest tools, its logic in Blue
     through host calls like the 3D engine's: the pad appears in each game's
     InputSprocket configuration with named buttons, sticks and triggers,
     and no USB emulation is needed. How InputSprocket finds its drivers
     (plug-ins in the Extensions folder, to confirm) decides the packaging.
     The first choice.
-  - A virtual USB gamepad (HID) on syshm's USB controller, which has no
+  - A virtual USB gamepad (HID) on Blue's USB controller, which has no
     devices yet, for Mac OS's own USB drivers: more general (games that
     read USB HID themselves; a base for other USB devices), but it needs
     USB device emulation and depends on what Mac OS 8.5-9.1's USB HID
@@ -247,7 +247,7 @@ only, as with Ethernet, with input-script commands for reproducible tests.
 
 ## More CD formats
 
-- **Where syshm is:** a CD image is a plain one (an Apple partition map with
+- **Where Blue is:** a CD image is a plain one (an Apple partition map with
   HFS partitions, a bare HFS or HFS+ volume, or ISO 9660, which an
   installed system mounts with ISO 9660 File Access) or a cue sheet with
   `.bin`, WAVE or AIFF tracks, whose audio the CD-ROM drive plays and reads

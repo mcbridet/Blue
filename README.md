@@ -1,18 +1,22 @@
-# syshm
+# Blue
 
 Run classic Mac OS on arbitrary hardware by replacing the bottom of the OS
 instead of emulating a whole Power Mac.
 
+Blue was called syshm until November 2026. Its settings in the environment
+are `BLUE_*` now: if one of the old names is set, Blue says what it's
+called now, and doesn't read it.
+
 On a real Power Mac only the NanoKernel runs in supervisor mode; the 68k
 emulator, the Toolbox, applications and drivers all run in PowerPC user mode
-and reach the kernel through a small interface. syshm keeps all of that Apple
+and reach the kernel through a small interface. Blue keeps all of that Apple
 code unmodified and supplies the rest natively:
 
 ```
 68k apps, 68k Toolbox code    → Apple's own 68k emulator (from the ROM, unchanged)
-PPC apps, Toolbox, drivers    → syshm's user-mode PowerPC JIT and interpreter
+PPC apps, Toolbox, drivers    → Blue's user-mode PowerPC JIT and interpreter
 ══════ NanoKernel interface: kernel calls (twi), exceptions, interrupts ══════
-Native kernel + HAL drivers + loader   ← syshm, portable C
+Native kernel + HAL drivers + loader   ← Blue, portable C
 Linux today; other hosts / bare metal later
 ```
 
@@ -26,9 +30,10 @@ Linux today; other hosts / bare metal later
   `iMac,1 PowerMac1,1 PowerBook1,1`; the family SheepShaver uses).
 - **OS:** the retail Mac OS 8.5 CD (`85.iso`). It boots with the ROM file it
   carries itself (1.1.x, no `<COMPATIBLE>` list) or with `MOS.rom`.
-- **Machine identity:** to be decided by the universal info tables syshm
-  builds. Retail 8.5 predates the Blue & White G3, so an iMac identity is the
-  safer first choice; B&W G3 (`PowerMac1,1`) for 8.5.1 and later.
+- **Machine identity:** to be decided by the universal info tables Blue
+  builds. Retail 8.5 predates the Power Mac G3 (Blue and White), so an iMac
+  identity is the safer first choice; the B&W G3 (`PowerMac1,1`) for 8.5.1
+  and later.
 - **OS ladder:** 8.5 → 8.6 → 9.0.4 on the NanoKernel v1 interface, then the
   v2 interface for 9.1 and 9.2.2 (both CDs start up to the Finder; see
   below).
@@ -50,8 +55,8 @@ and games' CD soundtracks (cue sheets) through the sound chip, as the iMac's
 drive did.
 
 ```
-build/syshm disk create hd.img 2G "Macintosh HD"      # an empty HFS volume
-build/syshm boot --disk hd.img --cdrom 85.iso --window --nvram syshm.nvram
+build/blue disk create hd.img 2G "Macintosh HD"      # an empty HFS volume
+build/blue boot --disk hd.img --cdrom 85.iso --window --nvram blue.nvram
 ```
 
 Run "Mac OS Install" from the CD (about 30 billion instructions, about a
@@ -60,12 +65,12 @@ Setup only knows Apple's own ATA/SCSI drives and quits on ours. Then boot the
 installed system with just `--disk hd.img`. Drives are tried in command-line
 order. In the window, the GUI/Super key is Command and Alt is Option.
 
-As a New World Mac's firmware does, syshm starts the "Mac OS ROM" file from
+As a New World Mac's firmware does, Blue starts the "Mac OS ROM" file from
 the startup disk: the first drive, in command-line order (an image's HFS
 partitions in partition-map order), whose blessed System Folder holds a file
 of type `tbxi`. Above, the new disk is empty, so that's the CD's; once 8.5
 is installed, the disk's own. `src/hfsread.c` reads HFS and HFS+ volumes
-(HFS+ also inside an HFS wrapper), only the blocks it needs. syshm says where
+(HFS+ also inside an HFS wrapper), only the blocks it needs. Blue says where
 the file came from:
 
 ```
@@ -73,7 +78,7 @@ rom: "Mac OS 9.1:System Folder:Mac OS ROM" from 91.iso, partition "Toast 4.0 PPC
 ```
 
 `--rom FILE` starts a ROM file (or a raw 4 MB ROM image) of your own
-instead. `syshm rom info` and the other `rom` commands take a disk or CD
+instead. `blue rom info` and the other `rom` commands take a disk or CD
 image too, and show the ROM file that would be started from it.
 
 Restart starts the machine over in the same window, from the ROM with
@@ -86,7 +91,7 @@ Mac OS 8.5 also starts up with the ROM file from its own System Folder
 system installed from it. That ROM has the DAV audio component's 'thng'
 resource in it, and registering the component copies the resource's
 description onto itself, in the ROM. The NanoKernel drops such stores
-(quiet writes; see Virtual machine description); until syshm's kernel did
+(quiet writes; see Virtual machine description); until Blue's kernel did
 too, startup stopped there with a bus error.
 
 ### Mac OS 9
@@ -100,14 +105,14 @@ The 9.0.4 update on the same CD installs too, and 9.0.4 boots to the Finder
 in under 3 s in real time, with fast start (see below). Without it, that's
 13 s, or 5 s with AppleTalk inactive (Chooser): with AppleTalk active on
 Ethernet, startup waits out its timeouts, as on a real Mac with no other
-AppleTalk machine around, and behind syshm's NAT (IP only) there never is
+AppleTalk machine around, and behind Blue's NAT (IP only) there never is
 one. That's 5 s for a node address and a router (AARP probes, then ZIP
 GetNetInfo) and 3 s for Apple Remote Access's personal server to make sure
 its name is unique (NBP lookups). Two things were in the way of those
 13 s:
 
 - Mac OS 9 waits up to 10 s during "Starting Up…" for the root hubs of the
-  machine's USB controllers, and without any it waits it all out. syshm has
+  machine's USB controllers, and without any it waits it all out. Blue has
   an empty USB controller (below), whose root hub the ROM's driver finds at
   once.
 - The input component of Mac OS 9's AWACS sound driver ('sind' 'awgc') has a
@@ -127,13 +132,13 @@ interrupts need acknowledging by the kernel (see interrupt sets below).
 
 Mac OS 8.6 and later carry a newer NanoKernel in the System file (a `krnl`
 resource) and replace the running kernel with it at startup unless that one
-is at least as new. syshm's kernel reports NanoKernelInfo version 2.28, with
+is at least as new. Blue's kernel reports NanoKernelInfo version 2.28, with
 the multiprocessing fields empty (no "blue task"), so those Systems keep it;
 their MPLibrary then doesn't use the version 2 interfaces, as on a machine
 without them. One call does come through, though: 8.6's Process Manager
 (its ProcessMgrSupport fragment), when nothing needs to run, sleeps until
 the next process's wake time with Multiprocessing Services call 55
-(`MPDispatch`, kernel call 8, with an AbsoluteTime in r3:r4). syshm naps
+(`MPDispatch`, kernel call 8, with an AbsoluteTime in r3:r4). Blue naps
 then until that time or an interrupt, as for `PowerDispatch`; any other
 `MPDispatch` call stops the run, naming it.
 
@@ -141,22 +146,22 @@ then until that time or an interrupt, as for `PowerDispatch`; any other
 
 9.1's System won't start with `MOS.rom` ("This startup disk will not work
 on this Macintosh model"). It needs the ROM file from its own CD (Mac OS ROM
-6.1f9, which syshm takes from the CD's System Folder; `MOS91.rom` here is a
+6.1f9, which Blue takes from the CD's System Folder; `MOS91.rom` here is a
 copy of its data fork, for `--rom` and the tools), which keeps its contents
 in parcels (`src/parcels.h`; `rom parcels` lists them): the Toolbox image;
 libraries the ROM prepares and registers at startup (MotherBoardHAL,
 TimeManagerLib, NVRAMServicesLib, RTCServicesLib, NativePowerMgrLib,
 StartLib), which earlier ROMs had inside
-the image; and drivers for machines' devices. syshm loads it and puts the
+the image; and drivers for machines' devices. Blue loads it and puts the
 libraries, and the drivers that match its devices (Cuda, Grackle, the
 RTC, NVRAM), in the device tree as the Trampoline would. Its ConfigInfo no longer
 describes the address space (the Trampoline in the same file hands the
-kernel a page map instead), so syshm lays it out as earlier ROMs describe
+kernel a page map instead), so Blue lays it out as earlier ROMs describe
 it.
 
 The 68k emulator then starts, and the ROM starts Multiprocessing Services,
 which want a NanoKernel 2 underneath: one that runs Mac OS as its "blue"
-task. For these ROM files syshm's kernel reports one (NanoKernelInfo's
+task. For these ROM files Blue's kernel reports one (NanoKernelInfo's
 version 2 fields; the ROM checks that the blue process has ID 1, the first
 one a NanoKernel 2 makes), and takes their calls (`sc`, or kernel call 8,
 with the call number in r0; `src/mp.c`): queues, semaphores, critical
@@ -164,7 +169,7 @@ regions, event groups (setting one that's marked for it raises a 68k
 software interrupt, which the emulator takes much as it does a device's),
 notifications, the areas startup's address space is made of (Mac OS's RAM
 and the page map's regions), and timers, which fire on the guest timebase.
-`SYSHM_LOG_MP=1` logs them, the switches between tasks, timers firing and
+`BLUE_LOG_MP=1` logs them, the switches between tasks, timers firing and
 software interrupts raised.
 
 Mixed Mode asks with every call whether the current task is the blue one
@@ -208,7 +213,7 @@ extensions' icons, then the CD's window), within about a billion
 instructions (under a second):
 
 ```
-build/syshm boot --cdrom 91.iso --max 3000000000 --screenshot finder.png
+build/blue boot --cdrom 91.iso --max 3000000000 --screenshot finder.png
 ```
 
 Startup used to wait 25 s first. 9.1's Start Manager, unlike earlier ones,
@@ -218,10 +223,10 @@ any drive. It learns which drive that is from StartLib (one of the ROM
 file's libraries), which reads the path Open Firmware leaves in the device
 tree (`/chosen`'s `bootpath`: the device, the partition, and the System
 Folder's ROM file) and asks each disk driver, through DriverGestalt, which
-device-tree node, unit and partition its drives are. syshm's tree had no
+device-tree node, unit and partition its drives are. Blue's tree had no
 such path. For ROM files with parcels it now names the partition the ROM
 file came from (if it has boot blocks; otherwise, or with `--rom`, the
-first partition with boot blocks, in command-line order), and syshm's disk
+first partition with boot blocks, in command-line order), and Blue's disk
 driver answers those questions, its drives being a SCSI target at the
 disk's PCI device number (StartLib knows units only for SCSI, ATA, USB
 and FireWire drives). In real time with fast start the CD is at the
@@ -245,7 +250,7 @@ NVRAM is the same 8 KB that RTAS serves 8.5–9.0.4, kept in the same
 file goes with an install whichever ROM starts it. 9.1 reads NVRAM at
 startup and keeps its changes in memory until it shuts down or restarts,
 when it writes them to the chip, as on an iMac: changes since startup are
-lost when syshm quits otherwise (closing the window, or Turn off in its
+lost when Blue quits otherwise (closing the window, or Turn off in its
 menu). The end-of-run statistics count the chip's reads and writes.
 
 Not done yet: installing 9.1 onto a disk image with its installer and
@@ -260,14 +265,14 @@ Finder on the same kernel, and opens its Read Me in SimpleText, as under
 QEMU:
 
 ```
-build/syshm boot --cdrom 922.iso --max 3000000000 --screenshot finder.png
+build/blue boot --cdrom 922.iso --max 3000000000 --screenshot finder.png
 ```
 
 The Finder is up by instruction 1.5 billion; in real time with fast start
 after 13-14 s of guest time (about 1 s on the host; how far guest time
 gets in that second depends on how busy the host is), and then the host
 sleeps most of the time. Its ROM file carries NanoKernel 2.28 (the version
-syshm's kernel reports), and wants a few things 9.1's doesn't:
+Blue's kernel reports), and wants a few things 9.1's doesn't:
 
 - The info records as NanoKernel 2.28 has them: HWInfo version 0x0108 (0xC0
   bytes), ProcessorInfo 0x0112 (0xA0 bytes, with the processor's clock
@@ -288,7 +293,7 @@ syshm's kernel reports), and wants a few things 9.1's doesn't:
   finds the counter stopped and corrects nothing.
 - Its ROM file has a lanLib for the iMac's own Ethernet controller (BMAC+),
   which the Trampoline puts in the Ethernet node in place of the firmware's.
-  syshm has no BMAC, so its own lanLib stays.
+  Blue has no BMAC, so its own lanLib stays.
 - Kernel call 7 (CacheDispatch) with a selector for no cache (4), from the
   power manager as it dozes after half an hour of idling: -2, as both
   NanoKernels answer.
@@ -298,7 +303,7 @@ syshm's kernel reports), and wants a few things 9.1's doesn't:
   slot in HWInfo's VectorLookupTable, here the source), so without it the
   sound chip, the USB controller and the Ethernet node had no sets: no
   sound, USB's driver waiting for an interrupt that never came, and lanLib
-  polling. syshm gives them one for ROM files whose Trampoline makes it
+  polling. Blue gives them one for ROM files whose Trampoline makes it
   (9.2's; earlier ROMs' trees are as they were; the display's set has
   always had one). The sound plays (alerts; the Sound control panel's
   volume and Mute), USB's root hub runs with its interrupts (start of
@@ -319,15 +324,15 @@ opens too, lists no drives (it knows Apple's own ATA and SCSI drives only)
 and isn't needed:
 
 ```
-build/syshm disk create hd922.img 2G "Macintosh HD"
-build/syshm boot --disk hd922.img --cdrom 922.iso --window --nvram syshm.nvram
+build/blue disk create hd922.img 2G "Macintosh HD"
+build/blue boot --disk hd922.img --cdrom 922.iso --window --nvram blue.nvram
 ```
 
 In Apple Software Restore (open it from the CD's window), click Switch Disk
 until the destination disk is "Macintosh HD", then Restore, and OK. A
 scripted run restored 671 MB in under 20 billion instructions; the volume is
-then called MacOS9Lives. Then `build/syshm boot --disk hd922.img --window
---nvram syshm.nvram` starts it, to the Finder (the first time, with the
+then called MacOS9Lives. Then `build/blue boot --disk hd922.img --window
+--nvram blue.nvram` starts it, to the Finder (the first time, with the
 Setup Assistant over it), in real time and in instruction time. In
 instruction time its startup used to stop short of the Finder until a key
 was pressed: a Time Manager software interrupt the 68k emulator never took,
@@ -360,9 +365,9 @@ open the TCP/IP control panel, answer Yes to make it active, then close it
 and save. Browsers of the time can't load most of today's HTTPS sites;
 plain-HTTP sites work.
 
-`SYSHM_NET=1` connects the Ethernet in instruction-time runs too (the
+`BLUE_NET=1` connects the Ethernet in instruction-time runs too (the
 host network's timing then makes them unreproducible), and
-`SYSHM_LOG_NET=1` logs the driver's calls. Frame counts are printed at
+`BLUE_LOG_NET=1` logs the driver's calls. Frame counts are printed at
 exit.
 
 ### Shared folder
@@ -375,10 +380,10 @@ Finder, installers, programs run from it), and what Mac OS changes on it
 goes back to the folder when Mac OS shuts down.
 
 ```
-build/syshm boot --disk hd.img --share ~/Mac --window --nvram syshm.nvram
+build/blue boot --disk hd.img --share ~/Mac --window --nvram blue.nvram
 ```
 
-The volume (`src/share.c`) is made when syshm starts: its catalog and the
+The volume (`src/share.c`) is made when Blue starts: its catalog and the
 rest of its metadata in memory (`src/hfs.c` lays volumes out), its files'
 contents read from the host's files only as Mac OS reads them. It has half
 as much free space as there is in it, at least 1 GB but under 2 GB (older
@@ -388,7 +393,7 @@ no System Folder). Names become Mac OS Roman, with `/` for `:` as macOS
 shows them; one longer than 31 characters, or the same as another's to
 Mac OS (which ignores case), is shortened with the item's ID, as Mac OS 9
 does (`A very long file name#1A.txt`). Dot files, symbolic links to
-folders and files over 2 GB (HFS's limit) are left out, and syshm says so.
+folders and files over 2 GB (HFS's limit) are left out, and Blue says so.
 Dates are the host's, but none later than the guest's clock as the run
 starts (`--fixed-time`'s, else the host's), and none created after it was
 modified (as a file macOS copied or unpacked is: it's created when it was
@@ -412,36 +417,36 @@ Unarchiver's `unar` (Homebrew's `unar`), which keeps resource forks and
 Finder info on macOS, so they reach Mac OS through the share.
 
 What Mac OS writes goes to a temporary file (in `$TMPDIR`, gone when
-syshm exits), never to the folder during the run. At the end of the run,
-if Mac OS put the volume away (Shut Down, or Put Away), syshm writes back
+Blue exits), never to the folder during the run. At the end of the run,
+if Mac OS put the volume away (Shut Down, or Put Away), Blue writes back
 what changed: new, changed, renamed, moved and deleted files and folders,
 with their resource forks and Finder info as the host keeps them (on
 macOS the file's own; otherwise an AppleDouble `._name` file, only for a
 file with a resource fork or Finder info its name and contents wouldn't
 give it) and their dates. Nothing of the host's is destroyed: a file or
 folder Mac OS deleted (emptying the Trash or not) or replaced is moved to
-`DIR/.syshm-recovery/<date and time>/`, under the path it had, and a file
+`DIR/.blue-recovery/<date and time>/`, under the path it had, and a file
 that changed on the host as well during the run is kept, with Mac OS's
 version beside it as `name (Mac OS).ext`. What Mac OS and its extensions
 keep on a volume for themselves (the desktop database, the Trash, invisible
-files at its top) isn't written back. syshm lists what it did:
+files at its top) isn't written back. Blue lists what it did:
 
 ```
 share: writing back what Mac OS changed on "Shared" to /Users/me/Shared
-share:   changed Read Me.txt (the host's was put in .syshm-recovery/2026-11-15 00.13.05)
+share:   changed Read Me.txt (the host's was put in .blue-recovery/2026-11-15 00.13.05)
 share:   new untitled folder
-share: 1 new, 1 changed, 0 moved or renamed, 0 deleted; the host's old ones are in /Users/me/Shared/.syshm-recovery/2026-11-15 00.13.05
+share: 1 new, 1 changed, 0 moved or renamed, 0 deleted; the host's old ones are in /Users/me/Shared/.blue-recovery/2026-11-15 00.13.05
 ```
 
 If the run ends without Mac OS having put the volume away (the window
-closed, or Turn off in syshm's menu, rather than Mac OS shutting down),
+closed, or Turn off in Blue's menu, rather than Mac OS shutting down),
 nothing is written back, as the volume may be half-written; if anything
 of the user's had changed on it, it is saved as a disk image in the
 recovery folder instead (attach it with `--disk` to get at what's on it;
 Mac OS may check it first, as after a crash). Mac OS marks the volume in use
 in its MDB as soon as it mounts it (its first write) and put away when it
-unmounts it; that's how syshm tells. A restart keeps the volume as Mac OS
-left it. `SYSHM_LOG_SHARE=1` logs Mac OS's writes.
+unmounts it; that's how Blue tells. A restart keeps the volume as Mac OS
+left it. `BLUE_LOG_SHARE=1` logs Mac OS's writes.
 
 Changes cross only once a run: files added on the host during the run
 appear in Mac OS the next time, and changes made in Mac OS reach the host
@@ -456,7 +461,7 @@ images that come and go while Mac OS runs, mainly to install software that
 came on floppies or on several CDs. Mac OS ejects a disc as on any Mac: Put
 Away or dragging it to the Trash, Eject in the Finder's Special menu, an
 installer's own eject, an Initialize dialog's Eject. The drive is then
-empty, and syshm says so (`cdrom: Mac OS ejected ut.iso`). To put an image
+empty, and Blue says so (`cdrom: Mac OS ejected ut.iso`). To put an image
 in, drop it on the window: one of a floppy's size (2880K or less) goes in
 the floppy drive, any other in a CD-ROM drive, the first that's empty (else
 one whose disc Mac OS isn't using). Mac OS learns of a disc going in as
@@ -464,15 +469,15 @@ from a real drive, by a disk-inserted event, so whatever application is in
 front and waiting for one (an installer, Disk Copy) gets it, and mounts it.
 
 ```
-build/syshm boot --disk hd.img --cdrom "Game CD 1.iso" --window
-build/syshm boot --disk hd.img --cdrom-drive --floppy "Install 1.image" --floppy "Install 2.image" --window
+build/blue boot --disk hd.img --cdrom "Game CD 1.iso" --window
+build/blue boot --disk hd.img --cdrom-drive --floppy "Install 1.image" --floppy "Install 2.image" --window
 ```
 
 The window's menu (F12) shows what's in each drive, with an Eject button.
-syshm won't take a disc out that Mac OS has mounted (it's using it: the
+Blue won't take a disc out that Mac OS has mounted (it's using it: the
 button is disabled, and the menu says to put it away in Mac OS); one that
 isn't mounted (unreadable, say, or just put in) it can. If an image can't
-go in (no empty drive, a drive Mac OS is using, not an image syshm takes),
+go in (no empty drive, a drive Mac OS is using, not an image Blue takes),
 the menu opens to say why.
 
 `--floppy IMAGE` puts a floppy disk image in the floppy drive; given
@@ -521,7 +526,7 @@ play lists the driver plays itself (AppleCD Audio Player's shuffle and
 programs, with repeat), reading audio digitally (ReadAudio, with the Q or
 all of the subchannel). The Finder shows a CD and a CD-ROM drive icon (a
 disc's own volume icon, if it has one, goes before them), and Get Info says
-"syshm CD-ROM drive".
+"Blue CD-ROM drive".
 
 Images with audio come as cue sheets (`.cue`, with `.bin` files, as most
 CD rips are): tracks in raw 2352-byte sectors (audio; mode 1 or mode 2
@@ -530,10 +535,10 @@ kHz, 16-bit stereo); `BINARY` and `MOTOROLA` files, one for the disc or one
 a track; `INDEX 00` pregaps in the file and `PREGAP`/`POSTGAP` silence that
 isn't; several sessions (`REM SESSION`, as on CD-Extra discs); `CATALOG` and
 `ISRC`. The disc's own addresses are worked out as a drive has them (track 1
-at 00:02:00). `syshm disk toc FILE` lists what the drive will say:
+at 00:02:00). `blue disk toc FILE` lists what the drive will say:
 
 ```
-$ build/syshm disk toc "Quake [1996].cue"
+$ build/blue disk toc "Quake [1996].cue"
 Quake [1996].cue: 11 tracks, 1 session, lead-out at 61:47:11 (LBA 277886)
    1  mode 1  00:02:00  LBA      0  02:47:20  (Mac OS sees its data)
    2  audio   02:51:20  LBA  12695  05:08:38  (pregap 00:02:00)
@@ -556,12 +561,12 @@ here, it plays through too). So CD audio is mixed with Mac OS's own sound
 and follows its volume and mute (Monitors & Sound), as on the real machine,
 and the drive's own volume (AudioControl) comes before. It's paced by guest
 time: where the drive is follows from where and when play started, so
-instruction-time runs are reproducible, and `SYSHM_SOUND_WAV` records it.
+instruction-time runs are reproducible, and `BLUE_SOUND_WAV` records it.
 To play a music CD's or a game's soundtrack, start Mac OS with the cue
 sheet, or drop it on the window:
 
 ```
-build/syshm boot --disk hd.img --cdrom "Quake [1996].cue" --window    # then AppleCD Audio Player, in the Apple menu
+build/blue boot --disk hd.img --cdrom "Quake [1996].cue" --window    # then AppleCD Audio Player, in the Apple menu
 ```
 
 On an installed 8.5, the Control Strip's CD module plays a disc that's in at
@@ -575,11 +580,11 @@ plays either. AppleCD Audio Player numbers a mixed disc's audio tracks from
 Images: raw ones of 400K, 720K, 800K, 1440K and 2880K disks (`.img`,
 `.dsk`, `.ima`, `.flp`), and Disk Copy 4.2 ones (`.image`: an 84-byte
 header, the blocks, then the 400K and 800K disks' tags; also in
-MacBinary), whose checksums syshm keeps right as Mac OS writes (they're
+MacBinary), whose checksums Blue keeps right as Mac OS writes (they're
 worked out again a second after the last write, and when the disk is
 ejected or flushed). They're told apart by their contents and size, not
 their names. Compressed images and archives (Disk Copy 6's NDIF, DART,
-UDIF `.dmg`, StuffIt, zip, gzip, BinHex) aren't taken: syshm says what
+UDIF `.dmg`, StuffIt, zip, gzip, BinHex) aren't taken: Blue says what
 they are, or that their size is no floppy's. Convert them to a raw or Disk
 Copy 4.2 image first (with Disk Copy in Mac OS, or a tool on the host). An
 image is read-only (Mac OS shows it locked) if its file can't be written,
@@ -591,12 +596,12 @@ System doesn't: it offers to initialize them). MFS disks (System 1-6 era,
 400K) are refused: Mac OS 8.5 and later can't read them. A blank image (or
 one Mac OS can't read) brings up Mac OS's "unreadable, initialize?"
 dialog, and Erase Disk works on floppies (Format, Verify, then a new
-volume; the format offered is the image's size). `syshm disk create
+volume; the format offered is the image's size). `blue disk create
 blank.img 1440K "Untitled"` makes a blank formatted floppy (400K, 720K,
 800K or 1440K).
 
 The iMac has no floppy controller, so none is emulated: the drive is a
-third kind of drive of syshm's own disk driver (`src/disk.c`, images in
+third kind of drive of Blue's own disk driver (`src/disk.c`, images in
 `src/floppy.c`, which drive an image goes in `src/drives.c`), at PCI
 device 7, much as a USB floppy drive is on a real iMac, and needs nothing
 installed in Mac OS. It answers as a floppy drive
@@ -604,7 +609,7 @@ installed in Mac OS. It answers as a floppy drive
 color, the 'where' of Get Info, the format list) and says its disk is
 ejectable, and Mac OS keeps the disk in at a restart. A floppy is never the
 startup disk: the drive is empty as far as Mac OS knows until applications
-run (see plan.md, Findings), and syshm doesn't look for a ROM file on it.
+run (see plan.md, Findings), and Blue doesn't look for a ROM file on it.
 Transfers take guest time at the disks' rate. The status bar's floppy light
 (with a floppy drive only) is dimmed while it's empty. Disk Copy can't
 make floppies from images in this drive (it looks for Apple's floppy
@@ -626,13 +631,13 @@ G3/300); in one real-time run on an M5, with other work on the host,
 Processor scored 18,324 (the test took about 25 s). MacBench times things
 by polling the VIA's timer in a tight loop; in real time, a loop whose
 device register read fell on the last instruction before a sync point
-kept syshm from ever reaching one (guest time stood still, and the window
+kept Blue from ever reaching one (guest time stood still, and the window
 froze); it no longer does. Its Floating Point test runs for about 50 s
 of guest time (five parts of about 10 s that count iterations: an FFT, an
 LU decomposition, MathLib's functions, NaNs and infinities among their
 arguments, a table of log factorials from MathLib's log and exp,
 arithmetic on special values); the score weighs them like a harmonic
-mean, so the log factorials (60% of it on syshm) count most. Headless in
+mean, so the log factorials (60% of it on Blue) count most. Headless in
 real time on an M5 (`--realtime`, a script in seconds; medians of 4 runs,
 interleaved) it scored 7,085 before the JIT's floating-point work above
 and 16,616 after (in a later session, 6,250 and 14,700: the host's speed
@@ -652,44 +657,44 @@ broken system heap, then the Toolbox) didn't reproduce here.
 
 ### Guest tools
 
-Some things only code inside Mac OS can do: syshm Enhancements, syshm
-3D Engine and syshm's OpenGL libraries (below). In a window, syshm offers to install them: before Mac OS
+Some things only code inside Mac OS can do: Blue Enhancements, Blue
+3D Engine and Blue's OpenGL libraries (below). In a window, Blue offers to install them: before Mac OS
 starts it looks in the startup disk's System Folder (its folders,
 Extensions whatever its name and Extensions (Disabled) among them) for
-them, and once the Finder is up, if one is missing or isn't this syshm's
+them, and once the Finder is up, if one is missing or isn't this version's
 (both forks compared with what it makes), a box over the screen says so,
 with Install and Restart (or Update and Restart) and Not Now; Mac OS runs
 on meanwhile. On Install, Mac OS writes the files itself (see Findings in
 plan.md): each goes to a temporary file in the folder it belongs in, which
 then takes the old copy's place, so an error (a full or locked disk) leaves
 nothing half written; a disabled copy is updated where it is and stays
-disabled. An older syshm Enhancements that's running is asked to quit
+disabled. An older Blue Enhancements that's running is asked to quit
 first (its file is in use while it runs). Once everything is in place,
-Mac OS restarts as Special > Restart does (syshm's installer sends the
+Mac OS restarts as Special > Restart does (Blue's installer sends the
 Process Manager the Restart Apple event): programs are asked to quit, and
 can ask to save their work first, or stop the restart (the tools are in
 place then, and load at the next restart). Afterwards the tools load as
-any extension does: syshm Enhancements runs, programs find the 3D engine
-and syshm's OpenGL, and nothing is offered. If anything goes wrong, Mac
+any extension does: Blue Enhancements runs, programs find the 3D engine
+and Blue's OpenGL, and nothing is offered. If anything goes wrong, Mac
 OS doesn't restart, and the box says what. This works on Mac OS 8.5, 8.6
 and 9.2.2 installed on disk images (9.1 by the same path; there was no
 installed 9.1 to try). The outcome is shown (the box stays through the
 restart, until OK) and printed:
 
 ```
-tools: installed syshm Enhancements, syshm 3D Engine, syshm OpenGL Library, syshm OpenGL Memory and syshm OpenGL Utility in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
+tools: installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory and Blue OpenGL Utility in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
 ```
 
-Mac OS 9 has OpenGL libraries of Apple's with the names syshm's have
+Mac OS 9 has OpenGL libraries of Apple's with the names Blue's have
 (OpenGLLibrary, OpenGLMemory, OpenGLUtility), so only one set can be
-enabled. Once syshm's are in Extensions, the installer moves Apple's to
-Extensions (Disabled) and says so (the offer says it will). If syshm's
+enabled. Once Blue's are in Extensions, the installer moves Apple's to
+Extensions (Disabled) and says so (the offer says it will). If Blue's
 are gone (deleted by hand) while Apple's are disabled, the offer is to put
-Apple's back (Put Back and Restart) instead of installing syshm's, and
-syshm's aren't offered again for the rest of the run. Checked on 9.2.2:
+Apple's back (Put Back and Restart) instead of installing Blue's, and
+Blue's aren't offered again for the rest of the run. Checked on 9.2.2:
 
 ```
-tools: installed syshm OpenGL Library, syshm OpenGL Memory and syshm OpenGL Utility in "MacOS9Lives:System Folder:Extensions"; moved Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility to "MacOS9Lives:System Folder:Extensions (Disabled)". Mac OS is restarting.
+tools: installed Blue OpenGL Library, Blue OpenGL Memory and Blue OpenGL Utility in "MacOS9Lives:System Folder:Extensions"; moved Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility to "MacOS9Lives:System Folder:Extensions (Disabled)". Mac OS is restarting.
 ```
 
 Nothing is offered when the startup disk is a CD, an image attached
@@ -699,12 +704,12 @@ on; `tools install` restarts Mac OS too, and instruction-time runs stay
 reproducible. The startup disk is the partition the ROM file came from (with
 `--rom`, the first with boot blocks).
 
-They can still be installed by hand: `syshm tools create FILE` writes a
-small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
+They can still be installed by hand: `blue tools create FILE` writes a
+small volume, "Blue Tools", holding them, which `--cdrom FILE` attaches
 (read-only); drag them onto the System Folder (the Finder puts them in
-Extensions) and restart, as syshm's installer does:
+Extensions) and restart, as Blue's installer does:
 
-- **syshm Enhancements**: from then on, resizing the window changes the
+- **Blue Enhancements**: from then on, resizing the window changes the
   screen's resolution to match once the window has stopped changing (while
   it's being dragged, the window scales the screen), and the Finder lays out
   the desktop again. A
@@ -713,15 +718,15 @@ Extensions) and restart, as syshm's installer does:
   screen. On high-density displays a screen pixel is a point, so Mac OS
   appears at the size of other programs; with `--integer-scale` it is a
   whole number of pixels instead (2 at 1.7x), for the crispest pixels. It
-  also shares the clipboard (below). One installed by a syshm from before
-  the clipboard isn't this syshm's (so in a window syshm offers to update
-  it), and it still switches modes until then: its data carries its
-  version, as the 3D engine's does, so that syshm finds the older copy's
+  also shares the clipboard (below). One installed by a version of Blue
+  from before the clipboard isn't this version's (so in a window Blue
+  offers to update it), and it still switches modes until then: its data carries its
+  version, as the 3D engine's does, so that Blue finds the older copy's
   data where it is, and says so. An `appe` only starts from Extensions, so
-  a CD's system can't run it; to try it there, `SYSHM_TOOLS_APPL=1 syshm
+  a CD's system can't run it; to try it there, `BLUE_TOOLS_APPL=1 blue
   tools create FILE` makes the volume's copy an application the Finder
   opens with a double-click.
-- **Clipboard** (with syshm Enhancements, in a window in real time): text
+- **Clipboard** (with Blue Enhancements, in a window in real time): text
   copied in Mac OS is on the host's clipboard, and text copied on the host
   is what Command-V pastes in Mac OS, in the front application, without
   switching applications (tested: SimpleText, Note Pad, Scrapbook, the
@@ -731,10 +736,10 @@ Extensions) and restart, as syshm's installer does:
   the host has UTF-8 with LF. Accents come out precomposed (macOS often
   decomposes them), and characters Mac OS Roman lacks become something
   close where there is one (½ "1/2", → "->", other spaces a space) or
-  else "?"; `utxt`, which syshm puts in the scrap too, has them all, for
+  else "?"; `utxt`, which Blue puts in the scrap too, has them all, for
   applications that read it, and is what the host gets when an
   application puts both. Styles (`styl`) and pictures aren't passed, nor
-  texts over 4 MB (syshm says so). How: each application has a scrap of
+  texts over 4 MB (Blue says so). How: each application has a scrap of
   its own (the Process Manager hands it to the next one brought to the
   front), and many keep a private one besides, such as TextEdit's, which
   they take from the scrap only when resumed with "the clipboard has
@@ -751,7 +756,7 @@ Extensions) and restart, as syshm's installer does:
   stand-in for the host's clipboard (`clipboard` and `print-clipboard`,
   see Debugging boot); other runs without a window, or in instruction
   time, leave the clipboard alone.
-- **syshm 3D Engine**: a QuickDraw 3D RAVE drawing engine (put it in
+- **Blue 3D Engine**: a QuickDraw 3D RAVE drawing engine (put it in
   Extensions). QuickDraw 3D's interactive renderer and RAVE games then find
   an accelerator: it reports itself as an ATI engine (vendor 1, engine 5),
   because games of the time, Bugdom among them, take nothing else for
@@ -780,7 +785,7 @@ Extensions) and restart, as syshm's installer does:
     gap and draw no pixel twice); the pixels are always the same, however many
     threads draw them, and it's built without the fused multiply-adds
     compilers use on some hosts (Apple silicon's), so instruction-time runs
-    stay the same on every host. `SYSHM_RASTER_THREADS` sets the number
+    stay the same on every host. `BLUE_RASTER_THREADS` sets the number
     (default 3, counting the emulated processor's).
 
   The rasterizer and the GPU take what Mac OS 9's OpenGL will need too
@@ -789,10 +794,10 @@ Extensions) and restart, as syshm's installer does:
   a fog coordinate, a stencil buffer and its test; RAVE's texture
   operations are such stages.
 
-  `--no-gpu` (or `SYSHM_GPU=0`) draws in software in real time too;
-  `SYSHM_GPU=1` draws with OpenGL in any run, a software renderer such as
-  Mesa's llvmpipe included. `SYSHM_RAVE_FPS=1` prints the frame rate every
-  second, and `SYSHM_LOG_RAVE=1` logs every call. docs/gpu-plan.md
+  `--no-gpu` (or `BLUE_GPU=0`) draws in software in real time too;
+  `BLUE_GPU=1` draws with OpenGL in any run, a software renderer such as
+  Mesa's llvmpipe included. `BLUE_RAVE_FPS=1` prints the frame rate every
+  second, and `BLUE_LOG_RAVE=1` logs every call. docs/gpu-plan.md
   describes the GPU backend in full.
 
   Frames for the screen come at most one a vertical blank of the display's
@@ -808,8 +813,8 @@ Extensions) and restart, as syshm's installer does:
   made up then: the game would show it). In a window in real time, the
   window shows each such frame when it's due, so frames come at an even
   pace.
-- **syshm OpenGL Library, Memory and Utility** (under way:
-  docs/opengl-plan.md): Mac OS 9's OpenGL libraries, as syshm's own, under
+- **Blue OpenGL Library, Memory and Utility** (under way:
+  docs/opengl-plan.md): Mac OS 9's OpenGL libraries, as Blue's own, under
   Apple's fragment names (OpenGLLibrary, OpenGLMemory, OpenGLUtility) with
   Apple's exports, put in Extensions; on Mac OS 9 Apple's go to Extensions
   (Disabled) meanwhile (above; installing by hand, move them there too). Their
@@ -846,13 +851,13 @@ Extensions) and restart, as syshm's installer does:
   goes) and `aglUseFont` (QuickDraw draws the glyphs, as with Apple's).
   Not yet: OpenGLUtility's tessellators and NURBS (they draw nothing); S3TC
   and paletted textures aren't offered (nor were they by Apple's for a
-  Rage 128). An OpenGLLibrary installed by an older syshm is left alone,
-  and syshm says to update it.
+  Rage 128). An OpenGLLibrary installed by an older version of Blue is left
+  alone, and Blue says to update it.
   Unreal Tournament's OpenGL build (on the UT CD, `Extras:OpenGL UT.sea`)
   and Quake III Arena's demo play with them, on the GPU and in software.
   Swaps to the screen or a window are paced as the 3D engine's frames are
-  (above). `SYSHM_GL_FPS=1` prints the frame rate every second, and
-  `SYSHM_LOG_GL=1` logs every call. `SYSHM_GL_PROFILE=FILE` writes a line
+  (above). `BLUE_GL_FPS=1` prints the frame rate every second, and
+  `BLUE_LOG_GL=1` logs every call. `BLUE_GL_PROFILE=FILE` writes a line
   to FILE for each frame shown on the screen: the host time since the one
   before and where it went (the libraries' host calls, waiting for the
   backend, reading back from the GPU, writing the frame to guest memory,
@@ -861,7 +866,7 @@ Extensions) and restart, as syshm's installer does:
   update of the window (see docs/opengl-plan.md, milestone 7).
 
 Like the drivers, these are generated code fragments whose logic runs in
-syshm through host calls (`src/tools.c`). Bugdom's setup, for the record:
+Blue through host calls (`src/tools.c`). Bugdom's setup, for the record:
 QuickDraw 3D 1.6, Game Sprockets, URL Access (part of Mac OS 8.6 and later;
 Bugdom won't load without it) and the 3D engine in
 Extensions; it asks for a registration code, which shareware-era copies
@@ -881,16 +886,17 @@ always the same, are taken to mean that). It plays at 60 frames a second,
 in time (a match's Elapsed Time 30 s in 30 s of host time, on 8.6 and
 9.2.2; 66 s at 640x480 and 40-46 s at 1024x768 before the frames were
 paced). The engine's data carries
-its version, so one installed by an older syshm isn't asked for what it
-lacks: syshm says to install it again (and a window offers to update it).
+its version, so one installed by an older version of Blue isn't asked for
+what it lacks: Blue says to install it again (and a window offers to update
+it).
 UT's OpenGL build (the application and `OpenGLDrv.ini` from the CD's
 `Extras:OpenGL UT.sea`, in place of UT's application, and
 `GameRenderDevice=OpenGLDrv.OpenGLRenderDevice` in `UnrealTournament.ini`)
-draws with syshm's OpenGL libraries, on 8.6 and on 9.2.2: the same
+draws with Blue's OpenGL libraries, on 8.6 and on 9.2.2: the same
 pictures as with RAVE, at 60 frames a second on the GPU and about 50 in
 software (on 8.6, an M5 Mac).
 
-- `syshm rom` decodes NewWorld bootinfo files and raw 4 MB ROMs, verifies the
+- `blue rom` decodes NewWorld bootinfo files and raw 4 MB ROMs, verifies the
   checksum, extracts the Toolbox image and Trampoline, and decodes the
   NanoKernel ConfigInfo (memory map, low-memory init list).
 - User-mode PowerPC interpreter (integer, FP, string/multiple, reservations)
@@ -908,7 +914,7 @@ software (on 8.6, an M5 Mac).
   the AArch64 JIT; the x86-64 one works the same way, with differences
   below (and in docs/x86-jit-plan.md). Blocks of up to 128
   instructions are translated
-  natively once they have run 16 times (`SYSHM_JIT_HOT`). A block ends at
+  natively once they have run 16 times (`BLUE_JIT_HOT`). A block ends at
   an unconditional or computed branch; past a conditional one it goes on
   along the not-taken path, and the taken path leaves through out-of-line
   code. Rarer instructions call the interpreter from inside the block;
@@ -960,7 +966,7 @@ software (on 8.6, an M5 Mac).
     0.87 to 0.86 s; 8.6: 1.24 to 1.21 s; 9.1's CD, with 17,000, as before)
     on an M5, where an access cost about 50 ns with its exit and costs
     about 25 now, nearly all of it the devices' own bookkeeping.
-    `SYSHM_DEVICE_EXITS=1` has every access exit as before, for
+    `BLUE_DEVICE_EXITS=1` has every access exit as before, for
     comparisons.
   - Registers: CR, LR, r1, r3, r4, r24, r27 and r29 (the hottest across the
     68k emulator and native code) live in host registers while generated
@@ -978,7 +984,7 @@ software (on 8.6, an M5 Mac).
     that faults (a device register, an unmapped or read-only page) is sent
     by a SIGSEGV handler (SIGBUS on macOS) to the interpreter, and
     translated with flag checks from then on. A few thousand do so in a
-    boot. `SYSHM_JIT_FASTMEM=0` checks every access.
+    boot. `BLUE_JIT_FASTMEM=0` checks every access.
   - Code changes are tracked per instruction word: stores (by either engine,
     or the host, e.g. disk reads) to a page with translated code drop only
     the blocks translated from those words, which matters because the 68k
@@ -1026,7 +1032,7 @@ software (on 8.6, an M5 Mac).
     registers too, which AArch64 leaves to the interpreter). String
     instructions call the interpreter from inside the block, as on
     AArch64. It needs x86-64-v3 (AVX2, FMA3,
-    BMI1/2, LZCNT, MOVBE; other processors interpret, and syshm says
+    BMI1/2, LZCNT, MOVBE; other processors interpret, and Blue says
     what's missing). Five guest registers live in host registers (CR, LR,
     r3, r4, r24) and four more are cached within a block. Its code takes
     about as many host instructions per guest instruction as AArch64's:
@@ -1039,12 +1045,12 @@ software (on 8.6, an M5 Mac).
     AArch64, and so do an installed 9.2.2's start and Unreal Tournament's
     intro on 8.6; under Rosetta on an M5 the 8.5 CD's 4 billion
     instructions take about 5.5 s (interpreted: 21 s), about 30% of it in
-    Rosetta's handling of syshm's writes to code that has run (new blocks,
+    Rosetta's handling of Blue's writes to code that has run (new blocks,
     links: about 13 µs each), a cost x86 processors don't have.
-  - `SYSHM_JIT_PROFILE=1` samples where host time goes (translated blocks
+  - `BLUE_JIT_PROFILE=1` samples where host time goes (translated blocks
     by guest address, stubs, C functions) and prints it at the end;
-    `SYSHM_JIT_PROFILE=FROM:TO` samples only from instruction FROM to TO.
-    `SYSHM_PERF=1` reads the host processor's counters for the emulation
+    `BLUE_JIT_PROFILE=FROM:TO` samples only from instruction FROM to TO.
+    `BLUE_PERF=1` reads the host processor's counters for the emulation
     thread (Linux): every second, guest instructions per second and host
     instructions and cycles per guest instruction; a total at the end.
 - Idle: the Process Manager calls `_SynchIdleTime` when no process can run,
@@ -1090,7 +1096,7 @@ software (on 8.6, an M5 Mac).
   is that much ahead at first, and right after a minute or two of idling.
   A restart starts guest time over from the host clock. `--no-fast-start`
   turns it off.
-- `syshm boot` takes the Mac OS ROM file from the startup disk (see above;
+- `blue boot` takes the Mac OS ROM file from the startup disk (see above;
   `src/hfsread.c`: the blessed System Folder is word 0 of the volume's
   Finder info, its files follow its thread record in the catalog B-tree, and
   a fragmented file's extents go on in the extents overflow file), or the
@@ -1165,7 +1171,7 @@ software (on 8.6, an M5 Mac).
 - Device tree (`src/devtree.c`, `src/bootinfo.c`): an `iMac,1` with a Grackle
   PCI bridge, Mac I/O, a framebuffer display and a disk, flattened into the
   format the ROM's Name Registry reads.
-- Native drivers: syshm generates PEF NDRVs (`src/ndrv.c`) and puts them in
+- Native drivers: Blue generates PEF NDRVs (`src/ndrv.c`) and puts them in
   the device tree, so Mac OS loads them like any PCI card's driver. Their code
   is a loop around a host call; the driver logic is C (`src/video.c`,
   `src/disk.c`), and the stub can call Mac OS services on its behalf
@@ -1186,7 +1192,7 @@ software (on 8.6, an M5 Mac).
     are one interrupt. It used to be a Driver Services timer, which ran on
     the Time Manager and so stopped whenever that did. Two more
     modes take the host window's size on request (up to what the 16 MB
-    framebuffer holds at 32 bits per pixel), for syshm Enhancements (a guest
+    framebuffer holds at 32 bits per pixel), for Blue Enhancements (a guest
     tool) to switch between; each is listed only while in use.
     In window runs in real time it has a hardware cursor: Mac OS hands it
     each new cursor (SetHardwareCursor, which Video Services'
@@ -1235,7 +1241,7 @@ software (on 8.6, an M5 Mac).
   code fragment in the `ethernet` node's `lanLib,AAPL,MacOS,PowerPC`
   property, which the ROM registers as the shared library lanLib; Open
   Transport then loads "Ethernet (Built-In)", a DLPI driver around it.
-  syshm puts its own generated lanLib there (the interface follows Apple's
+  Blue puts its own generated lanLib there (the interface follows Apple's
   `bmac+` one, in later Mac OS ROM files), whose routines are host calls:
   sending passes frames to libslirp; for receiving, its initialization
   (which gets the node's RegEntryID) installs an interrupt handler for the
@@ -1359,7 +1365,7 @@ software (on 8.6, an M5 Mac).
   gaps, and a stall of the host is made up within seconds),
   PNG screenshots (`src/png.c`), NVRAM kept
   in a file, real-time guest time with `--window`/`--realtime`, and
-  `syshm disk create`, which lays out an empty HFS volume (`src/hfs.c`, which
+  `blue disk create`, which lays out an empty HFS volume (`src/hfs.c`, which
   also lays out the shared folder's, with B-trees of any size) the
   way Disk Initialization does (`hfsck` from hfsutils accepts it).
 - Speed on an M1 Max: the boot to the Finder (about 3 billion instructions)
@@ -1386,7 +1392,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 - Grackle PCI host bridge; on it the display (device 1, framebuffer at
   `0x82000000`), up to four disks (devices 2-5; a shared folder is one),
   the USB controller (device 6, registers at `0x81000000`), the floppy
-  drive if there's one (device 7, `syshm,floppy`) and Mac I/O
+  drive if there's one (device 7, `blue,floppy`) and Mac I/O
   (device 16) at `0x81080000`:
   Heathrow-style interrupt controller (`+0x10`), DMA channels (`+0x8000`,
   0x100 bytes each), SCC (`+0x12000`), VIA1 with Cuda (`+0x16000`).
@@ -1399,7 +1405,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
   `sound` child; DecoderInfo long 39 holds the chip's address.
 - Ethernet: `ethernet` at Mac I/O `+0x11000` (`bmac+`, DMA channels 2 and 3;
   nothing answers at those addresses, lanLib being the driver's way to the
-  hardware), station address 52:54:00:12:34:56. Its lanLib is syshm's even
+  hardware), station address 52:54:00:12:34:56. Its lanLib is Blue's even
   when the ROM file has one for `bmac+` (9.2.2's).
 - Mac I/O's floppy controller cell (`+0x15000`), for ROM files with parcels
   only: reads as zeros, writes are ignored (the iMac has no floppy drive).
@@ -1408,7 +1414,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
   0x2000, `AAPL,address`), as on Heathrow and Paddington Macs: 8 KB, byte k
   at `+16k`.
 - Where Open Firmware booted from, for ROM files with parcels only:
-  `/chosen`'s `bootpath`, such as `/pci/syshm,disk@2:8,\\:tbxi` (a disk's
+  `/chosen`'s `bootpath`, such as `/pci/blue,disk@2:8,\\:tbxi` (a disk's
   node is at its PCI device number, the partition is its map entry, none
   without a map), for the partition the ROM file came from, or else the
   first partition with boot blocks. The disk
@@ -1433,7 +1439,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 - Quiet writes: ConfigInfo maps the ROM write-through and read-only (PP 3),
   which the NanoKernel takes to mean that stores to it are dropped rather
   than raising an exception (and counted in NanoKernelInfo's
-  QuietWriteCount). syshm's kernel does the same; a run's summary says
+  QuietWriteCount). Blue's kernel does the same; a run's summary says
   `quiet writes: N` when there were any.
 - The ROM maps a few regions as single 4 KB pages (the kernel's and the
   emulator's data, the info records). The pages next to them, up to 16 KB
@@ -1475,22 +1481,30 @@ input, AltiVec, printing, game controllers, and more CD formats.
 
 ## Build and test
 
+Ready-made builds are at https://github.com/mcbridet/Blue/releases, one
+archive for each of macOS and Linux on AArch64 and x86_64
+(`blue-<target>.tar.gz`: `blue-macos-aarch64`, `blue-macos-x86_64`,
+`blue-linux-aarch64`, `blue-linux-x86_64`), with `blue` in it and this file.
+To build it yourself:
+
 ```
-make            # build/syshm (C11, and C++17 for the menu: Dear ImGui is in third_party/imgui)
-make test       # unit tests; the ROM test uses ./MOS.rom or $SYSHM_TEST_ROM if present,
+git clone https://github.com/mcbridet/Blue
+cd Blue
+make            # build/blue (C11, and C++17 for the menu: Dear ImGui is in third_party/imgui)
+make test       # unit tests; the ROM test uses ./MOS.rom or $BLUE_TEST_ROM if present,
                 # the GPU test any OpenGL 3.3 there is (else it's skipped)
-SYSHM_JIT_PROGRAMS=200000 build/syshm-tests jit    # longer JIT-vs-interpreter fuzzing
+BLUE_JIT_PROGRAMS=200000 build/blue-tests jit    # longer JIT-vs-interpreter fuzzing
 tools/jit-timing.sh     # times the JIT here (its benchmark, the CD boots there are) into a log
 ```
 
 The guest's OpenGL is checked in the guest too, by a test application of
-syshm's own, "syshm GL Test" (`src/gltest.c`: its logic is C in syshm
+Blue's own, "Blue GL Test" (`src/gltest.c`: its logic is C in Blue
 calling the guest's OpenGLLibrary and OpenGLUtility through the Code
-Fragment Manager's linking, as a game would). `SYSHM_TOOLS_GL_TEST=1
-build/syshm tools create FILE` puts it on the tools volume; with the OpenGL
+Fragment Manager's linking, as a game would). `BLUE_TOOLS_GL_TEST=1
+build/blue tools create FILE` puts it on the tools volume; with the OpenGL
 libraries in a disk image's Extensions folder and it in Startup Items
 (hfsutils' `hcopy -m` copies them), a run in instruction time shows its
-window with the scene `SYSHM_GL_TEST_SCENE` names (`clear`: a clear, and a
+window with the scene `BLUE_GL_TEST_SCENE` names (`clear`: a clear, and a
 scissored one; `triangle`: in perspective, a floor cut by the near plane, a
 triangle and a quad crossing in depth, a flat-shaded fan; `lit`: a bump
 drawn from vertex and normal arrays, lit, fogged, and a quad drawn through
@@ -1499,43 +1513,43 @@ OpenGLUtility, called lit and as lines; `pixels`: an image zoomed, glyphs
 by `glBitmap`, a copy by `glCopyPixels`; `fullscreen`: `triangle` drawn
 on the whole screen, switched to 640 x 480 by `aglSetFullScreen`; `font`:
 lines of text in two fonts by `aglUseFont`'s lists) at the depth
-`SYSHM_GL_TEST_DEPTH` sets (16 or 32), the same on every host (with the
+`BLUE_GL_TEST_DEPTH` sets (16 or 32), the same on every host (with the
 same time zone: the guest's clock is the host's local time). On Linux,
 `make test` draws scenes through the libraries and compares them with Mesa's
 own OpenGL (its compatibility profile, which still has `glBegin`):
-`SYSHM_TEST_VERBOSE=1` says how far apart they are, and
-`SYSHM_TEST_SAVE=DIR` saves them as PNGs; `SYSHM_TEST_GLU=PATH` names
+`BLUE_TEST_VERBOSE=1` says how far apart they are, and
+`BLUE_TEST_SAVE=DIR` saves them as PNGs; `BLUE_TEST_GLU=PATH` names
 Mesa's libGLU (`libGLU.so.1`), to compare OpenGLUtility's scene too.
 `tools/gltable.py` made `src/opengl_table.h`, the libraries' functions,
 from Apple's (Mac OS 9.2.2's) and the macOS SDK's OpenGL headers.
 
 CI (`.github/workflows/ci.yml`) builds and tests on Linux and macOS, each on
 x86_64 and AArch64, with warnings as errors; it also fuzzes the JIT with
-100,000 programs (`SYSHM_TEST_JIT=1` makes a missing JIT a failure) and
-prints its synthetic benchmark (`SYSHM_JIT_BENCH=1 build/syshm-tests jit`:
+100,000 programs (`BLUE_TEST_JIT=1` makes a missing JIT a failure) and
+prints its synthetic benchmark (`BLUE_JIT_BENCH=1 build/blue-tests jit`:
 guest instructions a second for a few kernels, interpreted and
 translated), and on Linux the GPU backend
 is tested on Mesa's
-software OpenGL (llvmpipe; `SYSHM_TEST_GPU=1` makes the test fail rather than
-skip without a context). Each run uploads a `syshm-<os>-<arch>.tar.gz`, and
+software OpenGL (llvmpipe; `BLUE_TEST_GPU=1` makes the test fail rather than
+skip without a context). Each run uploads a `blue-<os>-<arch>.tar.gz`, and
 pushing a `v*` tag publishes them as a GitHub release.
 
 ```
-build/syshm rom info MOS.rom
-build/syshm rom info 91.iso                      # the Mac OS ROM file in a disk's System Folder
-build/syshm rom config MOS.rom                   # ConfigInfo and user address space
-build/syshm rom parcels MOS91.rom                # a Mac OS 9.1 ROM file's parcels
-build/syshm rom extract MOS.rom build/toolbox.rom
-build/syshm rom trampoline MOS.rom build/trampoline.elf
-build/syshm boot --rom MOS.rom --cdrom 85.iso --window   # interactive
-build/syshm boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
-build/syshm boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
-build/syshm boot --rom MOS.rom --cdrom 85.iso --floppy disk1.img --floppy disk2.img --window   # a floppy drive
-build/syshm boot --disk hd.img --cdrom-drive --window       # an empty CD-ROM drive: drop CD images on the window
-build/syshm boot --disk hd.img --cdrom "Game.cue" --window  # a CD with audio tracks
-build/syshm disk toc "Game.cue"                             # its tracks, as its CD-ROM drive gives them
-build/syshm disk create blank.img 1440K "Untitled"          # a blank floppy
-build/syshm run-raw code.bin 1000                # SYSHM_TRACE=1 logs every instruction
+build/blue rom info MOS.rom
+build/blue rom info 91.iso                      # the Mac OS ROM file in a disk's System Folder
+build/blue rom config MOS.rom                   # ConfigInfo and user address space
+build/blue rom parcels MOS91.rom                # a Mac OS 9.1 ROM file's parcels
+build/blue rom extract MOS.rom build/toolbox.rom
+build/blue rom trampoline MOS.rom build/trampoline.elf
+build/blue boot --rom MOS.rom --cdrom 85.iso --window   # interactive
+build/blue boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
+build/blue boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
+build/blue boot --rom MOS.rom --cdrom 85.iso --floppy disk1.img --floppy disk2.img --window   # a floppy drive
+build/blue boot --disk hd.img --cdrom-drive --window       # an empty CD-ROM drive: drop CD images on the window
+build/blue boot --disk hd.img --cdrom "Game.cue" --window  # a CD with audio tracks
+build/blue disk toc "Game.cue"                             # its tracks, as its CD-ROM drive gives them
+build/blue disk create blank.img 1440K "Untitled"          # a blank floppy
+build/blue run-raw code.bin 1000                # BLUE_TRACE=1 logs every instruction
 ```
 
 Without `--window` or `--realtime`, guest time is counted in instructions
@@ -1564,7 +1578,7 @@ image's path, comments included; `floppy eject` and `cdrom eject` take one
 out: see Floppies and CDs.)
 
 `clipboard` and `print-clipboard` stand in for the host's clipboard (a
-scripted run leaves the window's alone), for syshm Enhancements to share
+scripted run leaves the window's alone), for Blue Enhancements to share
 (see Guest tools): the text is as if copied on the host with the window
 then brought to the front.
 
@@ -1596,22 +1610,22 @@ reads, go through unseen, so a watched run goes as any other), `--traps N
 requests (a CD-ROM drive's calls with their parameters in and out, and what it plays), `--dump-ram FILE` saves RAM at the end, `--max N` limits the run.
 `--trace-range LO:HI [--trace-insn WORD]` logs only instructions in an
 address range (optionally only one instruction word), with instruction
-counts and r3-r5/LR, cheaply enough for whole boots. `SYSHM_LOG_SOUND=1`
-logs the sound chip's register accesses, and `SYSHM_SOUND_WAV=FILE` records
+counts and r3-r5/LR, cheaply enough for whole boots. `BLUE_LOG_SOUND=1`
+logs the sound chip's register accesses, and `BLUE_SOUND_WAV=FILE` records
 what it plays (also in instruction time; CD audio included).
-`SYSHM_LOG_AUDIO=1` prints, every second while sound plays in real time,
+`BLUE_LOG_AUDIO=1` prints, every second while sound plays in real time,
 how the host's sound queue fared (its depth, how much faster or slower it
 played, chunks dropped, silence added) and what paces it (the frames the
 guest's sound DMA gave, how far guest time is ahead of the host clock, the
 disks' transfers and the guest time they took, how much the host's sleeps
-overran). `SYSHM_LOG_USB=1` logs the USB
+overran). `BLUE_LOG_USB=1` logs the USB
 controller's register accesses (not the frame number, which drivers poll),
-`SYSHM_LOG_PCI=1` configuration space accesses.
+`BLUE_LOG_PCI=1` configuration space accesses.
 `--io-ram` backs unmodelled I/O pages with plain RAM. Under gdb, `handle
 SIGSEGV nostop noprint pass` lets the JIT's memory faults through; under lldb
 on macOS, `settings set platform.plugin.darwin.ignored-exceptions
 EXC_BAD_ACCESS` (before `run`) and `process handle -s false -n false -p true
-SIGBUS` (or set `SYSHM_JIT_FASTMEM=0`).
+SIGBUS` (or set `BLUE_JIT_FASTMEM=0`).
 
 `tools/disasm.py` disassembles guest code (PowerPC or 68k, with Python's
 capstone) from a ROM file's image or a `--dump-ram` file, and names the code
@@ -1645,7 +1659,7 @@ code, then spins at 68k `0xFFC18316`. The Trampoline didn't resolve any
 interrupt sources from the patched tree, so every vector in `NKHWInfo` is
 `0x0800`, and the ROM's SCC setup loops forever when SCC B has no vector. It
 is still the reference for what the Trampoline and kernel produce: the
-snapshot gave syshm its info records, universal tables and low-memory setup.
+snapshot gave Blue its info records, universal tables and low-memory setup.
 
 For Mac OS 9.1, QEMU's `mac99` runs Apple's real Trampoline and NanoKernel 2
 unpatched, to the Finder: `tools/qemu-ref/run91.sh [91.iso]` boots the CD,
@@ -1659,7 +1673,7 @@ screenshots. What they found is in `docs/nk2-reference.md`.
 ROMs and OS images are user-supplied and ignored by git: `MOS.rom` (the ROM
 above) and `85.iso` (retail Mac OS 8.5 CD, a bare bootable HFS volume);
 `MOS91.rom` and `91.iso` for Mac OS 9.1 (see above). The ROM files are only
-needed with `--rom` (and for the ROM test and tools): otherwise syshm takes
+needed with `--rom` (and for the ROM test and tools): otherwise Blue takes
 the one in the startup disk's System Folder.
 
 ## Layout
@@ -1691,7 +1705,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           surface.c + raster.c + gpu.c + gl.c (the 3D backend:
           drawing, in software and with OpenGL, and presenting), display.c (SDL2
           window), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
-          perf.c (host processor counters), main.c
+          perf.c (host processor counters), env.c (settings' old names),
+          main.c
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),

@@ -2,7 +2,7 @@
 
 What Apple's own 9.1 boot code (the "Mac OS ROM" 6.1f9 file from the 9.1
 CD, the same file as `MOS91.rom`, with its Trampoline and NanoKernel 2.21)
-does, observed under stock QEMU 11.1.3, to check syshm against. All
+does, observed under stock QEMU 11.1.3, to check Blue against. All
 addresses are for QEMU's `mac99,via=pmu` machine with 256 MB unless noted.
 
 How it was obtained (scripts in `tools/qemu-ref/`, usage in each file):
@@ -109,15 +109,16 @@ results after the arrow; IDs are slot << 16 | use count):
 | 255 | 0.313 | blue kc8 | 52 MPWaitForEvent | 0x001E0001, timeout 0 → r4 = 8 (first level-1 software interrupt) |
 | 256-259 |   | blue    | 18 (0x00300001, timeout 0) → message; 31; 13; 18 → -29296 | the Time Manager's loop |
 
-Up to call 7 this is exactly the sequence syshm sees (plan.md, Findings),
+Up to call 7 this is exactly the sequence Blue sees (plan.md, Findings),
 with three differences: the very first call is 13 from the emulator
-(syshm's log starts at 63); the first MPSetQueueReserve passes 2 where
-syshm's run passes 1; and the IDs differ (section 3). The reserve on queue
+(Blue's log starts at 63); the first MPSetQueueReserve passes 2 where
+Blue's run passes 1; and the IDs differ (section 3). The reserve on queue
 0x00190001 (the RAM area's page-fault queue) is the task count: MPLibrary
 (`0xFFCDC1B0`) reads NanoKernelInfo.TaskCount through the pointer at
 0x68FFEFE0 (the kernel-data view of the InfoRecord) and passes it to
 MPSetQueueReserve, then adds one per task made: 2, 3, 4, 5, and 6 at the
-Finder. TaskCount is 2 at startup (blue and idle); syshm reports 1.
+Finder. TaskCount is 2 at startup (the blue task and the idle task); Blue's
+kernel reports 1.
 
 **The first task.** MPCreateTask: r3 = 1 (blue process), r4 = 0x00240001
 (termination queue), r5 = 0 (options), r6 = 0x0009BB38 (kept at Task +0xEC;
@@ -178,10 +179,11 @@ objects:
 | 0x00090001 | address space (SRs 0x20n00001, no BATs) |
 | 0x000A0001-0x00150001 | the 12 areas of section 4 (0x00110002: created on the second try) |
 
-So the first ID an MP call returns is 0x00160001 (syshm: 0x000E0001).
-syshm matches the blue process (1) and address space (0x00030001); the blue
-task (0x00050001 vs syshm's 0x00010001), page queue (0x00040001 vs
-0x00020001) and the RAM area (0x000A0001 vs 0x00040001) differ.
+So the first ID an MP call returns is 0x00160001 (Blue's kernel:
+0x000E0001). Blue's kernel matches the blue process (1) and address space
+(0x00030001); the blue task (0x00050001 vs 0x00010001 in Blue's kernel),
+page queue (0x00040001 vs 0x00020001) and the RAM area (0x000A0001 vs
+0x00040001) differ.
 
 **NanoKernelInfo** (version 0x0221, length 0x140) at the first call:
 blueProcessID 0x00000001, blueTaskID 0x00050001, pageQueueID 0x00040001,
@@ -190,7 +192,7 @@ Finder: TaskCount 6, FreePoolExtendCount 10, 455 objects (389 timers).
 
 **InfoRecord pointer table** (KDP+0xFC0, logical 0x5FFFEFC0):
 
-| record          | logical    | version | length | syshm puts |
+| record          | logical    | version | length | Blue puts |
 |-----------------|------------|---------|--------|------------|
 | ProcessorState  | 0x68FFDB60 (PSA page) | 0x0100 | 0x80 | IR+0xB00 |
 | HWInfo          | 0x5FFFEC20 | 0x0107  | 0xC0   | IR+0xB80, 0x0103/0xA0 |
@@ -273,14 +275,14 @@ except the unused 0x00E60000-0x00EFEFFF). Kernel memory
 0x0FBB5000-0x0FE00000. Logical page 0 is physical 0x4000
 (PA_RelocatedLowMemInit).
 
-**Against syshm's `default_regions()`** (`build/syshm rom config
+**Against Blue's `default_regions()`** (`build/blue rom config
 MOS91.rom`): the ROM (0xFFC00000), 0x68000000 megabyte, InfoRecord
 (rw), kernel data (ro) and EmulatorData (rw) agree. Different:
-syshm maps the interrupt-control page at 0x808E0000 (QEMU's Trampoline
+Blue maps the interrupt-control page at 0x808E0000 (QEMU's Trampoline
 uses its machine's 0x80060000), its boot-info region at 0xFF800000
 (QEMU: device tree etc. at 0x64000000, ConfigInfo at 0x68FEF000), a page at
 0x60C00000, and I/O 0xF0000000-0xFF00FFFF (QEMU: whole segments 8 and F;
-0xFFC00000 up is covered by the BAT). syshm has no 0x68FFD000 (PSA) page;
+0xFFC00000 up is covered by the BAT). Blue has no 0x68FFD000 (PSA) page;
 it doesn't need one while its ProcessorState and DiagInfo are in the
 InfoRecord page.
 
@@ -290,7 +292,7 @@ InfoRecord page.
 Root's children in order: **AAPL,CodePrepare, AAPL,CodeRegister**, aliases,
 openprom, options, chosen, builtin, packages, cpus, memory, rom, nvram, pci,
 uni-n. So the two 'node' parcels become the *first* children of `/`
-(syshm's `dt_add_node()` appends them last).
+(Blue's `dt_add_node()` appends them last).
 
 - `AAPL,CodePrepare`: AAPL,prepare_order "Placeholder", MotherBoardHAL,
   TimeManagerLib, NVRAMServicesLib, RTCServicesLib (in parcel order).
@@ -317,7 +319,7 @@ does):
 Not applied (no such node): `pmu / power-mgt` (the node's compatible is
 via-pmu-99), `mac-io / nvram`, `via-pmu / nvram`, cuda, grackle,
 heathrow-ata, cmd646-ata, cofb, backlight, cardbus, ieee1394. QEMU VGA's
-driver is OpenBIOS's own NDRV. This matches syshm's matching rules; only the
+driver is OpenBIOS's own NDRV. This matches Blue's matching rules; only the
 node placement differs.
 
 ## 6. Software interrupts from event groups
@@ -362,7 +364,7 @@ flag 0x80000000. After a level-1 interrupt the Time Manager reads its
 queue 0x00300001 with MPWaitOnQueue (timeout 0) and re-arms with
 MPArmTimer.
 
-## For syshm
+## For Blue
 
 1. **`sc` with r0 = -1** comes right after the third task is made (Mixed
    Mode's CallUniversalProc, 53k times per boot). Answer as the kernel does
@@ -373,23 +375,24 @@ MPArmTimer.
    boot), all from the emulator at `0x6806C480`, which yields this way
    when ECB+0xCC (PriorityShifty) has 0x100 set; NanoKernel 2's scheduler
    sets that bit when it interrupts the blue task (it was 0x101 at the
-   first call). syshm doesn't set the bit, so it may not see these calls;
+   first call). Blue doesn't set the bit, so it may not see these calls;
    if it does, MPYieldWithHint just returns (r3 came back unchanged, 1).
 3. **TaskCount** should be 2 at startup (blue and idle): MPLibrary sets
-   the page-fault queue's reserve from it (QEMU 2, syshm 1).
+   the page-fault queue's reserve from it (QEMU 2, Blue 1).
 4. The real kernel makes 22 objects before the first call (table above);
-   matching them would make syshm's IDs equal QEMU's (first call result
+   matching them would make Blue's IDs equal QEMU's (first call result
    0x00160001, blue task 0x00050001, page queue 0x00040001, RAM area
    0x000A0001). Mac OS seems not to depend on the values.
 5. Info record versions/lengths: 9.1's kernel says NanoKernelInfo 0x0221/0x140,
-   HWInfo 0x0107/0xC0, SystemInfo 0x0107; syshm says 0x0228/0x160, 0x0103/0xA0,
+   HWInfo 0x0107/0xC0, SystemInfo 0x0107; Blue says 0x0228/0x160, 0x0103/0xA0,
    0x0105.
 6. Node parcels go first among `/`'s children, not last.
 7. New tasks don't run at once: here they first ran 170 ms after
    MPStartTask, when the blue task made its first PrioritizeInterrupts
    (kernel call 4, the 68k boot code enabling interrupts), with no blue MP
-   call in between. syshm's plan (run them when the blue task polls or
-   naps) differs; running ready tasks at kernel call 4 too would match.
+   call in between. Blue's kernel differs (it runs them when the blue
+   task polls or naps); running ready tasks at kernel call 4 too would
+   match.
    The first thing each does is block (or, for 'ager', wait 3 s).
 8. Software interrupts are needed early (the first at t = 0.313 s, 0.19 s
    after call 63, from the Time Manager's first timer), and arrive at the
@@ -414,5 +417,5 @@ Finder, from a RAM dump):
 | SystemInfo      | 0x5FFFEDC0 | 0x0107  | 0x140  |
 
 HWInfo's new fields (+0x9C, +0xA0 the device tree's checksum, +0xA8
-CascadeInfo), the `sc` calls of the boot (`-d int`) and what syshm does
+CascadeInfo), the `sc` calls of the boot (`-d int`) and what Blue does
 with them are in plan.md's Findings ("Mac OS 9.2.2: the CD" and after).
