@@ -944,6 +944,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	opengl_init(&m->opengl, &m->mem);
 	m->opengl.gpu = m->gpu;
 	m->opengl.log = getenv("SYSHM_LOG_GL") != NULL;
+	m->opengl.fps = getenv("SYSHM_GL_FPS") != NULL;
 	gltest_init(&m->gltest);
 	if (getenv("SYSHM_PERF") && !m->perf_on) {
 		m->perf_on = perf_open(&m->perf);
@@ -2990,11 +2991,14 @@ static bool tools_idle(struct machine *m, bool at_trap)
  * QARenderStart) returns once the display shows it: in real time the guest
  * waits in it, taking interrupts meanwhile (it makes the call again, which
  * goes no further until then: see frame_wait()); in instruction time guest
- * time moves on as if it had waited, as for disk transfers.
+ * time moves on as if it had waited, as for disk transfers. OpenGL's
+ * frames for the screen (aglSwapBuffers to a window's or the screen's port)
+ * are paced the same way, each context its own source after RAVE's.
  */
 #define RAVE_DEVICE_GDEVICE 1u          /* (kQADeviceGDevice: a context drawing to a screen) */
 #define RAVE_RENDER_START 13u           /* (kQARenderStart: the draw method) */
-_Static_assert(RAVE_MAX_CONTEXTS <= VIDEO_FRAME_SOURCES, "a source for each 3D context");
+#define GL_FRAME_SOURCES (VIDEO_FRAME_SOURCES - RAVE_MAX_CONTEXTS)
+_Static_assert(RAVE_MAX_CONTEXTS < VIDEO_FRAME_SOURCES, "a source for each 3D context, and OpenGL's");
 
 static void blue_naps(struct machine *m, uint64_t until, bool idle);
 
@@ -3005,6 +3009,22 @@ static uint64_t guest_now(const struct machine *m)
 		return m->cpu.tb;
 	uint64_t tb = ns_to_tb(host_ns() - m->start_ns) + m->lead_tb;
 	return tb > m->cpu.tb ? tb : m->cpu.tb;
+}
+
+/* A frame for the screen from a source (a 3D context), just ended by the call: true if the guest waits now */
+static bool frame_paced(struct machine *m, unsigned source, uint32_t id)
+{
+	uint64_t now = guest_now(m), shown = video_frame_shown(&m->video, source, id, now);
+	if (shown == now)
+		return false;
+	if (!m->realtime) {
+		pass_guest_time(m, shown - now);
+		return false;
+	}
+	m->frame_due = shown;
+	m->frame_pc = m->cpu.pc;
+	m->frame_sp = m->cpu.gpr[1];
+	return true;
 }
 
 /* After an engine call, with each context's frame count before it: true if the guest waits now */
@@ -3019,17 +3039,7 @@ static bool frame_shown(struct machine *m, const struct ndrv_call *c, const unsi
 		    x->device_type != RAVE_DEVICE_GDEVICE)
 			continue;
 		m->frame_started[k] = false;
-		uint64_t now = guest_now(m), shown = video_frame_shown(&m->video, k, x->guest, now);
-		if (shown == now)
-			continue;
-		if (!m->realtime) {
-			pass_guest_time(m, shown - now);
-		} else {
-			m->frame_due = shown;
-			m->frame_pc = m->cpu.pc;
-			m->frame_sp = m->cpu.gpr[1];
-			wait = true;
-		}
+		wait |= frame_paced(m, k, x->guest);
 	}
 	return wait;
 }
@@ -3144,6 +3154,8 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		rave_call(&m->rave, &c);
 		break;
 	case HOSTCALL_TOOLS_GL:
+		if (m->frame_due && cpu->pc == m->frame_pc && cpu->gpr[1] == m->frame_sp)
+			return frame_wait(m);
 		opengl_library_call(&m->opengl, &c);
 		break;
 	case HOSTCALL_TOOLS_GLM:
@@ -3196,6 +3208,9 @@ static const char *host_call(struct machine *m, uint32_t selector)
 	}
 	if (selector == HOSTCALL_TOOLS_RAVE && frame_shown(m, &c, frames))
 		return NULL;            /* (the guest makes the call again, until frame_wait() lets it return) */
+	if (selector == HOSTCALL_TOOLS_GL && c.done && m->opengl.shown &&
+	    frame_paced(m, RAVE_MAX_CONTEXTS + (m->opengl.shown - 1) % GL_FRAME_SOURCES, m->opengl.shown_id))
+		return NULL;
 	if (transfer)
 		return NULL;            /* (... until transfer_wait() does) */
 	cpu->pc += 4;

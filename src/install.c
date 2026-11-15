@@ -24,12 +24,29 @@ static int fail(char *err, size_t errlen, const char *fmt, ...)
 /* ---- the check ------------------------------------------------------------------ */
 
 #define ROOT_ID 2u
-#define MAX_FORK 0x10000u               /* (a bigger fork isn't one of ours) */
+#define MAX_FORK 0x40000u               /* (a bigger fork isn't one of ours) */
 #define MAX_FOLDERS 64u
 #define VOLUME_LOCKED 0x8080u           /* volume attributes: locked by hardware, by software */
 
 /* What each tool's code calls (installed copies keep these numbers, see tools.h) */
-static const uint32_t tool_hostcall[TOOLS_FILES] = { HOSTCALL_TOOLS_HELPER, HOSTCALL_TOOLS_RAVE };
+static const uint32_t tool_hostcall[TOOLS_FILES] = { HOSTCALL_TOOLS_HELPER, HOSTCALL_TOOLS_RAVE, HOSTCALL_TOOLS_GL,
+						     HOSTCALL_TOOLS_GLM, HOSTCALL_TOOLS_GLU };
+
+/* Apple's OpenGL libraries (see install.h), and the folders the check knows */
+static const char *const apple_names[INSTALL_APPLE_GL] = { "OpenGLLibrary", "OpenGLMemory", "OpenGLUtility" };
+#define EXTENSIONS_NAME "Extensions"
+#define DISABLED_NAME "Extensions (Disabled)"
+
+static bool is_gl(unsigned t)
+{
+	return t >= TOOLS_GL_FIRST && t < TOOLS_GL_FIRST + TOOLS_GL_FILES;
+}
+
+/* Whether a tool is to be installed or updated, if it isn't current: not syshm's OpenGL when Apple's go back */
+static bool wanted(const struct install_check *ck, unsigned t)
+{
+	return !(ck->apple_restore && is_gl(t));
+}
 
 struct look {
 	const struct hfsread_volume *v;
@@ -84,6 +101,15 @@ static int look_at_file(void *ctx, const struct hfsread_file *e)
 	unsigned in = 0;
 	while (in < l->subs && l->sub[in].id != e->parent)
 		in++;
+	if (!e->folder && in < l->subs && e->type == FOURCC('s', 'h', 'l', 'b') &&
+	    e->creator != l->files[TOOLS_GL_FIRST].creator) {          /* (Apple's OpenGL libraries) */
+		int where = !strcmp(l->sub[in].name, EXTENSIONS_NAME) ? 0 : !strcmp(l->sub[in].name, DISABLED_NAME) ? 1 : -1;
+		for (unsigned k = 0; where >= 0 && k < INSTALL_APPLE_GL; k++)
+			if (!strcmp(e->name, apple_names[k])) {
+				l->ck->apple[k].found[where] = true;
+				l->ck->apple[k].dir[where] = e->parent;
+			}
+	}
 	for (unsigned t = 0; t < TOOLS_FILES && !e->folder && in < l->subs; t++) {
 		struct install_copy *c = &l->ck->tool[t];
 		if (e->type != l->files[t].type || e->creator != l->files[t].creator || c->state == INSTALL_CURRENT)
@@ -97,6 +123,22 @@ static int look_at_file(void *ctx, const struct hfsread_file *e)
 		memcpy(c->folder, l->sub[in].name, sizeof c->folder);
 	}
 	return 0;
+}
+
+/* What's to be done with Apple's OpenGL libraries (see install.h) */
+static void apple_state(struct install_check *ck)
+{
+	bool ours_enabled = true, ours = false, on = false, off = false;
+	for (unsigned t = TOOLS_GL_FIRST; t < TOOLS_GL_FIRST + TOOLS_GL_FILES; t++) {
+		ours |= ck->tool[t].state != INSTALL_MISSING;
+		ours_enabled &= ck->tool[t].state != INSTALL_MISSING && !strcmp(ck->tool[t].folder, EXTENSIONS_NAME);
+	}
+	for (unsigned k = 0; k < INSTALL_APPLE_GL; k++) {
+		on |= ck->apple[k].found[0];
+		off |= ck->apple[k].found[1];
+	}
+	ck->apple_disable = ours_enabled && on;
+	ck->apple_restore = !ours && !on && off;
 }
 
 int install_check(const char *path, unsigned part, struct install_check *ck, char *err, size_t errlen)
@@ -129,6 +171,7 @@ int install_check(const char *path, unsigned part, struct install_check *ck, cha
 			     hfsread_path(&v, v.blessed, ck->system, sizeof ck->system) ? -1 : hfsread_walk(&v, add_folder, &l);
 		if (walked >= 0 && l.subs)
 			walked = hfsread_walk(&v, look_at_file, &l);
+		apple_state(ck);
 		rc = walked < 0 ? fail(err, errlen, "%s: its catalog is damaged", path) : 0;
 	}
 	free(l.buf);
@@ -140,16 +183,17 @@ int install_check(const char *path, unsigned part, struct install_check *ck, cha
 bool install_needed(const struct install_check *ck)
 {
 	for (unsigned t = 0; t < TOOLS_FILES; t++)
-		if (ck->tool[t].state != INSTALL_CURRENT)
+		if (ck->tool[t].state != INSTALL_CURRENT && wanted(ck, t))
 			return true;
-	return false;
+	return ck->apple_disable || ck->apple_restore;
 }
 
 /* ---- telling the user ------------------------------------------------------------- */
 
 static const char *tool_name(unsigned t)
 {
-	static const char *const names[TOOLS_FILES] = { "syshm Enhancements", "syshm 3D Engine" };
+	static const char *const names[TOOLS_FILES] = { "syshm Enhancements", "syshm 3D Engine", "syshm OpenGL Library",
+							"syshm OpenGL Memory", "syshm OpenGL Utility" };
 	return names[t];
 }
 
@@ -172,6 +216,7 @@ static const char *joint(unsigned k, unsigned n)
 }
 
 #define ABOUT "They make the screen follow the window, share the clipboard and accelerate 3D."
+#define APPLE_GOES " Apple's OpenGL libraries go to \"" DISABLED_NAME "\": syshm's take their place."
 
 static void say_found(struct install *in)
 {
@@ -185,26 +230,50 @@ static void say_found(struct install *in)
 		if (c->state != INSTALL_MISSING)
 			add(line, sizeof line, " (in \"%s\")", c->folder);
 	}
+	bool on = false, off = false;
+	for (unsigned k = 0; k < INSTALL_APPLE_GL; k++) {
+		on |= ck->apple[k].found[0];
+		off |= ck->apple[k].found[1];
+	}
+	if (on || off)
+		add(line, sizeof line, "; Apple's OpenGL libraries are in %s%s%s", on ? "\"" EXTENSIONS_NAME "\"" : "",
+		    on && off ? " and " : "", off ? "\"" DISABLED_NAME "\"" : "");
 	printf("tools: on \"%s\", %s\n", ck->volume, line);
 
 	unsigned installed = 0, todo = 0;
+	bool gl_todo = false;
 	for (unsigned t = 0; t < TOOLS_FILES; t++) {
 		installed += ck->tool[t].state != INSTALL_MISSING;
-		todo += ck->tool[t].state != INSTALL_CURRENT;
+		todo += ck->tool[t].state != INSTALL_CURRENT && wanted(ck, t);
+		gl_todo |= is_gl(t) && ck->tool[t].state == INSTALL_MISSING && wanted(ck, t);
 	}
+	const char *apple = on && gl_todo ? APPLE_GOES : "";
 	if (!installed) {
 		snprintf(in->question, sizeof in->question,
-			 "syshm's guest tools aren't installed on \"%s\". " ABOUT, ck->volume);
+			 "syshm's guest tools aren't installed on \"%s\". " ABOUT "%s", ck->volume, apple);
 		in->yes = "Install";
+		return;
+	}
+	if (!todo && ck->apple_restore) {
+		snprintf(in->question, sizeof in->question, "syshm's OpenGL libraries aren't on \"%s\", and Apple's are in "
+			 "\"" DISABLED_NAME "\": put Apple's back in \"" EXTENSIONS_NAME "\"?", ck->volume);
+		in->yes = "Put Back";
+		return;
+	}
+	if (!todo) {
+		snprintf(in->question, sizeof in->question, "Apple's OpenGL libraries are in \"" EXTENSIONS_NAME "\" on "
+			 "\"%s\" with syshm's: move Apple's to \"" DISABLED_NAME "\"?", ck->volume);
+		in->yes = "Move";
 		return;
 	}
 	char what[512] = "";
 	for (unsigned t = 0, k = 0; t < TOOLS_FILES; t++)
-		if (ck->tool[t].state != INSTALL_CURRENT)
+		if (ck->tool[t].state != INSTALL_CURRENT && wanted(ck, t))
 			add(what, sizeof what, "%s%s %s", joint(k++, todo), tool_name(t),
 			    ck->tool[t].state == INSTALL_MISSING ? "isn't installed" : "is from another version of syshm");
-	snprintf(in->question, sizeof in->question, "syshm's guest tools on \"%s\" need updating: %s.", ck->volume,
-		 what);
+	snprintf(in->question, sizeof in->question, "syshm's guest tools on \"%s\" need updating: %s.%s%s", ck->volume,
+		 what, ck->apple_restore ? " Apple's OpenGL libraries go back to \"" EXTENSIONS_NAME "\"." : "",
+		 ck->apple_disable ? " Apple's OpenGL libraries go to \"" DISABLED_NAME "\"." : apple);
 	in->yes = "Update";
 }
 
@@ -256,6 +325,7 @@ enum {
 	R_FRAGMENT = 0x1000,            /* the installer's container */
 	R_BUFFER = 0x4000,              /* a fork, for FSWrite */
 };
+_Static_assert(R_BUFFER + MAX_FORK <= INSTALL_REGION_SIZE, "room for a fork of any tool's");
 #define RD_PROC 20u                     /* the routine record's procDescriptor */
 #define PB_SIZE 128u
 #define STATUS_PENDING 1u
@@ -263,7 +333,7 @@ enum {
 
 enum {
 	I_FIND_FOLDER, I_HGET_VINFO, I_GET_CAT_INFO, I_FSP_DELETE, I_FSP_CREATE, I_FSP_OPEN_DF, I_FSP_OPEN_RF,
-	I_FS_WRITE, I_FS_CLOSE, I_FSP_SET_FINFO, I_FSP_RENAME, I_LAUNCH, I_COUNT,
+	I_FS_WRITE, I_FS_CLOSE, I_FSP_SET_FINFO, I_FSP_RENAME, I_LAUNCH, I_CAT_MOVE, I_COUNT,
 };
 
 static const struct ndrv_import installer_imports[I_COUNT] = {
@@ -279,6 +349,7 @@ static const struct ndrv_import installer_imports[I_COUNT] = {
 	[I_FSP_SET_FINFO] = { "InterfaceLib", "FSpSetFInfo" },
 	[I_FSP_RENAME] = { "InterfaceLib", "FSpRename" },
 	[I_LAUNCH] = { "InterfaceLib", "LaunchApplication" },
+	[I_CAT_MOVE] = { "InterfaceLib", "PBCatMoveSync" },
 };
 
 static uint32_t at(uint32_t offset)
@@ -549,6 +620,7 @@ void install_answer(struct install *in, bool yes, struct helper *h)
 
 #define K_ON_SYSTEM_DISK 0xFFFF8000u    /* (-32768) */
 #define K_EXTENSION_FOLDER FOURCC('e', 'x', 't', 'n')
+#define K_EXTENSION_DISABLED_FOLDER FOURCC('e', 'x', 't', 'D')
 #define FS_RD_WR_PERM 3u
 #define SM_SYSTEM_SCRIPT 0xFFFFFFFFu    /* (-1) */
 #define FNF_ERR (-43)
@@ -560,6 +632,8 @@ void install_answer(struct install *in, bool yes, struct helper *h)
 /* HParamBlockRec and CInfoPBRec fields */
 #define PB_NAME_PTR 18u
 #define PB_VREF_NUM 22u
+#define PB_NEW_NAME 28u                 /* (CMovePBRec) */
+#define PB_NEW_DIR_ID 36u
 #define PB_DIR_INDEX 28u
 #define PB_ATTRIB 30u
 #define PB_VATRB 38u
@@ -571,7 +645,7 @@ void install_answer(struct install *in, bool yes, struct helper *h)
 enum {
 	S_FIND_FOLDER, S_VOLUME, S_EXT_NAME, S_SCAN, S_DELETE_TEMP, S_CREATE, S_OPEN_DF, S_WRITE_DF, S_CLOSE_DF,
 	S_OPEN_RF, S_WRITE_RF, S_CLOSE_RF, S_SET_INFO, S_DELETE_OLD, S_RENAME, S_LAUNCH, S_CLEANUP_CLOSE,
-	S_CLEANUP_DELETE,
+	S_CLEANUP_DELETE, S_DISABLED_FOLDER, S_DISABLED_NAME, S_APPLE_MOVE,
 };
 
 static void callout(struct install *in, struct ndrv_call *c, unsigned step, unsigned imp, uint32_t a0, uint32_t a1,
@@ -624,12 +698,73 @@ static void start_temp(struct install *in, struct ndrv_call *c)
 }
 
 static void report(struct install *in, struct ndrv_call *c, struct helper *h);
+static void next_tool(struct install *in, struct ndrv_call *c, struct helper *h);
+
+/* The folder of one of syshm's tools once it's been written (or not): 0 if it isn't there */
+static uint32_t tool_dir(const struct install *in, unsigned t)
+{
+	return in->result[t].done ? in->result[t].dir : in->check.tool[t].state != INSTALL_MISSING ? in->check.tool[t].dir : 0;
+}
+
+/* The next of Apple's OpenGL libraries to move (see install.h), or on to what's after them */
+static void apple_next(struct install *in, struct ndrv_call *c, struct helper *h)
+{
+	for (; in->apple < INSTALL_APPLE_GL; in->apple++) {
+		const struct install_apple *a = &in->check.apple[in->apple];
+		uint32_t from, to;
+		if (in->apple_disabling && a->found[0] && a->dir[0] == in->ext_dir) {
+			from = in->ext_dir;
+			to = in->disabled_dir;
+		} else if (in->apple_restoring && a->found[1] && !a->found[0] && a->dir[1] != in->ext_dir) {
+			from = a->dir[1];
+			to = in->ext_dir;
+		} else {
+			continue;
+		}
+		uint32_t pb = param_block(in, c->mem);
+		put_pstring(mem_ptr(c->mem, at(R_NAMEBUF)), apple_names[in->apple], 256);
+		mem_w32(c->mem, pb + PB_DIR_ID, from);
+		mem_w32(c->mem, pb + PB_NEW_DIR_ID, to);
+		mem_w32(c->mem, pb + PB_NEW_NAME, 0);
+		callout(in, c, S_APPLE_MOVE, I_CAT_MOVE, pb, 0, 0, 0);
+		return;
+	}
+	next_tool(in, c, h);
+}
+
+/* syshm's tools written: Apple's OpenGL libraries to Extensions (Disabled) if syshm's are in Extensions, or back */
+static void apple_begin(struct install *in, struct ndrv_call *c, struct helper *h)
+{
+	bool enabled = true, ours = false;
+	for (unsigned t = TOOLS_GL_FIRST; t < TOOLS_GL_FIRST + TOOLS_GL_FILES; t++) {
+		enabled &= tool_dir(in, t) == in->ext_dir;
+		ours |= tool_dir(in, t) != 0;
+	}
+	in->apple_done = true;
+	in->apple = 0;
+	in->apple_restoring = !ours && in->check.apple_restore;
+	in->apple_disabling = false;
+	for (unsigned k = 0; k < INSTALL_APPLE_GL; k++)
+		in->apple_disabling |= enabled && in->check.apple[k].found[0] && in->check.apple[k].dir[0] == in->ext_dir;
+	if (in->apple_disabling) {
+		callout(in, c, S_DISABLED_FOLDER, I_FIND_FOLDER, K_ON_SYSTEM_DISK, K_EXTENSION_DISABLED_FOLDER, 1,
+			at(R_VREF));
+		c->out[4] = at(R_DIRID);
+		return;
+	}
+	apple_next(in, c, h);
+}
 
 static void next_tool(struct install *in, struct ndrv_call *c, struct helper *h)
 {
-	while (in->tool < TOOLS_FILES && in->check.tool[in->tool].state == INSTALL_CURRENT)
+	while (in->tool < TOOLS_FILES &&
+	       (in->check.tool[in->tool].state == INSTALL_CURRENT || !wanted(&in->check, in->tool)))
 		in->tool++;
 	in->replacing = in->temp_made = in->temp_open = in->old_deleted = false;
+	if (in->tool == TOOLS_FILES && !in->apple_done) {
+		apple_begin(in, c, h);
+		return;
+	}
 	if (in->tool == TOOLS_FILES) {
 		/* Enhancements starts: the new one, or the old one again if it quit for nothing */
 		in->relaunch = !in->result[TOOLS_ENHANCEMENTS].done && in->quit_asked && in->old_found;
@@ -710,6 +845,8 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 		in->tool = TOOLS_FILES;         /* (none yet) */
 		in->error = 0;
 		memset(in->result, 0, sizeof in->result);
+		in->apple_done = true;          /* (not until the tools are written) */
+		memset(in->apple_moved, 0, sizeof in->apple_moved);
 		callout(in, c, S_FIND_FOLDER, I_FIND_FOLDER, K_ON_SYSTEM_DISK, K_EXTENSION_FOLDER, 1, at(R_VREF));
 		c->out[4] = at(R_DIRID);
 		return;
@@ -751,6 +888,7 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 		else
 			roman_name(m, at(R_NAMEBUF), in->ext_name, sizeof in->ext_name);
 		in->tool = 0;
+		in->apple_done = false;
 		next_tool(in, c, h);
 		return;
 	case S_SCAN:
@@ -879,6 +1017,34 @@ void install_call(struct install *in, struct ndrv_call *c, struct helper *h)
 	case S_CLEANUP_DELETE:
 		stop(in, c, h, in->error, in->error_doing);
 		return;
+	case S_DISABLED_FOLDER:
+		if (err) {
+			for (unsigned k = 0; k < INSTALL_APPLE_GL; k++)
+				if (in->check.apple[k].found[0] && in->check.apple[k].dir[0] == in->ext_dir)
+					in->apple_moved[k].error = err;
+			in->apple = INSTALL_APPLE_GL;
+			apple_next(in, c, h);
+			return;
+		}
+		in->disabled_dir = mem_r32(m, at(R_DIRID));
+		param_block(in, m);
+		mem_w16(m, pb + PB_DIR_INDEX, 0xFFFF);
+		mem_w32(m, pb + PB_DIR_ID, in->disabled_dir);
+		callout(in, c, S_DISABLED_NAME, I_GET_CAT_INFO, pb, 0, 0, 0);
+		return;
+	case S_DISABLED_NAME:
+		if (err)
+			snprintf(in->disabled_name, sizeof in->disabled_name, DISABLED_NAME);
+		else
+			roman_name(m, at(R_NAMEBUF), in->disabled_name, sizeof in->disabled_name);
+		apple_next(in, c, h);
+		return;
+	case S_APPLE_MOVE:
+		in->apple_moved[in->apple].moved = !err;
+		in->apple_moved[in->apple].error = err;
+		in->apple++;
+		apple_next(in, c, h);
+		return;
 	default:
 		ndrv_finish(c, 0);
 		return;
@@ -892,20 +1058,44 @@ static void report(struct install *in, struct ndrv_call *c, struct helper *h)
 	size_t len = sizeof in->news;
 	const struct install_result *r = in->result;
 	s[0] = '\0';
-	if (r[0].done && r[1].done && r[0].replaced == r[1].replaced && r[0].dir == r[1].dir &&
-	    !strcmp(r[0].old_name, tool_name(0)) && !strcmp(r[1].old_name, tool_name(1))) {
-		add(s, len, "%s %s and %s in \"%s:%s\"", r[0].replaced ? "updated" : "installed", tool_name(0), tool_name(1),
-		    in->check.system, r[0].folder);
-	} else {
-		for (unsigned t = 0, k = 0; t < TOOLS_FILES; t++) {
-			if (!r[t].done)
+	/* each tool done, with the others done alike (in the same folder, as they're named) */
+	bool said[TOOLS_FILES] = { false };
+	for (unsigned t = 0, k = 0; t < TOOLS_FILES; t++) {
+		if (!r[t].done || said[t])
+			continue;
+		bool plain = !strcmp(r[t].old_name, tool_name(t));
+		unsigned n = 0;
+		for (unsigned u = t; u < TOOLS_FILES; u++)
+			n += r[u].done && !said[u] && (u == t || (plain && r[u].replaced == r[t].replaced &&
+								  r[u].dir == r[t].dir && !strcmp(r[u].old_name, tool_name(u))));
+		add(s, len, "%s%s ", k++ ? " and " : "", r[t].replaced ? "updated" : "installed");
+		for (unsigned u = t, j = 0; u < TOOLS_FILES; u++) {
+			if (!r[u].done || said[u] || (u != t && (!plain || r[u].replaced != r[t].replaced ||
+								 r[u].dir != r[t].dir || strcmp(r[u].old_name, tool_name(u)))))
 				continue;
-			add(s, len, "%s%s %s", k++ ? " and " : "", r[t].replaced ? "updated" : "installed", tool_name(t));
-			if (strcmp(r[t].old_name, tool_name(t)) != 0)
-				add(s, len, " (\"%s\")", r[t].old_name);
-			add(s, len, " in \"%s:%s\"", in->check.system, r[t].folder);
+			add(s, len, "%s%s", joint(j++, n), tool_name(u));
+			if (!plain)
+				add(s, len, " (\"%s\")", r[u].old_name);
+			said[u] = true;
 		}
+		add(s, len, " in \"%s:%s\"", in->check.system, r[t].folder);
 	}
+	/* Apple's OpenGL libraries */
+	unsigned moved = 0;
+	for (unsigned k = 0; k < INSTALL_APPLE_GL; k++)
+		moved += in->apple_moved[k].moved;
+	if (moved) {
+		add(s, len, "%s%s Apple's ", s[0] ? "; " : "", in->apple_restoring ? "put" : "moved");
+		for (unsigned k = 0, j = 0; k < INSTALL_APPLE_GL; k++)
+			if (in->apple_moved[k].moved)
+				add(s, len, "%s%s", joint(j++, moved), apple_names[k]);
+		add(s, len, " %s \"%s:%s\"", in->apple_restoring ? "back in" : "to", in->check.system,
+		    in->apple_restoring ? in->ext_name : in->disabled_name);
+	}
+	for (unsigned k = 0; k < INSTALL_APPLE_GL; k++)
+		if (in->apple_moved[k].error)
+			add(s, len, "%scouldn't move Apple's %s: %s", s[0] ? "; " : "", apple_names[k],
+			    error_text(in->apple_moved[k].error, buf, sizeof buf));
 	if (in->error) {
 		unsigned t = in->error_tool;
 		add(s, len, "%scouldn't %s %s", s[0] ? "; " : "",
@@ -933,8 +1123,12 @@ static void report(struct install *in, struct ndrv_call *c, struct helper *h)
 		else if (h->running)
 			add(s, len, " (Another copy of syshm Enhancements is running.)");
 	}
+	const char *gl = r[TOOLS_GL_LIBRARY].done || r[TOOLS_GL_MEMORY].done || r[TOOLS_GL_UTILITY].done ?
+			 "syshm's OpenGL" : moved && in->apple_restoring ? "Apple's OpenGL" : NULL;
 	if (r[TOOLS_3D_ENGINE].done)
-		add(s, len, " Programs opened from now on find the 3D engine.");
+		add(s, len, " Programs opened from now on find the 3D engine%s%s.", gl ? " and " : "", gl ? gl : "");
+	else if (gl)
+		add(s, len, " Programs opened from now on find %s.", gl);
 	finish_news(in);
 	ndrv_finish(c, 0);
 }

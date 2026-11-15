@@ -25,6 +25,16 @@
  *     no file is ever left half written), and LaunchApplication starts
  *     syshm Enhancements. A copy of Enhancements that's running (an older
  *     one) is asked to quit first (helper.quit).
+ *
+ * syshm's OpenGL libraries have the fragment names of Apple's (Mac OS 9's
+ * OpenGLLibrary, OpenGLMemory and OpenGLUtility), so only one of each can be
+ * enabled: Apple's are in Extensions (Disabled) while syshm's are in the
+ * Extensions folder. Once syshm's are there, the installer moves Apple's
+ * (files of those names) to Extensions (Disabled); and if syshm's are gone
+ * (none of them is anywhere) while Apple's are only in Extensions
+ * (Disabled), the offer is to put Apple's back, instead of installing
+ * syshm's. (The check knows the folders by their English names; the
+ * installer by FindFolder's.)
  */
 #ifndef SYSHM_INSTALL_H
 #define SYSHM_INSTALL_H
@@ -40,7 +50,8 @@
 
 #define HOSTCALL_TOOLS_INSTALL 0x103u   /* the installer's (never installed itself) */
 #define INSTALL_REGION 0x5E000000u      /* where its memory is mapped: nothing of Mac OS's is near */
-#define INSTALL_REGION_SIZE 0x10000u
+#define INSTALL_REGION_SIZE 0x50000u    /* (room for a fork of up to 300 KB) */
+#define INSTALL_APPLE_GL TOOLS_GL_FILES /* Apple's OpenGL libraries of the names syshm's have */
 
 /* ---- the check, before Mac OS starts ------------------------------------------ */
 
@@ -56,6 +67,13 @@ struct install_check {
 		uint32_t dir, id;               /* the copy found (not MISSING): its folder, its file ID */
 		char folder[HFSREAD_NAME_MAX];  /* ... the folder's name */
 	} tool[TOOLS_FILES];
+	/* Apple's OpenGL libraries: a copy in the Extensions folder (0), in Extensions (Disabled) (1) */
+	struct install_apple {
+		bool found[2];
+		uint32_t dir[2];
+	} apple[INSTALL_APPLE_GL];
+	bool apple_disable;             /* syshm's are all in the Extensions folder, and some of Apple's too */
+	bool apple_restore;             /* syshm's aren't anywhere, Apple's only in Extensions (Disabled) */
 };
 
 /*
@@ -115,6 +133,15 @@ struct install {
 		uint32_t dir;
 		char folder[HFSREAD_NAME_MAX], old_name[HFSREAD_NAME_MAX];
 	} result[TOOLS_FILES];
+	/* Apple's OpenGL libraries: moved to Extensions (Disabled), or back */
+	bool apple_done, apple_disabling, apple_restoring;
+	unsigned apple;
+	uint32_t disabled_dir;
+	char disabled_name[HFSREAD_NAME_MAX];
+	struct install_moved {
+		bool moved;
+		int16_t error;
+	} apple_moved[INSTALL_APPLE_GL];
 	int16_t error;
 	const char *error_doing;
 	unsigned error_tool;

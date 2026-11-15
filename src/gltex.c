@@ -770,11 +770,12 @@ static unsigned complete_levels(const struct gl_texture *t)
 	int w = first->width, h = first->height;
 	unsigned n = 1;
 	while ((w > 1 || h > 1) && b + (int)n <= t->max_level && b + (int)n < GLF_TEXTURE_LEVELS) {
-		w = w > 1 ? w / 2 : 1;
-		h = h > 1 ? h / 2 : 1;
+		int nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1;
 		const struct gl_level *l = &t->level[b + (int)n];
-		if (!l->texels || l->width != w || l->height != h || l->internal != first->internal)
+		if (!l->texels || l->width != nw || l->height != nh || l->internal != first->internal)
 			break;
+		w = nw;
+		h = nh;
 		n++;
 	}
 	bool chain = (w == 1 && h == 1) || b + (int)n > t->max_level || b + (int)n >= GLF_TEXTURE_LEVELS;

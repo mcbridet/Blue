@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "be.h"
 #include "opengl_table.h"
@@ -805,11 +806,32 @@ static void show(struct opengl *o, struct opengl_context *x)
 {
 	if (!x->has_surface || x->kind == DRAWABLE_NONE)
 		return;
+	struct timespec t0, t1;
+	if (o->fps)
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+	bool gpu = x->surface.gpu != NULL;
 	if (!surface_finish(&x->surface))
 		lose_gpu(o);
 	else if (x->surface.gpu)
 		o->gpu_frames++;
 	free_retired(o);
+	if (o->fps) {                   /* (SYSHM_GL_FPS: the frame rate, every second of host time) */
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		double now = (double)t1.tv_sec + 1e-9 * (double)t1.tv_nsec;
+		o->fps_drawing += now - ((double)t0.tv_sec + 1e-9 * (double)t0.tv_nsec);
+		o->fps_frames++;
+		if (!o->fps_since) {
+			o->fps_since = now;
+		} else if (now - o->fps_since >= 1) {
+			double span = now - o->fps_since;
+			printf("opengl: %.1f frames/s %s, waiting for drawing %.0f%% of the time\n", o->fps_frames / span,
+			       gpu ? "on the GPU" : "in software", 100 * o->fps_drawing / span);
+			fflush(stdout);
+			o->fps_since = now;
+			o->fps_frames = 0;
+			o->fps_drawing = 0;
+		}
+	}
 	x->frames++;
 	o->frames++;
 	int l = 0, t = 0, r = x->width, b = x->height;
@@ -1896,6 +1918,10 @@ static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_in
 		return 0;
 	case F_aglSwapBuffers:
 		show(o, x);
+		if (x->kind == DRAWABLE_PORT) {         /* (for the screen: paced by its refresh, see nk.c) */
+			o->shown = 1 + (unsigned)(in - o->inst) * OPENGL_CONTEXTS + (unsigned)(x - in->ctx);
+			o->shown_id = x->guest;
+		}
 		return 0;
 	case F_aglEnable:
 	case F_aglDisable:
@@ -1964,6 +1990,7 @@ static void finish_call(struct ndrv_call *c, const char *result, uint32_t v)
 void opengl_library_call(struct opengl *o, struct ndrv_call *c)
 {
 	o->calls++;
+	o->shown = 0;
 	if (c->entry == E_INIT || c->entry == E_TERM) {
 		/* CFM's initialization (a new process: its instance from scratch) and termination */
 		struct opengl_instance *in = instance_of(o, c->toc, c->entry == E_INIT);

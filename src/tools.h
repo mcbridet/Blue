@@ -13,7 +13,8 @@
  *                       and filters events, for every application.
  *   syshm 3D Engine     a QuickDraw 3D RAVE drawing engine (rave.h).
  *   syshm OpenGL ...    OpenGLLibrary, OpenGLMemory and OpenGLUtility
- *                       (opengl.h), on the volume only for now.
+ *                       (opengl.h), Mac OS 9's OpenGL; on Mac OS 9 they
+ *                       take Apple's place (see install.h).
  */
 #ifndef SYSHM_TOOLS_H
 #define SYSHM_TOOLS_H
@@ -36,7 +37,9 @@
 #define TOOLS_VOLUME_SIZE (2u << 20)
 
 /* The tools' files, in the volume's order */
-enum { TOOLS_ENHANCEMENTS, TOOLS_3D_ENGINE, TOOLS_FILES };
+enum { TOOLS_ENHANCEMENTS, TOOLS_3D_ENGINE, TOOLS_GL_LIBRARY, TOOLS_GL_MEMORY, TOOLS_GL_UTILITY, TOOLS_FILES };
+#define TOOLS_GL_FIRST TOOLS_GL_LIBRARY
+#define TOOLS_GL_FILES 3
 
 /*
  * The files as the tools volume holds them: names, type and creator, Finder
@@ -44,14 +47,6 @@ enum { TOOLS_ENHANCEMENTS, TOOLS_3D_ENGINE, TOOLS_FILES };
  * -1 if they can't be made.
  */
 int tools_files(struct hfs_file files[TOOLS_FILES]);
-
-/*
- * The OpenGL libraries (opengl.h), which the tools volume has too (the
- * installer doesn't offer them yet: see docs/opengl-plan.md). As
- * tools_files().
- */
-enum { TOOLS_GL_LIBRARY, TOOLS_GL_MEMORY, TOOLS_GL_UTILITY, TOOLS_GL_FILES };
-int tools_gl_files(struct hfs_file files[TOOLS_GL_FILES]);
 
 /*
  * Writes the tools volume (a disk image) to `path`. Returns 0 on success.

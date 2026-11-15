@@ -4,7 +4,10 @@
  * assembled into triangles, lines and points, flat shading's colors,
  * culling, clipping (the near and far planes, the guard band), the
  * viewport and scissor as the raster state's clip, errors, and pixels
- * drawn by raster.c.
+ * drawn by raster.c. Textures: pixel transfer (formats, types, packed and
+ * swapped, the pixel stores), objects and their errors, completeness, the
+ * backend's copy made and retired, each texture environment mode for each
+ * base format, the texture matrix and q, glReadPixels.
  */
 #include <math.h>
 #include <stdlib.h>
@@ -24,8 +27,11 @@ static void start(void)
 {
 	if (surf.target.color)
 		surface_free(&surf);
+	if (st.names)
+		glf_detach(&st, NULL);
 	CHECK(surface_init(&surf, W, H, NULL));
 	glf_init(&st);
+	CHECK(glf_attach(&st, NULL));
 	glf_viewport(&st, 0, 0, W, H);
 	glf_scissor(&st, 0, 0, W, H);
 	target = (struct gl_target){ &surf, W, H, 24, 8 };
@@ -566,6 +572,351 @@ static void test_pixels(void)
 	CHECK_EQ(pixel(5, 5), 0xBF808080u);                     /* (red at half over cyan; alpha 0.5 + 1 * 0.5) */
 }
 
+/* ---- textures ---------------------------------------------------------------------- */
+
+enum { GL_BYTE = 0x1400, GL_UNSIGNED_SHORT = 0x1403, GL_FLOAT = 0x1406, GL_UNSIGNED_SHORT_5_6_5 = 0x8363,
+       GL_UNSIGNED_SHORT_4_4_4_4 = 0x8033, GL_UNSIGNED_SHORT_1_5_5_5_REV = 0x8366, GL_UNSIGNED_INT_8_8_8_8 = 0x8035,
+       GL_UNSIGNED_INT_8_8_8_8_REV = 0x8367, GL_TEXTURE_1D_T = 0x0DE0, GL_TEXTURE_2D_T = 0x0DE1 };
+
+/* A 2D texture's level 0 texel (x, y) */
+static uint32_t texel_at(uint32_t name, int x, int y)
+{
+	const struct gl_texture *t = name ? glf_texture(&st, name) : &st.defaults[GLF_2D];
+	return t && t->level[0].texels ? t->level[0].texels[y * t->level[0].width + x] : 0xDEADBEEFu;
+}
+
+/* One texel of each format and type, as the texture keeps it (0xAARRGGBB) */
+static uint32_t one(uint32_t internal, uint32_t format, uint32_t type, const uint8_t *bytes)
+{
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, (int32_t)internal, 1, 1, 0, format, type, bytes);
+	CHECK_EQ(error(), GL_NO_ERROR);
+	return texel_at(1, 0, 0);
+}
+
+static void test_pixel_transfer(void)
+{
+	start();
+	glf_bind_texture(&st, GL_TEXTURE_2D_T, 1);
+	static const uint8_t rgba[4] = { 0x11, 0x22, 0x33, 0x44 };
+	CHECK_EQ(one(GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, rgba), 0x44112233u);
+	CHECK_EQ(one(GL_RGBA, GL_BGRA, GL_UNSIGNED_BYTE, rgba), 0x44332211u);      /* (B, G, R, A) */
+	CHECK_EQ(one(GL_RGB, GL_RGBA, GL_UNSIGNED_BYTE, rgba), 0xFF112233u);           /* (RGB: alpha 1) */
+	CHECK_EQ(one(GL_RGBA, GL_RGB, GL_UNSIGNED_BYTE, rgba), 0xFF112233u);
+	CHECK_EQ(one(GL_RGBA, GL_BGR, GL_UNSIGNED_BYTE, rgba), 0xFF332211u);
+	CHECK_EQ(one(GL_RGBA, 0x8000, GL_UNSIGNED_BYTE, rgba), 0x11443322u);           /* GL_ABGR_EXT */
+	CHECK_EQ(one(GL_LUMINANCE, GL_RGBA, GL_UNSIGNED_BYTE, rgba), 0xFF111111u);     /* (luminance: red) */
+	CHECK_EQ(one(GL_RGBA, GL_LUMINANCE, GL_UNSIGNED_BYTE, rgba), 0xFF111111u);
+	CHECK_EQ(one(GL_LUMINANCE_ALPHA, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, rgba), 0x22111111u);
+	CHECK_EQ(one(GL_ALPHA, GL_RGBA, GL_UNSIGNED_BYTE, rgba), 0x44000000u);
+	CHECK_EQ(one(GL_INTENSITY, GL_RGBA, GL_UNSIGNED_BYTE, rgba), 0x11111111u);
+	CHECK_EQ(one(GL_RGBA, GL_ALPHA, GL_UNSIGNED_BYTE, rgba), 0x11000000u);
+	CHECK_EQ(one(4, GL_RGBA, GL_UNSIGNED_BYTE, rgba), 0x44112233u);               /* (1 to 4 components) */
+	CHECK_EQ(one(0x8058, GL_RGBA, GL_UNSIGNED_BYTE, rgba), 0x44112233u);          /* GL_RGBA8 */
+	/* packed: big-endian halfwords and words, fields from the top (_REV: the bottom) */
+	static const uint8_t r565[2] = { 0xF8, 0x1F };                  /* red 31, green 0, blue 31 */
+	CHECK_EQ(one(GL_RGB, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, r565), 0xFFFF00FFu);
+	static const uint8_t r4444[2] = { 0x84, 0x2F };                 /* 8, 4, 2, 15 */
+	CHECK_EQ(one(GL_RGBA, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, r4444), 0xFF884422u);
+	static const uint8_t r1555[2] = { 0x80, 0x1F };                 /* (REV: B, the first, in the low bits; A on top) */
+	CHECK_EQ(one(GL_RGBA, GL_BGRA, GL_UNSIGNED_SHORT_1_5_5_5_REV, r1555), 0xFF0000FFu);
+	CHECK_EQ(one(GL_RGBA, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, rgba), 0x44112233u);
+	CHECK_EQ(one(GL_RGBA, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, rgba), 0x11223344u); /* (ARGB in a word) */
+	/* other types: signed bytes, shorts, floats; swapped bytes */
+	static const int8_t sb[4] = { -5, 0, 127, 63 };
+	CHECK_EQ(one(GL_RGBA, GL_RGBA, GL_BYTE, (const uint8_t *)sb), 0x7F0001FFu);
+	static const uint8_t us[8] = { 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x12, 0x34 };
+	CHECK_EQ(one(GL_RGBA, GL_RGBA, GL_UNSIGNED_SHORT, us), 0x12FF8000u);
+	uint8_t fl[16];
+	const float fv[4] = { 1.0f, 0.5f, -1.0f, 2.0f };
+	for (int k = 0; k < 4; k++) {
+		uint32_t b;
+		memcpy(&b, &fv[k], 4);
+		fl[4 * k] = (uint8_t)(b >> 24);
+		fl[4 * k + 1] = (uint8_t)(b >> 16);
+		fl[4 * k + 2] = (uint8_t)(b >> 8);
+		fl[4 * k + 3] = (uint8_t)b;
+	}
+	CHECK_EQ(one(GL_RGBA, GL_RGBA, GL_FLOAT, fl), 0xFFFF8000u);
+	glf_pixel_store(&st, 0x0CF0, 1);                                /* GL_UNPACK_SWAP_BYTES */
+	CHECK_EQ(one(GL_RGBA, GL_RGBA, GL_UNSIGNED_SHORT, us), 0x34FF0000u);      /* (0x0080, 0x3412) */
+	glf_pixel_store(&st, 0x0CF0, 0);
+
+	/* the pixel stores: alignment, row length, skips */
+	struct gl_pixel_store ps = { 0, 0, 0, 4, false, false };
+	CHECK_EQ(glf_image_bytes(&ps, GL_RGB, GL_UNSIGNED_BYTE, 3, 2), 12 + 9);        /* (rows of 9, padded to 12) */
+	ps.alignment = 1;
+	CHECK_EQ(glf_image_bytes(&ps, GL_RGB, GL_UNSIGNED_BYTE, 3, 2), 18);
+	ps.row_length = 5;
+	ps.skip_rows = 1;
+	ps.skip_pixels = 2;
+	CHECK_EQ(glf_image_bytes(&ps, GL_RGBA, GL_UNSIGNED_BYTE, 2, 2), 20 + 8 + 20 + 8);
+	CHECK_EQ(glf_image_bytes(&ps, GL_RGB, 0x1234, 2, 2), 0);
+	CHECK_EQ(glf_image_bytes(&ps, GL_RGBA, GL_UNSIGNED_SHORT_5_6_5, 2, 2), 0);     /* (565 is 3 components) */
+	glf_pixel_store(&st, 0x0CF2, 4);                                /* GL_UNPACK_ROW_LENGTH */
+	glf_pixel_store(&st, 0x0CF3, 1);                                /* ..._SKIP_ROWS */
+	glf_pixel_store(&st, 0x0CF4, 1);                                /* ..._SKIP_PIXELS */
+	glf_pixel_store(&st, 0x0CF5, 1);                                /* ..._ALIGNMENT */
+	uint8_t img[4 * 3];
+	for (int k = 0; k < 12; k++)
+		img[k] = (uint8_t)k;
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, GL_LUMINANCE, 2, 2, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, img);
+	CHECK(texel_at(1, 0, 0) == 0xFF050505u && texel_at(1, 1, 0) == 0xFF060606u &&
+	      texel_at(1, 0, 1) == 0xFF090909u && texel_at(1, 1, 1) == 0xFF0A0A0Au);
+	glf_pixel_store(&st, 0x0CF5, 3);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_pixel_store(&st, 0x1234, 1);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+}
+
+static void test_texture_objects(void)
+{
+	start();
+	uint32_t names[3];
+	glf_gen_textures(&st, 3, names);
+	CHECK(names[0] && names[1] != names[0] && names[2] != names[1]);
+	CHECK(!glf_is_texture(&st, names[0]));                  /* (not until bound) */
+	glf_bind_texture(&st, GL_TEXTURE_2D_T, names[0]);
+	CHECK(glf_is_texture(&st, names[0]));
+	glf_bind_texture(&st, GL_TEXTURE_1D_T, names[0]);       /* (a 2D texture) */
+	CHECK_EQ(error(), GL_INVALID_OPERATION);
+	glf_bind_texture(&st, 0x1234, names[0]);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	double v[4];
+	CHECK_EQ(glf_get(&st, 0x8069, v), 1);                   /* GL_TEXTURE_BINDING_2D */
+	CHECK(v[0] == names[0]);
+	/* images: sizes powers of two (with a border, two more), levels within the largest */
+	static uint8_t pix[64 * 64 * 4];
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, GL_RGBA, 6, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, GL_RGBA, 6, 4, 1, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+	CHECK_EQ(error(), GL_NO_ERROR);                         /* (4 x 2 and its border) */
+	CHECK_EQ(glf_get_tex_level_parameter(&st, GL_TEXTURE_2D_T, 0, 0x1000, v), 1);
+	CHECK(v[0] == 4);
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 11, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, 1234, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, GL_RGBA, 2048, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, GL_RGBA, 4, 4, 0, 0x1234, GL_UNSIGNED_BYTE, pix);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_SHORT_5_6_5, pix);
+	CHECK_EQ(error(), GL_INVALID_OPERATION);
+	/* subimages within a level */
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	static const uint8_t red[4 * 4] = { 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255 };
+	glf_tex_sub_image(&st, GL_TEXTURE_2D_T, 0, 1, 2, 2, 2, GL_RGBA, GL_UNSIGNED_BYTE, red);
+	CHECK_EQ(error(), GL_NO_ERROR);
+	CHECK(texel_at(names[0], 1, 2) == 0xFFFF0000u && texel_at(names[0], 2, 3) == 0xFFFF0000u &&
+	      texel_at(names[0], 0, 2) == 0 && texel_at(names[0], 1, 1) == 0);
+	glf_tex_sub_image(&st, GL_TEXTURE_2D_T, 0, 3, 3, 2, 2, GL_RGBA, GL_UNSIGNED_BYTE, red);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_tex_sub_image(&st, GL_TEXTURE_2D_T, 1, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, red);
+	CHECK_EQ(error(), GL_INVALID_OPERATION);                /* (no such level yet) */
+	/* parameters */
+	float p[4] = { (float)GL_CLAMP };
+	glf_tex_parameter(&st, GL_TEXTURE_2D_T, GL_TEXTURE_WRAP_S, p);
+	CHECK(glf_get_tex_parameter(&st, GL_TEXTURE_2D_T, GL_TEXTURE_WRAP_S, v) == 1 && v[0] == GL_CLAMP);
+	p[0] = (float)GL_LINEAR_MIPMAP_LINEAR;
+	glf_tex_parameter(&st, GL_TEXTURE_2D_T, GL_TEXTURE_MAG_FILTER, p);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	/* deleted: the binding goes back to the default */
+	glf_delete_texture(&st, names[0]);
+	CHECK(!glf_is_texture(&st, names[0]));
+	CHECK(glf_get(&st, 0x8069, v) == 1 && v[0] == 0);
+	glf_gen_textures(&st, 1, names);
+	CHECK(names[0] != 0);
+}
+
+/* Draws with a texture: made complete, drawn, changed, drawn again */
+static void test_texture_drawn(void)
+{
+	start();
+	glf_bind_texture(&st, GL_TEXTURE_2D_T, 7);
+	glf_enable(&st, GL_TEXTURE_2D, true);
+	static uint8_t pix[8 * 8 * 4];
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, GL_RGBA, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+	struct raster_texture *drawn = NULL;
+	CHECK(!glf_unit_texture(&st, 0, &drawn));               /* (mipmapped by default: incomplete) */
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 1, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 2, GL_RGBA, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+	CHECK(!glf_unit_texture(&st, 0, &drawn));
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 3, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+	CHECK(glf_unit_texture(&st, 0, &drawn) && drawn && drawn->levels == 4);
+	const struct gl_texture *t = glf_texture(&st, 7);
+	CHECK(drawn->texels[0] == t->level[0].texels);          /* (the texels shared) */
+	struct raster_texture *again = NULL;
+	CHECK(glf_unit_texture(&st, 0, &again) && again == drawn);
+	/* changed: the drawn one retired (its texels its own), a new one made */
+	static const uint8_t white[4] = { 255, 255, 255, 255 };
+	glf_tex_sub_image(&st, GL_TEXTURE_2D_T, 0, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, white);
+	CHECK_EQ(st.names->nretired, 1);
+	CHECK(st.names->retired[0] == drawn && drawn->texels[0][0] == 0);
+	CHECK(glf_unit_texture(&st, 0, &again) && again != drawn && again->texels[0][0] == 0xFFFFFFFFu);
+	glf_free_retired(st.names, NULL);
+	CHECK_EQ(st.names->nretired, 0);
+	/* without mipmaps: complete with a level 0 only, drawn with it alone */
+	glf_bind_texture(&st, GL_TEXTURE_2D_T, 8);
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, GL_RGBA, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+	float p[4] = { (float)GL_LINEAR };
+	glf_tex_parameter(&st, GL_TEXTURE_2D_T, GL_TEXTURE_MIN_FILTER, p);
+	CHECK(glf_unit_texture(&st, 0, &drawn) && drawn->levels == 1);
+	/* the second unit: its own binding and enable */
+	glf_active_texture(&st, GL_TEXTURE0_ARB + 1);
+	CHECK(!glf_unit_texture(&st, 1, &drawn));
+	glf_enable(&st, GL_TEXTURE_2D, true);
+	CHECK(!glf_unit_texture(&st, 1, &drawn));               /* (its default texture has no image) */
+	glf_bind_texture(&st, GL_TEXTURE_2D_T, 8);
+	CHECK(glf_unit_texture(&st, 1, &drawn));
+}
+
+/* A quad over the whole target with texture coordinates 0..1, a vertex color, drawn by raster.c */
+static void textured_quad(float r, float g, float b, float a)
+{
+	glf_begin(&st, GL_QUADS);
+	static const float c[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+	for (int k = 0; k < 4; k++) {
+		st.color[0] = r;
+		st.color[1] = g;
+		st.color[2] = b;
+		st.color[3] = a;
+		st.tex[0][0] = c[k][0];
+		st.tex[0][1] = c[k][1];
+		vertex(c[k][0] * W, c[k][1] * H, 0);
+	}
+	glf_end(&st, &target);
+	drawn();
+}
+
+static int channel(uint32_t p, int k)                   /* (k: 0 r, 1 g, 2 b, 3 a) */
+{
+	return (int)(p >> (k == 3 ? 24 : 16 - 8 * k) & 255);
+}
+
+/* Each environment mode for each base format, against OpenGL 1.2's table 3.18 (and GL_ADD's) */
+static void test_texture_env(void)
+{
+	static const uint32_t bases[6] = { GL_ALPHA, GL_LUMINANCE, GL_LUMINANCE_ALPHA, GL_INTENSITY, GL_RGB, GL_RGBA };
+	static const uint32_t modes[5] = { GL_REPLACE, GL_MODULATE, GL_DECAL, GL_BLEND, GL_ADD };
+	const float cf[4] = { 0.8f, 0.4f, 0.2f, 0.6f }, cc[4] = { 0.1f, 0.9f, 0.5f, 0.3f };
+	static const uint8_t tex[4] = { 0x40, 0x80, 0xC0, 0x20 };       /* (R, G, B, A: L and I are R) */
+	for (unsigned m = 0; m < 5; m++)
+		for (unsigned b = 0; b < 6; b++) {
+			start();
+			ortho();
+			glf_bind_texture(&st, GL_TEXTURE_2D_T, 1);
+			glf_tex_image(&st, GL_TEXTURE_2D_T, 0, (int32_t)bases[b], 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, tex);
+			float p[4] = { (float)GL_NEAREST };
+			glf_tex_parameter(&st, GL_TEXTURE_2D_T, GL_TEXTURE_MIN_FILTER, p);
+			glf_enable(&st, GL_TEXTURE_2D, true);
+			float mode[4] = { (float)modes[m] };
+			glf_tex_env(&st, GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, mode);
+			glf_tex_env(&st, GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, cc);
+			CHECK_EQ(error(), GL_NO_ERROR);
+			textured_quad(cf[0], cf[1], cf[2], cf[3]);
+			/* the texture's components as the base format has them (Lt, It: red) */
+			float t[4] = { tex[0] / 255.0f, tex[1] / 255.0f, tex[2] / 255.0f, tex[3] / 255.0f };
+			float rgb[3], a;
+			bool has_rgb = bases[b] != GL_ALPHA, has_a = bases[b] == GL_ALPHA || bases[b] == GL_LUMINANCE_ALPHA ||
+								    bases[b] == GL_RGBA || bases[b] == GL_INTENSITY;
+			float ct[3], at;
+			for (int k = 0; k < 3; k++)
+				ct[k] = bases[b] == GL_RGB || bases[b] == GL_RGBA ? t[k] : t[0];
+			at = bases[b] == GL_INTENSITY ? t[0] : t[3];
+			for (int k = 0; k < 3; k++) {
+				float f = cf[k], c = ct[k];
+				switch (modes[m]) {
+				case GL_REPLACE: rgb[k] = has_rgb ? c : f; break;
+				case GL_MODULATE: rgb[k] = has_rgb ? f * c : f; break;
+				case GL_DECAL:
+					rgb[k] = bases[b] == GL_RGB ? c : bases[b] == GL_RGBA ? f * (1 - at) + c * at : f;
+					break;
+				case GL_BLEND: rgb[k] = has_rgb ? f * (1 - c) + cc[k] * c : f; break;
+				default: rgb[k] = has_rgb ? f + c : f; break;
+				}
+				rgb[k] = rgb[k] < 1 ? rgb[k] : 1;
+			}
+			switch (modes[m]) {
+			case GL_REPLACE: a = has_a ? at : cf[3]; break;
+			case GL_MODULATE: a = has_a ? cf[3] * at : cf[3]; break;
+			case GL_DECAL: a = cf[3]; break;
+			case GL_BLEND: a = bases[b] == GL_INTENSITY ? cf[3] * (1 - at) + cc[3] * at : has_a ? cf[3] * at : cf[3]; break;
+			default: a = bases[b] == GL_INTENSITY ? cf[3] + at : has_a ? cf[3] * at : cf[3]; break;
+			}
+			a = a < 1 ? a : 1;
+			uint32_t px = pixel(W / 2, H / 2);
+			bool ok = true;
+			for (int k = 0; k < 3; k++)
+				ok &= abs(channel(px, k) - (int)(rgb[k] * 255 + 0.5f)) <= 1;
+			ok &= abs(channel(px, 3) - (int)(a * 255 + 0.5f)) <= 1;
+			if (!ok)
+				fprintf(stderr, "mode 0x%x base 0x%x: %08x, expected %.3f %.3f %.3f %.3f\n", modes[m], bases[b],
+					px, (double)rgb[0], (double)rgb[1], (double)rgb[2], (double)a);
+			CHECK(ok);
+		}
+}
+
+/* The texture matrix and q; repeat and clamp; glReadPixels */
+static void test_texture_coords(void)
+{
+	start();
+	ortho();
+	static const uint8_t checker[2 * 2 * 4] = { 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255 };
+	glf_bind_texture(&st, GL_TEXTURE_2D_T, 1);
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, GL_RGBA, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, checker);
+	float p[4] = { (float)GL_NEAREST };
+	glf_tex_parameter(&st, GL_TEXTURE_2D_T, GL_TEXTURE_MIN_FILTER, p);
+	glf_tex_parameter(&st, GL_TEXTURE_2D_T, GL_TEXTURE_MAG_FILTER, p);
+	glf_enable(&st, GL_TEXTURE_2D, true);
+	float mode[4] = { (float)GL_REPLACE };
+	glf_tex_env(&st, GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, mode);
+	textured_quad(1, 1, 1, 1);
+	/* texture rows go up: row 0 at the bottom */
+	CHECK(pixel(1, 1) == 0xFFFF0000u && pixel(W - 2, 1) == 0xFF00FF00u && pixel(1, H - 2) == 0xFF0000FFu &&
+	      pixel(W - 2, H - 2) == 0xFFFFFFFFu);
+	/* scaled by the texture matrix: repeated twice */
+	glf_matrix_mode(&st, GL_TEXTURE);
+	glf_scale(&st, 2, 2, 1);
+	glf_matrix_mode(&st, GL_MODELVIEW);
+	textured_quad(1, 1, 1, 1);
+	CHECK(pixel(1, 1) == 0xFFFF0000u && pixel(W / 4 + 1, 1) == 0xFF00FF00u && pixel(W / 2 + 1, 1) == 0xFFFF0000u);
+	/* clamped (GL_CLAMP: to the edge texels) */
+	p[0] = (float)GL_CLAMP;
+	glf_tex_parameter(&st, GL_TEXTURE_2D_T, GL_TEXTURE_WRAP_S, p);
+	glf_tex_parameter(&st, GL_TEXTURE_2D_T, GL_TEXTURE_WRAP_T, p);
+	textured_quad(1, 1, 1, 1);
+	CHECK(pixel(W / 2 + 1, 1) == 0xFF00FF00u && pixel(W - 2, H - 2) == 0xFFFFFFFFu);
+	/* q: (s, t, q) divided per pixel (the state's units projective) */
+	glf_matrix_mode(&st, GL_TEXTURE);
+	glf_identity(&st);
+	glf_matrix_mode(&st, GL_MODELVIEW);
+	glf_begin(&st, GL_TRIANGLES);
+	st.tex[0][0] = 0.25f * 2;
+	st.tex[0][1] = 0.25f * 2;
+	st.tex[0][3] = 2;
+	vertex(0.5f, 0.5f, 0);
+	vertex(20.5f, 0.5f, 0);
+	vertex(0.5f, 20.5f, 0);
+	glf_end(&st, &target);
+	CHECK(surf.batch[surf.rec].states[cmd(ncmds() - 1)->state].unit[0].projective);
+	drawn();
+	CHECK_EQ(pixel(2, 2), 0xFFFF0000u);                     /* (s/q = t/q = 0.25: the red texel) */
+	st.tex[0][3] = 1;
+
+	/* glReadPixels: from the bottom, packed as asked */
+	uint8_t out[64];
+	memset(out, 0xEE, sizeof out);
+	glf_pixel_store(&st, 0x0D05, 1);                                /* GL_PACK_ALIGNMENT */
+	glf_read_pixels(&st, &target, 0, 0, 2, 1, GL_RGBA, GL_UNSIGNED_BYTE, out);
+	CHECK(out[0] == 255 && out[1] == 0 && out[2] == 0 && out[3] == 255 && out[8] == 0xEE);
+	glf_read_pixels(&st, &target, W - 1, H - 1, 1, 1, GL_BGRA, GL_UNSIGNED_BYTE, out);
+	CHECK(out[0] == 255 && out[1] == 255 && out[2] == 255);
+	glf_read_pixels(&st, &target, 0, 0, 1, 1, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, out);
+	CHECK(out[0] == 0xF8 && out[1] == 0x00);
+	glf_read_pixels(&st, &target, 0, 0, 1, 1, GL_LUMINANCE, GL_UNSIGNED_BYTE, out);
+	CHECK_EQ(out[0], 255);
+	glf_read_pixels(&st, &target, 0, 0, 1, 1, 0x1234, GL_UNSIGNED_BYTE, out);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+}
+
 void test_glfront(void)
 {
 	test_sincos();
@@ -575,5 +926,11 @@ void test_glfront(void)
 	test_cull();
 	test_clipping();
 	test_pixels();
+	test_pixel_transfer();
+	test_texture_objects();
+	test_texture_drawn();
+	test_texture_env();
+	test_texture_coords();
 	surface_free(&surf);
+	glf_detach(&st, NULL);
 }

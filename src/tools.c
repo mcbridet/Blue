@@ -490,6 +490,8 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct 
 
 /* ---- the volume -------------------------------------------------------------- */
 
+static int gl_files(struct hfs_file files[TOOLS_GL_FILES]);
+
 int tools_files(struct hfs_file files[TOOLS_FILES])
 {
 	static uint8_t helper[8192], helper_rsrc[1024], engine[8192], engine_rsrc[1024];
@@ -522,10 +524,11 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 	files[TOOLS_3D_ENGINE] = (struct hfs_file){
 		"syshm 3D Engine", FOURCC('s', 'h', 'l', 'b'), FOURCC('t', 'n', 's', 'l'), 0, 40, 160,
 		engine, engine_rsrc, (uint32_t)engine_len, (uint32_t)engine_rsrc_len };
-	return 0;
+	return gl_files(files + TOOLS_GL_FIRST);
 }
 
-int tools_gl_files(struct hfs_file files[TOOLS_GL_FILES])
+/* The OpenGL libraries (opengl.h), as tools_files() */
+static int gl_files(struct hfs_file files[TOOLS_GL_FILES])
 {
 	static uint8_t frag[TOOLS_GL_FILES][OPENGL_LIBRARY_MAX], rsrc[TOOLS_GL_FILES][1024];
 	static const char *const names[TOOLS_GL_FILES] = { "syshm OpenGL Library", "syshm OpenGL Memory",
@@ -574,9 +577,9 @@ static int gl_test_file(struct hfs_file *file)
 
 int tools_create(const char *path)
 {
-	struct hfs_file files[TOOLS_FILES + TOOLS_GL_FILES + 1];
-	unsigned n = TOOLS_FILES + TOOLS_GL_FILES;
-	if (tools_files(files) || tools_gl_files(files + TOOLS_FILES))
+	struct hfs_file files[TOOLS_FILES + 1];
+	unsigned n = TOOLS_FILES;
+	if (tools_files(files))
 		return -1;
 	const char *test = getenv("SYSHM_TOOLS_GL_TEST");
 	if (test && strcmp(test, "0") && gl_test_file(&files[n++]))
