@@ -168,13 +168,17 @@ only, as with Ethernet, with input-script commands for reproducible tests.
     instructions cost about 10 ns each, so programs taking their AltiVec
     code would get slower than their scalar code. Most map one to one onto
     AArch64 NEON (also 128-bit): adds and saturating adds, multiply-adds,
-    compares, shifts, vperm with TBL. Vector registers in the register
-    cache; the fuzz tests cover them.
+    compares, shifts, vperm with TBL; ARMv8.2's dot products (UDOT, SDOT)
+    could speed up the multiply-sums (vmsum*) where the host has them, with
+    ARMv8.0 still the baseline. On x86-64 the JIT's baseline (x86-64-v3)
+    has the same in SSE and AVX2: saturating adds, PSHUFB for vperm, FMA3
+    for vmaddfp. Vector registers in the register cache; the fuzz tests
+    cover them.
   - The kernel: vector registers saved and restored with contexts and MP
     tasks (VRSAVE to skip unused ones), the AltiVec Unavailable exception,
     under both the NanoKernel 1 and 2 interfaces.
-  - x86_64 hosts have no JIT, so AltiVec would be slow there; one more
-    reason for an option.
+  - Hosts without a JIT (x86-64 processors older than x86-64-v3) would run
+    AltiVec slowly; one more reason for an option.
   - Once Gestalt says AltiVec, Mac OS 9.1 itself switches BlockMove to its
     AltiVec code and QuickTime to vector codecs, from the first boot, so the
     translation has to be right and fast from the start.
