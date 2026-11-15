@@ -830,8 +830,14 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
   `glGetTexImage`; 3D textures; clears, strings, errors and queries;
   OpenGLMemory's allocations; and OpenGLUtility, done on the host as SGI's
   GLU does it (`src/glu.c`: the matrices, `gluProject`, scaled images and
-  mipmaps, quadrics). Not yet: selection and feedback, evaluators,
-  `aglUseFont`, `aglSetFullScreen`, OpenGLUtility's tessellators and NURBS.
+  mipmaps, quadrics); selection and feedback (`src/glselect.c`);
+  evaluators (`src/gleval.c`); `aglSetFullScreen` (the Display Manager
+  switches the screen to the size asked for, and back when the drawable
+  goes) and `aglUseFont` (QuickDraw draws the glyphs, as with Apple's).
+  Not yet: OpenGLUtility's tessellators and NURBS (they draw nothing); S3TC
+  and paletted textures aren't offered (nor were they by Apple's for a
+  Rage 128). An OpenGLLibrary installed by an older syshm is left alone,
+  and syshm says to update it.
   Unreal Tournament's OpenGL build (on the UT CD, `Extras:OpenGL UT.sea`)
   and Quake III Arena's demo play with them, on the GPU and in software.
   Swaps to the screen or a window are paced as the 3D engine's frames are
@@ -1469,7 +1475,9 @@ triangle and a quad crossing in depth, a flat-shaded fan; `lit`: a bump
 drawn from vertex and normal arrays, lit, fogged, and a quad drawn through
 the stencil; `lists`: quadrics made into display lists through
 OpenGLUtility, called lit and as lines; `pixels`: an image zoomed, glyphs
-by `glBitmap`, a copy by `glCopyPixels`) at the depth
+by `glBitmap`, a copy by `glCopyPixels`; `fullscreen`: `triangle` drawn
+on the whole screen, switched to 640 x 480 by `aglSetFullScreen`; `font`:
+lines of text in two fonts by `aglUseFont`'s lists) at the depth
 `SYSHM_GL_TEST_DEPTH` sets (16 or 32), the same on every host (with the
 same time zone: the guest's clock is the host's local time). On Linux,
 `make test` draws scenes through the libraries and compares them with Mesa's

@@ -705,8 +705,25 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 18. OpenGL for Mac OS 9 games
 
-- **Status:** milestones 0 to 5 done (docs/opengl-plan.md has the plan,
-  its milestones and what's built). Milestone 5: display lists (kept with
+- **Status:** milestones 0 to 6 done (docs/opengl-plan.md has the plan,
+  its milestones and what's built). Milestone 6, completeness: selection
+  and feedback (`src/glselect.c`: hit records and every feedback type, the
+  primitives clipped to the view volume, in Mesa's order), evaluators
+  (`src/gleval.c`: one- and two-dimensional maps of every kind, grids,
+  meshes, made normals), `aglSetFullScreen` (the Display Manager switches
+  the screen to the size asked for and back when the drawable goes, by the
+  library's callouts) and `aglUseFont` (as Apple's: QuickDraw draws each
+  glyph into an offscreen world, the host makes it a list's `glBitmap`).
+  OpenGLLibrary now imports those calls from InterfaceLib, so its data
+  moved: an older syshm's copy is left alone, with a message to update
+  it. S3TC and paletted textures are left out: Mac OS 9.2.2's engine and
+  ATI renderer don't offer them. Feedback and selection give Mesa's
+  records, the evaluators' two new scenes Mesa's pixels (within 2), and
+  the test application's `fullscreen` and `font` scenes are the same
+  screenshots on macOS and Linux. Quake III's demo and UT play, but at
+  other moments than main's in instruction time: the library's imports
+  shift when they start (built without them, the milestone's syshm gives
+  main's runs exactly). Milestone 5: display lists (kept with
   the bytes their calls' pointers pointed to, arrays' draws as the
   attribute calls they make; nested, shared), the raster position,
   `glBitmap`, `glDrawPixels` and `glCopyPixels` of colors, depth and
@@ -722,9 +739,8 @@ the kernel); 8 onwards as the boot progresses.
   screenshots on macOS and Linux. Quake III Arena's demo (id's, from
   archive.org) installs with its installer and plays `demo001` on a clone
   of 8.6, the same frame on macOS and Linux in instruction time (with
-  `TZ=UTC`), and Unreal Tournament's runs are main's. Not yet: selection
-  and feedback, evaluators, `aglUseFont`, `aglSetFullScreen`, S3TC and
-  paletted textures. Milestone 4: client arrays of every
+  `TZ=UTC`), and Unreal Tournament's runs are main's. Milestone 4: client
+  arrays of every
   type (interleaved, `glDrawElements`, `glDrawRangeElements`, compiled
   arrays), lighting (8 lights, two sides, separate specular, the color
   material, normalizing and rescaling), fog, texture coordinate generation
@@ -789,10 +805,10 @@ the kernel); 8 onwards as the boot progresses.
   on macOS (with the next item) and Linux; on the GPU, 4 frames differ,
   each in one pixel's channel by one step. The 8.5 and 9.1 CDs boot to the same screenshots as
   main's.
-- **Next:** what's left of milestone 5 (selection and feedback,
-  evaluators, `aglUseFont`, `aglSetFullScreen`, S3TC and paletted
-  textures, OpenGLUtility's tessellators and NURBS), and milestone 6
-  (performance). Open items: lines and points aren't textured, and neither
+- **Next:** milestone 7 (performance). Open items: OpenGLUtility's
+  tessellators and NURBS renderers keep their objects and properties but
+  draw nothing (until a program needs them); lines and points aren't
+  textured, and neither
   stipple is drawn; lines are `raster.c`'s, a pixel a step, not OpenGL's
   diamond-exit rule;
   16-bit drawables take the top 5 bits of each component, not dithered
@@ -886,6 +902,43 @@ Facts later tasks need, added as they are found.
   quadrics drawn as points or silhouettes with flat normals (stale stack
   memory: Mesa's libGLU gave a previous call's); syshm gives the smooth
   ones there.
+- **Mesa 25.2's feedback and evaluators** (OpenGL, milestone 6): its
+  feedback gives `GL_LINE_TOKEN` where OpenGL 1.2's 5.3 has
+  `GL_LINE_RESET_TOKEN` (each separate line, each strip's first segment,
+  each polygon's outline's), and, flat shaded, each vertex's own color
+  rather than the provoking vertex's; it gives polygons as triangles
+  (v[i], v[i + 1], v[0]), which syshm follows (the order is OpenGL's to
+  choose). Its evaluators: once a color map has been evaluated, the
+  current color loses the components the last `glColor` didn't set (all
+  four if it was never called), so later vertices come out (0, 0, 0, 0),
+  or with alpha 0 after `glColor3`; filled meshes are triangle strips (the
+  quad strips of 5.1 split along the other diagonal: other colors inside
+  a quad, where they aren't linear in u and v); `glGetMap`'s coefficients
+  come v fastest (its manual page: u fastest); `GL_AUTO_NORMAL`'s
+  derivatives are in u' and v', so a domain run backwards doesn't turn the
+  normal round as 5.1's dp/du x dp/dv does. syshm keeps OpenGL's way in
+  each; the scenes compared with Mesa avoid them.
+- **Apple's `aglUseFont` and `aglSetFullScreen`** (OpenGL, milestone 6,
+  disassembled from Mac OS 9.2.2's OpenGLLibrary): `aglUseFont` fails with
+  `AGL_BAD_STATE` while a list is being made and `AGL_BAD_VALUE` for a font
+  `RealFont` doesn't have; it measures the font in a 4 x 4 1-bit GWorld,
+  then draws each glyph in one of (widMax + 2e) x (ascent + descent + 2e)
+  (e: half the size if the face isn't plain), the pen at (e, ascent + e),
+  copies its rows bottom up and makes list base + i of one `glBitmap`:
+  (CharWidth + 2e) wide, from (e, descent + e - 1), moving CharWidth on,
+  with the unpacking it sets (and puts back). It draws white on black
+  after `SetPort` (not `SetGWorld`, so the colors are the screen's
+  device's); syshm uses `SetGWorld` and the world's own black on white, so
+  the glyphs are its 1 bits whatever the screen's depth. `aglSetFullScreen`
+  keeps the size, frequency and
+  device, attaches the drawable through its engine and sets the viewport
+  to the size; neither the library, the engine nor the ATI renderer
+  imports a Display Manager call.
+- **S3TC and paletted textures on Mac OS 9.2.2** (OpenGL, milestone 6):
+  the extension strings of 9.2.2's OpenGLEngine, OpenGLRendererATI and
+  the software OpenGLRenderer have neither S3TC nor
+  `GL_EXT_paletted_texture`; only the "NVIDIA OpenGL" engine on the same
+  disk (GeForce cards') lists them.
 
 - **CD audio, Apple's CD-ROM driver** (Technical Note DV22, "CD-ROM Driver
   Calls", developer.apple.com/library/archive/technotes/dv/dv_22.html):
