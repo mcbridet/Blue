@@ -3,15 +3,15 @@
 Ideas worth doing some day, not planned yet. Each says what the real iMac
 had, what it would be good for under syshm, and what it would take.
 
-The modem and infrared both need the same thing first: a serial controller
-that carries data. syshm's Z8530 SCC (`src/scc.c`) has nothing attached
-today: what Mac OS sends vanishes, the receiver always sees an idle line, and
-it raises no interrupts. It would need data both ways, its interrupts
-(receive, transmit, status changes), the handshake and carrier-detect lines
-the drivers watch, timing at the chosen bit rate, and perhaps Mac I/O's DMA
-channels for the SCC if Mac OS's serial driver uses them on the iMac. Runs
-that use the network stay real-time only, as with Ethernet, with input-script
-commands for reproducible tests.
+The modem, a serial port and infrared all need the same thing first: a
+serial controller that carries data. syshm's Z8530 SCC (`src/scc.c`) has
+nothing attached today: what Mac OS sends vanishes, the receiver always sees
+an idle line, and it raises no interrupts. It would need data both ways, its
+interrupts (receive, transmit, status changes), the handshake and
+carrier-detect lines the drivers watch, timing at the chosen bit rate, and
+perhaps Mac I/O's DMA channels for the SCC if Mac OS's serial driver uses
+them on the iMac. Runs that use the network or a host device stay real-time
+only, as with Ethernet, with input-script commands for reproducible tests.
 
 ## Modem
 
@@ -36,6 +36,34 @@ commands for reproducible tests.
   the sound chip; syshm could play that while connecting.
 - **Size:** moderate, nearly all of it in the serial controller; the modem
   and TCP parts are small.
+
+## Serial port
+
+- **The iMac's:** none on the outside: the iMac was the first Mac without
+  the two mini-DIN-8 serial ports, and serial devices needed a USB-serial
+  adapter with its own drivers (Keyspan's, for example). Its serial
+  controller served only the internal modem and infrared.
+- **What for:** the modem's port wired straight to the host instead of to a
+  pretend modem, so programs that pick a serial port talk to something
+  real:
+  - devices of the time through a USB-serial adapter on the host: syncing a
+    Newton with Newton Connection Utilities or a Palm with HotSync, or a
+    terminal program on a router's or retro computer's console;
+  - a null-modem link between two syshm windows, for file transfer
+    programs and games that offer a serial or modem link;
+  - a host program at the other end of a pseudo-terminal, for scripted
+    tests.
+- **How:** an option such as `--serial PATH` (a host serial device or a
+  pseudo-terminal syshm creates and names) or `--serial tcp:HOST:PORT` (and
+  a listening form), used instead of the modem on that channel. For a host
+  device, the bit rate, parity and stop bits Mac OS sets go to it through
+  termios, and the handshake lines (DTR, RTS, CTS, DCD) through its
+  modem-control lines, so hardware handshaking works end to end. Whether the
+  infrared channel could appear as a second, plain serial port instead (and
+  under what name Mac OS lists each port) is to be checked in the ROM's
+  device tree.
+- **Size:** small once the serial controller carries data: the host side is
+  termios and socket plumbing.
 
 ## Infrared (IrDA)
 
