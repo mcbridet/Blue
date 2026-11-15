@@ -1,5 +1,6 @@
 #include "gltest.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,7 +16,10 @@
 	X(aglSwapBuffers) X(glClearColor) X(glClear) X(glScissor) X(glEnable) X(glDisable) X(glGetString) \
 	X(glGetError) X(glViewport) X(glClearDepth) X(glDepthFunc) X(glShadeModel) X(glMatrixMode) \
 	X(glLoadIdentity) X(glFrustum) X(glTranslatef) X(glRotatef) X(glPushMatrix) X(glPopMatrix) X(glBegin) \
-	X(glEnd) X(glColor3f) X(glColor3ub) X(glVertex3f) X(glVertex3fv)
+	X(glEnd) X(glColor3f) X(glColor3ub) X(glVertex3f) X(glVertex3fv) X(glClearStencil) X(glLightfv) \
+	X(glMaterialfv) X(glMaterialf) X(glFogi) X(glFogf) X(glFogfv) X(glEnableClientState) \
+	X(glDisableClientState) X(glVertexPointer) X(glNormalPointer) X(glDrawElements) X(glStencilFunc) \
+	X(glStencilOp) X(glColorMask)
 
 enum {
 #define X(name) I_##name,
@@ -42,11 +46,19 @@ static const char *const import_names[I_COUNT] = {
 /*
  * Its data (after the entry's TVector): QuickDraw's globals (thePort last),
  * an event record, the window's rectangle and title, the pixel format's
- * attributes, a vertex for glVertex3fv, then the variables: the window,
- * the pixel format, the context.
+ * attributes, a vertex for glVertex3fv, the variables (the window, the
+ * pixel format, the context), then "lit"'s vectors (a light's position
+ * and color, a material's colors, the fog's color) and a mesh's arrays
+ * (positions, normals, indices)
  */
+#define MESH_X 7
+#define MESH_Z 5
+#define MESH_INDICES ((MESH_X - 1) * (MESH_Z - 1) * 6)
 enum { D_QD = 0, D_THE_PORT = 202, D_EVENT = 208, D_RECT = 224, D_TITLE = 232, D_ATTRIBS = 264, D_VERTEX = 316,
-       D_VARS = 328, D_SIZE = D_VARS + 20 };
+       D_VARS = 328, D_LIGHT_POSITION = 348, D_LIGHT_COLOR = D_LIGHT_POSITION + 16, D_DIFFUSE = D_LIGHT_COLOR + 16,
+       D_SPECULAR = D_DIFFUSE + 16, D_FOG_COLOR = D_SPECULAR + 16, D_POSITIONS = D_FOG_COLOR + 16,
+       D_NORMALS = D_POSITIONS + 12 * MESH_X * MESH_Z, D_INDICES = D_NORMALS + 12 * MESH_X * MESH_Z,
+       D_SIZE = D_INDICES + 2 * MESH_INDICES };
 enum { V_NONE, V_WINDOW, V_FORMAT, V_CONTEXT, V_DEVICE };
 #define WINDOW_LEFT 40
 #define WINDOW_TOP 60
@@ -57,6 +69,7 @@ enum { V_NONE, V_WINDOW, V_FORMAT, V_CONTEXT, V_DEVICE };
 #define AGL_RGBA 4
 #define AGL_DOUBLEBUFFER 5
 #define AGL_DEPTH_SIZE 12
+#define AGL_STENCIL_SIZE 13
 #define AGL_ACCELERATED 73
 #define GL_DEPTH_BUFFER_BIT 0x0100u
 #define GL_COLOR_BUFFER_BIT 0x4000u
@@ -74,9 +87,40 @@ enum { V_NONE, V_WINDOW, V_FORMAT, V_CONTEXT, V_DEVICE };
 #define GL_VENDOR 0x1F00u
 #define GL_RENDERER 0x1F01u
 #define GL_VERSION 0x1F02u
+#define GL_STENCIL_BUFFER_BIT 0x0400u
+#define GL_LIGHTING 0x0B50u
+#define GL_LIGHT0 0x4000u
+#define GL_NORMALIZE 0x0BA1u
+#define GL_FOG 0x0B60u
+#define GL_STENCIL_TEST 0x0B90u
+#define GL_POSITION 0x1203u
+#define GL_DIFFUSE 0x1201u
+#define GL_SPECULAR 0x1202u
+#define GL_SHININESS 0x1601u
+#define GL_FRONT 0x0404u
+#define GL_FOG_MODE 0x0B65u
+#define GL_FOG_START 0x0B63u
+#define GL_FOG_END 0x0B64u
+#define GL_FOG_COLOR 0x0B66u
+#define GL_LINEAR 0x2601u
+#define GL_VERTEX_ARRAY 0x8074u
+#define GL_NORMAL_ARRAY 0x8075u
+#define GL_FLOAT 0x1406u
+#define GL_UNSIGNED_SHORT 0x1403u
+#define GL_ALWAYS 0x0207u
+#define GL_EQUAL 0x0202u
+#define GL_KEEP 0x1E00u
+#define GL_REPLACE 0x1E01u
 
 #define UPDATE_EVENT 6u
 #define EVERY_EVENT 0xFFFFu
+
+static uint32_t float_bits(float f)
+{
+	uint32_t w;
+	memcpy(&w, &f, 4);
+	return w;
+}
 
 size_t gltest_build(uint8_t *out, size_t size, struct ndrv_layout *layout)
 {
@@ -87,12 +131,41 @@ size_t gltest_build(uint8_t *out, size_t size, struct ndrv_layout *layout)
 	put_be16(data + D_RECT + 6, WINDOW_LEFT + WINDOW_WIDTH);
 	data[D_TITLE] = 7;
 	memcpy(data + D_TITLE + 1, "GL Test", 7);
-	static const uint32_t attribs[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_DEPTH_SIZE, 16, AGL_ACCELERATED, 0 };
+	static const uint32_t attribs[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_DEPTH_SIZE, 16, AGL_STENCIL_SIZE, 8,
+					    AGL_ACCELERATED, 0 };
+	_Static_assert(D_ATTRIBS + sizeof attribs <= D_VERTEX, "room for the attributes");
 	for (unsigned k = 0; k < sizeof attribs / sizeof attribs[0]; k++)
 		put_be32(data + D_ATTRIBS + 4 * k, attribs[k]);
 	static const uint32_t vertex[3] = { 0x3FB33333u, 0x3F99999Au, 0 };     /* (1.4, 1.2, 0) */
 	for (unsigned k = 0; k < 3; k++)
 		put_be32(data + D_VERTEX + 4 * k, vertex[k]);
+	/* "lit": its vectors; a mesh, a bump on a floor (its normals by sqrt alone: the same on every host) */
+	static const float vectors[5][4] = { { 0.4f, 1, 0.6f, 0 }, { 1, 0.95f, 0.85f, 1 }, { 0.3f, 0.55f, 0.9f, 1 },
+					     { 0.8f, 0.8f, 0.8f, 1 }, { 0.5f, 0.6f, 0.7f, 1 } };
+	for (unsigned k = 0; k < 5; k++)
+		for (unsigned j = 0; j < 4; j++)
+			put_be32(data + D_LIGHT_POSITION + 16 * k + 4 * j, float_bits(vectors[k][j]));
+	for (int z = 0; z < MESH_Z; z++)
+		for (int x = 0; x < MESH_X; x++) {
+			float px = -1.5f + 0.5f * (float)x, pz = -1 + 0.5f * (float)z;
+			float ax = 1 - px * px / 2.25f, az = 1 - pz * pz;
+			float py = 0.6f * ax * az;
+			float n[3] = { 0.6f * 2 * px / 2.25f * az, 1, 0.6f * ax * 2 * pz };     /* (-dy/dx, 1, -dy/dz) */
+			float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+			const float p[3] = { px, py, pz };
+			unsigned at = (unsigned)(z * MESH_X + x) * 12;
+			for (unsigned c = 0; c < 3; c++) {
+				put_be32(data + D_POSITIONS + at + 4 * c, float_bits(p[c]));
+				put_be32(data + D_NORMALS + at + 4 * c, float_bits(n[c] / len));
+			}
+		}
+	for (int z = 0, k = 0; z + 1 < MESH_Z; z++)
+		for (int x = 0; x + 1 < MESH_X; x++) {
+			int a = z * MESH_X + x, b = a + MESH_X, c = b + 1, d = a + 1;      /* (counterclockwise from above) */
+			const int tri[6] = { a, b, c, a, c, d };
+			for (int t = 0; t < 6; t++, k++)
+				put_be16(data + D_INDICES + 2 * (unsigned)k, (uint16_t)tri[t]);
+		}
 	const struct ndrv_spec spec = {
 		.kind = FRAG_APPLICATION, .entries = 1, .hostcall = HOSTCALL_TOOLS_GL_TEST, .imports = imports,
 		.import_count = I_COUNT, .extra = data, .extra_len = sizeof data,
@@ -229,6 +302,72 @@ static const struct gltest_step scene_triangle[] = {
 	CALL(aglSwapBuffers, VAR(V_CONTEXT)),
 };
 
+/*
+ * "lit": in perspective, a bump on a floor (vertex and normal arrays drawn
+ * by glDrawElements), lit by a light from above, its material shiny, fogged
+ * into the distance; then a yellow quad drawn only where a triangle was put
+ * in the stencil (its colors masked)
+ */
+static const struct gltest_step scene_lit[] = {
+	CALL_F(glClearColor, 0.5, 0.6, 0.7, 1.0),
+	CALL_D(glClearDepth, 1.0),
+	CALL(glClearStencil, 0),
+	CALL(glClear, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT),
+	CALL(glEnable, GL_DEPTH_TEST),
+	CALL(glMatrixMode, GL_PROJECTION),
+	CALL0(glLoadIdentity),
+	CALL_D(glFrustum, -1.0, 1.0, -0.75, 0.75, 1.0, 10.0),
+	CALL(glMatrixMode, GL_MODELVIEW),
+	CALL0(glLoadIdentity),
+	CALL_F(glTranslatef, 0.0, -0.4, -3.5),
+	CALL_F(glRotatef, 25.0, 1.0, 0.0, 0.0),
+	CALL(glEnable, GL_LIGHTING),
+	CALL(glEnable, GL_LIGHT0),
+	CALL(glEnable, GL_NORMALIZE),
+	CALL(glLightfv, GL_LIGHT0, GL_POSITION, DATA(D_LIGHT_POSITION)),
+	CALL(glLightfv, GL_LIGHT0, GL_DIFFUSE, DATA(D_LIGHT_COLOR)),
+	CALL(glMaterialfv, GL_FRONT, GL_DIFFUSE, DATA(D_DIFFUSE)),
+	CALL(glMaterialfv, GL_FRONT, GL_SPECULAR, DATA(D_SPECULAR)),
+	{ I_glMaterialf, 2, 1, V_NONE, false, { GL_FRONT, GL_SHININESS }, { 20.0 }, true },
+	CALL(glEnable, GL_FOG),
+	CALL(glFogi, GL_FOG_MODE, GL_LINEAR),
+	{ I_glFogf, 1, 1, V_NONE, false, { GL_FOG_START }, { 3.0 }, true },
+	{ I_glFogf, 1, 1, V_NONE, false, { GL_FOG_END }, { 6.0 }, true },
+	CALL(glFogfv, GL_FOG_COLOR, DATA(D_FOG_COLOR)),
+	CALL(glEnableClientState, GL_VERTEX_ARRAY),
+	CALL(glEnableClientState, GL_NORMAL_ARRAY),
+	CALL(glVertexPointer, 3, GL_FLOAT, 0, DATA(D_POSITIONS)),
+	CALL(glNormalPointer, GL_FLOAT, 0, DATA(D_NORMALS)),
+	CALL(glDrawElements, GL_TRIANGLES, MESH_INDICES, GL_UNSIGNED_SHORT, DATA(D_INDICES)),
+	CALL(glDisableClientState, GL_VERTEX_ARRAY),
+	CALL(glDisableClientState, GL_NORMAL_ARRAY),
+	CALL(glDisable, GL_LIGHTING),
+	CALL(glDisable, GL_FOG),
+	CALL(glDisable, GL_DEPTH_TEST),
+	CALL(glEnable, GL_STENCIL_TEST),
+	CALL(glStencilFunc, GL_ALWAYS, 1, 0xFF),
+	CALL(glStencilOp, GL_KEEP, GL_KEEP, GL_REPLACE),
+	CALL(glColorMask, 0, 0, 0, 0),
+	CALL0(glLoadIdentity),
+	CALL(glBegin, GL_TRIANGLES),
+	CALL_F(glVertex3f, 0.5, 0.2, -2.0),
+	CALL_F(glVertex3f, 1.4, 0.3, -2.0),
+	CALL_F(glVertex3f, 0.9, 1.2, -2.0),
+	CALL0(glEnd),
+	CALL(glColorMask, 1, 1, 1, 1),
+	CALL(glStencilFunc, GL_EQUAL, 1, 0xFF),
+	CALL(glStencilOp, GL_KEEP, GL_KEEP, GL_KEEP),
+	CALL_F(glColor3f, 1.0, 0.85, 0.1),
+	CALL(glBegin, GL_QUADS),
+	CALL_F(glVertex3f, 0.6, 0.4, -2.0),
+	CALL_F(glVertex3f, 1.6, 0.4, -2.0),
+	CALL_F(glVertex3f, 1.6, 1.3, -2.0),
+	CALL_F(glVertex3f, 0.6, 1.3, -2.0),
+	CALL0(glEnd),
+	CALL(glDisable, GL_STENCIL_TEST),
+	CALL(aglSwapBuffers, VAR(V_CONTEXT)),
+};
+
 static const struct {
 	const char *name;
 	const struct gltest_step *steps;
@@ -236,11 +375,12 @@ static const struct {
 } scenes[] = {
 	{ "clear", scene_clear, sizeof scene_clear / sizeof scene_clear[0] },
 	{ "triangle", scene_triangle, sizeof scene_triangle / sizeof scene_triangle[0] },
+	{ "lit", scene_lit, sizeof scene_lit / sizeof scene_lit[0] },
 };
 
 void gltest_init(struct gltest *t)
 {
-	static uint8_t scratch[16384];
+	static uint8_t scratch[32768];
 	memset(t, 0, sizeof *t);
 	gltest_build(scratch, sizeof scratch, &t->layout);
 	const char *want = getenv("SYSHM_GL_TEST_SCENE"), *depth = getenv("SYSHM_GL_TEST_DEPTH");

@@ -204,6 +204,20 @@ static void clear_rect(struct raster_target *t, int left, int top, int right, in
 	}
 }
 
+/* The stencil's bits in `write` set to v within [left, right) x [top, bottom) */
+static void clear_stencil(struct raster_target *t, int left, int top, int right, int bottom, uint8_t v, uint8_t write)
+{
+	left = left < 0 ? 0 : left;
+	top = top < 0 ? 0 : top;
+	right = right > t->width ? t->width : right;
+	bottom = bottom > t->height ? t->height : bottom;
+	for (int y = top; y < bottom && t->stencil; y++) {
+		uint8_t *p = t->stencil + (size_t)y * (size_t)t->width;
+		for (int x = left; x < right; x++)
+			p[x] = (uint8_t)((p[x] & ~write) | (v & write));
+	}
+}
+
 void raster_clear(struct raster_target *t, int left, int top, int right, int bottom,
 		  bool color, uint32_t argb, bool depth, float z)
 {
@@ -500,22 +514,17 @@ static void blend_factors(const struct raster_state *s, float c[4], uint32_t dst
 #define F_TEX 1u
 #define F_FOG 2u
 
-/*
- * One fragment: its color from the interpolated attributes (a) and, if
- * textured, the stages; fog, alpha test, then blended into the target at
- * index i (whose depth test has passed).
- */
-static ALWAYS_INLINE void fragment(struct raster_target *t, const struct raster_state *s, size_t i, const float *a,
-				   const struct shade *sh, unsigned flags, float depth)
+/* A fragment's color (a, r, g, b) from the interpolated attributes (a) and, if textured, the stages; fogged */
+static ALWAYS_INLINE void color_of(const struct raster_state *s, const float *a, const struct shade *sh,
+				   unsigned flags, float c[4])
 {
-	float c[4];                     /* a, r, g, b */
 	float w = 0;
 	if (flags & (F_TEX | F_FOG))
 		w = a[A_W] != 0 ? 1.0f / a[A_W] : 1e30f;
 	if (flags & F_TEX)
 		stages(s, sh, a, w, c);
 	else
-		memcpy(c, a + A_C0, sizeof c);
+		memcpy(c, a + A_C0, 4 * sizeof *c);
 
 	if (flags & F_FOG) {
 		float f, z = s->fog_coord ? a[A_FOG] * w : w, d = s->fog_density;
@@ -538,9 +547,11 @@ static ALWAYS_INLINE void fragment(struct raster_target *t, const struct raster_
 		for (int k = 1; k < 4; k++)
 			c[k] = f * c[k] + (1 - f) * s->fog_color[k];
 	}
+}
 
-	if (s->alpha_test != RASTER_ALPHA_NONE && !alpha_pass(s->alpha_test, c[0], s->alpha_ref))
-		return;
+/* A fragment of color c that's passed the tests, into the target at index i */
+static ALWAYS_INLINE void put(struct raster_target *t, const struct raster_state *s, size_t i, float *c, float depth)
+{
 	/*
 	 * Fully transparent fragments leave depth alone (as hardware engines do with
 	 * transparent texels: what's behind them, drawn later, still shows), and
@@ -568,6 +579,61 @@ static ALWAYS_INLINE void fragment(struct raster_target *t, const struct raster_
 	if (s->color_keep)
 		p = (p & ~s->color_keep) | (t->color[i] & s->color_keep);
 	t->color[i] = p;
+}
+
+/*
+ * One fragment: its color, alpha test, then blended into the target at
+ * index i (whose depth test has passed)
+ */
+static ALWAYS_INLINE void fragment(struct raster_target *t, const struct raster_state *s, size_t i, const float *a,
+				   const struct shade *sh, unsigned flags, float depth)
+{
+	float c[4];
+	color_of(s, a, sh, flags, c);
+	if (s->alpha_test != RASTER_ALPHA_NONE && !alpha_pass(s->alpha_test, c[0], s->alpha_ref))
+		return;
+	put(t, s, i, c, depth);
+}
+
+static uint8_t stencil_op(unsigned op, uint8_t v, uint8_t ref)
+{
+	switch (op) {
+	case RASTER_STENCIL_ZERO: return 0;
+	case RASTER_STENCIL_REPLACE: return ref;
+	case RASTER_STENCIL_INCR: return v < 255 ? (uint8_t)(v + 1) : v;
+	case RASTER_STENCIL_DECR: return v > 0 ? (uint8_t)(v - 1) : v;
+	case RASTER_STENCIL_INVERT: return (uint8_t)~v;
+	case RASTER_STENCIL_INCR_WRAP: return (uint8_t)(v + 1);
+	case RASTER_STENCIL_DECR_WRAP: return (uint8_t)(v - 1);
+	default: return v;
+	}
+}
+
+/* A fragment with stenciling: the alpha test, the stencil test, the z test, the stencil updated, then drawn */
+static void stenciled(struct raster_target *t, const struct raster_state *s, size_t i, const float *a,
+		      const struct shade *sh, unsigned flags, float depth)
+{
+	float c[4];
+	color_of(s, a, sh, flags, c);
+	if (s->alpha_test != RASTER_ALPHA_NONE && !alpha_pass(s->alpha_test, c[0], s->alpha_ref))
+		return;
+	uint8_t *st = &t->stencil[i], m = s->stencil_mask;
+	bool stencil_pass = z_pass(s->stencil_func, (float)(s->stencil_ref & m), (float)(*st & m));
+	bool z_ok = stencil_pass && (s->z_func == RASTER_Z_NONE || z_pass(s->z_func, depth, t->depth[i]));
+	unsigned op = s->stencil_op[!stencil_pass ? 0 : !z_ok ? 1 : 2];
+	*st = (uint8_t)((*st & ~s->stencil_write) | (stencil_op(op, *st, s->stencil_ref) & s->stencil_write));
+	if (z_ok)
+		put(t, s, i, c, depth);
+}
+
+/* A fragment through the tests the state has, in OpenGL's order, and drawn if it passes */
+static ALWAYS_INLINE void test(struct raster_target *t, const struct raster_state *s, size_t i, const float *a,
+			       const struct shade *sh, unsigned flags, float depth)
+{
+	if (s->stencil_func != RASTER_Z_NONE && t->stencil)
+		stenciled(t, s, i, a, sh, flags, depth);
+	else if (s->z_func == RASTER_Z_NONE || z_pass(s->z_func, depth, t->depth[i]))
+		fragment(t, s, i, a, sh, flags, depth);
 }
 
 /* ---- triangles -------------------------------------------------------------- */
@@ -625,10 +691,20 @@ static void unit_setup(const struct raster_unit *u, unsigned unit, const struct 
 	sampler_init(sm, u, level, linear);
 }
 
-/* A triangle set up for drawing */
+/*
+ * A triangle set up for drawing. Its coverage is exact: the vertices snap
+ * to 1/256 of a pixel (as GPUs' and Mesa's do) and the edge functions are
+ * 64-bit integers there, so of two triangles sharing an edge, exactly one
+ * covers a pixel whose center is on it: the one whose edge is a top or a
+ * left one (Direct3D's and Mesa's tie-break). Attributes are interpolated
+ * from the vertices as given.
+ */
+#define SUBPIXEL_BITS 8
+#define SNAP_LIMIT 2097152.0f           /* (vertices within 2^21 pixels: the edge functions stay within 2^61) */
+
 struct tri {
-	float ex[3], ey[3], ec[3];      /* edge functions: e = ec + ex * x + ey * y */
-	bool tl[3];                     /* top or left edges (which own pixels exactly on them) */
+	/* edge functions at the pixel center (x0, y0), less 1 if not a top or left edge (so >= 0 covers); steps */
+	int64_t ec[3], ex[3], ey[3];
 	float a0[A_MAX], ax[A_MAX], ay[A_MAX];  /* attributes at (ox, oy) and their gradients */
 	float ox, oy;
 	int x0, x1, y0, y1;             /* pixels that may be covered */
@@ -644,10 +720,25 @@ static bool tri_setup(const struct raster_target *t, const struct prepared *p, c
 	float area2 = (v1->x - v0->x) * (v2->y - v0->y) - (v2->x - v0->x) * (v1->y - v0->y);
 	if (!(area2 != 0) || !isfinite(area2))
 		return false;
+	int64_t X[3], Y[3];
+	for (int k = 0; k < 3; k++) {
+		if (!(fabsf(v[k]->x) < SNAP_LIMIT && fabsf(v[k]->y) < SNAP_LIMIT))
+			return false;
+		X[k] = llrintf(v[k]->x * (float)(1 << SUBPIXEL_BITS));
+		Y[k] = llrintf(v[k]->y * (float)(1 << SUBPIXEL_BITS));
+	}
+	int64_t snapped = (X[1] - X[0]) * (Y[2] - Y[0]) - (X[2] - X[0]) * (Y[1] - Y[0]);
+	if (snapped == 0 || (snapped > 0) != (area2 > 0))
+		return false;           /* (a sliver that snapping made empty or turned over) */
 	if (area2 < 0) {                /* one winding for the edge functions */
 		v[1] = v2;
 		v[2] = v1;
 		area2 = -area2;
+		int64_t x = X[1], y = Y[1];
+		X[1] = X[2];
+		Y[1] = Y[2];
+		X[2] = x;
+		Y[2] = y;
 	}
 	int l, top, r, b;
 	clip_rows(t, s, rows, &l, &top, &r, &b);
@@ -655,20 +746,22 @@ static bool tri_setup(const struct raster_target *t, const struct prepared *p, c
 	float miny = fminf(v[0]->y, fminf(v[1]->y, v[2]->y)), maxy = fmaxf(v[0]->y, fmaxf(v[1]->y, v[2]->y));
 	if (!(minx < (float)r && maxx > (float)l && miny < (float)b && maxy > (float)top))
 		return false;
-	T->x0 = minx > (float)l ? (int)floorf(minx) : l;
+	T->x0 = minx > (float)l ? (int)floorf(minx) : l;        /* (snapping moves no pixel center out of the box) */
 	T->x1 = maxx < (float)r ? (int)ceilf(maxx) : r;
 	T->y0 = miny > (float)top ? (int)floorf(miny) : top;
 	T->y1 = maxy < (float)b ? (int)ceilf(maxy) : b;
 
-	/* edge i: from v[i+1] to v[i+2], its function v[i]'s barycentric weight times area2 */
+	/* edge i: from v[i+1] to v[i+2], its function v[i]'s barycentric weight times the snapped area2 */
+	const int64_t one = 1 << SUBPIXEL_BITS;
+	int64_t cx = T->x0 * one + one / 2, cy = T->y0 * one + one / 2;
 	for (int i = 0; i < 3; i++) {
-		const struct raster_vertex *p = v[(i + 1) % 3], *q = v[(i + 2) % 3];
-		float dx = q->x - p->x, dy = q->y - p->y;
+		int pi = (i + 1) % 3, qi = (i + 2) % 3;
+		int64_t dx = X[qi] - X[pi], dy = Y[qi] - Y[pi];
+		bool top_left = dy < 0 || (dy == 0 && dx > 0);
 		/* e(x, y) = dx * (y - p.y) - dy * (x - p.x) */
-		T->ex[i] = -dy;
-		T->ey[i] = dx;
-		T->ec[i] = -dx * p->y + dy * p->x;
-		T->tl[i] = dy < 0 || (dy == 0 && dx > 0);
+		T->ec[i] = dx * (cy - Y[pi]) - dy * (cx - X[pi]) - (top_left ? 0 : 1);
+		T->ex[i] = -dy * one;
+		T->ey[i] = dx * one;
 	}
 
 	const struct layout *L = T->sh.L = textured ? &p->textured : &p->plain;
@@ -694,50 +787,48 @@ static bool tri_setup(const struct raster_target *t, const struct prepared *p, c
 	return true;
 }
 
-static ALWAYS_INLINE bool inside(const float e[3], const bool tl[3])
-{
-	return (e[0] > 0 || (e[0] == 0 && tl[0])) && (e[1] > 0 || (e[1] == 0 && tl[1])) &&
-	       (e[2] > 0 || (e[2] == 0 && tl[2]));
-}
-
 static ALWAYS_INLINE void tri_rows(struct raster_target *t, const struct raster_state *s, const struct tri *T,
 				   unsigned flags)
 {
-	bool ztest = s->z_func != RASTER_Z_NONE;
+	bool ztest = s->z_func != RASTER_Z_NONE, stencil = s->stencil_func != RASTER_Z_NONE && t->stencil;
 	const unsigned na = flags & F_TEX ? A_MAX : A_PLAIN;
 	for (int y = T->y0; y < T->y1; y++) {
 		float py = (float)y + 0.5f;
-		/* the span where every edge function can be >= 0 (then each pixel is tested exactly) */
-		float xs = (float)T->x0, xe = (float)T->x1;
-		bool empty = false;
-		for (int i = 0; i < 3 && !empty; i++) {
-			float e0 = T->ec[i] + T->ey[i] * py;
-			if (T->ex[i] > 0)
-				xs = fmaxf(xs, floorf(-e0 / T->ex[i] - 0.5f));
-			else if (T->ex[i] < 0)
-				xe = fminf(xe, ceilf(-e0 / T->ex[i] - 0.5f) + 1);
-			else if (e0 < 0 || (e0 == 0 && !T->tl[i]))
-				empty = true;
+		/* the pixels every edge function covers (each is linear in x, so they're a span) */
+		int64_t xs = 0, xe = T->x1 - T->x0;     /* (from x0) */
+		for (int i = 0; i < 3 && xs < xe; i++) {
+			int64_t e = T->ec[i] + T->ey[i] * (y - T->y0);
+			if (T->ex[i] > 0 && e < 0) {
+				int64_t k = (-e + T->ex[i] - 1) / T->ex[i];
+				xs = k > xs ? k : xs;
+			} else if (T->ex[i] < 0) {
+				int64_t k = e < 0 ? -1 : e / -T->ex[i];
+				xe = k + 1 < xe ? k + 1 : xe;
+			} else if (e < 0) {
+				xe = xs;
+			}
 		}
-		if (empty || !(xs < xe))
+		if (xs >= xe)
 			continue;
-		int xa = (int)xs, xb = (int)xe;
-		float px = (float)xa + 0.5f;
-		float e[3], a[A_MAX];
-		for (int i = 0; i < 3; i++)
-			e[i] = T->ec[i] + T->ex[i] * px + T->ey[i] * py;
+		int xa = T->x0 + (int)xs, xb = T->x0 + (int)xe;
+		/* (interpolation starts a pixel before the span, within the box, as it always has here: pixels round
+		 * as they always have) */
+		int xo = xa > T->x0 ? xa - 1 : xa;
+		float px = (float)xo + 0.5f;
+		float a[A_MAX];
 		for (unsigned k = 0; k < na; k++)
 			a[k] = T->a0[k] + T->ax[k] * (px - T->ox) + T->ay[k] * (py - T->oy);
+		if (xo < xa)
+			for (unsigned k = 0; k < na; k++)
+				a[k] += T->ax[k];
 		size_t row = (size_t)y * (size_t)t->width;
 		for (int x = xa; x < xb; x++) {
-			if (inside(e, T->tl)) {
-				size_t i = row + (size_t)x;
-				float depth = s->perspective_z ? -a[A_W] : a[A_Z];
-				if (!ztest || z_pass(s->z_func, depth, t->depth[i]))
-					fragment(t, s, i, a, &T->sh, flags, depth);
-			}
-			for (int k = 0; k < 3; k++)
-				e[k] += T->ex[k];
+			size_t i = row + (size_t)x;
+			float depth = s->perspective_z ? -a[A_W] : a[A_Z];
+			if (stencil)
+				stenciled(t, s, i, a, &T->sh, flags, depth);
+			else if (!ztest || z_pass(s->z_func, depth, t->depth[i]))
+				fragment(t, s, i, a, &T->sh, flags, depth);
 			for (unsigned k = 0; k < na; k++)
 				a[k] += T->ax[k];
 		}
@@ -790,12 +881,10 @@ static void plot(struct raster_target *t, const struct raster_state *s, const in
 	for (int y = y0; y < y1; y++)
 		for (int x = x0; x < x1; x++) {
 			size_t i = (size_t)y * (size_t)t->width + (size_t)x;
-			if (s->z_func == RASTER_Z_NONE || z_pass(s->z_func, depth, t->depth[i])) {
-				if (flags)
-					fragment(t, s, i, a, sh, F_FOG, depth);
-				else
-					fragment(t, s, i, a, sh, 0, depth);
-			}
+			if (flags)
+				test(t, s, i, a, sh, F_FOG, depth);
+			else
+				test(t, s, i, a, sh, 0, depth);
 		}
 }
 
@@ -866,8 +955,8 @@ static void bitmap(struct raster_target *t, const struct raster_state *s, const 
 			memcpy(a + A_C0, &c, sizeof c);
 			size_t k = (size_t)py * (size_t)t->width + (size_t)px;
 			float depth = s->perspective_z ? -1.0f : z;
-			if (c[0] > 0 && (s->z_func == RASTER_Z_NONE || z_pass(s->z_func, depth, t->depth[k])))
-				fragment(t, s, k, a, &sh, 0, depth);
+			if (c[0] > 0)
+				test(t, s, k, a, &sh, 0, depth);
 		}
 	}
 }
@@ -932,6 +1021,8 @@ static void run_band(struct raster_target *t, const struct raster_state *states,
 			int bottom = c->rect[3] < rows[1] ? c->rect[3] : rows[1];
 			clear_rect(t, c->rect[0], top, c->rect[2], bottom, c->clear_color, c->argb, s->color_keep,
 				   c->clear_depth, c->z);
+			if (c->clear_stencil)
+				clear_stencil(t, c->rect[0], top, c->rect[2], bottom, c->stencil, s->stencil_write);
 			break;
 		}
 		}

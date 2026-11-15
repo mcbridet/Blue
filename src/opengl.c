@@ -120,10 +120,11 @@ static const char vendor[] = "ATI Technologies Inc.";
 static const char renderer[] = "Rage 128 OpenGL Engine";
 static const char version[] = "1.2 syshm";
 /* (Mac OS 9.2.2's engine's, in its order, but only those syshm does) */
-static const char extensions[] = "GL_APPLE_packed_pixel GL_ARB_transpose_matrix GL_EXT_clip_volume_hint "
+static const char extensions[] = "GL_APPLE_transform_hint GL_APPLE_packed_pixel GL_ARB_transpose_matrix "
+				 "GL_EXT_clip_volume_hint GL_EXT_rescale_normal GL_NV_texgen_reflection "
 				 "GL_ARB_multitexture GL_ARB_texture_env_add GL_EXT_blend_color GL_EXT_blend_minmax "
-				 "GL_EXT_blend_subtract GL_EXT_texture_env_add GL_EXT_abgr GL_EXT_bgra "
-				 "GL_SGIS_texture_edge_clamp";
+				 "GL_EXT_blend_subtract GL_EXT_compiled_vertex_array GL_EXT_texture_env_add "
+				 "GL_EXT_abgr GL_EXT_bgra GL_SGIS_texture_edge_clamp";
 /* aglErrorString()'s, as Apple's */
 static const char *const agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE] = {
 	"invalid pixel format attribute", "invalid renderer property", "invalid pixel format",
@@ -935,7 +936,7 @@ static void not_yet(struct opengl *o, unsigned fn)
 static struct gl_target target_of(struct opengl_context *x)
 {
 	return (struct gl_target){ x->has_surface ? &x->surface : NULL, x->width, x->height, x->depth_bits,
-				   x->pixel_size == 32 ? 8 : 0 };
+				   x->pixel_size == 32 ? 8 : 0, x->stencil_bits };
 }
 
 static float clampf(float v)
@@ -1075,6 +1076,101 @@ static bool vector_arg(struct mem *m, uint32_t at, uint32_t pname, bool ints, fl
 			v[k] = color ? int_color((int32_t)w) : (float)(int32_t)w;
 	}
 	return true;
+}
+
+/* ---- lighting, fog, texture coordinate generation: their vectors ---- */
+
+/* Which glLight, glMaterial, glLightModel and glFog parameters are colors (integers given as -1..1) */
+static bool color_pname(uint32_t pname)
+{
+	return pname == GL_AMBIENT || pname == GL_DIFFUSE || pname == GL_SPECULAR || pname == GL_EMISSION ||
+	       pname == GL_AMBIENT_AND_DIFFUSE || pname == GL_LIGHT_MODEL_AMBIENT || pname == GL_FOG_COLOR;
+}
+
+/* How many values a parameter of glLight..., glMaterial..., glLightModel..., glFog..., glTexGen... takes */
+static unsigned pname_values(uint32_t pname)
+{
+	switch (pname) {
+	case GL_AMBIENT: case GL_DIFFUSE: case GL_SPECULAR: case GL_POSITION: case GL_EMISSION:
+	case GL_AMBIENT_AND_DIFFUSE: case GL_LIGHT_MODEL_AMBIENT: case GL_FOG_COLOR:
+	case GL_OBJECT_PLANE: case GL_EYE_PLANE:
+		return 4;
+	case GL_SPOT_DIRECTION: case GL_COLOR_INDEXES: return 3;
+	default: return 1;
+	}
+}
+
+/* A parameter vector from the program's memory as floats (of type 'f', 'i' or 'd'); false if it can't be read */
+static bool param_vector(struct mem *m, uint32_t at, char type, uint32_t pname, unsigned n, float *v)
+{
+	unsigned size = type == 'd' ? 8 : 4;
+	if (!readable(m, at, n * size))
+		return false;
+	for (unsigned k = 0; k < n; k++) {
+		if (type == 'd') {
+			uint64_t b = mem_r64(m, at + 8 * k);
+			double d;
+			memcpy(&d, &b, 8);
+			v[k] = (float)d;
+		} else {
+			uint32_t w = mem_r32(m, at + 4 * k);
+			if (type == 'f')
+				memcpy(&v[k], &w, 4);
+			else
+				v[k] = color_pname(pname) ? int_color((int32_t)w) : (float)(int32_t)w;
+		}
+	}
+	return true;
+}
+
+/* glGetLight..., glGetMaterial..., glGetTexGen..., glGetClipPlane's values into the program's memory */
+static void put_params(struct mem *m, uint32_t at, char type, uint32_t pname, const double *v, unsigned n)
+{
+	put_values(m, at, type, type == 'i' && color_pname(pname) ? 0x0B00 : 0, v, n);
+}
+
+/* ---- client arrays ---- */
+
+/* Each enabled array's elements [first, first + n) on the host, where the program's memory has them */
+static void arrays_at(struct opengl *o, struct gl_state *st, uint32_t first, uint32_t n)
+{
+	for (unsigned k = 0; k < GLF_ARRAYS; k++) {
+		struct gl_array *a = &st->arrays[k];
+		a->data = NULL;
+		a->first = first;
+		a->count = 0;
+		if (!a->enabled || !n)
+			continue;
+		uint64_t at = (uint64_t)a->pointer + (uint64_t)first * glf_array_stride(a), bytes = glf_array_bytes(a, n);
+		if (at + bytes <= 0x100000000ull && bytes <= (64u << 20) && readable(o->mem, (uint32_t)at, (uint32_t)bytes)) {
+			a->data = mem_ptr(o->mem, (uint32_t)at);
+			a->count = n;
+		}
+	}
+}
+
+/* glDrawElements' and glDrawRangeElements': the indices read, the arrays for the elements they name */
+static void draw_elements(struct opengl *o, struct opengl_context *x, uint32_t mode, int32_t count, uint32_t type,
+			  uint32_t indices)
+{
+	struct gl_state *st = &x->st;
+	struct gl_target t = target_of(x);
+	unsigned size = glf_index_size(type);
+	if (!size || count <= 0 || (uint64_t)count * size > (64u << 20) ||
+	    !readable(o->mem, indices, (uint32_t)count * size)) {
+		glf_draw_elements(st, &t, mode, size ? count : 0, type, NULL);  /* (its errors) */
+		return;
+	}
+	const uint8_t *p = mem_ptr(o->mem, indices);
+	uint32_t lo = UINT32_MAX, hi = 0;
+	for (int32_t k = 0; k < count; k++) {
+		const uint8_t *q = p + (size_t)k * size;
+		uint32_t i = size == 1 ? q[0] : size == 2 ? be16(q) : be32(q);
+		lo = i < lo ? i : lo;
+		hi = i > hi ? i : hi;
+	}
+	arrays_at(o, st, lo, hi - lo + 1);
+	glf_draw_elements(st, &t, mode, count, type, p);
 }
 
 /* glTexImage1D and 2D, glTexSubImage1D and 2D: the image's bytes there to be read (or none given) */
@@ -1328,6 +1424,159 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 			st->client_active_texture = a[0].u - GL_TEXTURE0_ARB;
 		else
 			glf_error(st, GL_INVALID_ENUM);
+		return 0;
+	/* lighting, fog, texture coordinate generation, clip planes */
+	case F_glLightf: case F_glLighti: case F_glLightModelf: case F_glLightModeli: case F_glMaterialf:
+	case F_glMateriali: case F_glFogf: case F_glFogi: case F_glTexGenf: case F_glTexGeni: case F_glTexGend: {
+		bool two = fn == F_glLightModelf || fn == F_glLightModeli || fn == F_glFogf || fn == F_glFogi;
+		uint32_t pname = a[two ? 0 : 1].u;
+		const union arg *val = &a[two ? 1 : 2];
+		char type = library_functions[fn].args[two ? 1 : 2];
+		float v[4] = { type == 'f' ? val->f : type == 'd' ? (float)val->d : (float)val->i, 0, 0, 0 };
+		if (pname_values(pname) != 1) {
+			glf_error(st, GL_INVALID_ENUM);         /* (a vector's: the v forms only) */
+			return 0;
+		}
+		if (fn == F_glLightf || fn == F_glLighti)
+			glf_light(st, a[0].u, pname, v);
+		else if (fn == F_glMaterialf || fn == F_glMateriali)
+			glf_material(st, a[0].u, pname, v);
+		else if (fn == F_glLightModelf || fn == F_glLightModeli)
+			glf_light_model(st, pname, v);
+		else if (fn == F_glFogf || fn == F_glFogi)
+			glf_fog(st, pname, v);
+		else {
+			double d = fn == F_glTexGend ? val->d : v[0];
+			glf_tex_gen(st, a[0].u, pname, &d);
+		}
+		return 0;
+	}
+	case F_glLightfv: case F_glLightiv: case F_glMaterialfv: case F_glMaterialiv: case F_glLightModelfv:
+	case F_glLightModeliv: case F_glFogfv: case F_glFogiv: case F_glTexGenfv: case F_glTexGeniv:
+	case F_glTexGendv: {
+		bool two = fn == F_glLightModelfv || fn == F_glLightModeliv || fn == F_glFogfv || fn == F_glFogiv;
+		uint32_t pname = a[two ? 0 : 1].u;
+		const char *name = library_functions[fn].name;
+		char type = name[strlen(name) - 2];             /* ('f', 'i' or 'd': ...fv, ...iv, ...dv) */
+		float v[4] = { 0, 0, 0, 0 };
+		if (!param_vector(m, a[two ? 1 : 2].u, type, pname, pname_values(pname), v))
+			return 0;
+		if (fn == F_glLightfv || fn == F_glLightiv)
+			glf_light(st, a[0].u, pname, v);
+		else if (fn == F_glMaterialfv || fn == F_glMaterialiv)
+			glf_material(st, a[0].u, pname, v);
+		else if (two && (fn == F_glLightModelfv || fn == F_glLightModeliv))
+			glf_light_model(st, pname, v);
+		else if (two)
+			glf_fog(st, pname, v);
+		else if (fn == F_glTexGendv) {
+			double d[4];
+			if (!readable(m, a[2].u, 8 * pname_values(pname)))
+				return 0;
+			for (unsigned k = 0; k < pname_values(pname); k++) {
+				uint64_t b = mem_r64(m, a[2].u + 8 * k);
+				memcpy(&d[k], &b, 8);
+			}
+			glf_tex_gen(st, a[0].u, pname, d);
+		} else {
+			double d[4] = { v[0], v[1], v[2], v[3] };
+			glf_tex_gen(st, a[0].u, pname, d);
+		}
+		return 0;
+	}
+	case F_glColorMaterial: glf_color_material(st, a[0].u, a[1].u); return 0;
+	case F_glClipPlane: {
+		double eq[4];
+		if (!readable(m, a[1].u, 32))
+			return 0;
+		for (int k = 0; k < 4; k++) {
+			uint64_t b = mem_r64(m, a[1].u + 8 * (uint32_t)k);
+			memcpy(&eq[k], &b, 8);
+		}
+		glf_clip_plane(st, a[0].u, eq);
+		return 0;
+	}
+	case F_glGetLightfv: case F_glGetLightiv: case F_glGetMaterialfv: case F_glGetMaterialiv:
+	case F_glGetTexGenfv: case F_glGetTexGeniv: case F_glGetTexGendv: case F_glGetClipPlane: {
+		double v[4];
+		unsigned n = fn == F_glGetLightfv || fn == F_glGetLightiv ? glf_get_light(st, a[0].u, a[1].u, v) :
+			     fn == F_glGetMaterialfv || fn == F_glGetMaterialiv ? glf_get_material(st, a[0].u, a[1].u, v) :
+			     fn == F_glGetClipPlane ? glf_get_clip_plane(st, a[0].u, v) :
+			     glf_get_tex_gen(st, a[0].u, a[1].u, v);
+		char type = fn == F_glGetTexGendv || fn == F_glGetClipPlane ? 'd' :
+			    fn == F_glGetLightiv || fn == F_glGetMaterialiv || fn == F_glGetTexGeniv ? 'i' : 'f';
+		if (n)
+			put_params(m, fn == F_glGetClipPlane ? a[1].u : a[2].u, type, fn == F_glGetClipPlane ? 0 : a[1].u,
+				   v, n);
+		return 0;
+	}
+	/* polygons, lines, hints, stencil */
+	case F_glPolygonMode: glf_polygon_mode(st, a[0].u, a[1].u); return 0;
+	case F_glPolygonOffset: glf_polygon_offset(st, a[0].f, a[1].f); return 0;
+	case F_glLineStipple: glf_line_stipple(st, a[0].i, (uint16_t)a[1].u); return 0;
+	case F_glPolygonStipple:
+		if (readable(m, a[0].u, sizeof st->polygon_stipple))
+			memcpy(st->polygon_stipple, mem_ptr(m, a[0].u), sizeof st->polygon_stipple);
+		return 0;
+	case F_glGetPolygonStipple:
+		if (writable(m, a[0].u, sizeof st->polygon_stipple))
+			mem_load(m, a[0].u, st->polygon_stipple, sizeof st->polygon_stipple);
+		return 0;
+	case F_glStencilFunc: glf_stencil_func(st, a[0].u, a[1].i, a[2].u); return 0;
+	case F_glStencilOp: glf_stencil_op(st, a[0].u, a[1].u, a[2].u); return 0;
+	case F_glStencilMask: glf_stencil_mask(st, a[0].u); return 0;
+	case F_glClearStencil: st->clear_stencil = a[0].i; return 0;
+	case F_glPushAttrib: glf_push_attrib(st, a[0].u); return 0;
+	case F_glPopAttrib: glf_pop_attrib(st); return 0;
+	case F_glPushClientAttrib: glf_push_client_attrib(st, a[0].u); return 0;
+	case F_glPopClientAttrib: glf_pop_client_attrib(st); return 0;
+	/* client arrays */
+	case F_glEnableClientState:
+	case F_glDisableClientState:
+		if (!glf_enable_client(st, a[0].u, fn == F_glEnableClientState))
+			glf_error(st, GL_INVALID_ENUM);
+		return 0;
+	case F_glVertexPointer: glf_array_pointer(st, GLF_ARRAY_VERTEX, a[0].i, a[1].u, a[2].i, a[3].u); return 0;
+	case F_glColorPointer: glf_array_pointer(st, GLF_ARRAY_COLOR, a[0].i, a[1].u, a[2].i, a[3].u); return 0;
+	case F_glTexCoordPointer: glf_array_pointer(st, GLF_ARRAY_TEX0, a[0].i, a[1].u, a[2].i, a[3].u); return 0;
+	case F_glSecondaryColorPointerEXT:
+		glf_array_pointer(st, GLF_ARRAY_SECONDARY, a[0].i, a[1].u, a[2].i, a[3].u);
+		return 0;
+	case F_glNormalPointer: glf_array_pointer(st, GLF_ARRAY_NORMAL, 3, a[0].u, a[1].i, a[2].u); return 0;
+	case F_glIndexPointer: glf_array_pointer(st, GLF_ARRAY_INDEX, 1, a[0].u, a[1].i, a[2].u); return 0;
+	case F_glEdgeFlagPointer: glf_array_pointer(st, GLF_ARRAY_EDGE, 1, GL_UNSIGNED_BYTE, a[0].i, a[1].u); return 0;
+	case F_glInterleavedArrays: glf_interleaved_arrays(st, a[0].u, a[1].i, a[2].u); return 0;
+	case F_glLockArraysEXT: glf_lock_arrays(st, a[0].i, a[1].i); return 0;
+	case F_glUnlockArraysEXT: glf_unlock_arrays(st); return 0;
+	case F_glGetPointerv: {
+		uint32_t p;
+		if (!glf_get_pointer(st, a[0].u, &p)) {
+			if (a[0].u != 0x0DF0 && a[0].u != 0x0DF3) {     /* (feedback and selection buffers: none) */
+				glf_error(st, GL_INVALID_ENUM);
+				return 0;
+			}
+			p = 0;
+		}
+		if (writable(m, a[1].u, 4))
+			mem_w32(m, a[1].u, p);
+		return 0;
+	}
+	case F_glArrayElement:
+		arrays_at(o, st, a[0].i < 0 ? 0 : a[0].u, 1);
+		glf_array_element(st, &t, a[0].i);
+		return 0;
+	case F_glDrawArrays:
+		if (a[1].i >= 0 && a[2].i > 0)
+			arrays_at(o, st, a[1].u, a[2].u);
+		glf_draw_arrays(st, &t, a[0].u, a[1].i, a[2].i);
+		return 0;
+	case F_glDrawElements: draw_elements(o, x, a[0].u, a[1].i, a[2].u, a[3].u); return 0;
+	case F_glDrawRangeElements:
+		if (a[2].u < a[1].u) {
+			glf_error(st, GL_INVALID_VALUE);
+			return 0;
+		}
+		draw_elements(o, x, a[0].u, a[3].i, a[4].u, a[5].u);
 		return 0;
 	default:
 		not_yet(o, fn);

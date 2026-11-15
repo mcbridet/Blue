@@ -7,7 +7,11 @@
  * drawn by raster.c. Textures: pixel transfer (formats, types, packed and
  * swapped, the pixel stores), objects and their errors, completeness, the
  * backend's copy made and retired, each texture environment mode for each
- * base format, the texture matrix and q, glReadPixels.
+ * base format, the texture matrix and q, glReadPixels. Lighting's values
+ * (each kind of light, two sides, separate specular, the color material),
+ * generated texture coordinates, clip planes and fog; polygon modes and
+ * offset; the stencil's state and clears; the attribute stacks; client
+ * arrays (types, indices, bounds, interleaved); queries.
  */
 #include <math.h>
 #include <stdlib.h>
@@ -34,7 +38,7 @@ static void start(void)
 	CHECK(glf_attach(&st, NULL));
 	glf_viewport(&st, 0, 0, W, H);
 	glf_scissor(&st, 0, 0, W, H);
-	target = (struct gl_target){ &surf, W, H, 24, 8 };
+	target = (struct gl_target){ &surf, W, H, 24, 8, 8 };
 }
 
 /* Object coordinates as window coordinates (x right, y up, z 0 in the middle of the depth range) */
@@ -574,7 +578,7 @@ static void test_pixels(void)
 
 /* ---- textures ---------------------------------------------------------------------- */
 
-enum { GL_BYTE = 0x1400, GL_UNSIGNED_SHORT = 0x1403, GL_FLOAT = 0x1406, GL_UNSIGNED_SHORT_5_6_5 = 0x8363,
+enum { GL_UNSIGNED_SHORT_5_6_5 = 0x8363,
        GL_UNSIGNED_SHORT_4_4_4_4 = 0x8033, GL_UNSIGNED_SHORT_1_5_5_5_REV = 0x8366, GL_UNSIGNED_INT_8_8_8_8 = 0x8035,
        GL_UNSIGNED_INT_8_8_8_8_REV = 0x8367, GL_TEXTURE_1D_T = 0x0DE0, GL_TEXTURE_2D_T = 0x0DE1 };
 
@@ -917,6 +921,432 @@ static void test_texture_coords(void)
 	CHECK_EQ(error(), GL_INVALID_ENUM);
 }
 
+/* ---- lighting, fog, texture coordinate generation, clip planes ---------------------------------------- */
+
+static void shade_at(float x, float y, float z, struct gl_vertex *v)
+{
+	const float obj[4] = { x, y, z, 1 };
+	glf_shade(&st, obj, v);
+}
+
+static void test_lighting(void)
+{
+	start();
+	struct gl_vertex v;
+	glf_enable(&st, GL_LIGHTING, true);
+	glf_enable(&st, GL_LIGHT0, true);
+	/* the default light (white, from +z) on the default material: ambient 0.2 * 0.2, diffuse 0.8 * n.l */
+	const float n[3] = { 0, 0.6f, 0.8f };
+	memcpy(st.normal, n, sizeof n);
+	shade_at(0, 0, 0, &v);
+	CHECK(near(v.color[0][0], 0.04f + 0.8f * 0.8f, 1e-6f) && near(v.color[0][3], 1, 0));
+	CHECK(near(v.secondary[0][0], 0, 0) && near(v.color[1][1], v.color[0][1], 0));
+	/* a positional light, attenuated (constant 1, linear 0.5 at a distance of 2) and the spot it gives */
+	glf_enable(&st, GL_LIGHT0, false);
+	glf_enable(&st, GL_LIGHT0 + 1, true);
+	const float white[4] = { 1, 1, 1, 1 }, pos[4] = { 0, 0, 2, 1 }, down[3] = { 0, 0, -1 }, half[1] = { 0.5f };
+	const float cutoff[1] = { 30 }, two[1] = { 2 };
+	glf_light(&st, GL_LIGHT0 + 1, GL_DIFFUSE, white);
+	glf_light(&st, GL_LIGHT0 + 1, GL_POSITION, pos);
+	glf_light(&st, GL_LIGHT0 + 1, GL_LINEAR_ATTENUATION, half);
+	st.normal[1] = 0;
+	st.normal[2] = 1;
+	shade_at(0, 0, 0, &v);
+	CHECK(near(v.color[0][0], 0.04f + 0.8f * 0.5f, 1e-6f));
+	glf_light(&st, GL_LIGHT0 + 1, GL_SPOT_DIRECTION, down);
+	glf_light(&st, GL_LIGHT0 + 1, GL_SPOT_CUTOFF, cutoff);
+	glf_light(&st, GL_LIGHT0 + 1, GL_SPOT_EXPONENT, two);
+	shade_at(0, 0, 0, &v);                                  /* (in the spot's middle: cos 0 = 1) */
+	CHECK(near(v.color[0][0], 0.04f + 0.8f * 0.5f, 1e-6f));
+	shade_at(2, 0, 0, &v);                                  /* (45 degrees off: outside 30) */
+	CHECK(near(v.color[0][0], 0.04f, 1e-6f));
+	/* two-sided: the back's material, the normal turned round (facing it: lit) */
+	glf_enable(&st, GL_LIGHT0 + 1, false);
+	glf_enable(&st, GL_LIGHT0, true);
+	const float on[1] = { 1 }, green[4] = { 0, 1, 0, 1 };
+	glf_light_model(&st, GL_LIGHT_MODEL_TWO_SIDE, on);
+	glf_material(&st, GL_BACK, GL_DIFFUSE, green);
+	st.normal[2] = -1;
+	shade_at(0, 0, 0, &v);
+	CHECK(near(v.color[0][0], 0.04f, 1e-6f) && v.color[1][1] == 1 && near(v.color[1][0], 0.04f, 1e-6f));
+	/* specular, separate: in the secondary color */
+	const float sep[1] = { (float)GL_SEPARATE_SPECULAR_COLOR }, shine[1] = { 10 };
+	glf_material(&st, GL_FRONT, GL_SPECULAR, white);
+	glf_material(&st, GL_FRONT, GL_SHININESS, shine);
+	glf_light_model(&st, GL_LIGHT_MODEL_COLOR_CONTROL, sep);
+	st.normal[2] = 1;
+	shade_at(0, 0, 0, &v);                                  /* (n.h 1: all of it) */
+	CHECK(near(v.secondary[0][0], 1, 1e-6f) && near(v.color[0][0], 0.84f, 1e-6f) && v.secondary[0][3] == 0);
+	/* the color material tracking the current color */
+	glf_color_material(&st, GL_FRONT, GL_DIFFUSE);
+	glf_enable(&st, GL_COLOR_MATERIAL, true);
+	color(0.5f, 0.25f, 0);
+	double got[4];
+	CHECK(glf_get_material(&st, GL_FRONT, GL_DIFFUSE, got) == 4 && got[0] == 0.5 && got[1] == 0.25);
+	/* positions in eye coordinates, as the modelview was */
+	glf_translate(&st, 1, 2, 3);
+	const float origin[4] = { 0, 0, 0, 1 };
+	glf_light(&st, GL_LIGHT0 + 3, GL_POSITION, origin);
+	CHECK(glf_get_light(&st, GL_LIGHT0 + 3, GL_POSITION, got) == 4 && got[0] == 1 && got[1] == 2 && got[2] == 3);
+	CHECK_EQ(error(), GL_NO_ERROR);
+	/* errors */
+	glf_light(&st, GL_LIGHT0 + 8, GL_DIFFUSE, white);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	const float wide[1] = { 100 }, shinier[1] = { 200 };
+	glf_light(&st, GL_LIGHT0, GL_SPOT_CUTOFF, wide);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_material(&st, GL_FRONT, GL_SHININESS, shinier);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	CHECK_EQ(glf_get_material(&st, GL_FRONT_AND_BACK, GL_DIFFUSE, got), 0);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	glf_color_material(&st, GL_FRONT, GL_SHININESS);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+}
+
+static void test_texgen_clip(void)
+{
+	start();
+	struct gl_vertex v;
+	/* object linear: by the plane in object coordinates */
+	const double sp[4] = { 0.5, 0, 0, 0.25 };
+	const double mode_object[1] = { GL_OBJECT_LINEAR }, mode_eye[1] = { GL_EYE_LINEAR }, sphere[1] = { GL_SPHERE_MAP };
+	glf_tex_gen(&st, GL_S, GL_TEXTURE_GEN_MODE, mode_object);
+	glf_tex_gen(&st, GL_S, 0x2501, sp);                     /* GL_OBJECT_PLANE */
+	glf_enable(&st, GL_TEXTURE_GEN_S, true);
+	shade_at(2, 7, 0, &v);
+	CHECK(near(v.tex[0][0], 1.25f, 1e-6f) && v.tex[1][0] == 0);
+	/* eye linear: the plane given now (the modelview a translation) */
+	glf_translate(&st, 10, 0, 0);
+	const double ep[4] = { 1, 0, 0, 0 };
+	glf_tex_gen(&st, GL_S, GL_TEXTURE_GEN_MODE, mode_eye);
+	glf_tex_gen(&st, GL_S, 0x2502, ep);                     /* GL_EYE_PLANE: (1, 0, 0, -10) */
+	glf_identity(&st);
+	shade_at(3, 0, 0, &v);                                  /* (eye x 3: 3 - 10) */
+	CHECK(near(v.tex[0][0], -7, 1e-5f));
+	/* the sphere map: straight back at the eye, the middle */
+	glf_tex_gen(&st, GL_S, GL_TEXTURE_GEN_MODE, sphere);
+	shade_at(0, 0, -1, &v);
+	CHECK(near(v.tex[0][0], 0.5f, 1e-6f));
+	glf_tex_gen(&st, GL_Q, GL_TEXTURE_GEN_MODE, sphere);   /* (s and t only) */
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	/* clip planes: distances in eye coordinates; nothing on disabled ones */
+	const double plane[4] = { 1, 0, 0, -2 };
+	glf_clip_plane(&st, GL_CLIP_PLANE0 + 2, plane);
+	shade_at(5, 1, 1, &v);
+	CHECK(v.user[2] == 0);
+	glf_enable(&st, GL_CLIP_PLANE0 + 2, true);
+	shade_at(5, 1, 1, &v);
+	CHECK(near(v.user[2], 3, 1e-6f));
+	/* a triangle cut by it (ortho: window coordinates), half its pixels gone */
+	ortho();
+	const double cut[4] = { 1, 0, 0, -20 };
+	glf_clip_plane(&st, GL_CLIP_PLANE0 + 2, cut);
+	color(1, 1, 1);
+	glf_begin(&st, GL_TRIANGLES);
+	vertex(4.3f, 4.2f, 0);
+	vertex(40.6f, 4.2f, 0);
+	vertex(4.3f, 40.7f, 0);
+	glf_end(&st, &target);
+	drawn();
+	CHECK(pixel(19, 5) == 0 && pixel(21, 5) == 0xFFFFFFFFu);
+	/* fog: the raster state's (the coordinate: eye-space |z|) */
+	glf_enable(&st, GL_CLIP_PLANE0 + 2, false);
+	glf_enable(&st, GL_FOG, true);
+	const float linear[1] = { (float)GL_LINEAR }, end[1] = { 7 };
+	glf_fog(&st, GL_FOG_MODE, linear);
+	glf_fog(&st, GL_FOG_END, end);
+	shade_at(0, 0, -3, &v);
+	CHECK(v.fog == 3);
+	glf_begin(&st, GL_POINTS);
+	vertex(5.5f, 5.5f, 0);
+	glf_end(&st, &target);
+	const struct raster_state *s = &surf.batch[surf.rec].states[cmd(ncmds() - 1)->state];
+	CHECK(s->fog_mode == RASTER_FOG_LINEAR && s->fog_coord && s->fog_end == 7);
+	const float bad[1] = { 5 };
+	glf_fog(&st, GL_FOG_MODE, bad);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	glf_fog(&st, 0x8450, bad);                              /* (no GL_EXT_fog_coord on Mac OS 9) */
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+}
+
+/* ---- polygon modes and offset, stencil --------------------------------------------------------- */
+
+static unsigned commands(uint8_t kind)
+{
+	unsigned n = 0;
+	for (unsigned k = 0; k < ncmds(); k++)
+		n += cmd(k)->kind == kind;
+	return n;
+}
+
+static void test_polygons(void)
+{
+	start();
+	ortho();
+	color(1, 1, 1);
+	/* outlined: a quad's 4 edges (not its diagonal); a polygon's 5, its closing edge at glEnd */
+	glf_polygon_mode(&st, GL_FRONT_AND_BACK, GL_LINE);
+	glf_begin(&st, GL_QUADS);
+	vertex(4.3f, 4.2f, 0);
+	vertex(20.6f, 4.2f, 0);
+	vertex(20.6f, 20.7f, 0);
+	vertex(4.3f, 20.7f, 0);
+	glf_end(&st, &target);
+	CHECK(commands(RASTER_CMD_LINE) == 4 && commands(RASTER_CMD_TRIANGLE) == 0);
+	glf_begin(&st, GL_POLYGON);
+	vertex(30.3f, 4.2f, 0);
+	vertex(40.6f, 4.2f, 0);
+	vertex(44.6f, 12.7f, 0);
+	st.edge_flag = false;                                   /* (the edge from this one isn't drawn) */
+	vertex(37.6f, 20.7f, 0);
+	st.edge_flag = true;
+	vertex(28.3f, 12.7f, 0);
+	glf_end(&st, &target);
+	CHECK_EQ(commands(RASTER_CMD_LINE), 4 + 4);
+	/* points: each vertex once */
+	glf_polygon_mode(&st, GL_FRONT_AND_BACK, GL_POINT);
+	glf_begin(&st, GL_QUADS);
+	vertex(4.3f, 30.2f, 0);
+	vertex(20.6f, 30.2f, 0);
+	vertex(20.6f, 40.7f, 0);
+	vertex(4.3f, 40.7f, 0);
+	glf_end(&st, &target);
+	CHECK_EQ(commands(RASTER_CMD_POINT), 4);
+	/* cut by a clip plane: its edge along the plane isn't drawn */
+	glf_polygon_mode(&st, GL_FRONT_AND_BACK, GL_LINE);
+	const double plane[4] = { 1, 0, 0, -50 };
+	glf_clip_plane(&st, GL_CLIP_PLANE0, plane);
+	glf_enable(&st, GL_CLIP_PLANE0, true);
+	unsigned before = commands(RASTER_CMD_LINE);
+	glf_begin(&st, GL_TRIANGLES);
+	vertex(40.3f, 30.2f, 0);
+	vertex(60.6f, 30.2f, 0);
+	vertex(60.6f, 46.7f, 0);
+	glf_end(&st, &target);
+	CHECK_EQ(commands(RASTER_CMD_LINE) - before, 3);
+	glf_enable(&st, GL_CLIP_PLANE0, false);
+	/* the back's mode for back faces only */
+	glf_polygon_mode(&st, GL_FRONT, GL_FILL);
+	before = commands(RASTER_CMD_TRIANGLE);
+	glf_begin(&st, GL_TRIANGLES);
+	vertex(4.3f, 4.2f, 0);
+	vertex(4.3f, 20.7f, 0);                         /* (clockwise: a back face) */
+	vertex(20.6f, 4.2f, 0);
+	glf_end(&st, &target);
+	CHECK_EQ(commands(RASTER_CMD_TRIANGLE), before);
+	glf_polygon_mode(&st, GL_FRONT_AND_BACK, 0x1234);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+
+	/* offset: the depth slope times the factor, plus the units times 24 bits' resolution */
+	start();
+	ortho();
+	glf_polygon_mode(&st, GL_FRONT_AND_BACK, GL_FILL);
+	glf_enable(&st, GL_POLYGON_OFFSET_FILL, true);
+	glf_polygon_offset(&st, 0, 1000);
+	glf_begin(&st, GL_TRIANGLES);
+	vertex(4.3f, 4.2f, 0);
+	vertex(40.6f, 4.2f, 0);
+	vertex(4.3f, 40.7f, 0);
+	glf_end(&st, &target);
+	CHECK(near(cmd(ncmds() - 1)->v[0].z, 0.5f + 1000.0f / 16777215, 1e-7f));
+	glf_polygon_offset(&st, 2, 0);
+	glf_begin(&st, GL_TRIANGLES);           /* (z from 0.5 to 0.25 over 32 pixels: a slope of 1/128) */
+	vertex(4.3f, 4.2f, 0);
+	vertex(36.3f, 4.2f, 0.5f);
+	vertex(4.3f, 40.7f, 0);
+	glf_end(&st, &target);
+	CHECK(near(cmd(ncmds() - 1)->v[0].z, 0.5f + 2.0f / 128, 1e-6f));
+}
+
+static void test_stencil_state(void)
+{
+	start();
+	ortho();
+	glf_enable(&st, GL_STENCIL_TEST, true);
+	glf_stencil_func(&st, GL_NOTEQUAL, 300, 0x3F);
+	glf_stencil_op(&st, GL_INCR_WRAP_EXT, GL_INVERT, GL_REPLACE);
+	glf_stencil_mask(&st, 0x1F0);
+	glf_color_mask(&st, false, false, false, false);
+	color(1, 1, 1);
+	glf_begin(&st, GL_POINTS);
+	vertex(5.5f, 5.5f, 0);
+	glf_end(&st, &target);
+	CHECK_EQ(ncmds(), 1);                   /* (all colors masked, but the stencil written: drawn) */
+	const struct raster_state *s = &surf.batch[surf.rec].states[cmd(0)->state];
+	CHECK(s->stencil_func == RASTER_Z_NE && s->stencil_ref == 255 && s->stencil_mask == 0x3F &&
+	      s->stencil_write == 0xF0);
+	CHECK(s->stencil_op[0] == RASTER_STENCIL_INCR_WRAP && s->stencil_op[1] == RASTER_STENCIL_INVERT &&
+	      s->stencil_op[2] == RASTER_STENCIL_REPLACE);
+	st.clear_stencil = 0x1A7;
+	glf_clear(&st, &target, GL_STENCIL_BUFFER_BIT);
+	CHECK(cmd(1)->kind == RASTER_CMD_CLEAR && cmd(1)->clear_stencil && cmd(1)->stencil == 0xA7 &&
+	      !cmd(1)->clear_color);
+	/* without stencil bits: no test, nothing cleared */
+	struct gl_target none = target;
+	none.stencil_bits = 0;
+	glf_clear(&st, &none, GL_STENCIL_BUFFER_BIT);
+	CHECK_EQ(ncmds(), 2);
+	glf_stencil_op(&st, GL_KEEP, 0x1234, GL_KEEP);
+	glf_stencil_func(&st, 0x1234, 0, 0);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+}
+
+/* ---- the attribute stacks, client arrays, queries ------------------------------------------------- */
+
+static void test_attrib(void)
+{
+	start();
+	glf_bind_texture(&st, GL_TEXTURE_2D, 5);
+	glf_push_attrib(&st, 0x40 | 0x2000 | 0x40000);  /* GL_LIGHTING_BIT | GL_ENABLE_BIT | GL_TEXTURE_BIT */
+	glf_enable(&st, GL_LIGHTING, true);
+	glf_enable(&st, GL_BLEND, true);
+	glf_shade_model(&st, GL_FLAT);
+	color(0.5f, 0.5f, 0.5f);                        /* (current: not pushed) */
+	glf_bind_texture(&st, GL_TEXTURE_2D, 6);
+	float linear[1] = { (float)GL_LINEAR };
+	glf_tex_parameter(&st, GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, linear);
+	glf_bind_texture(&st, GL_TEXTURE_2D, 5);
+	glf_tex_parameter(&st, GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, linear);
+	glf_bind_texture(&st, GL_TEXTURE_2D, 6);
+	CHECK_EQ(st.attrib_depth, 1);
+	glf_pop_attrib(&st);
+	CHECK(!glf_is_enabled(&st, GL_LIGHTING) && !glf_is_enabled(&st, GL_BLEND) && st.shade_model == GL_SMOOTH);
+	CHECK(st.color[0] == 0.5f);
+	CHECK(st.units[0].bound[GLF_2D]->name == 5 && st.units[0].bound[GLF_2D]->min_filter == GL_NEAREST_MIPMAP_LINEAR);
+	CHECK(glf_texture(&st, 6)->min_filter == GL_LINEAR);    /* (not bound when pushed: as it is) */
+	/* the stack's depth */
+	for (int k = 0; k < GLF_ATTRIB_DEPTH; k++)
+		glf_push_attrib(&st, 0x1);
+	CHECK_EQ(error(), GL_NO_ERROR);
+	glf_push_attrib(&st, 0x1);
+	CHECK_EQ(error(), GL_STACK_OVERFLOW);
+	glf_free(&st);
+	glf_pop_attrib(&st);
+	CHECK_EQ(error(), GL_STACK_UNDERFLOW);
+	/* the client's: the arrays as they were */
+	glf_array_pointer(&st, GLF_ARRAY_VERTEX, 2, GL_SHORT, 8, 0x1000);
+	glf_push_client_attrib(&st, 0x2);
+	glf_array_pointer(&st, GLF_ARRAY_VERTEX, 3, GL_FLOAT, 0, 0x2000);
+	glf_enable_client(&st, 0x8074, true);
+	glf_pop_client_attrib(&st);
+	CHECK(st.arrays[GLF_ARRAY_VERTEX].pointer == 0x1000 && st.arrays[GLF_ARRAY_VERTEX].size == 2 &&
+	      !st.arrays[GLF_ARRAY_VERTEX].enabled);
+	glf_pop_client_attrib(&st);
+	CHECK_EQ(error(), GL_STACK_UNDERFLOW);
+}
+
+static void put_be(uint8_t *p, uint32_t w)
+{
+	p[0] = (uint8_t)(w >> 24);
+	p[1] = (uint8_t)(w >> 16);
+	p[2] = (uint8_t)(w >> 8);
+	p[3] = (uint8_t)w;
+}
+
+static void put_float(uint8_t *p, float f)
+{
+	uint32_t w;
+	memcpy(&w, &f, 4);
+	put_be(p, w);
+}
+
+static void test_arrays(void)
+{
+	start();
+	ortho();
+	/* positions as floats, colors as unsigned bytes (to 0..1), both big-endian, as the program's memory has them */
+	static uint8_t pos[4 * 2 * 4], col[4 * 4];
+	static const float xy[4][2] = { { 4.3f, 4.2f }, { 40.6f, 4.2f }, { 4.3f, 40.7f }, { 40.6f, 40.7f } };
+	for (int k = 0; k < 4; k++) {
+		put_float(pos + 8 * k, xy[k][0]);
+		put_float(pos + 8 * k + 4, xy[k][1]);
+		col[4 * k] = 255;
+		col[4 * k + 1] = (uint8_t)(51 * k);
+		col[4 * k + 2] = 0;
+		col[4 * k + 3] = 255;
+	}
+	CHECK(glf_enable_client(&st, 0x8074, true) && glf_enable_client(&st, 0x8076, true));
+	CHECK(glf_is_enabled(&st, 0x8074) == 1 && glf_is_enabled(&st, 0x8075) == 0);
+	glf_array_pointer(&st, GLF_ARRAY_VERTEX, 2, GL_FLOAT, 0, 0x1000);
+	glf_array_pointer(&st, GLF_ARRAY_COLOR, 4, GL_UNSIGNED_BYTE, 0, 0x2000);
+	CHECK_EQ(glf_array_bytes(&st.arrays[GLF_ARRAY_VERTEX], 4), 32);
+	st.arrays[GLF_ARRAY_VERTEX] = (struct gl_array){ true, 2, 0, GL_FLOAT, 0x1000, pos, 0, 4 };
+	st.arrays[GLF_ARRAY_COLOR] = (struct gl_array){ true, 4, 0, GL_UNSIGNED_BYTE, 0x2000, col, 0, 4 };
+	glf_draw_arrays(&st, &target, GL_TRIANGLE_STRIP, 0, 4);
+	CHECK(ncmds() == 2 && at(&cmd(1)->v[2], 40.6f, 40.7f));
+	CHECK(near(cmd(1)->v[2].color[0][1], 0.6f, 1e-6f) && st.color[1] == 0.6f);     /* (and current) */
+	/* elements: indices big-endian; one past what's there leaves the vertex out */
+	static const uint8_t shorts[6] = { 0, 0, 0, 3, 0, 2 }, bytes[3] = { 0, 2, 9 };
+	glf_draw_elements(&st, &target, GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, shorts);
+	CHECK(ncmds() == 3 && at(&cmd(2)->v[1], 40.6f, 40.7f));
+	glf_draw_elements(&st, &target, GL_TRIANGLES, 3, GL_UNSIGNED_BYTE, bytes);
+	CHECK_EQ(ncmds(), 3);
+	glf_draw_elements(&st, &target, GL_TRIANGLES, 3, GL_FLOAT, shorts);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	/* interleaved: where each array is, and the stride */
+	glf_interleaved_arrays(&st, 0x2A29, 0, 0x4000);         /* GL_T2F_C4UB_V3F */
+	CHECK(st.arrays[GLF_ARRAY_TEX0].pointer == 0x4000 && st.arrays[GLF_ARRAY_COLOR].pointer == 0x4008 &&
+	      st.arrays[GLF_ARRAY_VERTEX].pointer == 0x400C && st.arrays[GLF_ARRAY_VERTEX].stride == 24 &&
+	      st.arrays[GLF_ARRAY_COLOR].type == GL_UNSIGNED_BYTE && !st.arrays[GLF_ARRAY_NORMAL].enabled);
+	/* errors */
+	glf_array_pointer(&st, GLF_ARRAY_VERTEX, 5, GL_FLOAT, 0, 0);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_array_pointer(&st, GLF_ARRAY_VERTEX, 3, GL_UNSIGNED_BYTE, 0, 0);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	glf_array_pointer(&st, GLF_ARRAY_COLOR, 3, GL_FLOAT, -4, 0);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_unlock_arrays(&st);
+	CHECK_EQ(error(), GL_INVALID_OPERATION);
+	glf_lock_arrays(&st, 0, 4);
+	glf_lock_arrays(&st, 0, 4);
+	CHECK_EQ(error(), GL_INVALID_OPERATION);
+	double v[4];
+	CHECK(glf_get(&st, 0x81A9, v) == 1 && v[0] == 4);       /* GL_ARRAY_ELEMENT_LOCK_COUNT_EXT */
+	CHECK(!glf_enable_client(&st, GL_LIGHTING, true));
+}
+
+static void test_queries(void)
+{
+	start();
+	double v[16];
+	static const struct {
+		uint32_t pname;
+		unsigned n;
+		double first;
+	} values[] = {
+		{ 0x0B40, 2, GL_FILL },                 /* GL_POLYGON_MODE */
+		{ 0x0B92, 1, GL_ALWAYS },               /* GL_STENCIL_FUNC */
+		{ 0x0B94, 1, GL_KEEP },                 /* GL_STENCIL_FAIL */
+		{ 0x0B98, 1, 4294967295.0 },            /* GL_STENCIL_WRITEMASK */
+		{ GL_LIGHT_MODEL_AMBIENT, 4, 0.2f },
+		{ GL_FOG_MODE, 1, GL_EXP },
+		{ GL_FOG_DENSITY, 1, 1 },
+		{ 0x0D31, 1, 8 },                       /* GL_MAX_LIGHTS */
+		{ 0x0D32, 1, 6 },                       /* GL_MAX_CLIP_PLANES */
+		{ 0x0D50, 1, 8 },                       /* GL_SUBPIXEL_BITS */
+		{ 0x0D35, 1, GLF_ATTRIB_DEPTH },        /* GL_MAX_ATTRIB_STACK_DEPTH */
+		{ 0x0BB0, 1, 0 },                       /* GL_ATTRIB_STACK_DEPTH */
+		{ 0x807A, 1, 4 },                       /* GL_VERTEX_ARRAY_SIZE */
+		{ 0x8089, 1, GL_FLOAT },                /* GL_TEXTURE_COORD_ARRAY_TYPE */
+		{ 0x0C54, 1, GL_DONT_CARE },            /* GL_FOG_HINT */
+		{ 0x0B55, 1, GL_FRONT_AND_BACK },       /* GL_COLOR_MATERIAL_FACE */
+		{ 0x0C31, 1, 1 },                       /* GL_RGBA_MODE */
+	};
+	for (unsigned k = 0; k < sizeof values / sizeof values[0]; k++) {
+		unsigned n = glf_get(&st, values[k].pname, v);
+		if (n != values[k].n || v[0] != values[k].first)
+			fprintf(stderr, "glfront: 0x%04X gives %u values, the first %g\n", values[k].pname, n, v[0]);
+		CHECK(n == values[k].n && v[0] == values[k].first);
+	}
+	glf_enable(&st, GL_LIGHT0 + 3, true);
+	CHECK(glf_is_enabled(&st, GL_LIGHT0 + 3) == 1 && glf_is_enabled(&st, GL_LIGHT0 + 2) == 0);
+	glf_hint(&st, 0x85B1, GL_NICEST);                       /* GL_TRANSFORM_HINT_APPLE */
+	CHECK(glf_get(&st, 0x85B1, v) == 1 && v[0] == GL_NICEST);
+	glf_hint(&st, 0x1234, GL_NICEST);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	CHECK_EQ(glf_get(&st, 0x1234, v), 0);
+}
+
 void test_glfront(void)
 {
 	test_sincos();
@@ -931,6 +1361,13 @@ void test_glfront(void)
 	test_texture_drawn();
 	test_texture_env();
 	test_texture_coords();
+	test_lighting();
+	test_texgen_clip();
+	test_polygons();
+	test_stencil_state();
+	test_attrib();
+	test_arrays();
+	test_queries();
 	surface_free(&surf);
 	glf_detach(&st, NULL);
 }

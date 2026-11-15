@@ -29,21 +29,34 @@ static const struct cap {
 	[GLF_CAP_DITHER] = { GL_DITHER, false, true },
 	[GLF_CAP_TEXTURE_1D] = { GL_TEXTURE_1D, true, false },
 	[GLF_CAP_TEXTURE_2D] = { GL_TEXTURE_2D, true, false },
+	[GLF_CAP_TEXTURE_GEN_S] = { GL_TEXTURE_GEN_S, true, false }, { GL_TEXTURE_GEN_S + 1, true, false },
+	{ GL_TEXTURE_GEN_S + 2, true, false }, { GL_TEXTURE_GEN_S + 3, true, false },
+	[GLF_CAP_LIGHTING] = { GL_LIGHTING, false, false },
+	[GLF_CAP_LIGHT0] = { GL_LIGHT0, false, false }, { GL_LIGHT0 + 1, false, false }, { GL_LIGHT0 + 2, false, false },
+	{ GL_LIGHT0 + 3, false, false }, { GL_LIGHT0 + 4, false, false }, { GL_LIGHT0 + 5, false, false },
+	{ GL_LIGHT0 + 6, false, false }, { GL_LIGHT0 + 7, false, false },
+	[GLF_CAP_NORMALIZE] = { GL_NORMALIZE, false, false },
+	[GLF_CAP_RESCALE_NORMAL] = { GL_RESCALE_NORMAL, false, false },
+	[GLF_CAP_COLOR_MATERIAL] = { GL_COLOR_MATERIAL, false, false },
+	[GLF_CAP_FOG] = { GL_FOG, false, false },
+	[GLF_CAP_COLOR_SUM] = { GL_COLOR_SUM_EXT, false, false },
+	[GLF_CAP_CLIP_PLANE0] = { GL_CLIP_PLANE0, false, false }, { GL_CLIP_PLANE0 + 1, false, false },
+	{ GL_CLIP_PLANE0 + 2, false, false }, { GL_CLIP_PLANE0 + 3, false, false }, { GL_CLIP_PLANE0 + 4, false, false },
+	{ GL_CLIP_PLANE0 + 5, false, false },
+	[GLF_CAP_OFFSET_POINT] = { GL_POLYGON_OFFSET_POINT, false, false },
+	[GLF_CAP_OFFSET_LINE] = { GL_POLYGON_OFFSET_LINE, false, false },
+	[GLF_CAP_OFFSET_FILL] = { GL_POLYGON_OFFSET_FILL, false, false },
+	[GLF_CAP_STENCIL_TEST] = { GL_STENCIL_TEST, false, false },
+	/* (kept, not drawn by) */
 	{ 0x806F, true, false },                                        /* 3D */
-	{ 0x0C60, true, false }, { 0x0C61, true, false }, { 0x0C62, true, false }, { 0x0C63, true, false },
-	{ GL_LIGHTING, false, false }, { 0x4000, false, false }, { 0x4001, false, false }, { 0x4002, false, false },
-	{ 0x4003, false, false }, { 0x4004, false, false }, { 0x4005, false, false }, { 0x4006, false, false },
-	{ 0x4007, false, false }, { GL_FOG, false, false }, { GL_POINT_SMOOTH, false, false },
-	{ GL_LINE_SMOOTH, false, false }, { 0x0B24, false, false }, { 0x0B41, false, false }, { 0x0B42, false, false },
-	{ 0x0B57, false, false }, { 0x0BA1, false, false }, { 0x803A, false, false }, { 0x0B90, false, false },
-	{ 0x0BF1, false, false }, { 0x0BF2, false, false }, { 0x0D80, false, false },
+	{ GL_POINT_SMOOTH, false, false }, { GL_LINE_SMOOTH, false, false }, { 0x0B24, false, false },
+	{ 0x0B41, false, false }, { 0x0B42, false, false }, { 0x0BF1, false, false }, { 0x0BF2, false, false },
+	{ 0x0D80, false, false },
 	{ 0x0D90, false, false }, { 0x0D91, false, false }, { 0x0D92, false, false }, { 0x0D93, false, false },
 	{ 0x0D94, false, false }, { 0x0D95, false, false }, { 0x0D96, false, false }, { 0x0D97, false, false },
 	{ 0x0D98, false, false }, { 0x0DB0, false, false }, { 0x0DB1, false, false }, { 0x0DB2, false, false },
 	{ 0x0DB3, false, false }, { 0x0DB4, false, false }, { 0x0DB5, false, false }, { 0x0DB6, false, false },
-	{ 0x0DB7, false, false }, { 0x0DB8, false, false }, { 0x2A01, false, false }, { 0x2A02, false, false },
-	{ 0x8037, false, false }, { 0x3000, false, false }, { 0x3001, false, false }, { 0x3002, false, false },
-	{ 0x3003, false, false }, { 0x3004, false, false }, { 0x3005, false, false }, { 0x80D0, false, false },
+	{ 0x0DB7, false, false }, { 0x0DB8, false, false }, { 0x80D0, false, false },
 	{ 0x80D1, false, false }, { 0x80D2, false, false }, { 0x8010, false, false }, { 0x8011, false, false },
 	{ 0x8012, false, false }, { 0x8024, false, false }, { 0x802E, false, false },
 };
@@ -55,6 +68,11 @@ static int cap_index(uint32_t name)
 		if (caps[k].name == name)
 			return (int)k;
 	return -1;
+}
+
+int glf_cap(uint32_t name)
+{
+	return cap_index(name);
 }
 
 bool glf_enable(struct gl_state *st, uint32_t cap, bool on)
@@ -72,7 +90,7 @@ int glf_is_enabled(const struct gl_state *st, uint32_t cap)
 {
 	int k = cap_index(cap);
 	if (k < 0)
-		return -1;
+		return glf_array_enabled(st, cap);
 	return (st->caps[k] >> (caps[k].unit ? st->active_texture : 0) & 1) != 0;
 }
 
@@ -121,6 +139,15 @@ void glf_init(struct gl_state *st)
 	st->front_face = GL_CCW;
 	st->shade_model = GL_SMOOTH;
 	st->point_size = st->line_width = 1;
+	st->polygon_mode[0] = st->polygon_mode[1] = GL_FILL;
+	st->line_stipple_factor = 1;
+	st->line_stipple = 0xFFFF;
+	memset(st->polygon_stipple, 0xFF, sizeof st->polygon_stipple);
+	st->stencil_func = GL_ALWAYS;
+	st->stencil_fail = st->stencil_zfail = st->stencil_zpass = GL_KEEP;
+	st->stencil_mask = st->stencil_write_mask = 0xFFFFFFFFu;
+	for (int k = 0; k < 7; k++)
+		st->hints[k] = GL_DONT_CARE;
 	st->matrix_mode = GL_MODELVIEW;
 	stack_init(&st->modelview, GLF_MODELVIEW_DEPTH);
 	stack_init(&st->projection, GLF_PROJECTION_DEPTH);
@@ -128,8 +155,10 @@ void glf_init(struct gl_state *st)
 		stack_init(&st->texture[k], GLF_TEXTURE_DEPTH);
 		st->tex[k][3] = 1;
 	}
-	st->mvp_stale = st->texmat_stale = true;
+	st->mvp_stale = st->texmat_stale = st->normal_stale = true;
 	glf_textures_init(st);
+	glf_lighting_init(st);
+	glf_arrays_init(st);
 	st->color[0] = st->color[1] = st->color[2] = st->color[3] = 1;
 	st->secondary_color[3] = 1;
 	st->normal[2] = 1;
@@ -314,6 +343,79 @@ void glf_active_texture(struct gl_state *st, uint32_t unit)
 		st->active_texture = unit - GL_TEXTURE0_ARB;
 }
 
+void glf_polygon_mode(struct gl_state *st, uint32_t face, uint32_t mode)
+{
+	if ((face != GL_FRONT && face != GL_BACK && face != GL_FRONT_AND_BACK) || mode < GL_POINT || mode > GL_FILL) {
+		glf_error(st, GL_INVALID_ENUM);
+		return;
+	}
+	if (face != GL_BACK)
+		st->polygon_mode[0] = mode;
+	if (face != GL_FRONT)
+		st->polygon_mode[1] = mode;
+}
+
+void glf_polygon_offset(struct gl_state *st, float factor, float units)
+{
+	st->offset_factor = factor;
+	st->offset_units = units;
+}
+
+void glf_line_stipple(struct gl_state *st, int32_t factor, uint16_t pattern)
+{
+	st->line_stipple_factor = factor < 1 ? 1 : factor > 256 ? 256 : factor;
+	st->line_stipple = pattern;
+}
+
+void glf_hint(struct gl_state *st, uint32_t target, uint32_t mode)
+{
+	static const uint32_t targets[7] = { 0x0C50, 0x0C51, 0x0C52, 0x0C53, 0x0C54, 0x80F0, 0x85B1 };
+	unsigned k = 0;
+	while (k < 7 && targets[k] != target)
+		k++;
+	if (k == 7 || mode < GL_DONT_CARE || mode > GL_NICEST) {
+		glf_error(st, GL_INVALID_ENUM);
+		return;
+	}
+	st->hints[k] = mode;            /* (taken: the same drawing either way) */
+}
+
+void glf_stencil_func(struct gl_state *st, uint32_t func, int32_t ref, uint32_t mask)
+{
+	if (!is_func(func)) {
+		glf_error(st, GL_INVALID_ENUM);
+		return;
+	}
+	st->stencil_func = func;
+	st->stencil_ref = ref;
+	st->stencil_mask = mask;
+	st->raster_stale = true;
+}
+
+static bool is_stencil_op(uint32_t op)
+{
+	return op == GL_KEEP || op == GL_ZERO || op == GL_REPLACE || op == GL_INCR || op == GL_DECR ||
+	       op == GL_INVERT || op == GL_INCR_WRAP_EXT || op == GL_DECR_WRAP_EXT;
+}
+
+void glf_stencil_op(struct gl_state *st, uint32_t fail, uint32_t zfail, uint32_t zpass)
+{
+	if (!is_stencil_op(fail) || !is_stencil_op(zfail) || !is_stencil_op(zpass)) {
+		glf_error(st, GL_INVALID_ENUM);
+		return;
+	}
+	st->stencil_fail = fail;
+	st->stencil_zfail = zfail;
+	st->stencil_zpass = zpass;
+	st->raster_stale = true;
+}
+
+void glf_stencil_mask(struct gl_state *st, uint32_t mask)
+{
+	st->stencil_write_mask = mask;
+	st->raster_stale = true;
+}
+
 /* ---- matrices -------------------------------------------------------------------------- */
 
 static struct gl_matrices *stack(struct gl_state *st)
@@ -334,7 +436,7 @@ float *glf_top(struct gl_state *st)
 static void touched(struct gl_state *st)
 {
 	if (st->matrix_mode != GL_TEXTURE)
-		st->mvp_stale = true;
+		st->mvp_stale = st->normal_stale = true;
 	else
 		st->texmat_stale = true;
 }
@@ -662,6 +764,57 @@ static void textures(struct gl_state *st, struct raster_state *s)
 	st->textured = n > 0;
 }
 
+static unsigned stencil_op(uint32_t op)
+{
+	switch (op) {
+	case GL_ZERO: return RASTER_STENCIL_ZERO;
+	case GL_REPLACE: return RASTER_STENCIL_REPLACE;
+	case GL_INCR: return RASTER_STENCIL_INCR;
+	case GL_DECR: return RASTER_STENCIL_DECR;
+	case GL_INVERT: return RASTER_STENCIL_INVERT;
+	case GL_INCR_WRAP_EXT: return RASTER_STENCIL_INCR_WRAP;
+	case GL_DECR_WRAP_EXT: return RASTER_STENCIL_DECR_WRAP;
+	default: return RASTER_STENCIL_KEEP;
+	}
+}
+
+/* Fog; the secondary color added after texturing (separate specular, or GL_COLOR_SUM_EXT's); stenciling */
+static void fog_sum_stencil(struct gl_state *st, const struct gl_target *t, struct raster_state *s)
+{
+	if (st->caps[GLF_CAP_FOG]) {
+		s->fog_mode = st->fog_mode == GL_LINEAR ? RASTER_FOG_LINEAR :
+			      st->fog_mode == GL_EXP ? RASTER_FOG_EXP : RASTER_FOG_EXP2;
+		s->fog_coord = true;
+		s->fog_color[0] = st->fog_color[3];
+		for (int k = 0; k < 3; k++)
+			s->fog_color[k + 1] = st->fog_color[k];
+		s->fog_start = st->fog_start;
+		s->fog_end = st->fog_end;
+		s->fog_density = st->fog_density;
+	}
+	bool sum = st->caps[GLF_CAP_LIGHTING] ? st->separate_specular : st->caps[GLF_CAP_COLOR_SUM] != 0;
+	if (sum && s->stages < RASTER_STAGES) {
+		struct raster_stage *g = &s->stage[s->stages++];
+		memset(g, 0, sizeof *g);
+		g->op[0] = RASTER_OP_ADD;
+		g->arg[0][0] = RASTER_PREVIOUS;
+		g->arg[0][1] = RASTER_COLOR1;
+		g->op[1] = RASTER_OP_REPLACE;
+		g->arg[1][0] = RASTER_PREVIOUS;
+		g->clamp[0] = g->clamp[1] = true;
+		st->textured = true;            /* (drawn with the stages, textures or not) */
+	}
+	if (st->caps[GLF_CAP_STENCIL_TEST] && t->stencil_bits) {
+		s->stencil_func = z_func(st->stencil_func);
+		s->stencil_ref = (uint8_t)(st->stencil_ref < 0 ? 0 : st->stencil_ref > 255 ? 255 : st->stencil_ref);
+		s->stencil_mask = (uint8_t)st->stencil_mask;
+		s->stencil_write = (uint8_t)st->stencil_write_mask;
+		s->stencil_op[0] = (uint8_t)stencil_op(st->stencil_fail);
+		s->stencil_op[1] = (uint8_t)stencil_op(st->stencil_zfail);
+		s->stencil_op[2] = (uint8_t)stencil_op(st->stencil_zpass);
+	}
+}
+
 /* What draws primitives in the current state into the target */
 static const struct raster_state *raster(struct gl_state *st, const struct gl_target *t)
 {
@@ -671,6 +824,7 @@ static const struct raster_state *raster(struct gl_state *st, const struct gl_ta
 	struct raster_state *s = &st->raster;
 	memset(s, 0, sizeof *s);
 	textures(st, s);
+	fog_sum_stencil(st, t, s);
 	bool depth = st->caps[GLF_CAP_DEPTH_TEST] && t->depth_bits;
 	s->z_func = depth ? z_func(st->depth_func) : RASTER_Z_NONE;
 	s->z_write = depth && st->depth_mask;
@@ -701,9 +855,10 @@ static const struct raster_state *raster(struct gl_state *st, const struct gl_ta
 	s->clip_top = top;
 	s->clip_right = r > l ? r : l;
 	s->clip_bottom = b > top ? b : top;
-	/* nothing is drawn with alpha never passing, or every channel masked */
+	/* nothing is drawn with alpha never passing, or every channel masked (and no stencil written) */
+	bool stencil_writes = s->stencil_func != RASTER_Z_NONE && s->stencil_write;
 	st->draw_none = (st->caps[GLF_CAP_ALPHA_TEST] && st->alpha_func == GL_NEVER) ||
-			(s->color_keep == 0xFFFFFFFFu && !s->z_write) || r <= l || b <= top;
+			(s->color_keep == 0xFFFFFFFFu && !s->z_write && !stencil_writes) || r <= l || b <= top;
 	st->raster_stale = false;
 	st->raster_width = t->width;
 	st->raster_height = t->height;
@@ -712,8 +867,12 @@ static const struct raster_state *raster(struct gl_state *st, const struct gl_ta
 
 /* ---- primitives -------------------------------------------------------------------------- */
 
-/* Clip planes: near and far, then the guard band's (a vertex is inside plane k if dist(v, k) >= 0) */
-enum { P_NEAR, P_FAR, P_LEFT, P_RIGHT, P_BOTTOM, P_TOP, PLANES };
+/*
+ * Clip planes: near and far, then the guard band's, then the user's (a
+ * vertex is inside plane k if dist(v, k) >= 0; a user plane that isn't
+ * enabled is 0 at every vertex)
+ */
+enum { P_NEAR, P_FAR, P_LEFT, P_RIGHT, P_BOTTOM, P_TOP, P_USER, PLANES = P_USER + GLF_CLIP_PLANES };
 #define MAX_POLY (3 + PLANES)
 
 static float dist(const struct gl_vertex *v, unsigned plane)
@@ -725,7 +884,8 @@ static float dist(const struct gl_vertex *v, unsigned plane)
 	case P_LEFT: return GLF_GUARD * c[3] + c[0];
 	case P_RIGHT: return GLF_GUARD * c[3] - c[0];
 	case P_BOTTOM: return GLF_GUARD * c[3] + c[1];
-	default: return GLF_GUARD * c[3] - c[1];
+	case P_TOP: return GLF_GUARD * c[3] - c[1];
+	default: return v->user[plane - P_USER];
 	}
 }
 
@@ -751,8 +911,8 @@ static void lerp(struct gl_vertex *out, const struct gl_vertex *a, const struct 
 		o[k] = p[k] + (q[k] - p[k]) * t;
 }
 
-/* Its window coordinates (x, y up from the bottom), and as raster.h's (y down) */
-static bool project(const struct gl_state *st, const struct gl_target *t, const struct gl_vertex *v,
+/* Its window coordinates (x, y up from the bottom), and as raster.h's (y down), with a face's colors */
+static bool project(const struct gl_state *st, const struct gl_target *t, const struct gl_vertex *v, unsigned face,
 		    struct raster_vertex *r, float win[2])
 {
 	if (!(v->clip[3] > 0))
@@ -765,7 +925,9 @@ static bool project(const struct gl_state *st, const struct gl_target *t, const 
 	r->y = (float)t->height - y;
 	r->z = v->clip[2] * iw * st->vp_scale[2] + st->vp_offset[2];
 	r->invw = iw;
-	memcpy(r->color[0], v->color, sizeof v->color);
+	memcpy(r->color[0], v->color[face], sizeof v->color[face]);
+	memcpy(r->color[1], v->secondary[face], sizeof v->secondary[face]);
+	r->fog = v->fog * iw;
 	for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++) {      /* (divided by w: see raster.h) */
 		r->tex[u][0] = v->tex[u][0] * iw;
 		r->tex[u][1] = v->tex[u][1] * iw;
@@ -776,9 +938,72 @@ static bool project(const struct gl_state *st, const struct gl_target *t, const 
 	return true;
 }
 
-static void triangle(struct gl_state *st, const struct gl_target *t, const struct gl_vertex *a,
-		     const struct gl_vertex *b, const struct gl_vertex *c)
+/* Lines and points into the backend, as given */
+static void emit_line(struct gl_state *st, const struct gl_target *t, const struct raster_vertex *a,
+		      const struct raster_vertex *b)
 {
+	struct raster_state s = *raster(st, t);
+	s.width = st->line_width;
+	struct raster_cmd *cmd = surface_cmd(t->surface, &s, RASTER_CMD_LINE);
+	if (!cmd) {
+		glf_error(st, GL_OUT_OF_MEMORY);
+		return;
+	}
+	cmd->v[0] = *a;
+	cmd->v[1] = *b;
+	st->primitives++;
+}
+
+static void emit_point(struct gl_state *st, const struct gl_target *t, const struct raster_vertex *v)
+{
+	struct raster_state s = *raster(st, t);
+	s.width = st->point_size;
+	struct raster_cmd *cmd = surface_cmd(t->surface, &s, RASTER_CMD_POINT);
+	if (!cmd) {
+		glf_error(st, GL_OUT_OF_MEMORY);
+		return;
+	}
+	cmd->v[0] = *v;
+	st->primitives++;
+}
+
+/*
+ * Polygon offset (OpenGL 1.2's 3.5.5): the polygon's largest depth slope
+ * times the factor, plus the units times the depth buffer's resolution
+ */
+static float offset_of(const struct gl_state *st, const struct gl_target *t, const struct raster_vertex *rv,
+		       unsigned n)
+{
+	float m = 0;
+	for (unsigned k = 1; k + 1 < n; k++) {
+		float x1 = rv[k].x - rv[0].x, y1 = rv[k].y - rv[0].y, z1 = rv[k].z - rv[0].z;
+		float x2 = rv[k + 1].x - rv[0].x, y2 = rv[k + 1].y - rv[0].y, z2 = rv[k + 1].z - rv[0].z;
+		float area = x1 * y2 - x2 * y1;
+		if (!(area != 0))
+			continue;
+		float dzdx = fabsf((z1 * y2 - z2 * y1) / area), dzdy = fabsf((x1 * z2 - x2 * z1) / area);
+		m = dzdx > dzdy ? dzdx : dzdy;
+		break;
+	}
+	unsigned bits = t->depth_bits && t->depth_bits < 24 ? t->depth_bits : 24;
+	return st->offset_factor * m + st->offset_units / (float)((1u << bits) - 1);
+}
+
+/* Edges of a triangle that are its polygon's (bit k: from vertex k to the next); with E_FLAGS, edge flags count */
+#define E_AB 1u
+#define E_BC 2u
+#define E_CA 4u
+#define E_FLAGS 8u
+
+/*
+ * A triangle, clipped, facing the way its window area says, culled, then
+ * filled or outlined (polygon modes: its polygon's edges as lines, or
+ * their first vertices as points, but for edges clipping made)
+ */
+static void triangle(struct gl_state *st, const struct gl_target *t, const struct gl_vertex *a,
+		     const struct gl_vertex *b, const struct gl_vertex *c, unsigned edges)
+{
+	st->polygon_face = -1;
 	struct gl_vertex buf[2][MAX_POLY];
 	const struct gl_vertex *in[3] = { a, b, c };
 	unsigned codes = 0, all = ~0u;
@@ -790,8 +1015,10 @@ static void triangle(struct gl_state *st, const struct gl_target *t, const struc
 	if (all)
 		return;
 	unsigned n = 3, cur = 0;
-	for (int k = 0; k < 3; k++)
+	for (int k = 0; k < 3; k++) {
 		buf[0][k] = *in[k];
+		buf[0][k].edge = edges >> k & 1 && (!(edges & E_FLAGS) || in[k]->edge > 0.5f) ? 1 : 0;
+	}
 	for (unsigned plane = 0; plane < PLANES && codes; plane++) {
 		if (!(codes >> plane & 1))
 			continue;
@@ -804,10 +1031,13 @@ static void triangle(struct gl_state *st, const struct gl_target *t, const struc
 			if (du >= 0)
 				o[m++] = *u;
 			if ((du >= 0) != (dv >= 0)) {
-				if (du >= 0)
-					lerp(&o[m++], u, v, du / (du - dv));
-				else
-					lerp(&o[m++], v, u, dv / (dv - du));
+				if (du >= 0) {
+					lerp(&o[m], u, v, du / (du - dv));
+					o[m++].edge = 0;                /* (along the plane: not the polygon's) */
+				} else {
+					lerp(&o[m], v, u, dv / (dv - du));
+					o[m++].edge = u->edge;
+				}
 			}
 		}
 		n = m;
@@ -815,10 +1045,11 @@ static void triangle(struct gl_state *st, const struct gl_target *t, const struc
 		if (n < 3)
 			return;
 	}
+	const struct gl_vertex *poly = buf[cur];
 	struct raster_vertex rv[MAX_POLY];
 	float win[MAX_POLY][2];
 	for (unsigned k = 0; k < n; k++)
-		if (!project(st, t, &buf[cur][k], &rv[k], win[k]))
+		if (!project(st, t, &poly[k], 0, &rv[k], win[k]))
 			return;
 	/* facing: the clipped polygon's area in window coordinates (counterclockwise positive) */
 	float area = 0;
@@ -831,13 +1062,41 @@ static void triangle(struct gl_state *st, const struct gl_target *t, const struc
 	if (st->caps[GLF_CAP_CULL_FACE] &&
 	    (st->cull_mode == GL_FRONT_AND_BACK || (st->cull_mode == GL_FRONT) == front))
 		return;
+	unsigned face = front ? 0 : 1;
+	if (face)                               /* (the back's colors: two-sided lighting's) */
+		for (unsigned k = 0; k < n && k < MAX_POLY; k++) {
+			memcpy(rv[k].color[0], poly[k].color[1], sizeof rv[k].color[0]);
+			memcpy(rv[k].color[1], poly[k].secondary[1], sizeof rv[k].color[1]);
+		}
+	uint32_t mode = st->polygon_mode[face];
+	unsigned offset_cap = mode == GL_FILL ? GLF_CAP_OFFSET_FILL : mode == GL_LINE ? GLF_CAP_OFFSET_LINE :
+			      GLF_CAP_OFFSET_POINT;
+	float offset = st->caps[offset_cap] ? offset_of(st, t, rv, n) : 0;
+	if (offset != 0)
+		for (unsigned k = 0; k < n; k++) {
+			float z = rv[k].z + offset;
+			rv[k].z = z > 0 ? (z < 1 ? z : 1) : 0;
+		}
+	st->polygon_face = (int)face;
+	st->polygon_offset = offset;
+	if (mode != GL_FILL) {
+		for (unsigned k = 0; k < n; k++) {
+			if (!(poly[k].edge > 0.5f))
+				continue;
+			if (mode == GL_LINE)
+				emit_line(st, t, &rv[k], &rv[(k + 1) % n]);
+			else
+				emit_point(st, t, &rv[k]);
+		}
+		return;
+	}
 	const struct raster_state *s = raster(st, t);
 	struct raster_state projective;
 	if (st->textured) {                     /* (q not 1: divided by q/w, per pixel) */
 		bool q = false;
 		for (unsigned k = 0; k < n && !q; k++)
 			for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++)
-				q |= s->unit[u].texture && buf[cur][k].tex[u][3] != 1;
+				q |= s->unit[u].texture && poly[k].tex[u][3] != 1;
 		if (q) {
 			projective = *s;
 			for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++)
@@ -879,46 +1138,40 @@ static bool clip_line(struct gl_vertex *a, struct gl_vertex *b)
 	return true;
 }
 
+/* A line, with a face's colors (a polygon's edge: and its offset) */
 static void line(struct gl_state *st, const struct gl_target *t, const struct gl_vertex *a,
-		 const struct gl_vertex *b)
+		 const struct gl_vertex *b, unsigned face, float offset)
 {
 	struct gl_vertex p = *a, q = *b;
 	if (!clip_line(&p, &q))
 		return;
 	struct raster_vertex rp, rq;
 	float win[2];
-	if (!project(st, t, &p, &rp, win) || !project(st, t, &q, &rq, win))
+	if (!project(st, t, &p, face, &rp, win) || !project(st, t, &q, face, &rq, win))
 		return;
-	struct raster_state s = *raster(st, t);
-	s.width = st->line_width;
-	struct raster_cmd *cmd = surface_cmd(t->surface, &s, RASTER_CMD_LINE);
-	if (!cmd) {
-		glf_error(st, GL_OUT_OF_MEMORY);
-		return;
+	if (offset != 0) {
+		rp.z = fminf(fmaxf(rp.z + offset, 0), 1);
+		rq.z = fminf(fmaxf(rq.z + offset, 0), 1);
 	}
-	cmd->v[0] = rp;
-	cmd->v[1] = rq;
-	st->primitives++;
+	emit_line(st, t, &rp, &rq);
 }
 
-static void point(struct gl_state *st, const struct gl_target *t, const struct gl_vertex *v)
+static void point(struct gl_state *st, const struct gl_target *t, const struct gl_vertex *v, unsigned face,
+		  float offset)
 {
 	const float *c = v->clip;
 	if (!(c[0] >= -c[3] && c[0] <= c[3] && c[1] >= -c[3] && c[1] <= c[3] && c[2] >= -c[3] && c[2] <= c[3]))
 		return;
+	for (unsigned k = 0; k < GLF_CLIP_PLANES; k++)
+		if (v->user[k] < 0)
+			return;
 	struct raster_vertex r;
 	float win[2];
-	if (!project(st, t, v, &r, win))
+	if (!project(st, t, v, face, &r, win))
 		return;
-	struct raster_state s = *raster(st, t);
-	s.width = st->point_size;
-	struct raster_cmd *cmd = surface_cmd(t->surface, &s, RASTER_CMD_POINT);
-	if (!cmd) {
-		glf_error(st, GL_OUT_OF_MEMORY);
-		return;
-	}
-	cmd->v[0] = r;
-	st->primitives++;
+	if (offset != 0)
+		r.z = fminf(fmaxf(r.z + offset, 0), 1);
+	emit_point(st, t, &r);
 }
 
 /* ---- glBegin, glVertex, glEnd ------------------------------------------------------------- */
@@ -932,6 +1185,7 @@ void glf_begin(struct gl_state *st, uint32_t mode)
 	st->inside = true;
 	st->mode = mode;
 	st->count = 0;
+	st->polygon_face = -1;
 }
 
 /* Whether this target is drawn into now */
@@ -943,38 +1197,39 @@ static bool drawing(struct gl_state *st, const struct gl_target *t)
 	return !st->draw_none;
 }
 
-/* Flat shading: the primitive's vertices with the color of the one that gives it */
+/* Flat shading: the primitive's vertices with the colors of the one that gives them */
 static void flat(const struct gl_vertex *const in[], struct gl_vertex *out, unsigned n, const struct gl_vertex *by)
 {
 	for (unsigned k = 0; k < n; k++) {
 		out[k] = *in[k];
 		memcpy(out[k].color, by->color, sizeof by->color);
+		memcpy(out[k].secondary, by->secondary, sizeof by->secondary);
 	}
 }
 
 static void tri(struct gl_state *st, const struct gl_target *t, const struct gl_vertex *a, const struct gl_vertex *b,
-		const struct gl_vertex *c, const struct gl_vertex *by)
+		const struct gl_vertex *c, const struct gl_vertex *by, unsigned edges)
 {
 	if (st->shade_model == GL_FLAT) {
 		const struct gl_vertex *in[3] = { a, b, c };
 		struct gl_vertex v[3];
 		flat(in, v, 3, by);
-		triangle(st, t, &v[0], &v[1], &v[2]);
+		triangle(st, t, &v[0], &v[1], &v[2], edges);
 	} else {
-		triangle(st, t, a, b, c);
+		triangle(st, t, a, b, c, edges);
 	}
 }
 
 static void seg(struct gl_state *st, const struct gl_target *t, const struct gl_vertex *a, const struct gl_vertex *b,
-		const struct gl_vertex *by)
+		const struct gl_vertex *by, unsigned face, float offset)
 {
 	if (st->shade_model == GL_FLAT) {
 		const struct gl_vertex *in[2] = { a, b };
 		struct gl_vertex v[2];
 		flat(in, v, 2, by);
-		line(st, t, &v[0], &v[1]);
+		line(st, t, &v[0], &v[1], face, offset);
 	} else {
-		line(st, t, a, b);
+		line(st, t, a, b, face, offset);
 	}
 }
 
@@ -986,34 +1241,19 @@ void glf_vertex(struct gl_state *st, const struct gl_target *t, const float obj[
 	struct gl_vertex v;
 	for (int i = 0; i < 4; i++)
 		v.clip[i] = m[i] * obj[0] + m[4 + i] * obj[1] + m[8 + i] * obj[2] + m[12 + i] * obj[3];
-	for (int i = 0; i < 4; i++)
-		v.color[i] = clampf(st->color[i]);
-	if (st->texmat_stale) {
-		static const float id[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
-		for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++)
-			st->texmat_identity[u] = !memcmp(st->texture[u].m[st->texture[u].depth - 1], id, sizeof id);
-		st->texmat_stale = false;
-	}
-	for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++) {
-		const float *c = st->tex[u], *tm = st->texture[u].m[st->texture[u].depth - 1];
-		if (st->texmat_identity[u])
-			memcpy(v.tex[u], c, sizeof v.tex[u]);
-		else
-			for (int i = 0; i < 4; i++)
-				v.tex[u][i] = tm[i] * c[0] + tm[4 + i] * c[1] + tm[8 + i] * c[2] + tm[12 + i] * c[3];
-	}
+	glf_shade(st, obj, &v);
 	unsigned k = st->count++;
 	struct gl_vertex *vb = st->vb;
 	bool draw = drawing(st, t);
 	switch (st->mode) {
 	case GL_POINTS:
 		if (draw)
-			point(st, t, &v);
+			point(st, t, &v, 0, 0);
 		break;
 	case GL_LINES:
 		if (k & 1) {
 			if (draw)
-				seg(st, t, &vb[0], &v, &v);
+				seg(st, t, &vb[0], &v, &v, 0, 0);
 		} else {
 			vb[0] = v;
 		}
@@ -1023,37 +1263,41 @@ void glf_vertex(struct gl_state *st, const struct gl_target *t, const float obj[
 		if (k == 0)
 			vb[0] = v;
 		else if (draw)
-			seg(st, t, &vb[1], &v, &v);
+			seg(st, t, &vb[1], &v, &v, 0, 0);
 		vb[1] = v;
 		break;
 	case GL_TRIANGLES:
 		if (k % 3 < 2)
 			vb[k % 3] = v;
 		else if (draw)
-			tri(st, t, &vb[0], &vb[1], &v, &v);
+			tri(st, t, &vb[0], &vb[1], &v, &v, E_AB | E_BC | E_CA | E_FLAGS);
 		break;
 	case GL_TRIANGLE_STRIP:                 /* (odd triangles the other way round, for their facing) */
 		if (k >= 2 && draw) {
 			if (k & 1)
-				tri(st, t, &vb[1], &vb[0], &v, &v);
+				tri(st, t, &vb[1], &vb[0], &v, &v, E_AB | E_BC | E_CA);
 			else
-				tri(st, t, &vb[0], &vb[1], &v, &v);
+				tri(st, t, &vb[0], &vb[1], &v, &v, E_AB | E_BC | E_CA);
 		}
 		vb[0] = vb[1];
 		vb[1] = v;
 		break;
 	case GL_TRIANGLE_FAN:
-	case GL_POLYGON:                        /* (a polygon's color is its first vertex's) */
 		if (k >= 2 && draw)
-			tri(st, t, &vb[0], &vb[1], &v, st->mode == GL_POLYGON ? &vb[0] : &v);
+			tri(st, t, &vb[0], &vb[1], &v, &v, E_AB | E_BC | E_CA);
 		vb[k ? 1 : 0] = v;
 		break;
-	case GL_QUADS:
+	case GL_POLYGON:                        /* (its color is its first vertex's; its closing edge at glEnd) */
+		if (k >= 2 && draw)
+			tri(st, t, &vb[0], &vb[1], &v, &vb[0], (k == 2 ? E_AB : 0) | E_BC | E_FLAGS);
+		vb[k ? 1 : 0] = v;
+		break;
+	case GL_QUADS:                          /* (as (v0, v1, v3) and (v1, v2, v3)) */
 		if (k % 4 < 3) {
 			vb[k % 4] = v;
 		} else if (draw) {
-			tri(st, t, &vb[0], &vb[1], &v, &v);
-			tri(st, t, &vb[1], &vb[2], &v, &v);
+			tri(st, t, &vb[0], &vb[1], &v, &v, E_AB | E_CA | E_FLAGS);
+			tri(st, t, &vb[1], &vb[2], &v, &v, E_AB | E_BC | E_FLAGS);
 		}
 		break;
 	case GL_QUAD_STRIP:                     /* (quad i: 2i, 2i + 1, 2i + 3, 2i + 2) */
@@ -1061,8 +1305,8 @@ void glf_vertex(struct gl_state *st, const struct gl_target *t, const float obj[
 			vb[k < 3 ? k : 2] = v;
 		} else {
 			if (draw) {
-				tri(st, t, &vb[2], &vb[0], &v, &v);
-				tri(st, t, &vb[0], &vb[1], &v, &v);
+				tri(st, t, &vb[2], &vb[0], &v, &v, E_AB | E_CA);
+				tri(st, t, &vb[0], &vb[1], &v, &v, E_AB | E_BC);
 			}
 			vb[0] = vb[2];
 			vb[1] = v;
@@ -1078,7 +1322,22 @@ void glf_end(struct gl_state *st, const struct gl_target *t)
 		return;
 	}
 	if (st->mode == GL_LINE_LOOP && st->count >= 2 && drawing(st, t))
-		seg(st, t, &st->vb[1], &st->vb[0], &st->vb[0]);
+		seg(st, t, &st->vb[1], &st->vb[0], &st->vb[0], 0, 0);
+	/* a polygon outlined: its closing edge, from its last vertex (facing as its last triangle) */
+	int face = st->polygon_face;
+	if (st->mode == GL_POLYGON && st->count >= 3 && face >= 0 && st->polygon_mode[face] != GL_FILL &&
+	    st->vb[1].edge > 0.5f && drawing(st, t)) {
+		if (st->polygon_mode[face] == GL_LINE) {
+			seg(st, t, &st->vb[1], &st->vb[0], &st->vb[0], (unsigned)face, st->polygon_offset);
+		} else {
+			struct gl_vertex last = st->vb[1];
+			if (st->shade_model == GL_FLAT) {
+				memcpy(last.color, st->vb[0].color, sizeof last.color);
+				memcpy(last.secondary, st->vb[0].secondary, sizeof last.secondary);
+			}
+			point(st, t, &last, (unsigned)face, st->polygon_offset);
+		}
+	}
 	st->inside = false;
 }
 
@@ -1093,12 +1352,14 @@ void glf_clear(struct gl_state *st, const struct gl_target *t, uint32_t mask)
 	bool color = mask & GL_COLOR_BUFFER_BIT && (st->color_mask[0] || st->color_mask[1] || st->color_mask[2] ||
 						    (st->color_mask[3] && t->alpha_bits));
 	bool depth = mask & GL_DEPTH_BUFFER_BIT && st->depth_mask && t->depth_bits;
-	if (!t->surface || (!color && !depth))
+	bool stencil = mask & GL_STENCIL_BUFFER_BIT && t->stencil_bits && (st->stencil_write_mask & 0xFF);
+	if (!t->surface || (!color && !depth && !stencil))
 		return;
 	struct raster_state s;
 	memset(&s, 0, sizeof s);
 	s.clip_right = t->width;
 	s.clip_bottom = t->height;
+	s.stencil_write = (uint8_t)st->stencil_write_mask;
 	s.color_keep = (st->color_mask[0] ? 0 : 0x00FF0000u) | (st->color_mask[1] ? 0 : 0x0000FF00u) |
 		       (st->color_mask[2] ? 0 : 0x000000FFu) | (st->color_mask[3] || !t->alpha_bits ? 0 : 0xFF000000u);
 	struct raster_cmd *c = surface_cmd(t->surface, &s, RASTER_CMD_CLEAR);
@@ -1114,6 +1375,8 @@ void glf_clear(struct gl_state *st, const struct gl_target *t, uint32_t mask)
 		cut(&c->rect[0], &c->rect[1], &c->rect[2], &c->rect[3], st->scissor, t->height);
 	c->clear_color = color;
 	c->clear_depth = depth;
+	c->clear_stencil = stencil;
+	c->stencil = (uint8_t)st->clear_stencil;
 	const float *cc = st->clear_color;
 	float alpha = t->alpha_bits ? clampf(cc[3]) : 1;        /* (no alpha bits: alpha 1) */
 	c->argb = (uint32_t)(alpha * 255 + 0.5f) << 24 | (uint32_t)(clampf(cc[0]) * 255 + 0.5f) << 16 |
@@ -1206,6 +1469,63 @@ unsigned glf_get(struct gl_state *st, uint32_t pname, double *v)
 	case 0x0CF3: case 0x0D03: v[0] = (pname == 0x0D03 ? &st->pack : &st->unpack)->skip_rows; return 1;
 	case 0x0CF4: case 0x0D04: v[0] = (pname == 0x0D04 ? &st->pack : &st->unpack)->skip_pixels; return 1;
 	case 0x0CF5: case 0x0D05: v[0] = (pname == 0x0D05 ? &st->pack : &st->unpack)->alignment; return 1;
-	default: return 0;
+	/* polygons, lines */
+	case 0x0B40: v[0] = st->polygon_mode[0]; v[1] = st->polygon_mode[1]; return 2;  /* GL_POLYGON_MODE */
+	case 0x8038: v[0] = st->offset_factor; return 1;                                /* GL_POLYGON_OFFSET_FACTOR */
+	case 0x2A00: v[0] = st->offset_units; return 1;                                 /* ..._UNITS */
+	case 0x0B25: v[0] = st->line_stipple; return 1;                                 /* GL_LINE_STIPPLE_PATTERN */
+	case 0x0B26: v[0] = st->line_stipple_factor; return 1;                          /* ..._REPEAT */
+	case 0x0B13: case 0x0B23: v[0] = 0.125; return 1;       /* GL_POINT_SIZE_GRANULARITY, GL_LINE_WIDTH_... */
+	/* stencil */
+	case 0x0B91: v[0] = st->clear_stencil; return 1;                                /* GL_STENCIL_CLEAR_VALUE */
+	case 0x0B92: v[0] = st->stencil_func; return 1;
+	case 0x0B93: v[0] = st->stencil_mask; return 1;
+	case 0x0B94: v[0] = st->stencil_fail; return 1;
+	case 0x0B95: v[0] = st->stencil_zfail; return 1;
+	case 0x0B96: v[0] = st->stencil_zpass; return 1;
+	case 0x0B97: v[0] = st->stencil_ref; return 1;
+	case 0x0B98: v[0] = st->stencil_write_mask; return 1;
+	/* hints */
+	case 0x0C50: case 0x0C51: case 0x0C52: case 0x0C53: case 0x0C54: v[0] = st->hints[pname - 0x0C50]; return 1;
+	case 0x80F0: v[0] = st->hints[5]; return 1;                     /* GL_CLIP_VOLUME_CLIPPING_HINT_EXT */
+	case 0x85B1: v[0] = st->hints[6]; return 1;                     /* GL_TRANSFORM_HINT_APPLE */
+	/* the attribute stacks, limits, modes */
+	case 0x0BB0: v[0] = st->attrib_depth; return 1;                 /* GL_ATTRIB_STACK_DEPTH */
+	case 0x0BB1: v[0] = st->client_depth; return 1;                 /* GL_CLIENT_ATTRIB_STACK_DEPTH */
+	case 0x0D35: case 0x0D3B: v[0] = GLF_ATTRIB_DEPTH; return 1;    /* GL_MAX_(CLIENT_)ATTRIB_STACK_DEPTH */
+	case 0x0D50: v[0] = 8; return 1;                                /* GL_SUBPIXEL_BITS (raster.h's) */
+	case 0x80E8: case 0x80E9: v[0] = GLF_MAX_ELEMENTS; return 1;    /* GL_MAX_ELEMENTS_VERTICES, _INDICES */
+	case 0x0C31: v[0] = 1; return 1;                                /* GL_RGBA_MODE */
+	case 0x0C30: case 0x0C33: case 0x0C00: case 0x0D51: case 0x0C20: v[0] = 0; return 1;
+						/* (color index mode, stereo, auxiliary buffers, index bits, its clear) */
+	case 0x0D58: case 0x0D59: case 0x0D5A: case 0x0D5B: v[0] = 0; return 1;        /* (no accumulation buffer) */
+	case 0x0B80: v[0] = v[1] = v[2] = v[3] = 0; return 4;                           /* GL_ACCUM_CLEAR_VALUE */
+	case 0x0C21: v[0] = 255; return 1;                              /* GL_INDEX_WRITEMASK */
+	case 0x0BF0: v[0] = 0x1503; return 1;                           /* GL_LOGIC_OP_MODE: GL_COPY */
+	case 0x0C40: v[0] = 0x1C00; return 1;                           /* GL_RENDER_MODE: GL_RENDER */
+	case 0x0B30: case 0x0B32: case 0x0B33: case 0x0D70: v[0] = 0; return 1;
+						/* (display lists: none being made, list base, name stack) */
+	case 0x0B31: case 0x0D37: v[0] = 64; return 1;                  /* GL_MAX_LIST_NESTING, _NAME_STACK_DEPTH */
+	case 0x0D30: v[0] = 8; return 1;                                /* GL_MAX_EVAL_ORDER */
+	case 0x0D34: v[0] = 32; return 1;                               /* GL_MAX_PIXEL_MAP_TABLE */
+	case 0x8073: v[0] = 16; return 1;                               /* GL_MAX_3D_TEXTURE_SIZE */
+	case 0x806A: v[0] = 0; return 1;                                /* GL_TEXTURE_BINDING_3D */
+	case 0x806B: case 0x806C: case 0x806D: case 0x806E: v[0] = 0; return 1;    /* (3D images' pixel stores) */
+	/* (the raster position and pixel transfers, as they start: milestone 5's) */
+	case 0x0B07: v[0] = v[1] = v[2] = 0; v[3] = 1; return 4;        /* GL_CURRENT_RASTER_POSITION */
+	case 0x0B08: v[0] = 1; return 1;                                /* ..._VALID */
+	case 0x0B04: v[0] = v[1] = v[2] = v[3] = 1; return 4;           /* GL_CURRENT_RASTER_COLOR */
+	case 0x0B06: v[0] = v[1] = v[2] = 0; v[3] = 1; return 4;        /* ..._TEXTURE_COORDS */
+	case 0x0B09: v[0] = 0; return 1;                                /* ..._DISTANCE */
+	case 0x0B05: v[0] = 1; return 1;                                /* ..._INDEX */
+	case 0x0D10: case 0x0D11: case 0x0D12: case 0x0D13: v[0] = 0; return 1;
+	case 0x0D14: case 0x0D18: case 0x0D1A: case 0x0D1C: case 0x0D1E: case 0x0D16: case 0x0D17: v[0] = 1; return 1;
+	case 0x0D15: case 0x0D19: case 0x0D1B: case 0x0D1D: case 0x0D1F: v[0] = 0; return 1;
+	case 0x0CB0: case 0x0CB1: case 0x0CB2: case 0x0CB3: case 0x0CB4: case 0x0CB5: case 0x0CB6: case 0x0CB7:
+	case 0x0CB8: case 0x0CB9: v[0] = 1; return 1;                   /* (pixel maps' sizes) */
+	default: {
+		unsigned n = glf_get_lighting(st, pname, v);
+		return n ? n : glf_get_arrays(st, pname, v);
+	}
 	}
 }

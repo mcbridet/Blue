@@ -1,6 +1,6 @@
 /*
- * A drawing surface for the guest's 3D APIs: color and depth buffers on
- * the host (a raster_target), drawn by recorded commands in batches, by
+ * A drawing surface for the guest's 3D APIs: color, depth and stencil
+ * buffers on the host (a raster_target), drawn by recorded commands in batches, by
  * the GPU (gpu.c) or the software rasterizer (raster.c), whose pixels are
  * then presented into guest memory: a QuickDraw pixmap (the screen's, a
  * GWorld's) or a buffer, clipped to QuickDraw regions.

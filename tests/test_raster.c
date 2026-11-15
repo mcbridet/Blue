@@ -1,8 +1,8 @@
 /*
- * The 3D engine's rasterizer: coverage (the top-left rule), depth testing,
- * texture orientation, and drawing recorded commands on helper threads,
- * at once or in background batches, which must give exactly the pixels of
- * drawing them one at a time.
+ * The 3D engine's rasterizer: coverage (the top-left rule, exact on edges
+ * triangles share), depth testing, texture orientation, and drawing
+ * recorded commands on helper threads, at once or in background batches,
+ * which must give exactly the pixels of drawing them one at a time.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +18,7 @@ static float depth_a[W * H], depth_b[W * H], depth_c[W * H];
 
 static struct raster_target target(uint32_t *color, float *depth)
 {
-	return (struct raster_target){ W, H, color, depth };
+	return (struct raster_target){ W, H, color, depth, NULL };
 }
 
 static struct raster_state plain(void)
@@ -80,6 +80,53 @@ static void test_coverage(void)
 		for (int x = 0; x < W; x++) {
 			unsigned red = color_a[y * W + x] >> 16 & 255;
 			wrong += red != (x >= 2 && x < 12 && y >= 3 && y < 13);
+		}
+	CHECK_EQ(wrong, 0);
+}
+
+/*
+ * A mesh of triangles sharing edges, many of them through pixels' centers
+ * (vertices at .3, .5, a third...), wound either way: each pixel inside is
+ * covered exactly once (no cracks, no pixel drawn twice)
+ */
+static void test_shared_edges(void)
+{
+	struct raster_target t = target(color_a, depth_a);
+	raster_clear(&t, 0, 0, W, H, true, 0, true, 1);
+	struct raster_state s = plain();
+	s.blend = RASTER_BLEND_FACTORS;
+	s.blend_src = RASTER_F_ONE;
+	s.blend_dst = RASTER_F_ONE;
+	float one = 1.0f / 255;
+	enum { NX = 10, NY = 8 };
+	static const float offsets[] = { 0, 0.3f, 0.5f, -0.5f, 1.0f / 3, 0.25f, -0.2f, 0.7f, -1.0f / 3 };
+	struct raster_vertex v[NY + 1][NX + 1];
+	unsigned pick = 0;
+	for (int j = 0; j <= NY; j++)
+		for (int i = 0; i <= NX; i++) {
+			float x = 2 + 6.0f * (float)i, y = 3 + 5.0f * (float)j;
+			if (i > 0 && i < NX && j > 0 && j < NY) {       /* (the outside stays a rectangle) */
+				x += offsets[pick++ % 9];
+				y += offsets[(pick += 4) % 9];
+			}
+			v[j][i] = vertex(x, y, 0, one, 0, 0);
+		}
+	for (int j = 0; j < NY; j++)
+		for (int i = 0; i < NX; i++) {
+			const struct raster_vertex *a = &v[j][i], *b = &v[j][i + 1], *c = &v[j + 1][i + 1], *d = &v[j + 1][i];
+			if ((i + j) & 1) {
+				raster_triangle(&t, &s, a, b, c, false);
+				raster_triangle(&t, &s, c, d, a, false);
+			} else {
+				raster_triangle(&t, &s, b, a, d, false);        /* (the other diagonal, the other way round) */
+				raster_triangle(&t, &s, b, d, c, false);
+			}
+		}
+	unsigned wrong = 0;
+	for (int y = 0; y < H; y++)
+		for (int x = 0; x < W; x++) {
+			unsigned red = color_a[y * W + x] >> 16 & 255;
+			wrong += red != (x >= 2 && x < 2 + 6 * NX && y >= 3 && y < 3 + 5 * NY);
 		}
 	CHECK_EQ(wrong, 0);
 }
@@ -395,12 +442,109 @@ static void test_fragments(void)
 	CHECK(depth_a[4 * W + 4] == 0.25f);
 }
 
+/*
+ * The stencil test and its operations, in OpenGL's order (the alpha test
+ * first, the z test after), the write mask, clears of it
+ */
+static uint8_t stencil_a[W * H];
+
+static void stencil_square(struct raster_target *t, const struct raster_state *s, float x0, float y0, float x1, float y1,
+		   float z, float alpha)
+{
+	struct raster_vertex a = vertex(x0, y0, z, 1, 1, 1), b = vertex(x1, y0, z, 1, 1, 1);
+	struct raster_vertex c = vertex(x1, y1, z, 1, 1, 1), d = vertex(x0, y1, z, 1, 1, 1);
+	a.color[0][3] = b.color[0][3] = c.color[0][3] = d.color[0][3] = alpha;
+	raster_triangle(t, s, &a, &b, &c, false);
+	raster_triangle(t, s, &a, &c, &d, false);
+}
+
+static void test_stencil(void)
+{
+	struct raster_target t = target(color_a, depth_a);
+	t.stencil = stencil_a;
+	raster_clear(&t, 0, 0, W, H, true, 0, true, 1);
+	memset(stencil_a, 0, sizeof stencil_a);
+	struct raster_state s = plain();
+	s.blend = RASTER_BLEND_NONE;
+	s.all_fragments = true;
+	s.color_keep = 0xFFFFFFFFu;             /* (the stencil alone) */
+	s.stencil_func = RASTER_Z_TRUE;
+	s.stencil_ref = 1;
+	s.stencil_mask = s.stencil_write = 0xFF;
+	s.stencil_op[2] = RASTER_STENCIL_REPLACE;
+	stencil_square(&t, &s, 2, 2, 12, 12, 0.5f, 1);
+	CHECK(stencil_a[5 * W + 5] == 1 && stencil_a[5 * W + 15] == 0);
+	/* counting, then inverting the low bits */
+	s.stencil_op[2] = RASTER_STENCIL_INCR;
+	stencil_square(&t, &s, 8, 8, 20, 20, 0.5f, 1);
+	CHECK(stencil_a[10 * W + 10] == 2 && stencil_a[15 * W + 15] == 1 && stencil_a[5 * W + 5] == 1);
+	s.stencil_write = 0x0F;
+	s.stencil_op[2] = RASTER_STENCIL_INVERT;
+	stencil_square(&t, &s, 0, 0, 30, 30, 0.5f, 1);
+	CHECK(stencil_a[10 * W + 10] == 0x0D && stencil_a[15 * W + 15] == 0x0E && stencil_a[25 * W + 25] == 0x0F);
+	/* drawn where it's equal to the reference in the mask's bits */
+	s.stencil_write = 0xFF;
+	s.stencil_op[2] = RASTER_STENCIL_KEEP;
+	s.stencil_func = RASTER_Z_EQ;
+	s.stencil_ref = 0x3D;                   /* (0xD in the mask) */
+	s.stencil_mask = 0x0F;
+	s.color_keep = 0;
+	stencil_square(&t, &s, 0, 0, 30, 30, 0.5f, 1);
+	CHECK(color_a[10 * W + 10] == 0xFFFFFFFFu && color_a[15 * W + 15] == 0 && color_a[5 * W + 5] == 0);
+	/* the alpha test first: what it discards leaves the stencil alone */
+	s.stencil_func = RASTER_Z_TRUE;
+	s.stencil_mask = 0xFF;
+	s.stencil_ref = 7;
+	s.stencil_op[2] = RASTER_STENCIL_REPLACE;
+	s.alpha_test = RASTER_ALPHA_GT;
+	s.alpha_ref = 0.5f;
+	stencil_square(&t, &s, 32, 2, 42, 12, 0.5f, 0.25f);
+	CHECK_EQ(stencil_a[5 * W + 35], 0);
+	stencil_square(&t, &s, 32, 2, 42, 12, 0.5f, 0.75f);
+	CHECK_EQ(stencil_a[5 * W + 35], 7);
+	s.alpha_test = RASTER_ALPHA_NONE;
+	/* the z test after: its failing operation, or its passing one */
+	s.z_func = RASTER_Z_LT;
+	s.z_write = true;
+	s.stencil_op[0] = RASTER_STENCIL_ZERO;
+	s.stencil_op[1] = RASTER_STENCIL_INCR;
+	s.stencil_op[2] = RASTER_STENCIL_DECR;
+	stencil_square(&t, &s, 32, 14, 42, 24, 0.25f, 1);       /* (passes: 0 decremented stays 0) */
+	CHECK_EQ(stencil_a[20 * W + 35], 0);
+	stencil_square(&t, &s, 32, 14, 42, 24, 0.75f, 1);       /* (farther: fails) */
+	CHECK_EQ(stencil_a[20 * W + 35], 1);
+	s.stencil_func = RASTER_Z_FALSE;                /* (the stencil test failing: zero) */
+	stencil_square(&t, &s, 32, 14, 42, 24, 0.1f, 1);
+	CHECK(stencil_a[20 * W + 35] == 0 && depth_a[20 * W + 35] == 0.25f);
+	/* wrapping, and not */
+	s.z_func = RASTER_Z_NONE;
+	s.stencil_func = RASTER_Z_TRUE;
+	s.stencil_op[2] = RASTER_STENCIL_DECR_WRAP;
+	stencil_square(&t, &s, 44, 2, 54, 12, 0.5f, 1);
+	CHECK_EQ(stencil_a[5 * W + 50], 255);
+	s.stencil_op[2] = RASTER_STENCIL_INCR;
+	stencil_square(&t, &s, 44, 2, 54, 12, 0.5f, 1);
+	CHECK_EQ(stencil_a[5 * W + 50], 255);
+	s.stencil_op[2] = RASTER_STENCIL_INCR_WRAP;
+	stencil_square(&t, &s, 44, 2, 54, 12, 0.5f, 1);
+	CHECK_EQ(stencil_a[5 * W + 50], 0);
+	/* cleared, in the write mask's bits */
+	struct raster_cmd clear = { .kind = RASTER_CMD_CLEAR, .clear_stencil = true, .stencil = 0xA5,
+				    .rect = { 0, 0, W, H } };
+	s.stencil_write = 0xF0;
+	stencil_a[0] = 0x0F;
+	raster_run(&t, &s, &clear, 1);
+	CHECK(stencil_a[0] == 0xAF && stencil_a[5 * W + 50] == 0xA0);
+}
+
 void test_raster(void)
 {
 	test_coverage();
+	test_shared_edges();
 	test_depth();
 	test_texture();
 	test_threads();
 	test_stages();
 	test_fragments();
+	test_stencil();
 }

@@ -446,9 +446,11 @@ presented rectangle comes later (see Performance).
 Real-time runs only, unless `SYSHM_GPU=1`:
 
 1. **Triangle edges:** GPUs snap vertices to a subpixel grid (typically
-   1/256 pixel) and evaluate edges in fixed point, so pixels whose centers
-   lie on or very near an edge can go to the other triangle. Shared edges
-   stay watertight.
+   1/256 pixel) and evaluate edges in fixed point, as `raster.c` does too
+   (1/256, 64-bit edge functions, the top-left rule); a GPU with another
+   grid, or one whose conversion from window coordinates rounds a vertex
+   the other way, can give a pixel whose center lies on or very near an
+   edge to the other triangle. Shared edges stay watertight.
 2. **Interpolation and arithmetic:** colors, texture coordinates and fog
    can differ by a unit in the last 8-bit place.
 3. **Bilinear filtering:** GPUs weigh texels with a few bits of fraction
