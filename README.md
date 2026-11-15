@@ -707,7 +707,10 @@ reproducible. The startup disk is the partition the ROM file came from (with
 They can still be installed by hand: `blue tools create FILE` writes a
 small volume, "Blue Tools", holding them, which `--cdrom FILE` attaches
 (read-only); drag them onto the System Folder (the Finder puts them in
-Extensions) and restart, as Blue's installer does:
+Extensions) and restart, as Blue's installer does. The Finder shows each
+tool with an icon of Blue's (custom icons: resource ID -16455 in each
+file, with the Finder flag that says so), and the volume too (an
+invisible file at its top, `Icon\r`):
 
 - **Blue Enhancements**: from then on, resizing the window changes the
   screen's resolution to match once the window has stopped changing (while
@@ -1534,6 +1537,19 @@ software OpenGL (llvmpipe; `BLUE_TEST_GPU=1` makes the test fail rather than
 skip without a context). Each run uploads a `blue-<os>-<arch>.tar.gz`, and
 pushing a `v*` tag publishes them as a GitHub release.
 
+Blue's icons come from `art/`: `art/blue.svg`, the master (the stack on its
+tile), and `art/finder-icons.txt`, the Finder icons in Mac OS as pixel art
+in Mac OS's palettes. `tools/icons.py` makes the rest from them (with
+Python and headless Chrome, which building doesn't need: what it makes is
+committed): the app icon as PNGs (`art/png/blue-16.png` to
+`blue-1024.png`), the window's (`src/icon_data.inc`, 256 x 256, which SDL
+on macOS shows in the Dock too) and the Finder's (`src/finder_icons.inc`,
+previewed in `art/finder-icons.png`). On macOS the executable carries an
+Info.plist (`art/Info.plist`), so the menu bar and the Dock say Blue; its
+bundle identifier is `local.blue`. On Linux the window's class and app
+ID are `blue`, which `art/blue.desktop` and the icons go with: CI's Linux
+archives have them under `share/` (`cp -R share ~/.local/`).
+
 ```
 build/blue rom info MOS.rom
 build/blue rom info 91.iso                      # the Mac OS ROM file in a disk's System Folder
@@ -1706,13 +1722,17 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           drawing, in software and with OpenGL, and presenting), display.c (SDL2
           window), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), env.c (settings' old names),
-          main.c
+          icon.c (the window's icon), main.c
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
           devtree.py (device-tree copy dumper), disasm.py (disassembler),
           heap.py (heap zones in a RAM dump, checked),
-          gltable.py (the OpenGL libraries' functions, from Apple's)
+          gltable.py (the OpenGL libraries' functions, from Apple's),
+          icons.py (the icons, from art/)
+art/      blue.svg (the icon's master), finder-icons.txt (the Finder
+          icons' pixel art), png/ (the icon at each size), Info.plist
+          (macOS), blue.desktop (Linux)
 docs/     x86-jit-plan.md (the x86-64 JIT), gpu-plan.md (the
           3D engine's OpenGL backend), opengl-plan.md and
           glide-plan.md (Mac OS 9's OpenGL, under way, and 3dfx Glide),

@@ -20,6 +20,13 @@
 #define CFRG_LIBRARY 0
 #define CFRG_APPLICATION 1
 
+/* The Finder's custom icons (Finder flags, resource ID), and the icons: finder_icons[] */
+#define HAS_CUSTOM_ICON 0x0400u
+#define IS_INVISIBLE 0x4000u
+#define CUSTOM_ICON_ID (-16455)
+#define ICON_RESOURCES 6
+#include "finder_icons.inc"
+
 /* 'SIZE' flags */
 #define SIZE_CAN_BACKGROUND 0x1000u
 #define SIZE_ONLY_BACKGROUND 0x0400u
@@ -490,11 +497,23 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct 
 
 /* ---- the volume -------------------------------------------------------------- */
 
+/* A Finder icon (FINDER_ICON_*) as a file's custom icon, its resources in r[0..ICON_RESOURCES-1] */
+static void icon_resources(struct rsrc *r, unsigned icon)
+{
+	const struct finder_icon *f = &finder_icons[icon];
+	r[0] = (struct rsrc){ FOURCC('I', 'C', 'N', '#'), CUSTOM_ICON_ID, f->icn, sizeof f->icn };
+	r[1] = (struct rsrc){ FOURCC('i', 'c', 'l', '8'), CUSTOM_ICON_ID, f->icl8, sizeof f->icl8 };
+	r[2] = (struct rsrc){ FOURCC('i', 'c', 'l', '4'), CUSTOM_ICON_ID, f->icl4, sizeof f->icl4 };
+	r[3] = (struct rsrc){ FOURCC('i', 'c', 's', '#'), CUSTOM_ICON_ID, f->ics, sizeof f->ics };
+	r[4] = (struct rsrc){ FOURCC('i', 'c', 's', '8'), CUSTOM_ICON_ID, f->ics8, sizeof f->ics8 };
+	r[5] = (struct rsrc){ FOURCC('i', 'c', 's', '4'), CUSTOM_ICON_ID, f->ics4, sizeof f->ics4 };
+}
+
 static int gl_files(struct hfs_file files[TOOLS_GL_FILES]);
 
 int tools_files(struct hfs_file files[TOOLS_FILES])
 {
-	static uint8_t helper[8192], helper_rsrc[1024], engine[8192], engine_rsrc[1024];
+	static uint8_t helper[8192], helper_rsrc[4096], engine[8192], engine_rsrc[4096];
 	struct ndrv_layout layout;
 	size_t helper_len = build_helper(helper, sizeof helper, &layout, false);
 	size_t engine_len = rave_build_engine(engine, sizeof engine, &layout);
@@ -504,25 +523,28 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 	put_be16(size_res, SIZE_CAN_BACKGROUND | SIZE_ONLY_BACKGROUND | SIZE_32_BIT | SIZE_HIGH_LEVEL_EVENTS);
 	put_be32(size_res + 2, 96u << 10);      /* preferred and minimum partition */
 	put_be32(size_res + 6, 96u << 10);
-	const struct rsrc res[] = {
+	struct rsrc res[2 + ICON_RESOURCES] = {
 		{ FOURCC('S', 'I', 'Z', 'E'), -1, size_res, sizeof size_res },
 		{ FOURCC('c', 'f', 'r', 'g'), 0, cfrg, (uint32_t)cfrg_len },
 	};
-	size_t rsrc_len = rsrc_build(res, 2, helper_rsrc, sizeof helper_rsrc);
+	icon_resources(res + 2, FINDER_ICON_ENHANCEMENTS);
+	size_t rsrc_len = rsrc_build(res, 2 + ICON_RESOURCES, helper_rsrc, sizeof helper_rsrc);
 
 	/* RAVE loads 'shlb' files of creator 'tnsl' from the Extensions folder */
 	uint8_t engine_cfrg[128];
 	size_t engine_cfrg_len = make_cfrg(engine_cfrg, CFRG_LIBRARY, 0, "Blue 3D Engine", 0);
-	const struct rsrc engine_res[] = { { FOURCC('c', 'f', 'r', 'g'), 0, engine_cfrg, (uint32_t)engine_cfrg_len } };
-	size_t engine_rsrc_len = rsrc_build(engine_res, 1, engine_rsrc, sizeof engine_rsrc);
+	struct rsrc engine_res[1 + ICON_RESOURCES] = {
+		{ FOURCC('c', 'f', 'r', 'g'), 0, engine_cfrg, (uint32_t)engine_cfrg_len } };
+	icon_resources(engine_res + 1, FINDER_ICON_ENGINE);
+	size_t engine_rsrc_len = rsrc_build(engine_res, 1 + ICON_RESOURCES, engine_rsrc, sizeof engine_rsrc);
 	if (!helper_len || !rsrc_len || !engine_len || !engine_rsrc_len)
 		return -1;
 
 	files[TOOLS_ENHANCEMENTS] = (struct hfs_file){
-		"Blue Enhancements", FOURCC('a', 'p', 'p', 'e'), FOURCC('s', 'y', 'H', 'p'), 0, 40, 60,
+		"Blue Enhancements", FOURCC('a', 'p', 'p', 'e'), FOURCC('s', 'y', 'H', 'p'), HAS_CUSTOM_ICON, 40, 60,
 		helper, helper_rsrc, (uint32_t)helper_len, (uint32_t)rsrc_len };
 	files[TOOLS_3D_ENGINE] = (struct hfs_file){
-		"Blue 3D Engine", FOURCC('s', 'h', 'l', 'b'), FOURCC('t', 'n', 's', 'l'), 0, 40, 160,
+		"Blue 3D Engine", FOURCC('s', 'h', 'l', 'b'), FOURCC('t', 'n', 's', 'l'), HAS_CUSTOM_ICON, 40, 160,
 		engine, engine_rsrc, (uint32_t)engine_len, (uint32_t)engine_rsrc_len };
 	return gl_files(files + TOOLS_GL_FIRST);
 }
@@ -530,7 +552,7 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 /* The OpenGL libraries (opengl.h), as tools_files() */
 static int gl_files(struct hfs_file files[TOOLS_GL_FILES])
 {
-	static uint8_t frag[TOOLS_GL_FILES][OPENGL_LIBRARY_MAX], rsrc[TOOLS_GL_FILES][1024];
+	static uint8_t frag[TOOLS_GL_FILES][OPENGL_LIBRARY_MAX], rsrc[TOOLS_GL_FILES][4096];
 	static const char *const names[TOOLS_GL_FILES] = { "Blue OpenGL Library", "Blue OpenGL Memory",
 							   "Blue OpenGL Utility" };
 	static const char *const fragments[TOOLS_GL_FILES] = { "OpenGLLibrary", "OpenGLMemory", "OpenGLUtility" };
@@ -542,11 +564,12 @@ static int gl_files(struct hfs_file files[TOOLS_GL_FILES])
 		uint8_t cfrg[128];
 		/* (as Apple's: current version 1, any version from 0 compatible) */
 		size_t cfrg_len = make_cfrg(cfrg, CFRG_LIBRARY, 0, fragments[k], 1);
-		const struct rsrc res[] = { { FOURCC('c', 'f', 'r', 'g'), 0, cfrg, (uint32_t)cfrg_len } };
-		size_t rsrc_len = rsrc_build(res, 1, rsrc[k], sizeof rsrc[k]);
+		struct rsrc res[1 + ICON_RESOURCES] = { { FOURCC('c', 'f', 'r', 'g'), 0, cfrg, (uint32_t)cfrg_len } };
+		icon_resources(res + 1, FINDER_ICON_OPENGL);
+		size_t rsrc_len = rsrc_build(res, 1 + ICON_RESOURCES, rsrc[k], sizeof rsrc[k]);
 		if (!len || !rsrc_len)
 			return -1;
-		files[k] = (struct hfs_file){ names[k], FOURCC('s', 'h', 'l', 'b'), FOURCC('s', 'y', 'G', 'L'), 0, 140,
+		files[k] = (struct hfs_file){ names[k], FOURCC('s', 'h', 'l', 'b'), FOURCC('s', 'y', 'G', 'L'), HAS_CUSTOM_ICON, 140,
 					      (int16_t)(60 + 100 * k), frag[k], rsrc[k], (uint32_t)len, (uint32_t)rsrc_len };
 	}
 	return 0;
@@ -575,11 +598,25 @@ static int gl_test_file(struct hfs_file *file)
 	return 0;
 }
 
+/* The volume's own icon: an invisible file "Icon\r" holding it (see hfs_format()) */
+static int volume_icon_file(struct hfs_file *file)
+{
+	static uint8_t rsrc[4096];
+	struct rsrc res[ICON_RESOURCES];
+	icon_resources(res, FINDER_ICON_VOLUME);
+	size_t rsrc_len = rsrc_build(res, ICON_RESOURCES, rsrc, sizeof rsrc);
+	if (!rsrc_len)
+		return -1;
+	*file = (struct hfs_file){ HFS_VOLUME_ICON, FOURCC('i', 'c', 'o', 'n'), FOURCC('M', 'A', 'C', 'S'), IS_INVISIBLE, 0, 0,
+				   NULL, rsrc, 0, (uint32_t)rsrc_len };
+	return 0;
+}
+
 int tools_create(const char *path)
 {
-	struct hfs_file files[TOOLS_FILES + 1];
+	struct hfs_file files[TOOLS_FILES + 2];
 	unsigned n = TOOLS_FILES;
-	if (tools_files(files))
+	if (tools_files(files) || volume_icon_file(&files[n++]))
 		return -1;
 	const char *test = getenv("BLUE_TOOLS_GL_TEST");
 	if (test && strcmp(test, "0") && gl_test_file(&files[n++]))

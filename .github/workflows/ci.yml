@@ -80,12 +80,21 @@ jobs:
         continue-on-error: true
         run: BLUE_JIT_BENCH=1 build/blue-tests jit
 
-      # A tarball keeps the executable bit, which artifact zips drop
+      # A tarball keeps the executable bit, which artifact zips drop. On Linux it has the
+      # desktop entry and icons too, laid out as under ~/.local/share
       - name: Package
         run: |
           dir=blue-${{ matrix.target }}
           mkdir "$dir"
           cp build/blue README.md "$dir/"
+          if [ "$(uname -s)" = Linux ]; then
+            mkdir -p "$dir/share/applications"
+            cp art/blue.desktop "$dir/share/applications/"
+            for n in 16 24 32 48 64 128 256 512; do
+              mkdir -p "$dir/share/icons/hicolor/${n}x${n}/apps"
+              cp "art/png/blue-$n.png" "$dir/share/icons/hicolor/${n}x${n}/apps/blue.png"
+            done
+          fi
           tar -czf "$dir.tar.gz" "$dir"
 
       - uses: actions/upload-artifact@v7

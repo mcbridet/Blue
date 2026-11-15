@@ -1,8 +1,11 @@
 /*
  * The window's layout of the screen: where it goes, how it's scaled, and
- * which screen pixel a window position is over.
+ * which screen pixel a window position is over; and its icon.
  */
+#include <stdlib.h>
+
 #include "../src/display.h"
+#include "../src/icon.h"
 #include "test.h"
 
 #define CHECK_VIEW(v, vx, vy, vw, vh, k)        \
@@ -63,8 +66,23 @@ static void test_points(void)
 	CHECK_EQ(y, 600);
 }
 
+/* The icon unpacks: clear around the tile, opaque inside it */
+static void test_icon(void)
+{
+	uint32_t *icon = malloc(ICON_SIZE * ICON_SIZE * sizeof *icon);
+	CHECK(icon && icon_argb(icon));
+	if (!icon)
+		return;
+	CHECK_EQ(icon[0] >> 24, 0);
+	CHECK_EQ(icon[ICON_SIZE * ICON_SIZE - 1] >> 24, 0);
+	CHECK_EQ(icon[ICON_SIZE / 2 * ICON_SIZE + ICON_SIZE / 2] >> 24, 0xFF);
+	CHECK((icon[ICON_SIZE * 40 + ICON_SIZE / 2] & 0xFFF0F0F0u) == 0xFFF0F0F0u);  /* (the tile's top: white) */
+	free(icon);
+}
+
 void test_display(void)
 {
 	test_view();
 	test_points();
+	test_icon();
 }

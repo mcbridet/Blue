@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Blue</title>
+  <!--
+    Blue's mark: three slabs, Mac OS on Blue's kernel. The master for the
+    app icon (the stack on its tile), the site's logo and favicon (the
+    stack alone: #stack, in its own 32-unit space) and the og:image;
+    tools/icons.py renders them. The Finder icons in Mac OS are pixel art
+    drawn after it (art/finder-icons.txt).
+  -->
+  <defs>
+    <linearGradient id="tile-fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset=".55" stop-color="#eef5f7"/>
+      <stop offset="1" stop-color="#c7e2e9"/>
+    </linearGradient>
+    <linearGradient id="tile-edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#7fb2bf"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".7"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="bondi-top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#33b5d1"/>
+      <stop offset="1" stop-color="#0095b6"/>
+    </linearGradient>
+    <linearGradient id="ice-top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c4ecf4"/>
+      <stop offset="1" stop-color="#8cd2e1"/>
+    </linearGradient>
+    <linearGradient id="white-top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#ececec"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#0b2e38" flood-opacity=".35"/>
+    </filter>
+  </defs>
+
+  <g id="tile">
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile-fill)" filter="url(#shadow)"/>
+    <rect x="104" y="104" width="816" height="816" rx="181" fill="none" stroke="url(#tile-edge)" stroke-width="8"/>
+  </g>
+
+  <g id="stack" transform="translate(512 524) scale(21) translate(-16 -17)"
+     stroke="#0b2e38" stroke-linejoin="round" style="stroke-width: var(--stroke, .4px)">
+    <path d="M16 15 29 21.5 16 28 3 21.5Z" fill="url(#bondi-top)"/>
+    <path d="M16 16.4 26.2 21.5 16 26.6 5.8 21.5Z" fill="url(#gloss)" stroke="none" opacity=".5"/>
+    <path d="M3 21.5 16 28V31L3 24.5Z" fill="#00728c"/>
+    <path d="M16 28 29 21.5V24.5L16 31Z" fill="#00566a"/>
+    <path d="M16 9 29 15.5 16 22 3 15.5Z" fill="url(#ice-top)" fill-opacity=".92"/>
+    <path d="M16 10.4 26.2 15.5 16 20.6 5.8 15.5Z" fill="url(#gloss)" stroke="none" opacity=".6"/>
+    <path d="M3 15.5 16 22V25L3 18.5Z" fill="#4fb6cc" fill-opacity=".92"/>
+    <path d="M16 22 29 15.5V18.5L16 25Z" fill="#2c94ab" fill-opacity=".92"/>
+    <path d="M16 3 29 9.5 16 16 3 9.5Z" fill="url(#white-top)"/>
+    <path d="M3 9.5 16 16V19L3 12.5Z" fill="#d6d6d6"/>
+    <path d="M16 16 29 9.5V12.5L16 19Z" fill="#a9a9a9"/>
+  </g>
+</svg>

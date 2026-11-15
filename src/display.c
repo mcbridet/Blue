@@ -7,6 +7,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "icon.h"
 #include "ui.h"
 
 /* The parts of the SDL2 ABI we use (stable across SDL 2.x). */
@@ -30,6 +31,7 @@
 #define SDL_BLENDFACTOR_ONE_MINUS_SRC_COLOR 4
 #define SDL_BLENDFACTOR_ONE_MINUS_DST_COLOR 8
 #define SDL_BLENDOPERATION_ADD 1
+#define SDL_HINT_NORMAL 1
 #define SDL_HINT_OVERRIDE 2
 #define SDL_HINT_RENDER_SCALE_QUALITY "SDL_RENDER_SCALE_QUALITY"   /* read when a texture is made */
 #define SDL_HINT_WAYLAND_SCALE_TO_DISPLAY "SDL_VIDEO_WAYLAND_SCALE_TO_DISPLAY"
@@ -148,6 +150,9 @@ struct sdl {
 	char *(*GetClipboardText)(void);        /* (these may be missing) */
 	int (*SetClipboardText)(const char *);
 	void (*free)(void *);
+	void *(*CreateRGBSurfaceFrom)(void *, int, int, int, int, uint32_t, uint32_t, uint32_t, uint32_t);
+	void (*SetWindowIcon)(void *, void *);
+	void (*FreeSurface)(void *);
 };
 
 struct display {
@@ -278,7 +283,26 @@ static bool load_sdl(struct sdl *s)
 	*(void **)&s->GetClipboardText = dlsym(s->lib, "SDL_GetClipboardText");
 	*(void **)&s->SetClipboardText = dlsym(s->lib, "SDL_SetClipboardText");
 	*(void **)&s->free = dlsym(s->lib, "SDL_free");
+	*(void **)&s->CreateRGBSurfaceFrom = dlsym(s->lib, "SDL_CreateRGBSurfaceFrom");
+	*(void **)&s->SetWindowIcon = dlsym(s->lib, "SDL_SetWindowIcon");
+	*(void **)&s->FreeSurface = dlsym(s->lib, "SDL_FreeSurface");
 	return true;
+}
+
+/* Blue's icon for the window (on macOS, the Dock's too) */
+static void set_icon(struct display *d)
+{
+	struct sdl *s = &d->sdl;
+	uint32_t *pixels = malloc(ICON_SIZE * ICON_SIZE * sizeof *pixels);
+	if (pixels && s->CreateRGBSurfaceFrom && s->SetWindowIcon && s->FreeSurface && icon_argb(pixels)) {
+		void *icon = s->CreateRGBSurfaceFrom(pixels, ICON_SIZE, ICON_SIZE, 32, ICON_SIZE * 4, 0x00FF0000u,
+						     0x0000FF00u, 0x000000FFu, 0xFF000000u);
+		if (icon) {
+			s->SetWindowIcon(d->window, icon);      /* (it keeps a copy) */
+			s->FreeSurface(icon);
+		}
+	}
+	free(pixels);
 }
 
 struct display_view display_view(unsigned screen_w, unsigned screen_h, int out_w, int out_h, bool integer)
@@ -574,6 +598,12 @@ struct display *display_open(const char *title, unsigned width, unsigned height,
 	 * the program handles high-density displays itself, as this one does */
 	if (!getenv(SDL_HINT_WAYLAND_SCALE_TO_DISPLAY))
 		d->sdl.SetHintWithPriority(SDL_HINT_WAYLAND_SCALE_TO_DISPLAY, "0", SDL_HINT_OVERRIDE);
+	/* the window's class on X11 and app ID on Wayland, as art/blue.desktop has them (SDL 2 reads them
+	 * from the environment, SDL 3 from a hint), and the name sound servers and the like show */
+	setenv("SDL_VIDEO_X11_WMCLASS", "blue", 0);
+	setenv("SDL_VIDEO_WAYLAND_WMCLASS", "blue", 0);
+	d->sdl.SetHintWithPriority("SDL_APP_ID", "blue", SDL_HINT_NORMAL);
+	d->sdl.SetHintWithPriority("SDL_APP_NAME", "Blue", SDL_HINT_NORMAL);
 	if (d->sdl.Init(SDL_INIT_VIDEO) != 0) {
 		fprintf(stderr, "display: %s\n", d->sdl.GetError());
 		goto fail;
@@ -582,8 +612,10 @@ struct display *display_open(const char *title, unsigned width, unsigned height,
 	/* (on high-density displays, drawn at their full resolution rather than scaled up by the system) */
 	d->window = d->sdl.CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
 					(int)width, (int)height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-	if (d->window)
+	if (d->window) {
+		set_icon(d);
 		d->renderer = d->sdl.CreateRenderer(d->window, -1, 0);
+	}
 	if (!d->renderer || !set_screen_size(d, width, height)) {
 		fprintf(stderr, "display: %s\n", d->sdl.GetError());
 		display_close(d);

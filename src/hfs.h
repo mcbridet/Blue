@@ -29,8 +29,11 @@ struct hfs_file {
 
 /*
  * Formats `size` bytes of the open file `fd` (from offset 0), with `nfiles`
- * files in the root folder. Returns 0 on success.
+ * files in the root folder. If one is HFS_VOLUME_ICON (its resource fork
+ * holding a custom icon), the Finder shows that as the volume's icon.
+ * Returns 0 on success.
  */
+#define HFS_VOLUME_ICON "Icon\r"
 int hfs_format(int fd, uint64_t size, const char *name, uint32_t mac_time, const struct hfs_file *files,
 	       unsigned nfiles);
 

@@ -11,6 +11,7 @@
 
 #include "../src/be.h"
 #include "../src/hfs.h"
+#include "../src/hfsread.h"
 #include "../src/rsrc.h"
 #include "../src/tools.h"
 #include "../src/video.h"
@@ -275,6 +276,65 @@ static void test_many_exports(void)
 	CHECK_EQ(ndrv_build(&spec, buf, sizeof buf, &l), 0);
 }
 
+#define HAS_CUSTOM_ICON 0x0400u
+#define IS_INVISIBLE 0x4000u
+#define CUSTOM_ICON_ID (-16455)
+
+/* A custom icon's resources in a fork: the 32 x 32 ones and the 16 x 16 ones, of their sizes */
+static bool has_icon(const uint8_t *fork)
+{
+	static const struct { uint32_t type, len; } icon[] = {
+		{ FOURCC('I', 'C', 'N', '#'), 256 }, { FOURCC('i', 'c', 'l', '8'), 1024 }, { FOURCC('i', 'c', 'l', '4'), 512 },
+		{ FOURCC('i', 'c', 's', '#'), 64 }, { FOURCC('i', 'c', 's', '8'), 256 }, { FOURCC('i', 'c', 's', '4'), 128 },
+	};
+	for (unsigned k = 0; k < sizeof icon / sizeof icon[0]; k++) {
+		uint32_t len = 0;
+		if (!find_resource(fork, icon[k].type, CUSTOM_ICON_ID, &len) || len != icon[k].len)
+			return false;
+	}
+	return true;
+}
+
+/* Each tool has its own icon in the Finder */
+static void test_icons(void)
+{
+	struct hfs_file files[TOOLS_FILES];
+	CHECK_EQ(tools_files(files), 0);
+	for (unsigned k = 0; k < TOOLS_FILES; k++) {
+		CHECK(files[k].finder_flags & HAS_CUSTOM_ICON);
+		CHECK(has_icon(files[k].rsrc));
+	}
+}
+
+struct volume_icon {
+	const struct hfsread_volume *v;
+	bool root, file;
+};
+
+static int look_for_icon(void *ctx, const struct hfsread_file *f)
+{
+	struct volume_icon *vi = ctx;
+	uint8_t fork[4096];
+	if (f->folder && f->id == 2)
+		vi->root = (be16(f->finder + 8) & HAS_CUSTOM_ICON) != 0;
+	if (!f->folder && f->parent == 2 && !strcmp(f->name, "Icon\r") && f->type == FOURCC('i', 'c', 'o', 'n') &&
+	    (be16(f->finder + 8) & IS_INVISIBLE) && f->rsrc.size <= sizeof fork &&
+	    !hfsread_read(vi->v, &f->rsrc, 0, fork, (size_t)f->rsrc.size))
+		vi->file = has_icon(fork);
+	return 0;
+}
+
+/* The volume's own icon: the root folder has one, in an invisible file "Icon\r" */
+static void test_volume_icon(int fd)
+{
+	struct hfsread_volume v;
+	struct volume_icon vi = { &v, false, false };
+	CHECK_EQ(hfsread_open(&v, fd, 0, TOOLS_VOLUME_SIZE), 0);
+	CHECK_EQ(hfsread_walk(&v, look_for_icon, &vi), 0);
+	CHECK(vi.root);
+	CHECK(vi.file);
+}
+
 static void test_volume(void)
 {
 	char path[256];
@@ -304,10 +364,10 @@ static void test_volume(void)
 	}
 	const uint8_t *f = rec + ((7 + 17 + 1) & ~1);
 	CHECK_EQ(be32(f + 4), FOURCC('a', 'p', 'p', 'e'));
-	uint8_t pef[16], fork[1024];
+	uint8_t pef[16], fork[4096];
 	CHECK(pread(fd, pef, 16, (off_t)al_bl_st * 512 + (off_t)be16(f + 74) * al_siz) == 16);
 	CHECK(!memcmp(pef, "Joy!peffpwpc", 12));
-	CHECK_EQ(be16(mdb + 12), TOOLS_FILES);                  /* and the 3D engine, the OpenGL libraries */
+	CHECK_EQ(be16(mdb + 12), TOOLS_FILES + 1);              /* and the 3D engine, the OpenGL libraries, the icon */
 	uint32_t rlen = be32(f + 36), len = 0;
 	CHECK(rlen <= sizeof fork);
 	CHECK(pread(fd, fork, rlen, (off_t)al_bl_st * 512 + (off_t)be16(f + 86) * al_siz) == (ssize_t)rlen);
@@ -316,6 +376,7 @@ static void test_volume(void)
 	CHECK(cfrg && !memcmp(cfrg + 32 + 43, "Blue Enhancements", 17));
 	const uint8_t *size = find_resource(fork, FOURCC('S', 'I', 'Z', 'E'), -1, &len);
 	CHECK(size && (be16(size) & 0x0400));                  /* background only */
+	test_volume_icon(fd);
 	close(fd);
 	unlink(path);
 }
@@ -658,6 +719,7 @@ void test_tools(void)
 	test_exports();
 	test_many_exports();
 	test_volume();
+	test_icons();
 	if (mem_init(&mem)) {
 		CHECK(!"mem_init");
 		return;

@@ -44,6 +44,7 @@ enum {
 #define FOLDER_SIZE 70u
 #define FILE_SIZE 102u
 #define THREAD_SIZE 46u
+#define HAS_CUSTOM_ICON 0x0400u         /* (Finder flags) */
 
 /* ---- names and dates ----------------------------------------------------- */
 
@@ -749,6 +750,8 @@ int hfs_format(int fd, uint64_t size, const char *name, uint32_t now, const stru
 		x->created = x->modified = now;
 		x->data_len = f->data_len;
 		x->rsrc_len = f->rsrc_len;
+		if (!strcmp(f->name, HFS_VOLUME_ICON))
+			put_be16(e[0].finder + 8, HAS_CUSTOM_ICON);     /* (the root folder's frFlags) */
 	}
 	if (hfs_build(&l, e, nfiles + 1, size, 0, now))
 		goto out;
