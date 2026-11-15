@@ -7,7 +7,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>Blue</string>
 	<key>CFBundleIdentifier</key>
-	<string>local.blue</string>
+	<string>io.github.mcbridet.Blue</string>
 	<key>CFBundleExecutable</key>
 	<string>blue</string>
 	<key>CFBundlePackageType</key>

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Times Blue's JIT on this machine (Linux or macOS, x86_64 or AArch64) and
-# writes what it found to a log to send back:
+# writes what it found to a log to send back (as an issue at
+# https://github.com/mcbridet/Blue/issues, say):
 #
 #   tools/jit-timing.sh [runs]
 #

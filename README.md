@@ -1546,9 +1546,10 @@ committed): the app icon as PNGs (`art/png/blue-16.png` to
 on macOS shows in the Dock too) and the Finder's (`src/finder_icons.inc`,
 previewed in `art/finder-icons.png`). On macOS the executable carries an
 Info.plist (`art/Info.plist`), so the menu bar and the Dock say Blue; its
-bundle identifier is `local.blue`. On Linux the window's class and app
-ID are `blue`, which `art/blue.desktop` and the icons go with: CI's Linux
-archives have them under `share/` (`cp -R share ~/.local/`).
+bundle identifier is `io.github.mcbridet.Blue`. On Linux the window's
+class and app ID are `blue`, which `art/blue.desktop` and the icons go
+with: CI's Linux archives have them under `share/`
+(`cp -R share ~/.local/`).
 
 ```
 build/blue rom info MOS.rom
