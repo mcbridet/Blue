@@ -51,12 +51,15 @@ static const struct cap {
 	/* (kept, not drawn by) */
 	{ GL_POINT_SMOOTH, false, false }, { GL_LINE_SMOOTH, false, false }, { 0x0B24, false, false },
 	{ 0x0B41, false, false }, { 0x0B42, false, false }, { 0x0BF1, false, false }, { 0x0BF2, false, false },
+	/* (evaluators': GL_AUTO_NORMAL, the maps) */
 	{ 0x0D80, false, false },
 	{ 0x0D90, false, false }, { 0x0D91, false, false }, { 0x0D92, false, false }, { 0x0D93, false, false },
 	{ 0x0D94, false, false }, { 0x0D95, false, false }, { 0x0D96, false, false }, { 0x0D97, false, false },
 	{ 0x0D98, false, false }, { 0x0DB0, false, false }, { 0x0DB1, false, false }, { 0x0DB2, false, false },
 	{ 0x0DB3, false, false }, { 0x0DB4, false, false }, { 0x0DB5, false, false }, { 0x0DB6, false, false },
-	{ 0x0DB7, false, false }, { 0x0DB8, false, false }, { 0x80D0, false, false },
+	{ 0x0DB7, false, false }, { 0x0DB8, false, false },
+	/* (kept, not drawn by) */
+	{ 0x80D0, false, false },
 	{ 0x80D1, false, false }, { 0x80D2, false, false }, { 0x8010, false, false }, { 0x8011, false, false },
 	{ 0x8012, false, false }, { 0x8024, false, false }, { 0x802E, false, false },
 };
@@ -160,6 +163,9 @@ void glf_init(struct gl_state *st)
 	glf_lighting_init(st);
 	glf_arrays_init(st);
 	glf_pixels_init(st);
+	st->select.mode = GL_RENDER;
+	st->grid1_n = st->grid2_n[0] = st->grid2_n[1] = 1;
+	st->grid1[1] = st->grid2[1] = st->grid2[3] = 1;
 	st->color[0] = st->color[1] = st->color[2] = st->color[3] = 1;
 	st->secondary_color[3] = 1;
 	st->normal[2] = 1;
@@ -871,35 +877,41 @@ static const struct raster_state *raster(struct gl_state *st, const struct gl_ta
 /* ---- primitives -------------------------------------------------------------------------- */
 
 /*
- * Clip planes: near and far, then the guard band's, then the user's (a
- * vertex is inside plane k if dist(v, k) >= 0; a user plane that isn't
- * enabled is 0 at every vertex)
+ * Clip planes: near and far, then the guard band's (the view volume's
+ * sides, for selection and feedback: guard 1), then the user's (a vertex
+ * is inside plane k if dist(v, k) >= 0; a user plane that isn't enabled is
+ * 0 at every vertex)
  */
 enum { P_NEAR, P_FAR, P_LEFT, P_RIGHT, P_BOTTOM, P_TOP, P_USER, PLANES = P_USER + GLF_CLIP_PLANES };
 #define MAX_POLY (3 + PLANES)
 
-static float dist(const struct gl_vertex *v, unsigned plane)
+static float dist(const struct gl_vertex *v, unsigned plane, float guard)
 {
 	const float *c = v->clip;
 	switch (plane) {
 	case P_NEAR: return c[3] + c[2];
 	case P_FAR: return c[3] - c[2];
-	case P_LEFT: return GLF_GUARD * c[3] + c[0];
-	case P_RIGHT: return GLF_GUARD * c[3] - c[0];
-	case P_BOTTOM: return GLF_GUARD * c[3] + c[1];
-	case P_TOP: return GLF_GUARD * c[3] - c[1];
+	case P_LEFT: return guard * c[3] + c[0];
+	case P_RIGHT: return guard * c[3] - c[0];
+	case P_BOTTOM: return guard * c[3] + c[1];
+	case P_TOP: return guard * c[3] - c[1];
 	default: return v->user[plane - P_USER];
 	}
 }
 
 /* The planes a vertex is outside (bit k: plane k) */
-static unsigned outside(const struct gl_vertex *v)
+static unsigned outside(const struct gl_vertex *v, float guard)
 {
 	unsigned out = 0;
 	for (unsigned k = 0; k < PLANES; k++)
-		if (dist(v, k) < 0)
+		if (dist(v, k, guard) < 0)
 			out |= 1u << k;
 	return out;
+}
+
+static float guard_of(const struct gl_state *st)
+{
+	return glf_selecting(st) ? 1.0f : GLF_GUARD;
 }
 
 /*
@@ -971,6 +983,24 @@ static void emit_point(struct gl_state *st, const struct gl_target *t, const str
 	st->primitives++;
 }
 
+/* A vertex for selection and feedback: its window coordinates (y up), its depth (offset), a face's color */
+static void fb_vertex(const struct gl_vertex *v, const float win[2], float z, unsigned face, struct glf_fb_vertex *f)
+{
+	f->win[0] = win[0];
+	f->win[1] = win[1];
+	f->win[2] = z;
+	f->win[3] = v->clip[3];
+	memcpy(f->color, v->color[face], sizeof f->color);
+	memcpy(f->tex, v->tex[0], sizeof f->tex);
+}
+
+/* A line for selection and feedback (the first since the stipple was reset: GL_LINE_RESET_TOKEN) */
+static void select_line(struct gl_state *st, const struct glf_fb_vertex v[2])
+{
+	glf_select_primitive(st, st->select.line_reset ? GL_LINE_RESET_TOKEN : GL_LINE_TOKEN, v, 2);
+	st->select.line_reset = false;
+}
+
 /*
  * Polygon offset (OpenGL 1.2's 3.5.5): the polygon's largest depth slope
  * times the factor, plus the units times the depth buffer's resolution
@@ -1011,8 +1041,9 @@ static void triangle(struct gl_state *st, const struct gl_target *t, const struc
 	struct gl_vertex buf[2][MAX_POLY];
 	const struct gl_vertex *in[3] = { a, b, c };
 	unsigned codes = 0, all = ~0u;
+	float guard = guard_of(st);
 	for (int k = 0; k < 3; k++) {
-		unsigned o = outside(in[k]);
+		unsigned o = outside(in[k], guard);
 		codes |= o;
 		all &= o;
 	}
@@ -1031,7 +1062,7 @@ static void triangle(struct gl_state *st, const struct gl_target *t, const struc
 		unsigned m = 0;
 		for (unsigned i = 0; i < n; i++) {
 			const struct gl_vertex *u = &p[i], *v = &p[(i + 1) % n];
-			float du = dist(u, plane), dv = dist(v, plane);
+			float du = dist(u, plane, guard), dv = dist(v, plane, guard);
 			if (du >= 0)
 				o[m++] = *u;
 			if ((du >= 0) != (dv >= 0)) {
@@ -1083,6 +1114,33 @@ static void triangle(struct gl_state *st, const struct gl_target *t, const struc
 		}
 	st->polygon_face = (int)face;
 	st->polygon_offset = offset;
+	if (glf_selecting(st)) {
+		/*
+		 * Instead: as triangles, in Mesa's order (the order is OpenGL's
+		 * to choose): a polygon's, or a clipped one's, as (v[i], v[i + 1],
+		 * v[0]); outlined, the closing edge first (each the first of a
+		 * polygon's lines since the stipple was reset: see glf_vertex())
+		 */
+		struct glf_fb_vertex fv[MAX_POLY];
+		for (unsigned k = 0; k < n; k++)
+			fb_vertex(&poly[k], win[k], rv[k].z, face, &fv[k]);
+		for (unsigned j = 0; mode != GL_FILL && j < n; j++) {
+			unsigned k = mode == GL_LINE ? (j + n - 1) % n : j;
+			if (!(poly[k].edge > 0.5f))
+				continue;
+			if (mode == GL_LINE)
+				select_line(st, (const struct glf_fb_vertex[2]){ fv[k], fv[(k + 1) % n] });
+			else
+				glf_select_primitive(st, GL_POINT_TOKEN, &fv[k], 1);
+		}
+		if (mode == GL_FILL && !codes && st->mode != GL_POLYGON)
+			glf_select_primitive(st, GL_POLYGON_TOKEN, fv, 3);
+		else if (mode == GL_FILL)
+			for (unsigned k = 1; k + 1 < n; k++)
+				glf_select_primitive(st, GL_POLYGON_TOKEN,
+						     (const struct glf_fb_vertex[3]){ fv[k], fv[k + 1], fv[0] }, 3);
+		return;
+	}
 	if (mode != GL_FILL) {
 		for (unsigned k = 0; k < n; k++) {
 			if (!(poly[k].edge > 0.5f))
@@ -1123,15 +1181,15 @@ static void triangle(struct gl_state *st, const struct gl_target *t, const struc
 }
 
 /* A segment cut to the clip planes: false if none of it is left */
-static bool clip_line(struct gl_vertex *a, struct gl_vertex *b)
+static bool clip_line(struct gl_vertex *a, struct gl_vertex *b, float guard)
 {
-	unsigned oa = outside(a), ob = outside(b);
+	unsigned oa = outside(a, guard), ob = outside(b, guard);
 	if (oa & ob)
 		return false;
 	for (unsigned plane = 0; plane < PLANES && (oa | ob); plane++) {
 		if (!((oa | ob) >> plane & 1))
 			continue;
-		float da = dist(a, plane), db = dist(b, plane);
+		float da = dist(a, plane, guard), db = dist(b, plane, guard);
 		if (da < 0 && db < 0)
 			return false;
 		if (da < 0)
@@ -1147,15 +1205,22 @@ static void line(struct gl_state *st, const struct gl_target *t, const struct gl
 		 const struct gl_vertex *b, unsigned face, float offset)
 {
 	struct gl_vertex p = *a, q = *b;
-	if (!clip_line(&p, &q))
+	if (!clip_line(&p, &q, guard_of(st)))
 		return;
 	struct raster_vertex rp, rq;
-	float win[2];
-	if (!project(st, t, &p, face, &rp, win) || !project(st, t, &q, face, &rq, win))
+	float wp[2], wq[2];
+	if (!project(st, t, &p, face, &rp, wp) || !project(st, t, &q, face, &rq, wq))
 		return;
 	if (offset != 0) {
 		rp.z = fminf(fmaxf(rp.z + offset, 0), 1);
 		rq.z = fminf(fmaxf(rq.z + offset, 0), 1);
+	}
+	if (glf_selecting(st)) {
+		struct glf_fb_vertex fv[2];
+		fb_vertex(&p, wp, rp.z, face, &fv[0]);
+		fb_vertex(&q, wq, rq.z, face, &fv[1]);
+		select_line(st, fv);
+		return;
 	}
 	emit_line(st, t, &rp, &rq);
 }
@@ -1175,6 +1240,12 @@ static void point(struct gl_state *st, const struct gl_target *t, const struct g
 		return;
 	if (offset != 0)
 		r.z = fminf(fmaxf(r.z + offset, 0), 1);
+	if (glf_selecting(st)) {
+		struct glf_fb_vertex fv;
+		fb_vertex(v, win, r.z, face, &fv);
+		glf_select_primitive(st, GL_POINT_TOKEN, &fv, 1);
+		return;
+	}
 	emit_point(st, t, &r);
 }
 
@@ -1190,11 +1261,14 @@ void glf_begin(struct gl_state *st, uint32_t mode)
 	st->mode = mode;
 	st->count = 0;
 	st->polygon_face = -1;
+	st->select.line_reset = true;
 }
 
-/* Whether this target is drawn into now */
+/* Whether this target is drawn into now (or the primitives selected or fed back) */
 static bool drawing(struct gl_state *st, const struct gl_target *t)
 {
+	if (glf_selecting(st))
+		return true;
 	if (!t->surface || t->width <= 0 || t->height <= 0)
 		return false;
 	raster(st, t);
@@ -1287,8 +1361,9 @@ void glf_vertex(struct gl_state *st, const struct gl_target *t, const float obj[
 		if (draw)
 			point(st, t, &v, 0, 0);
 		break;
-	case GL_LINES:
+	case GL_LINES:                          /* (the stipple reset for each) */
 		if (k & 1) {
+			st->select.line_reset = true;
 			if (draw)
 				seg(st, t, &vb[0], &v, &v, 0, 0);
 		} else {
@@ -1303,13 +1378,17 @@ void glf_vertex(struct gl_state *st, const struct gl_target *t, const float obj[
 			seg(st, t, &vb[1], &v, &v, 0, 0);
 		vb[1] = v;
 		break;
+	/* (polygons: each a run of lines since the stipple was reset, when outlined: a triangle, a quad, a polygon) */
 	case GL_TRIANGLES:
-		if (k % 3 < 2)
+		if (k % 3 < 2) {
 			vb[k % 3] = v;
-		else if (draw)
+		} else if (draw) {
+			st->select.line_reset = true;
 			tri(st, t, &vb[0], &vb[1], &v, &v, E_AB | E_BC | E_CA | E_FLAGS);
+		}
 		break;
 	case GL_TRIANGLE_STRIP:                 /* (odd triangles the other way round, for their facing) */
+		st->select.line_reset = true;
 		if (k >= 2 && draw) {
 			if (k & 1)
 				tri(st, t, &vb[1], &vb[0], &v, &v, E_AB | E_BC | E_CA);
@@ -1320,6 +1399,7 @@ void glf_vertex(struct gl_state *st, const struct gl_target *t, const float obj[
 		vb[1] = v;
 		break;
 	case GL_TRIANGLE_FAN:
+		st->select.line_reset = true;
 		if (k >= 2 && draw)
 			tri(st, t, &vb[0], &vb[1], &v, &v, E_AB | E_BC | E_CA);
 		vb[k ? 1 : 0] = v;
@@ -1333,6 +1413,7 @@ void glf_vertex(struct gl_state *st, const struct gl_target *t, const float obj[
 		if (k % 4 < 3) {
 			vb[k % 4] = v;
 		} else if (draw) {
+			st->select.line_reset = true;
 			tri(st, t, &vb[0], &vb[1], &v, &v, E_AB | E_CA | E_FLAGS);
 			tri(st, t, &vb[1], &vb[2], &v, &v, E_AB | E_BC | E_FLAGS);
 		}
@@ -1342,6 +1423,7 @@ void glf_vertex(struct gl_state *st, const struct gl_target *t, const float obj[
 			vb[k < 3 ? k : 2] = v;
 		} else {
 			if (draw) {
+				st->select.line_reset = true;
 				tri(st, t, &vb[2], &vb[0], &v, &v, E_AB | E_CA);
 				tri(st, t, &vb[0], &vb[1], &v, &v, E_AB | E_BC);
 			}
@@ -1390,8 +1472,8 @@ void glf_clear(struct gl_state *st, const struct gl_target *t, uint32_t mask)
 						    (st->color_mask[3] && t->alpha_bits));
 	bool depth = mask & GL_DEPTH_BUFFER_BIT && st->depth_mask && t->depth_bits;
 	bool stencil = mask & GL_STENCIL_BUFFER_BIT && t->stencil_bits && (st->stencil_write_mask & 0xFF);
-	if (!t->surface || (!color && !depth && !stencil))
-		return;
+	if (!t->surface || (!color && !depth && !stencil) || glf_selecting(st))
+		return;                         /* (selecting or feeding back: nothing, as Mesa) */
 	struct raster_state s;
 	memset(&s, 0, sizeof s);
 	s.clip_right = t->width;
@@ -1539,11 +1621,19 @@ unsigned glf_get(struct gl_state *st, uint32_t pname, double *v)
 	case 0x0B80: v[0] = v[1] = v[2] = v[3] = 0; return 4;                           /* GL_ACCUM_CLEAR_VALUE */
 	case 0x0C21: v[0] = 255; return 1;                              /* GL_INDEX_WRITEMASK */
 	case 0x0BF0: v[0] = 0x1503; return 1;                           /* GL_LOGIC_OP_MODE: GL_COPY */
-	case 0x0C40: v[0] = 0x1C00; return 1;                           /* GL_RENDER_MODE: GL_RENDER */
+	case 0x0C40: v[0] = st->select.mode; return 1;                  /* GL_RENDER_MODE */
 	case 0x0B32: v[0] = st->list_base; return 1;                    /* GL_LIST_BASE */
-	case 0x0D70: v[0] = 0; return 1;                                /* GL_NAME_STACK_DEPTH */
-	case 0x0B31: case 0x0D37: v[0] = 64; return 1;                  /* GL_MAX_LIST_NESTING, _NAME_STACK_DEPTH */
-	case 0x0D30: v[0] = 8; return 1;                                /* GL_MAX_EVAL_ORDER */
+	case 0x0D70: v[0] = st->select.depth; return 1;                 /* GL_NAME_STACK_DEPTH */
+	case 0x0DF4: v[0] = st->select.select_size; return 1;           /* GL_SELECTION_BUFFER_SIZE */
+	case 0x0DF1: v[0] = st->select.feedback_size; return 1;         /* GL_FEEDBACK_BUFFER_SIZE */
+	case 0x0DF2: v[0] = st->select.feedback_type; return 1;         /* GL_FEEDBACK_BUFFER_TYPE */
+	case 0x0B31: v[0] = 64; return 1;                               /* GL_MAX_LIST_NESTING */
+	case 0x0D37: v[0] = GLF_NAME_STACK; return 1;                   /* GL_MAX_NAME_STACK_DEPTH */
+	case 0x0D30: v[0] = GLF_EVAL_ORDER; return 1;                   /* GL_MAX_EVAL_ORDER */
+	case 0x0DD0: v[0] = st->grid1[0]; v[1] = st->grid1[1]; return 2;        /* GL_MAP1_GRID_DOMAIN */
+	case 0x0DD1: v[0] = st->grid1_n; return 1;                      /* GL_MAP1_GRID_SEGMENTS */
+	case 0x0DD2: for (int k = 0; k < 4; k++) v[k] = st->grid2[k]; return 4; /* GL_MAP2_GRID_DOMAIN */
+	case 0x0DD3: v[0] = st->grid2_n[0]; v[1] = st->grid2_n[1]; return 2;    /* GL_MAP2_GRID_SEGMENTS */
 	case 0x8073: v[0] = GLF_MAX_3D_TEXTURE_SIZE; return 1;          /* GL_MAX_3D_TEXTURE_SIZE */
 	case 0x806B: v[0] = st->pack.skip_images; return 1;             /* GL_PACK_SKIP_IMAGES */
 	case 0x806C: v[0] = st->pack.image_height; return 1;

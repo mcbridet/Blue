@@ -1012,7 +1012,12 @@ static void set_attrib(struct opengl *o, struct opengl_context *x, unsigned fn, 
 	case A_FOGCOORD: st->fog_coord = v[0]; break;
 	case A_INDEX: break;                    /* (there's no color index mode) */
 	case A_RASTERPOS: glf_raster_pos(st, v); break;
-	default: not_yet(o, fn); break;         /* (evaluators) */
+	case A_EVALCOORD: {
+		struct gl_target t = target_of(x);
+		glf_eval_coord(st, &t, at->count, v[0], v[1]);
+		break;
+	}
+	default: not_yet(o, fn); break;
 	}
 }
 
@@ -1308,11 +1313,29 @@ static unsigned name_size(uint32_t type)
 	}
 }
 
+/*
+ * glMap1's and glMap2's control points: how many values from the first's
+ * to the last's end, by the strides and orders (0: they're wrong, an error)
+ */
+static size_t map_values(unsigned fn, const union gl_arg *a)
+{
+	bool two = fn == F_glMap2f || fn == F_glMap2d;
+	unsigned dims, k = glf_map_components(a[0].u, &dims);
+	int32_t ustride = a[3].i, uorder = a[4].i, vstride = two ? a[7].i : 0, vorder = two ? a[8].i : 1;
+	if (!k || dims != (two ? 2u : 1u) || uorder < 1 || uorder > GLF_EVAL_ORDER || vorder < 1 ||
+	    vorder > GLF_EVAL_ORDER || ustride < (int32_t)k || (two && vstride < (int32_t)k) || ustride > (1 << 20) ||
+	    vstride > (1 << 20))
+		return 0;
+	return (size_t)(uorder - 1) * (size_t)ustride + (size_t)(vorder - 1) * (size_t)vstride + k;
+}
+
 /* The bytes a call's pointer argument points to that a list keeps (0: none, or not known) */
 static size_t data_len(const struct opengl_context *x, unsigned fn, const union gl_arg *a)
 {
 	const struct gl_pixel_store *ps = &x->st.unpack;
 	switch (fn) {
+	case F_glMap1f: case F_glMap2f: return 4 * map_values(fn, a);
+	case F_glMap1d: case F_glMap2d: return 8 * map_values(fn, a);
 	case F_glTexParameteriv: case F_glTexParameterfv: case F_glTexEnviv: case F_glTexEnvfv:
 		return 4 * vector_values(a[1].u);
 	case F_glLightModelfv: case F_glLightModeliv: case F_glFogfv: case F_glFogiv:
@@ -1850,6 +1873,73 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 		glf_read_pixels(st, &t, a[0].i, a[1].i, a[2].i, a[3].i, a[4].u, a[5].u, mem_ptr(m, a[6].u));
 		return 0;
 	}
+	/* selection and feedback (glselect.c): the records into the program's buffer as glRenderMode leaves a mode */
+	case F_glRenderMode: {
+		uint32_t at = 0;
+		const uint32_t *words;
+		size_t count;
+		int32_t r = glf_render_mode(st, a[0].u, &at, &words, &count);
+		if (count && count <= (16u << 20) && writable(m, at, 4 * (uint32_t)count))
+			for (size_t k = 0; k < count; k++)
+				mem_w32(m, at + 4 * (uint32_t)k, words[k]);
+		return (uint32_t)r;
+	}
+	case F_glSelectBuffer: glf_select_buffer(st, a[0].i, a[1].u); return 0;
+	case F_glFeedbackBuffer: glf_feedback_buffer(st, a[0].i, a[1].u, a[2].u); return 0;
+	case F_glInitNames: glf_init_names(st); return 0;
+	case F_glLoadName: glf_load_name(st, a[0].u); return 0;
+	case F_glPushName: glf_push_name(st, a[0].u); return 0;
+	case F_glPopName: glf_pop_name(st); return 0;
+	case F_glPassThrough: glf_pass_through(st, a[0].f); return 0;
+	/* evaluators (gleval.c): the control points packed, [v][u][component] */
+	case F_glMap1f: case F_glMap1d: case F_glMap2f: case F_glMap2d: {
+		bool two = fn == F_glMap2f || fn == F_glMap2d, dbl = fn == F_glMap1d || fn == F_glMap2d;
+		double domain[4] = { 0, 1, 0, 1 };
+		static const unsigned at[4] = { 1, 2, 5, 6 };
+		for (unsigned k = 0; k < (two ? 4u : 2u); k++)
+			domain[k] = dbl ? a[at[k]].d : a[at[k]].f;
+		int32_t ustride = a[3].i, uorder = a[4].i, vstride = two ? a[7].i : 0, vorder = two ? a[8].i : 1;
+		size_t n = map_values(fn, a);
+		const uint8_t *p = n ? in_data(o, x, a[two ? 9 : 5].u, n * (dbl ? 8 : 4)) : NULL;
+		float points[GLF_EVAL_ORDER * GLF_EVAL_ORDER * 4];
+		unsigned dims, k = glf_map_components(a[0].u, &dims);       /* (p: k is right) */
+		for (int32_t j = 0; p && j < vorder; j++)
+			for (int32_t i = 0; i < uorder; i++)
+				for (unsigned c = 0; c < k; c++) {
+					size_t from = (size_t)i * (size_t)ustride + (size_t)j * (size_t)vstride + c;
+					uint32_t w = dbl ? 0 : be32(p + 4 * from);
+					float *to = &points[((size_t)j * (size_t)uorder + (size_t)i) * k + c];
+					if (dbl)
+						*to = (float)be_double(p + 8 * from);
+					else
+						memcpy(to, &w, 4);
+				}
+		glf_map(st, two ? 2 : 1, a[0].u, domain, ustride, uorder, vstride, vorder, p ? points : NULL);
+		return 0;
+	}
+	case F_glMapGrid1f: glf_map_grid1(st, a[0].i, a[1].f, a[2].f); return 0;
+	case F_glMapGrid1d: glf_map_grid1(st, a[0].i, (float)a[1].d, (float)a[2].d); return 0;
+	case F_glMapGrid2f: glf_map_grid2(st, a[0].i, a[1].f, a[2].f, a[3].i, a[4].f, a[5].f); return 0;
+	case F_glMapGrid2d:
+		glf_map_grid2(st, a[0].i, (float)a[1].d, (float)a[2].d, a[3].i, (float)a[4].d, (float)a[5].d);
+		return 0;
+	case F_glEvalMesh1: case F_glEvalMesh2: case F_glEvalPoint1: case F_glEvalPoint2: {
+		struct gl_target t = target_of(x);
+		if (fn == F_glEvalMesh1)
+			glf_eval_mesh(st, &t, 1, a[0].u, a[1].i, a[2].i, 0, 0);
+		else if (fn == F_glEvalMesh2)
+			glf_eval_mesh(st, &t, 2, a[0].u, a[1].i, a[2].i, a[3].i, a[4].i);
+		else
+			glf_eval_point(st, &t, fn == F_glEvalPoint1 ? 1 : 2, a[0].i, fn == F_glEvalPoint1 ? 0 : a[1].i);
+		return 0;
+	}
+	case F_glGetMapdv: case F_glGetMapfv: case F_glGetMapiv: {
+		double v[GLF_EVAL_ORDER * GLF_EVAL_ORDER * 4];
+		unsigned n = glf_get_map(st, a[0].u, a[1].u, v);
+		if (n)
+			put_values(m, a[2].u, fn == F_glGetMapdv ? 'd' : fn == F_glGetMapfv ? 'f' : 'i', 0, v, n);
+		return 0;
+	}
 	/* pixels: at the raster position, the pixel transfer, into textures */
 	case F_glBitmap: {
 		size_t bytes = a[0].i > 0 && a[1].i > 0 ? glf_image_bytes(&st->unpack, GL_COLOR_INDEX, GL_BITMAP, a[0].i,
@@ -2074,11 +2164,8 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 	case F_glGetPointerv: {
 		uint32_t p;
 		if (!glf_get_pointer(st, a[0].u, &p)) {
-			if (a[0].u != 0x0DF0 && a[0].u != 0x0DF3) {     /* (feedback and selection buffers: none) */
-				glf_error(st, GL_INVALID_ENUM);
-				return 0;
-			}
-			p = 0;
+			glf_error(st, GL_INVALID_ENUM);
+			return 0;
 		}
 		if (writable(m, a[1].u, 4))
 			mem_w32(m, a[1].u, p);

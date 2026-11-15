@@ -15,7 +15,7 @@
 enum { A_CURRENT = 0x1, A_POINT = 0x2, A_LINE = 0x4, A_POLYGON = 0x8, A_POLYGON_STIPPLE = 0x10, A_PIXEL_MODE = 0x20,
        A_LIGHTING = 0x40,
        A_FOG = 0x80, A_DEPTH = 0x100, A_STENCIL = 0x400, A_VIEWPORT = 0x800, A_TRANSFORM = 0x1000,
-       A_ENABLE = 0x2000, A_COLOR = 0x4000, A_HINT = 0x8000, A_LIST = 0x20000, A_TEXTURE = 0x40000,
+       A_ENABLE = 0x2000, A_COLOR = 0x4000, A_HINT = 0x8000, A_EVAL = 0x10000, A_LIST = 0x20000, A_TEXTURE = 0x40000,
        A_SCISSOR = 0x80000 };
 enum { C_PIXEL_STORE = 0x1, C_VERTEX_ARRAY = 0x2 };
 
@@ -177,6 +177,17 @@ void glf_pop_attrib(struct gl_state *st)
 		caps(st, o, GLF_CAP_LIGHTING, 1 + GLF_LIGHTS);
 		cap(st, o, GL_COLOR_MATERIAL);
 	}
+	if (m & A_EVAL) {
+		st->grid1_n = o->grid1_n;
+		memcpy(st->grid2_n, o->grid2_n, sizeof st->grid2_n);
+		memcpy(st->grid1, o->grid1, sizeof st->grid1);
+		memcpy(st->grid2, o->grid2, sizeof st->grid2);
+		cap(st, o, 0x0D80);                             /* GL_AUTO_NORMAL */
+		for (uint32_t k = 0; k < 9; k++) {              /* GL_MAP1_COLOR_4..., GL_MAP2_COLOR_4... */
+			cap(st, o, 0x0D90 + k);
+			cap(st, o, 0x0DB0 + k);
+		}
+	}
 	if (m & A_FOG) {
 		st->fog_mode = o->fog_mode;
 		st->fog_density = o->fog_density;
@@ -298,4 +309,9 @@ void glf_free(struct gl_state *st)
 		free(st->attrib_stack[--st->attrib_depth]);
 	while (st->client_depth)
 		free(st->client_stack[--st->client_depth]);
+	free(st->select.words);
+	st->select.words = NULL;
+	st->select.cap = st->select.count = 0;
+	free(st->eval);
+	st->eval = NULL;
 }

@@ -747,6 +747,21 @@ static bool drawable(struct gl_state *st, const struct gl_target *t, int32_t w, 
 	       st->transfer.zoom[0] != 0 && st->transfer.zoom[1] != 0;
 }
 
+/* Selecting or feeding back: the raster position as the vertex of a token instead of drawing (true then) */
+static bool select_raster(struct gl_state *st, uint32_t token)
+{
+	if (!glf_selecting(st))
+		return false;
+	if (st->rpos.valid) {
+		struct glf_fb_vertex v;
+		memcpy(v.win, st->rpos.win, sizeof v.win);
+		memcpy(v.color, st->rpos.color, sizeof v.color);
+		memcpy(v.tex, st->rpos.tex[0], sizeof v.tex);
+		glf_select_primitive(st, token, &v, 1);
+	}
+	return true;
+}
+
 void glf_bitmap(struct gl_state *st, const struct gl_target *t, int32_t w, int32_t h, float xorig, float yorig,
 		float xmove, float ymove, const uint8_t *bits)
 {
@@ -757,6 +772,8 @@ void glf_bitmap(struct gl_state *st, const struct gl_target *t, int32_t w, int32
 	if (!st->rpos.valid)
 		return;
 	struct gl_raster_pos *r = &st->rpos;
+	if (select_raster(st, GL_BITMAP_TOKEN))
+		bits = NULL;
 	if (bits && t->surface && t->width > 0 && t->height > 0 && w > 0 && h > 0 && (size_t)w * (size_t)h <= (1u << 24)) {
 		struct layout L;
 		layout_of(&st->unpack, GL_COLOR_INDEX, GL_BITMAP, w, &L);
@@ -801,7 +818,8 @@ void glf_draw_pixels(struct gl_state *st, const struct gl_target *t, int32_t w, 
 		glf_error(st, GL_INVALID_OPERATION);
 		return;
 	}
-	if (!pixels || !drawable(st, t, w, h) || (size_t)w * (size_t)h > (1u << 24))
+	if (select_raster(st, GL_DRAW_PIXEL_TOKEN) || !pixels || !drawable(st, t, w, h) ||
+	    (size_t)w * (size_t)h > (1u << 24))
 		return;
 	uint32_t *texels = malloc((size_t)w * (size_t)h * 4);
 	if (!texels) {
@@ -853,7 +871,7 @@ void glf_copy_pixels(struct gl_state *st, const struct gl_target *t, int32_t x, 
 		glf_error(st, GL_INVALID_OPERATION);
 		return;
 	}
-	if (!drawable(st, t, w, h) || (size_t)w * (size_t)h > (1u << 24))
+	if (select_raster(st, GL_COPY_PIXEL_TOKEN) || !drawable(st, t, w, h) || (size_t)w * (size_t)h > (1u << 24))
 		return;
 	uint32_t *texels = malloc((size_t)w * (size_t)h * 4);
 	if (!texels) {

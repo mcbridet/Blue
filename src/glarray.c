@@ -237,6 +237,10 @@ bool glf_get_pointer(const struct gl_state *st, uint32_t pname, uint32_t *p)
 			*p = st->arrays[array == GLF_ARRAY_TEX0 ? array + st->client_active_texture : array].pointer;
 			return true;
 		}
+	if (pname == 0x0DF0 || pname == 0x0DF3) {       /* GL_FEEDBACK_BUFFER_POINTER, GL_SELECTION_BUFFER_POINTER */
+		*p = pname == 0x0DF0 ? st->select.feedback_buffer : st->select.select_buffer;
+		return true;
+	}
 	return false;
 }
 
