@@ -448,7 +448,7 @@ static void test_random_programs(unsigned programs, bool rom_code)
 	for (unsigned p = 0; p < programs && failures < 3; p++) {
 		uint64_t seed = 0x9E3779B97F4A7C15ull * (base + p + 1);
 		rng = seed;
-		uint32_t code[CODE_MAX + 1];
+		uint32_t code[CODE_MAX + 1] = { 0 };   /* (all of it goes into guest memory) */
 		unsigned n = 8 + pick(CODE_MAX - 8);
 		fp_heavy = pick(4) == 0;
 		for (unsigned k = 0; k < n; k++)
