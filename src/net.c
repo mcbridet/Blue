@@ -517,7 +517,7 @@ bool net_start(struct net *n)
 		.vnetwork = ipv4(0x0A000200),           /* 10.0.2.0/24 */
 		.vnetmask = ipv4(0xFFFFFF00),
 		.vhost = ipv4(0x0A000202),              /* the gateway, 10.0.2.2 */
-		.vhostname = "syshm",
+		.vhostname = "blue",
 		.vdhcp_start = ipv4(0x0A00020F),        /* the guest, 10.0.2.15 */
 		.vnameserver = ipv4(0x0A000203),        /* DNS, 10.0.2.3 */
 	};

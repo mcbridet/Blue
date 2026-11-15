@@ -256,8 +256,8 @@ size_t disk_build_ndrv(struct disk *d, uint8_t *out, size_t size, uint32_t hostc
 	};
 	static const uint8_t zero[DATA_SIZE_REG_ENTRY];
 	struct ndrv_spec spec = {
-		.device_name = "syshm,disk",
-		.driver_name = ".syshmDisk",
+		.device_name = "blue,disk",
+		.driver_name = ".BlueDisk",
 		.runtime_options = NDRV_LOADED_UPON_DISCOVERY | NDRV_OPENED_UPON_LOAD,
 		.category = 0x6E647276u,        /* 'ndrv' */
 		.type = 0x626C6F6Bu,            /* 'blok' */
@@ -270,7 +270,7 @@ size_t disk_build_ndrv(struct disk *d, uint8_t *out, size_t size, uint32_t hostc
 	};
 	uint8_t icons[DATA_SIZE_ICONS];
 	if (d->floppy || d->cdrom) {
-		const char *where = d->floppy ? "syshm floppy drive" : "syshm CD-ROM drive";
+		const char *where = d->floppy ? "Blue floppy drive" : "Blue CD-ROM drive";
 		memset(icons, 0, sizeof icons);
 		(d->floppy ? floppy_icons : cdrom_icons)(icons + MEDIA_ICN, icons + DRIVE_ICN, icons + MEDIA_ICNS,
 							  icons + DRIVE_ICNS);
@@ -280,8 +280,8 @@ size_t disk_build_ndrv(struct disk *d, uint8_t *out, size_t size, uint32_t hostc
 		spec.extra_len = sizeof icons;
 	}
 	if (d->floppy) {
-		spec.device_name = "syshm,floppy";
-		spec.driver_name = ".syshmFloppy";
+		spec.device_name = "blue,floppy";
+		spec.driver_name = ".BlueFloppy";
 	} else if (d->cdrom) {
 		spec.driver_name = ".AppleCD";  /* (programs open the CD-ROM driver by its name) */
 	}

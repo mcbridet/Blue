@@ -192,8 +192,8 @@ bool install_needed(const struct install_check *ck)
 
 static const char *tool_name(unsigned t)
 {
-	static const char *const names[TOOLS_FILES] = { "syshm Enhancements", "syshm 3D Engine", "syshm OpenGL Library",
-							"syshm OpenGL Memory", "syshm OpenGL Utility" };
+	static const char *const names[TOOLS_FILES] = { "Blue Enhancements", "Blue 3D Engine", "Blue OpenGL Library",
+							"Blue OpenGL Memory", "Blue OpenGL Utility" };
 	return names[t];
 }
 
@@ -461,7 +461,7 @@ static bool inject(struct install *in, struct mem *m, uint16_t trap)
 	make_bootstrap(head + R_CODE, entry, routine, (uint32_t)len);
 	make_routine_descriptor(head + R_RD);
 	put_be32(head + R_STATUS, STATUS_PENDING);
-	put_pstring(head + R_NAME, "syshm Installer", 64);
+	put_pstring(head + R_NAME, "Blue Installer", 64);
 	mem_map(m, INSTALL_REGION, INSTALL_REGION_SIZE, MEM_RWX);
 	mem_load(m, at(0), head, sizeof head);
 	mem_load(m, at(R_FRAGMENT), fragment, (uint32_t)len);
@@ -570,7 +570,7 @@ static bool ask_to_quit(struct install *in, struct helper *h)
 	h->quit = true;
 	in->quit_asked = true;
 	in->phase = INSTALL_QUITTING;
-	printf("tools: asking syshm Enhancements to quit, to replace it\n");
+	printf("tools: asking Blue Enhancements to quit, to replace it\n");
 	return true;
 }
 
@@ -647,7 +647,7 @@ void install_answer(struct install *in, bool yes, struct helper *h)
 #define SM_SYSTEM_SCRIPT 0xFFFFFFFFu    /* (-1) */
 #define FNF_ERR (-43)
 #define WRONG_DISK 1                    /* (not an OSErr: the System Folder isn't the one checked) */
-#define TEMP_NAME "syshm installing"
+#define TEMP_NAME "Blue installing"
 #define TEMP_TYPE FOURCC('T', 'E', 'M', 'P')    /* (until it's whole: nothing is started from it) */
 #define TEMP_CREATOR FOURCC('s', 'y', 'H', 'p')
 
@@ -1190,14 +1190,14 @@ static void report(struct install *in, struct ndrv_call *c)
 	add(s, len, ".");
 	const struct install_result *e = &r[TOOLS_ENHANCEMENTS];
 	if (e->done && e->dir != in->ext_dir)
-		add(s, len, " It stays in \"%s\": Mac OS starts syshm Enhancements only from \"%s\".", e->folder,
+		add(s, len, " It stays in \"%s\": Mac OS starts Blue Enhancements only from \"%s\".", e->folder,
 		    in->ext_name);
 	if (in->restarting)
 		add(s, len, " Mac OS is restarting.");
 	else if (in->restart_error)
 		add(s, len, " Restart Mac OS to use them.");
 	else if (in->quit_asked || (e->done && e->dir == in->ext_dir))
-		add(s, len, " syshm Enhancements starts with Mac OS next time.");
+		add(s, len, " Blue Enhancements starts with Mac OS next time.");
 	finish_news(in);
 	ndrv_finish(c, 0);
 }

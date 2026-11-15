@@ -1,18 +1,18 @@
 /*
- * The guest tools: a "syshm Tools" volume of files to put in the System
+ * The guest tools: a "Blue Tools" volume of files to put in the System
  * Folder, for what only code inside Mac OS can do. Like the drivers, they
  * are generated code fragments whose logic runs in the emulator through
  * host calls (see ndrv.h).
  *
- *   syshm Enhancements  a background-only application, which Mac OS launches
+ *   Blue Enhancements   a background-only application, which Mac OS launches
  *                       from the Extensions folder at startup. When the host
  *                       window is resized, it switches the display to a mode
  *                       of that size (video_request_size()) with the Display
  *                       Manager. With a clipboard to share (clip.h), it
  *                       patches the Scrap Manager's ZeroScrap and PutScrap,
  *                       and filters events, for every application.
- *   syshm 3D Engine     a QuickDraw 3D RAVE drawing engine (rave.h).
- *   syshm OpenGL ...    OpenGLLibrary, OpenGLMemory and OpenGLUtility
+ *   Blue 3D Engine      a QuickDraw 3D RAVE drawing engine (rave.h).
+ *   Blue OpenGL ...     OpenGLLibrary, OpenGLMemory and OpenGLUtility
  *                       (opengl.h), Mac OS 9's OpenGL; on Mac OS 9 they
  *                       take Apple's place (see install.h).
  */
@@ -50,7 +50,7 @@ int tools_files(struct hfs_file files[TOOLS_FILES]);
 
 /*
  * Writes the tools volume (a disk image) to `path`. Returns 0 on success.
- * BLUE_TOOLS_APPL=1 makes syshm Enhancements there an application the
+ * BLUE_TOOLS_APPL=1 makes Blue Enhancements there an application the
  * Finder opens (an 'appe' only runs from Extensions), to try it from a CD's
  * system; BLUE_TOOLS_GL_TEST=1 adds the OpenGL test application (gltest.h).
  */

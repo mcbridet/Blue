@@ -161,10 +161,10 @@ void test_nvram(void)
 	if (node) {
 		uint32_t len;
 		const uint8_t *path = flat_prop(node, "bootpath", &len);
-		static const char want[] = "/pci/syshm,disk@3:3,\\\\:tbxi";
+		static const char want[] = "/pci/blue,disk@3:3,\\\\:tbxi";
 		CHECK(path && len == sizeof want && memcmp(path, want, len) == 0);
 	}
-	CHECK(flat_find(tree, NULL, "syshm,disk", "pci") != NULL);
+	CHECK(flat_find(tree, NULL, "blue,disk", "pci") != NULL);
 
 	/*
 	 * NanoKernel 2's HWInfo (0x0108): CascadeInfo at +0xA8, no cascaded

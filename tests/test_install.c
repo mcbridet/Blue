@@ -270,7 +270,7 @@ static void test_offer(void)
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
 	CHECK(strcmp(in.yes, "Update and Restart") == 0);
-	CHECK(strstr(in.question, "need updating: syshm 3D Engine is from another version of Blue.") != NULL);
+	CHECK(strstr(in.question, "need updating: Blue 3D Engine is from another version of Blue.") != NULL);
 
 	/* Mac OS 9: Apple's OpenGL goes when Blue's comes; Blue's beside Apple's; Apple's back */
 	struct item folders9[] = { folder(SYSTEM, EXTENSIONS, "Extensions"), folder(SYSTEM, DISABLED, "Extensions (Disabled)") };
@@ -607,13 +607,13 @@ static void test_installer(void)
 	run_installer(&in);
 	CHECK_EQ(in.phase, INSTALL_DONE);
 	CHECK(in.news_ready);
-	CHECK(same_as(find(EXTENSIONS, "syshm Enhancements"), TOOLS_ENHANCEMENTS));
+	CHECK(same_as(find(EXTENSIONS, "Blue Enhancements"), TOOLS_ENHANCEMENTS));
 	CHECK(same_as(find(DISABLED, "Old 3D"), TOOLS_3D_ENGINE));     /* (still disabled, still its name) */
-	CHECK(!find(DISABLED, "syshm installing") && !find(EXTENSIONS, "syshm installing"));
+	CHECK(!find(DISABLED, "Blue installing") && !find(EXTENSIONS, "Blue installing"));
 	CHECK_EQ(fs.opened, 0);
 	CHECK(fs.flushes == 1 && fs.restarts == 1 && in.restarting);
-	CHECK(strcmp(in.news, "installed syshm Enhancements in \"Test:System Folder:Extensions\" and updated "
-			      "syshm 3D Engine (\"Old 3D\") in \"Test:System Folder:Extensions (Disabled)\". Mac OS is "
+	CHECK(strcmp(in.news, "installed Blue Enhancements in \"Test:System Folder:Extensions\" and updated "
+			      "Blue 3D Engine (\"Old 3D\") in \"Test:System Folder:Extensions (Disabled)\". Mac OS is "
 			      "restarting.") == 0);
 }
 
@@ -632,7 +632,7 @@ static void test_installer_errors(void)
 	write_volume(items, n, 0);
 	memset(&fs, 0, sizeof fs);
 	fs.next_id = 100;
-	struct file *old = add_file(EXTENSIONS, "syshm 3D Engine", 61, &tools[TOOLS_3D_ENGINE]);
+	struct file *old = add_file(EXTENSIONS, "Blue 3D Engine", 61, &tools[TOOLS_3D_ENGINE]);
 	old->fork[0][0] ^= 1;
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, true, &h);                  /* (a script's, before the question) */
@@ -651,20 +651,20 @@ static void test_installer_errors(void)
 	install_call(&in, &c);
 	for (unsigned steps = 0; !c.done && steps < 1000; steps++) {
 		unsigned call = (c.tvector - TVECTORS) / 8;
-		fs.full = find(EXTENSIONS, "syshm Enhancements") != NULL;
+		fs.full = find(EXTENSIONS, "Blue Enhancements") != NULL;
 		int16_t err = file_manager(call, c.out);
 		c = (struct ndrv_call){ .mem = &mem, .entry = NDRV_ENTRY_RESUME, .toc = TOC, .frame = FRAME };
 		c.arg[0] = (uint32_t)(int32_t)err;
 		install_call(&in, &c);
 	}
 	CHECK(c.done);
-	CHECK(same_as(find(EXTENSIONS, "syshm Enhancements"), TOOLS_ENHANCEMENTS));
+	CHECK(same_as(find(EXTENSIONS, "Blue Enhancements"), TOOLS_ENHANCEMENTS));
 	CHECK(old->used && old->fork[0][0] != tools[TOOLS_3D_ENGINE].data[0]);  /* the old engine, as it was */
-	CHECK(!find(EXTENSIONS, "syshm installing"));
+	CHECK(!find(EXTENSIONS, "Blue installing"));
 	CHECK_EQ(fs.opened, 0);
 	CHECK(fs.flushes == 0 && fs.restarts == 0 && !in.restarting);
-	CHECK(strcmp(in.news, "installed syshm Enhancements in \"Test:System Folder:Extensions\"; couldn't update "
-			      "syshm 3D Engine (writing it): the disk is full. syshm Enhancements starts with Mac OS next "
+	CHECK(strcmp(in.news, "installed Blue Enhancements in \"Test:System Folder:Extensions\"; couldn't update "
+			      "Blue 3D Engine (writing it): the disk is full. Blue Enhancements starts with Mac OS next "
 			      "time.") == 0);
 
 	/* a locked volume: nothing done */
@@ -676,7 +676,7 @@ static void test_installer_errors(void)
 	install_answer(&in, true, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
 	run_installer(&in);
-	CHECK(!find(EXTENSIONS, "syshm Enhancements") && !find(EXTENSIONS, "syshm installing"));
+	CHECK(!find(EXTENSIONS, "Blue Enhancements") && !find(EXTENSIONS, "Blue installing"));
 	CHECK(strcmp(in.news, "couldn't install the guest tools (looking at the startup disk): the disk is locked.") == 0);
 	CHECK_EQ(fs.restarts, 0);
 
@@ -688,9 +688,9 @@ static void test_installer_errors(void)
 	install_answer(&in, true, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
 	run_installer(&in);
-	CHECK(same_as(find(EXTENSIONS, "syshm 3D Engine"), TOOLS_3D_ENGINE));
+	CHECK(same_as(find(EXTENSIONS, "Blue 3D Engine"), TOOLS_3D_ENGINE));
 	CHECK(fs.flushes == 1 && fs.restarts == 0 && !in.restarting);
-	CHECK(strcmp(in.news, "installed syshm Enhancements and syshm 3D Engine in \"Test:System Folder:Extensions\"; "
+	CHECK(strcmp(in.news, "installed Blue Enhancements and Blue 3D Engine in \"Test:System Folder:Extensions\"; "
 			      "couldn't restart Mac OS: there isn't enough memory. Restart Mac OS to use them.") == 0);
 }
 
@@ -700,12 +700,12 @@ static void test_installer_quit(void)
 	static struct install in;
 	struct helper h = { .running = true };
 	struct item items[8] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
-				 tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 62, "syshm Helper", true),
+				 tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 62, "Blue Helper", true),
 				 tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 63, NULL, false) };
 	write_volume(items, with_gl(items, 3, EXTENSIONS, 70), 0);
 	memset(&fs, 0, sizeof fs);
 	fs.next_id = 100;
-	add_file(EXTENSIONS, "syshm Helper", 62, &tools[TOOLS_ENHANCEMENTS])->locked = true;
+	add_file(EXTENSIONS, "Blue Helper", 62, &tools[TOOLS_ENHANCEMENTS])->locked = true;
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, true, &h);
 	struct install_idle w = { &mem, &h, true, HZ, HZ, 1000, DRIVE, IDLE_TRAP };
@@ -720,13 +720,13 @@ static void test_installer_quit(void)
 	w.tb += HZ / 5;
 	CHECK(install_idle(&in, &w));                   /* soon after, the installer */
 	run_installer(&in);
-	CHECK(strcmp(in.news, "couldn't update syshm Enhancements (replacing the old copy): the file is locked. "
-			      "syshm Enhancements starts with Mac OS next time.") == 0);
+	CHECK(strcmp(in.news, "couldn't update Blue Enhancements (replacing the old copy): the file is locked. "
+			      "Blue Enhancements starts with Mac OS next time.") == 0);
 	CHECK_EQ(fs.restarts, 0);
-	CHECK(!find(EXTENSIONS, "syshm installing"));
+	CHECK(!find(EXTENSIONS, "Blue installing"));
 
 	/* ... or is replaced, and Mac OS restarts */
-	find(EXTENSIONS, "syshm Helper")->locked = false;
+	find(EXTENSIONS, "Blue Helper")->locked = false;
 	h.running = true;
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, true, &h);
@@ -739,8 +739,8 @@ static void test_installer_quit(void)
 	w.tb += HZ / 5;
 	CHECK(install_idle(&in, &w));
 	run_installer(&in);
-	CHECK(same_as(find(EXTENSIONS, "syshm Helper"), TOOLS_ENHANCEMENTS));
-	CHECK(strcmp(in.news, "updated syshm Enhancements (\"syshm Helper\") in \"Test:System Folder:Extensions\". "
+	CHECK(same_as(find(EXTENSIONS, "Blue Helper"), TOOLS_ENHANCEMENTS));
+	CHECK(strcmp(in.news, "updated Blue Enhancements (\"Blue Helper\") in \"Test:System Folder:Extensions\". "
 			      "Mac OS is restarting.") == 0);
 	CHECK_EQ(fs.restarts, 1);
 
@@ -802,8 +802,8 @@ static void test_installer_apple(void)
 	run_installer(&in);
 	for (unsigned t = 0; t < TOOLS_FILES; t++)
 		CHECK(same_as(find(EXTENSIONS, tools[t].name), t));
-	CHECK(strcmp(in.news, "installed syshm Enhancements, syshm 3D Engine, syshm OpenGL Library, syshm OpenGL Memory "
-			      "and syshm OpenGL Utility in \"Test:System Folder:Extensions\". Mac OS is restarting.") == 0);
+	CHECK(strcmp(in.news, "installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory "
+			      "and Blue OpenGL Utility in \"Test:System Folder:Extensions\". Mac OS is restarting.") == 0);
 	h.running = true;
 
 	struct item items[12] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
@@ -822,7 +822,7 @@ static void test_installer_apple(void)
 		CHECK(same_as(find(EXTENSIONS, tools[t].name), t));
 	for (unsigned k = 0; k < 3; k++)
 		CHECK(find(DISABLED, names[k]) && !find(EXTENSIONS, names[k]));
-	CHECK(strcmp(in.news, "installed syshm OpenGL Library, syshm OpenGL Memory and syshm OpenGL Utility in "
+	CHECK(strcmp(in.news, "installed Blue OpenGL Library, Blue OpenGL Memory and Blue OpenGL Utility in "
 			      "\"Test:System Folder:Extensions\"; moved Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility "
 			      "to \"Test:System Folder:Extensions (Disabled)\". Mac OS is restarting.") == 0);
 	CHECK_EQ(fs.restarts, 1);

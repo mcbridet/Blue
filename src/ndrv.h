@@ -83,7 +83,7 @@ struct ndrv_spec {
 	unsigned entries;               /* entry points (0: NDRV_ENTRIES) */
 	/* drivers */
 	const char *device_name;        /* matched against the node's name/compatible */
-	const char *driver_name;        /* unit table name, e.g. ".Display_syshm" */
+	const char *driver_name;        /* unit table name, e.g. ".Display_Blue" */
 	uint32_t runtime_options;
 	uint32_t category, type;        /* service, e.g. 'ndrv' 'vide' */
 	uint32_t version;               /* NumVersion */

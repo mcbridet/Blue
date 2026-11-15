@@ -1,5 +1,5 @@
 /*
- * The clipboard shared by Mac OS and the host, for text. syshm Enhancements
+ * The clipboard shared by Mac OS and the host, for text. Blue Enhancements
  * (tools.c) patches the Scrap Manager so that what applications put in the
  * scrap comes here, and the host's text goes into the scrap of the front
  * application when it next looks at it. This is the part in between: the
@@ -23,7 +23,7 @@
 
 struct clip {
 	bool enabled;                   /* the guest's scrap is kept in step with a host clipboard */
-	bool listening;                 /* ... by syshm Enhancements' patches, which are in place */
+	bool listening;                 /* ... by Blue Enhancements' patches, which are in place */
 	char *host;                     /* the host clipboard's text as last seen or set (UTF-8), or NULL */
 	/* host to Mac OS: the host's text converted, for the front application's scrap */
 	bool pending;                   /* ... not yet put there */
@@ -69,7 +69,7 @@ const char *clip_take(struct clip *c);
 /*
  * Whether Mac OS's front application has yet to be told that the host has
  * new text: applications that keep a private scrap (TextEdit's) take in
- * the scrap only on a resume event that says it has changed, which syshm
+ * the scrap only on a resume event that says it has changed, which Blue
  * Enhancements posts when it next looks (within a sixth of a second). Keys
  * typed in the window meanwhile (Command-V) wait for that, at most
  * CLIP_HOLD_NS: clip_hold_key() is false if a key can go to the guest now,

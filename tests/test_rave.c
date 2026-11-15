@@ -107,7 +107,7 @@ static void run(struct gpu *gpu)
 
 	CHECK_EQ(gestalt(&r, GESTALT_VENDOR), 1);       /* ATI's, as games want */
 	CHECK_EQ(gestalt(&r, GESTALT_ENGINE), 5);
-	CHECK_EQ(gestalt(&r, GESTALT_NAME_LENGTH), 8);  /* "syshm 3D" */
+	CHECK_EQ(gestalt(&r, GESTALT_NAME_LENGTH), 7);  /* "Blue 3D" */
 
 	uint32_t device[6] = { 0, SIZE * 4, PIXEL_ARGB32, SIZE, SIZE, FB };    /* memory: rowBytes, type, w, h, base */
 	for (int k = 0; k < 6; k++)

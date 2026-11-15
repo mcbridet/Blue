@@ -191,7 +191,7 @@ static void test_hold(void)
 	bool down;
 
 	clip_host_text(&c, "text");
-	CHECK(!clip_telling(&c));               /* (no syshm Enhancements to tell it) */
+	CHECK(!clip_telling(&c));               /* (no Blue Enhancements to tell it) */
 	CHECK(!clip_hold_key(&c, 9, true, 0));
 	c.listening = true;
 	CHECK(clip_telling(&c));

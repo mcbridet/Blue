@@ -119,7 +119,7 @@ enum { OPTION_SWAP_RECT, OPTION_BUFFER_RECT, OPTION_SWAP_LIMIT, OPTION_COLORMAP_
 #define TEXTURE_MEMORY (32u << 20)
 static const char vendor[] = "ATI Technologies Inc.";
 static const char renderer[] = "Rage 128 OpenGL Engine";
-static const char version[] = "1.2 syshm";
+static const char version[] = "1.2 Blue";
 /* (Mac OS 9.2.2's engine's, in its order, but only those Blue does) */
 static const char extensions[] = "GL_APPLE_transform_hint GL_APPLE_packed_pixel GL_ARB_transpose_matrix "
 				 "GL_EXT_clip_volume_hint GL_EXT_rescale_normal GL_NV_texgen_reflection "
@@ -147,7 +147,7 @@ static const char *const agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE] = {
  * calls write into (see "callouts").
  */
 #define DATA_MAGIC 0x7379474Cu          /* 'syGL' */
-#define DATA_VERSION 3u
+#define DATA_VERSION 4u
 enum { D_MAGIC = 0, D_VERSION = 4, D_CURRENT = OPENGL_DATA_CURRENT, D_RECORD = OPENGL_DATA_RECORD,
        D_RECORD_END = D_RECORD + 4, D_STRINGS = 20 };
 #define FORMATS 16
@@ -3422,7 +3422,7 @@ static void library_call(struct opengl *o, struct ndrv_call *c)
 			} else if (!library_current(o, in)) {
 				in->stale = true;
 				if (!o->told_stale)
-					printf("opengl: the guest's syshm OpenGL is older than this version of Blue: update "
+					printf("opengl: the guest's Blue OpenGL is older than this version of Blue: update "
 					       "it (Blue offers to, in a window), or by hand from a volume made with \"blue "
 					       "tools create\" into Extensions\n");
 				o->told_stale = true;

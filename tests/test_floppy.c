@@ -371,7 +371,7 @@ static void test_driver(void)
 	CHECK_EQ(io(&d, &mem, NDRV_CONTROL, 21, drive), 0);    /* drive icon, then where it is */
 	uint32_t icon = mem_r32(&mem, PB + 28);
 	CHECK(memcmp(mem_ptr(&mem, icon), drive_icn, FLOPPY_ICN_SIZE) == 0);
-	CHECK(mem_r8(&mem, icon + 256) > 0 && memcmp(mem_ptr(&mem, icon + 257), "syshm floppy drive", 18) == 0);
+	CHECK(mem_r8(&mem, icon + 256) > 0 && memcmp(mem_ptr(&mem, icon + 257), "Blue floppy drive", 17) == 0);
 	CHECK_EQ(io(&d, &mem, NDRV_CONTROL, 23, drive), 0);    /* drive info: a SuperDrive */
 	CHECK_EQ(mem_r32(&mem, PB + 28), 4);
 	CHECK_EQ(read_block(&d, &mem, drive, 0, 0x30000, false), -65);         /* (off line) */

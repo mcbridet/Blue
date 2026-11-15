@@ -82,7 +82,7 @@ enum { GESTALT_OPTIONAL, GESTALT_FAST, GESTALT_VENDOR, GESTALT_ENGINE, GESTALT_R
 #define VENDOR_ATI 1u
 #define ENGINE_ID 5u                    /* (Bugdom wants an ATI engine past 4) */
 #define ENGINE_REVISION 32u
-#define ENGINE_NAME "syshm 3D"
+#define ENGINE_NAME "Blue 3D"
 #define TEXTURE_MEMORY (64u << 20)
 #define CONTEXT_TYPES (1u << PIXEL_RGB16 | 1u << PIXEL_ARGB16 | 1u << PIXEL_RGB32 | 1u << PIXEL_ARGB32)
 #define IMAGE_TYPES (CONTEXT_TYPES | 1u << PIXEL_RGB8_332 | 1u << PIXEL_ARGB16_4444 | 1u << PIXEL_I8 | \
@@ -1450,7 +1450,7 @@ void rave_call(struct rave *r, struct ndrv_call *c)
 	if (c->entry == E_INIT) {
 		/* the fragment's initialization: QARegisterEngine(our getMethod) */
 		if (!engine_current(r, c)) {
-			printf("3d: the guest's syshm 3D Engine is older than this version of Blue: update it (Blue offers "
+			printf("3d: the guest's Blue 3D Engine is older than this version of Blue: update it (Blue offers "
 			       "to, in a window), or by hand from a volume made with \"blue tools create\" into Extensions\n");
 			fflush(stdout);
 		}

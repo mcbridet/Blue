@@ -70,7 +70,7 @@ enum { D_QD = 0, D_THE_PORT = 202, D_EVENT = 208, D_RECT = 224, D_TITLE = 232, D
        D_INDICES = D_NORMALS + 12 * MESH_X * MESH_Z, D_RED = D_INDICES + 2 * MESH_INDICES, D_GREEN = D_RED + 16,
        D_IMAGE = D_GREEN + 16, D_GLYPH = D_IMAGE + 16 * 16 * 4, D_FULL_ATTRIBS = D_GLYPH + 16 * 4,
        D_TEXT = D_FULL_ATTRIBS + 32, D_TEXT2 = D_TEXT + 32, D_SIZE = D_TEXT2 + 32 };
-#define TEXT "syshm's aglUseFont"
+#define TEXT "Blue's aglUseFont"
 #define TEXT2 "Geneva 18, bold: (aj)"
 #define FULL_WIDTH 640
 #define FULL_HEIGHT 480

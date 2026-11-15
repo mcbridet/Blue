@@ -192,7 +192,7 @@ size_t video_build_ndrv(struct video *v, uint8_t *out, size_t size, uint32_t hos
 
 	struct ndrv_spec spec = {
 		.device_name = "display",
-		.driver_name = ".Display_Video_syshm",
+		.driver_name = ".Display_Video_Blue",
 		.runtime_options = NDRV_OPENED_UPON_LOAD | NDRV_UNDER_EXPERT_CONTROL,
 		.category = 0x6E647276u,        /* 'ndrv' */
 		.type = 0x76696465u,            /* 'vide' */

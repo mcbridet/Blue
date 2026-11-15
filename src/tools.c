@@ -45,7 +45,7 @@ static size_t make_cfrg(uint8_t *p, unsigned usage, uint32_t stack, const char *
 	return 32 + member;
 }
 
-/* ---- syshm Enhancements ---------------------------------------------------- */
+/* ---- Blue Enhancements ----------------------------------------------------- */
 
 enum {
 	IMP_WAIT_NEXT_EVENT, IMP_GET_MAIN_DEVICE, IMP_DM_SET_DISPLAY_MODE, IMP_V1_COUNT,
@@ -254,7 +254,7 @@ static void helper_main(struct helper *h, struct ndrv_call *c, struct clip *clip
 	h->launches++;
 	if (!current(h, c)) {
 		h->old = true;
-		printf("enhancements: the guest's syshm Enhancements is older than this version of Blue (no clipboard): "
+		printf("enhancements: the guest's Blue Enhancements is older than this version of Blue (no clipboard): "
 		       "update it (Blue offers to, in a window), or by hand from a volume made with \"blue tools create\"\n");
 		fflush(stdout);
 	} else if (clip->enabled && !h->patched && patch(h, c, true)) {
@@ -500,7 +500,7 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 	size_t engine_len = rave_build_engine(engine, sizeof engine, &layout);
 
 	uint8_t cfrg[128], size_res[10];
-	size_t cfrg_len = make_cfrg(cfrg, CFRG_APPLICATION, 32u << 10, "syshm Enhancements", 0);
+	size_t cfrg_len = make_cfrg(cfrg, CFRG_APPLICATION, 32u << 10, "Blue Enhancements", 0);
 	put_be16(size_res, SIZE_CAN_BACKGROUND | SIZE_ONLY_BACKGROUND | SIZE_32_BIT | SIZE_HIGH_LEVEL_EVENTS);
 	put_be32(size_res + 2, 96u << 10);      /* preferred and minimum partition */
 	put_be32(size_res + 6, 96u << 10);
@@ -512,17 +512,17 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 
 	/* RAVE loads 'shlb' files of creator 'tnsl' from the Extensions folder */
 	uint8_t engine_cfrg[128];
-	size_t engine_cfrg_len = make_cfrg(engine_cfrg, CFRG_LIBRARY, 0, "syshm 3D Engine", 0);
+	size_t engine_cfrg_len = make_cfrg(engine_cfrg, CFRG_LIBRARY, 0, "Blue 3D Engine", 0);
 	const struct rsrc engine_res[] = { { FOURCC('c', 'f', 'r', 'g'), 0, engine_cfrg, (uint32_t)engine_cfrg_len } };
 	size_t engine_rsrc_len = rsrc_build(engine_res, 1, engine_rsrc, sizeof engine_rsrc);
 	if (!helper_len || !rsrc_len || !engine_len || !engine_rsrc_len)
 		return -1;
 
 	files[TOOLS_ENHANCEMENTS] = (struct hfs_file){
-		"syshm Enhancements", FOURCC('a', 'p', 'p', 'e'), FOURCC('s', 'y', 'H', 'p'), 0, 40, 60,
+		"Blue Enhancements", FOURCC('a', 'p', 'p', 'e'), FOURCC('s', 'y', 'H', 'p'), 0, 40, 60,
 		helper, helper_rsrc, (uint32_t)helper_len, (uint32_t)rsrc_len };
 	files[TOOLS_3D_ENGINE] = (struct hfs_file){
-		"syshm 3D Engine", FOURCC('s', 'h', 'l', 'b'), FOURCC('t', 'n', 's', 'l'), 0, 40, 160,
+		"Blue 3D Engine", FOURCC('s', 'h', 'l', 'b'), FOURCC('t', 'n', 's', 'l'), 0, 40, 160,
 		engine, engine_rsrc, (uint32_t)engine_len, (uint32_t)engine_rsrc_len };
 	return gl_files(files + TOOLS_GL_FIRST);
 }
@@ -531,8 +531,8 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 static int gl_files(struct hfs_file files[TOOLS_GL_FILES])
 {
 	static uint8_t frag[TOOLS_GL_FILES][OPENGL_LIBRARY_MAX], rsrc[TOOLS_GL_FILES][1024];
-	static const char *const names[TOOLS_GL_FILES] = { "syshm OpenGL Library", "syshm OpenGL Memory",
-							   "syshm OpenGL Utility" };
+	static const char *const names[TOOLS_GL_FILES] = { "Blue OpenGL Library", "Blue OpenGL Memory",
+							   "Blue OpenGL Utility" };
 	static const char *const fragments[TOOLS_GL_FILES] = { "OpenGLLibrary", "OpenGLMemory", "OpenGLUtility" };
 	size_t (*const build[TOOLS_GL_FILES])(uint8_t *, size_t, struct ndrv_layout *) = {
 		opengl_build_library, opengl_build_memory, opengl_build_utility };
@@ -559,7 +559,7 @@ static int gl_test_file(struct hfs_file *file)
 	struct ndrv_layout layout;
 	size_t len = gltest_build(frag, sizeof frag, &layout);
 	uint8_t cfrg[128], size_res[10];
-	size_t cfrg_len = make_cfrg(cfrg, CFRG_APPLICATION, 32u << 10, "syshm GL Test", 0);
+	size_t cfrg_len = make_cfrg(cfrg, CFRG_APPLICATION, 32u << 10, "Blue GL Test", 0);
 	put_be16(size_res, SIZE_CAN_BACKGROUND | SIZE_32_BIT);
 	put_be32(size_res + 2, 512u << 10);
 	put_be32(size_res + 6, 512u << 10);
@@ -570,7 +570,7 @@ static int gl_test_file(struct hfs_file *file)
 	size_t rsrc_len = rsrc_build(res, 2, rsrc, sizeof rsrc);
 	if (!len || !rsrc_len)
 		return -1;
-	*file = (struct hfs_file){ "syshm GL Test", FOURCC('A', 'P', 'P', 'L'), FOURCC('s', 'y', 'G', 'T'), 0, 240,
+	*file = (struct hfs_file){ "Blue GL Test", FOURCC('A', 'P', 'P', 'L'), FOURCC('s', 'y', 'G', 'T'), 0, 240,
 				   60, frag, rsrc, (uint32_t)len, (uint32_t)rsrc_len };
 	return 0;
 }
@@ -593,7 +593,7 @@ int tools_create(const char *path)
 		return -1;
 	}
 	int err = ftruncate(fd, TOOLS_VOLUME_SIZE) ? -1 :
-		  hfs_format(fd, TOOLS_VOLUME_SIZE, "syshm Tools", hfs_mac_time_now(), files, n);
+		  hfs_format(fd, TOOLS_VOLUME_SIZE, "Blue Tools", hfs_mac_time_now(), files, n);
 	if (close(fd))
 		err = -1;
 	if (err)

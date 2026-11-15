@@ -1,5 +1,5 @@
 /*
- * The OpenGL test application, "syshm GL Test": a generated application
+ * The OpenGL test application, "Blue GL Test": a generated application
  * whose logic runs on the host (see ndrv.h). It opens a window and draws a
  * scene in it through the guest's OpenGLLibrary and OpenGLUtility, by
  * callouts to what it imports from them (so through the Code Fragment

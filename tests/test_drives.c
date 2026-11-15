@@ -184,7 +184,7 @@ static void test_cdrom(struct mem *mem)
 	CHECK_EQ(io(&d, mem, NDRV_CONTROL, 21, drive), 0);
 	CHECK(!memcmp(mem_ptr(mem, mem_r32(mem, PB + 28)), icn[1], 256));
 	uint32_t where = mem_r32(mem, PB + 28) + 256;
-	CHECK(!memcmp(mem_ptr(mem, where), "\022syshm CD-ROM drive", 19));
+	CHECK(!memcmp(mem_ptr(mem, where), "\021Blue CD-ROM drive", 18));
 	CHECK_EQ(io(&d, mem, NDRV_CONTROL, 23, drive), 0);
 	CHECK_EQ(mem_r32(mem, PB + 28), 0xB01);
 	CHECK(disk_bootable(&d, 0) == false);

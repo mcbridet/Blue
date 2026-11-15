@@ -136,7 +136,7 @@ void disk_driver_call(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz)
 
 /*
  * The floppy drive, empty: a drive whose disk comes and goes. Its driver
- * (disk_build_ndrv()) is for a node named "syshm,floppy", answers as a
+ * (disk_build_ndrv()) is for a node named "blue,floppy", answers as a
  * floppy drive (icons, format list, DriverGestalt 'devt' 'flop'), and
  * ejects when Mac OS asks (Put Away, Eject), which empties the drive.
  */

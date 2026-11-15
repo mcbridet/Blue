@@ -190,8 +190,8 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	struct dt_node *disp = dt_add_node(pci, "display");
 	pci_ids(disp, PCI_VENDOR_BLUE, PCI_DEVICE_DISPLAY, PCI_CLASS_DISPLAY, 1);
 	dt_prop_str(disp, "device_type", "display");
-	dt_prop_str(disp, "model", "syshm framebuffer");
-	dt_prop_str(disp, "compatible", "syshm,display");
+	dt_prop_str(disp, "model", "Blue framebuffer");
+	dt_prop_str(disp, "compatible", "blue,display");
 	pci_bar0(disp, PCI_DEVFN_DISPLAY, hw->fb_base, hw->fb_size);
 	const uint32_t disp_irq = IRQ_DISPLAY;
 	dt_prop_u32(disp, "interrupts", IRQ_DISPLAY);
@@ -206,20 +206,20 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 
 	/* Block storage backed by host files */
 	for (unsigned k = 0; k < hw->disks && k < BOOTINFO_MAX_DISKS; k++) {
-		struct dt_node *disk = dt_add_node(pci, "syshm,disk");
+		struct dt_node *disk = dt_add_node(pci, "blue,disk");
 		const uint32_t reg[5] = { PCI_SPACE_CONFIG | (PCI_DEVFN_DISK + 8 * k) << 8, 0, 0, 0, 0 };
 		pci_ids(disk, PCI_VENDOR_BLUE, PCI_DEVICE_DISK, PCI_CLASS_DISK, 1);
 		dt_prop_str(disk, "device_type", "block");
-		dt_prop_str(disk, "compatible", "syshm,disk");
+		dt_prop_str(disk, "compatible", "blue,disk");
 		dt_prop_cells(disk, "reg", reg, 5);
 		dt_prop(disk, "driver,AAPL,MacOS,PowerPC", hw->disk_ndrv[k], (uint32_t)hw->disk_ndrv_size[k]);
 	}
 	if (hw->floppy_ndrv_size) {
-		struct dt_node *floppy = dt_add_node(pci, "syshm,floppy");
+		struct dt_node *floppy = dt_add_node(pci, "blue,floppy");
 		const uint32_t reg[5] = { PCI_SPACE_CONFIG | PCI_DEVFN_FLOPPY << 8, 0, 0, 0, 0 };
 		pci_ids(floppy, PCI_VENDOR_BLUE, PCI_DEVICE_FLOPPY, PCI_CLASS_DISK, 1);
 		dt_prop_str(floppy, "device_type", "block");
-		dt_prop_str(floppy, "compatible", "syshm,floppy");
+		dt_prop_str(floppy, "compatible", "blue,floppy");
 		dt_prop_cells(floppy, "reg", reg, 5);
 		dt_prop(floppy, "driver,AAPL,MacOS,PowerPC", hw->floppy_ndrv, (uint32_t)hw->floppy_ndrv_size);
 	}
@@ -371,9 +371,9 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 		char path[64];
 		unsigned dev = (PCI_DEVFN_DISK + 8 * hw->boot_disk) >> 3;
 		if (hw->boot_map_entry)
-			snprintf(path, sizeof path, "/pci/syshm,disk@%x:%u,\\\\:tbxi", dev, hw->boot_map_entry);
+			snprintf(path, sizeof path, "/pci/blue,disk@%x:%u,\\\\:tbxi", dev, hw->boot_map_entry);
 		else
-			snprintf(path, sizeof path, "/pci/syshm,disk@%x:,\\\\:tbxi", dev);
+			snprintf(path, sizeof path, "/pci/blue,disk@%x:,\\\\:tbxi", dev);
 		dt_prop_str(dt_add_node(root, "chosen"), "bootpath", path);
 	}
 
