@@ -12,11 +12,120 @@ It should come first (see Order).
 
 ## Status
 
-Milestones 0 (the groundwork, shared with Glide), 1 (AGL and a clear) and
-2 (a triangle) are built; milestones 3 to 6 are to do. The user chose
-OpenGL before Glide, and accepted the proposed decisions below for now
-(replacing the libraries, recording in guest memory, fixed function in C
-on the host, frames read back into guest memory, a Rage 128's identity).
+Milestones 0 (the groundwork, shared with Glide), 1 (AGL and a clear), 2
+(a triangle) and 3 (textures, and Unreal Tournament's OpenGL build) are
+built; milestones 4 to 6 are to do. The user chose OpenGL before Glide,
+and accepted the proposed decisions below for now (replacing the
+libraries, recording in guest memory, fixed function in C on the host,
+frames read back into guest memory, a Rage 128's identity).
+
+Milestone 3:
+
+- **Textures** (`src/gltex.c`, `src/glfront.c`): texture objects
+  (`glGenTextures`, `glBindTexture`, `glDeleteTextures`, `glIsTexture`,
+  `glAreTexturesResident`, `glPrioritizeTextures`) in a namespace that
+  contexts made to share (`aglCreateContext`'s second argument) share;
+  1D and 2D images and subimages (`glTexImage1D`/`2D`, `glTexSubImage1D`/
+  `2D`, the proxies) in every format and type of OpenGL 1.2, the packed
+  ones, BGR, BGRA and `GL_ABGR_EXT` included, read big-endian from guest
+  memory with the unpack stores (`glPixelStore`: alignment, row length,
+  skips, swapped bytes); texels kept as 8-bit ARGB whatever the internal
+  format, as the base format gives them (a table in `gltex.c`); the
+  parameters (filters, wraps, base and maximum level; the LOD clamps and
+  priority kept) and level parameters, with their errors; completeness as
+  OpenGL 1.2 has it (an incomplete texture turns its unit off); two units
+  (`glActiveTextureARB`, `glClientActiveTextureARB`,
+  `glMultiTexCoord*ARB`), each with its environment (`GL_REPLACE`,
+  `GL_MODULATE`, `GL_DECAL`, `GL_BLEND`, `GL_ADD`) made the backend's
+  stages for each base format as OpenGL 1.2's table 3.18 (and
+  `GL_ARB_texture_env_add`) says; the texture matrices; q divided per
+  pixel, only for primitives whose q isn't 1. The backend's copy of a
+  texture is made when it's first drawn and shares the texels; a change
+  retires it (its texels copied first), and it's freed once no surface is
+  drawing with it. Where OpenGL leaves room, the Rage 128's way (in
+  `glfront.h`): `GL_CLAMP` clamps to the edge texels, as
+  `GL_CLAMP_TO_EDGE` (the chip had no texture borders), and textures keep
+  8 bits a component whatever internal format is asked for.
+- **`glReadPixels`** (what's recorded drawn first; every format and type,
+  the pack stores), and the extensions string: Mac OS 9.2.2's engine's
+  extensions in its order, less what syshm doesn't do (`GL_APPLE_packed_pixel
+  GL_ARB_transpose_matrix GL_EXT_clip_volume_hint GL_ARB_multitexture
+  GL_ARB_texture_env_add GL_EXT_blend_color GL_EXT_blend_minmax
+  GL_EXT_blend_subtract GL_EXT_texture_env_add GL_EXT_abgr GL_EXT_bgra
+  GL_SGIS_texture_edge_clamp`).
+- **Swaps paced:** `aglSwapBuffers` to a window's or the screen's port
+  ends a frame for the screen, paced by the display's refresh as the 3D
+  engine's are (`frame_paced()` in `src/nk.c`; each context a frame source
+  of its own after RAVE's): in real time the guest waits in the call, in
+  instruction time guest time moves on. Offscreen swaps aren't paced. In
+  instruction time UT's OpenGL and RAVE builds draw the same number of
+  frames (639 by 44 billion instructions); before, the OpenGL build drew
+  as fast as the host could. `SYSHM_GL_FPS=1` prints the frame rate.
+- **Installing** (`src/install.c`): the three libraries are guest tools
+  like the others, offered with them, and put in Extensions. On Mac OS 9,
+  Apple's are enabled exactly while syshm's aren't: once syshm's are all
+  in Extensions, the installer moves Apple's (files named OpenGLLibrary,
+  OpenGLMemory and OpenGLUtility, of type `shlb` and not syshm's creator,
+  in Extensions) to Extensions (Disabled) with `PBCatMoveSync` (the folder
+  made if there's none: `FindFolder`'s `extD`), and says so; if syshm's
+  are gone (none of them anywhere: deleted by hand, as there's no
+  uninstall) while Apple's are only in Extensions (Disabled), the offer is
+  "Put Back" instead, and nothing of syshm's OpenGL is installed. Apple's
+  in Extensions with syshm's already there gives "Move". The other tools'
+  offers and messages are as before. On a clone of the user's 9.2.2:
+  `tools: installed syshm OpenGL Library, syshm OpenGL Memory and syshm
+  OpenGL Utility in "MacOS9Lives:System Folder:Extensions"; moved Apple's
+  OpenGLLibrary, OpenGLMemory and OpenGLUtility to "MacOS9Lives:System
+  Folder:Extensions (Disabled)". Programs opened from now on find syshm's
+  OpenGL.`, and UT's OpenGL build, opened in that same session, drew with
+  syshm's; with syshm's three deleted, the next start put Apple's back.
+- **Unreal Tournament's OpenGL build** (the UT CD's `Extras:OpenGL
+  UT.sea`: an application and `OpenGLDrv.ini`), on a clone of the 8.6 disk
+  with UT installed, the libraries in Extensions and
+  `GameRenderDevice=OpenGLDrv.OpenGLRenderDevice`: the intro and a
+  DM-Barricade match (opened from the console) play, on the GPU (Metal)
+  and in software, HUD, weapon, bots and scoreboard included. It uses
+  mipmapped `GL_RGBA8` textures from RGBA bytes, `glTexSubImage2D`, two
+  units modulated (the lightmaps), blending (`ONE, ZERO`; `ONE,
+  ONE_MINUS_SRC_ALPHA`; `ONE, ONE_MINUS_SRC_COLOR`), the alpha test, and
+  a depth range trick (`glDepthRange` flipped each frame). Against the
+  RAVE build at the same instruction counts (both paced, they show the
+  same intro frames at 38.75 and 41.25 billion): the same pictures, the
+  OpenGL build's lightmapped walls a little brighter. That wasn't traced
+  further; UT's two renderers light differently, and syshm's drawing of
+  what OpenGL asks matches Mesa's in the scenes below. In real time on an
+  M5 Mac: on the GPU 60 frames a second (the
+  display's refresh) throughout, drawing 13-28% of the time; in software
+  41-60 in the intro and about 50 in a match (drawing 85% of the time);
+  the RAVE build on the GPU 60, drawing 15%.
+- **Checked against Mesa** (`tests/test_opengl.c`, on Linux): four more
+  scenes, the earlier six as before. Pixels differing by more than 2 out
+  of 6,912:
+
+  | scene | GPU | Mesa | what differs |
+  |---|---|---|---|
+  | texture (nearest, repeated, replace, decal, modulate, blended) | 3 | 3 | centers on a quad's diagonal (below) |
+  | clamp (`GL_CLAMP`, linear, magnified past the edges) | 0 | 3,840 (by up to 191) | Mesa blends with the border color |
+  | edge (the same with `GL_CLAMP_TO_EDGE`) | 0 | 0 | |
+  | multitexture (two units, linear, in perspective) | 0 | 0 | |
+
+  In "clamp" the pixels whose coordinates are inside the texture are
+  checked the same as Mesa's. In "texture", three pixels whose centers are
+  exactly on the diagonal two triangles share are drawn by neither in
+  `raster.c` (its edge functions are floats, and both triangles' come out
+  just negative there); the GPU and Mesa draw them.
+- **Tests:** `tests/test_glfront.c` (every format and type unpacked, the
+  pixel stores, objects and their errors, completeness, the backend's copy
+  made, shared and retired, each environment mode for each base format
+  against table 3.18, the texture matrix, repeat and clamp, q,
+  `glReadPixels`), `tests/test_opengl.c` (the scenes; a swap to a port
+  reported for pacing, an offscreen one not), `tests/test_install.c`
+  (Apple's libraries found in either folder, the offers, moved to
+  Extensions (Disabled) and back, one that can't move).
+- Not yet: texture borders, `glCopyTexImage*`, `glDrawPixels`, lighting,
+  fog, vertex arrays (milestones 4 and 5); 16-bit drawables dithered;
+  lines by OpenGL's diamond-exit rule; and the shared-edge pixels above,
+  which fixing in `raster.c` would change RAVE's pixels at such ties.
 
 Milestone 2:
 
@@ -571,7 +680,9 @@ program; nothing in (a) gets in its way.
   rely on which of two same-named fragments the Code Fragment Manager
   picks (an open question to test), the install prompt moves Apple's
   OpenGLLibrary, OpenGLMemory and OpenGLUtility to "Extensions
-  (Disabled)", saying so, and moves them back on uninstall. Apple's engine
+  (Disabled)", saying so, and moves them back on uninstall (as built:
+  syshm has no uninstall, so once syshm's are deleted the offer is to put
+  Apple's back; see Status). Apple's engine
   and renderers are then never loaded (only Apple's OpenGLLibrary loads
   the engine).
 - As with the 3D engine, the library's data carries its version, so one
@@ -1021,9 +1132,10 @@ Shared pieces may already exist from Glide.
 ## Open questions
 
 - Identity: Rage 128, Radeon, or syshm's own strings? (User.)
-- Which of two same-named fragments in Extensions CFM picks, and whether
-  disabling Apple's is enough (test on a 9.1 install; installing 9.1 onto
-  a disk image isn't done yet in syshm).
+- Which of two same-named fragments in Extensions CFM picks (not tried).
+  Disabling Apple's is enough on 9.2.2 (verified: UT's OpenGL build then
+  links to syshm's, even in the session that moved Apple's); 9.1 isn't
+  tried (installing 9.1 onto a disk image isn't done yet in syshm).
 - Did a Mac OS 9 `aglMacro.h` exist, and does any target call through
   `glc_cc` or the context's table?
 - Which games use `aglSetFullScreen` rather than DrawSprocket, and what

@@ -641,8 +641,8 @@ Findings in plan.md.
 
 ### Guest tools
 
-Some things only code inside Mac OS can do: syshm Enhancements and syshm
-3D Engine (below). In a window, syshm offers to install them: before Mac OS
+Some things only code inside Mac OS can do: syshm Enhancements, syshm
+3D Engine and syshm's OpenGL libraries (below). In a window, syshm offers to install them: before Mac OS
 starts it looks in the startup disk's System Folder (its folders,
 Extensions whatever its name and Extensions (Disabled) among them) for
 them, and once the Finder is up, if one is missing or isn't this syshm's
@@ -659,7 +659,18 @@ restart. This works on Mac OS 8.5, 8.6 and 9.2.2 installed on disk images
 shown and printed:
 
 ```
-tools: installed syshm Enhancements and syshm 3D Engine in "Macintosh HD:System Folder:Extensions". syshm Enhancements is running. Programs opened from now on find the 3D engine.
+tools: installed syshm Enhancements, syshm 3D Engine, syshm OpenGL Library, syshm OpenGL Memory and syshm OpenGL Utility in "Macintosh HD:System Folder:Extensions". syshm Enhancements is running. Programs opened from now on find the 3D engine and syshm's OpenGL.
+```
+
+Mac OS 9 has OpenGL libraries of Apple's with the names syshm's have
+(OpenGLLibrary, OpenGLMemory, OpenGLUtility), so only one set can be
+enabled. Once syshm's are in Extensions, the installer moves Apple's to
+Extensions (Disabled) and says so (the offer says it will). If syshm's
+are gone (deleted by hand) while Apple's are disabled, the offer is to put
+Apple's back (Put Back) instead of installing syshm's. Checked on 9.2.2:
+
+```
+tools: installed syshm OpenGL Library, syshm OpenGL Memory and syshm OpenGL Utility in "MacOS9Lives:System Folder:Extensions"; moved Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility to "MacOS9Lives:System Folder:Extensions (Disabled)". Programs opened from now on find syshm's OpenGL.
 ```
 
 Nothing is offered when the startup disk is a CD, an image attached
@@ -773,15 +784,16 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
   at twice the speed (see Findings in plan.md). Waiting, the host sleeps,
   as when the guest idles (but guest time ahead of the host clock isn't
   made up then: the game would show it).
-- **syshm OpenGL Library, Memory and Utility** (under way; on the volume,
-  not offered by the installer yet: docs/opengl-plan.md): Mac OS 9's
-  OpenGL libraries, as syshm's own, under Apple's fragment names
-  (OpenGLLibrary, OpenGLMemory, OpenGLUtility) with Apple's exports, put
-  in Extensions (on 8.5 and 8.6, which have no OpenGL of their own). Their
+- **syshm OpenGL Library, Memory and Utility** (under way:
+  docs/opengl-plan.md): Mac OS 9's OpenGL libraries, as syshm's own, under
+  Apple's fragment names (OpenGLLibrary, OpenGLMemory, OpenGLUtility) with
+  Apple's exports, put in Extensions; on Mac OS 9 Apple's go to Extensions
+  (Disabled) meanwhile (above; installing by hand, move them there too). Their
   calls are host calls (`src/opengl.c`), but for most of gl's: the
   library's own code records those in a buffer in the program's memory,
   done on the host all together at its next host call (a swap,
-  `glGetError`). A front end on the host (`src/glfront.c`) does OpenGL's
+  `glGetError`). A front end on the host (`src/glfront.c`, `src/gltex.c`)
+  does OpenGL's
   fixed function, and it draws with the 3D engine's backend, on the GPU in
   real time and in software otherwise, into the context's window (clipped
   to its regions), the screen or an offscreen buffer, when it's swapped.
@@ -791,9 +803,15 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
   rectangles) and, of OpenGL, the matrices and their stacks, `glBegin` and
   `glEnd`'s points, lines, triangles, quads and polygons with their colors,
   transformed, clipped, culled, flat or smooth shaded, depth tested,
-  blended, alpha tested, masked and scissored in the viewport; clears,
-  strings, errors and queries; OpenGLMemory's allocations. Not yet:
-  textures, lighting, fog, vertex arrays, display lists, OpenGLUtility.
+  blended, alpha tested, masked and scissored in the viewport; textures
+  (objects, 1D and 2D images in every format and type, parameters, two
+  units with their texture environments, the texture matrices);
+  `glReadPixels`; clears, strings, errors and queries; OpenGLMemory's
+  allocations. Not yet: lighting, fog, vertex arrays, display lists,
+  OpenGLUtility. Unreal Tournament's OpenGL build (on the UT CD,
+  `Extras:OpenGL UT.sea`) plays with them, on the GPU and in software.
+  Swaps to the screen or a window are paced as the 3D engine's frames are
+  (above). `SYSHM_GL_FPS=1` prints the frame rate every second, and
   `SYSHM_LOG_GL=1` logs every call.
 
 Like the drivers, these are generated code fragments whose logic runs in
@@ -819,6 +837,12 @@ in time (a match's Elapsed Time 30 s in 30 s of host time, on 8.6 and
 paced). The engine's data carries
 its version, so one installed by an older syshm isn't asked for what it
 lacks: syshm says to install it again (and a window offers to update it).
+UT's OpenGL build (the application and `OpenGLDrv.ini` from the CD's
+`Extras:OpenGL UT.sea`, in place of UT's application, and
+`GameRenderDevice=OpenGLDrv.OpenGLRenderDevice` in `UnrealTournament.ini`)
+draws with syshm's OpenGL libraries, on 8.6 and on 9.2.2: the same
+pictures as with RAVE, at 60 frames a second on the GPU and about 50 in
+software (on 8.6, an M5 Mac).
 
 - `syshm rom` decodes NewWorld bootinfo files and raw 4 MB ROMs, verifies the
   checksum, extracts the Toolbox image and Trampoline, and decodes the
@@ -1340,8 +1364,9 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 ## Next steps
 
 1. 3D: OpenGL with Mac OS 9, then Glide: docs/opengl-plan.md (what Mac OS
-   9.1's OpenGL is and what games link to, the design; under way: the
-   groundwork, which Glide shares, is done) and docs/glide-plan.md. (The
+   9.1's OpenGL is and what games link to, the design; under way: textures
+   are done and Unreal Tournament's OpenGL build plays; vertex arrays, fog
+   and lighting are next) and docs/glide-plan.md. (The
    RAVE engine draws with the host's GPU; what's left there, such as
    reading back less of each frame, is in docs/gpu-plan.md.)
 2. Networking: host ports forwarded to the guest (so it can serve).
@@ -1561,8 +1586,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           rsrc.c (resource forks), tools.c (guest tools), install.c
           (installing them from inside Mac OS), clip.c (the clipboard they
           share with the host), rave.c (3D engine), opengl.c +
-          opengl_table.h (the guest's OpenGL libraries), glfront.c (their
-          fixed-function front end), gltest.c (their test application), surface.c + raster.c + gpu.c + gl.c (the 3D backend:
+          opengl_table.h (the guest's OpenGL libraries), glfront.c + gltex.c (their
+          fixed-function front end; gltex.c its textures), gltest.c (their test application), surface.c + raster.c + gpu.c + gl.c (the 3D backend:
           drawing, in software and with OpenGL, and presenting), display.c (SDL2
           window), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), main.c

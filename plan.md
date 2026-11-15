@@ -115,11 +115,14 @@ Done:
   in place of the Driver Services timer. The restored 9.2.2 reaches the
   Finder in instruction time without a key. See Findings, "The display's
   interrupt".
-- **OpenGL** (Task 18; milestones 0 to 2 of docs/opengl-plan.md): the
+- **OpenGL** (Task 18; milestones 0 to 3 of docs/opengl-plan.md): the
   libraries, AGL and clears, checked by a test application in the guest;
   gl calls recorded in guest memory by the library's own code, and a
   fixed-function front end on the host drawing triangles (matrices,
-  clipping, culling, depth, blending), checked against Mesa's OpenGL.
+  clipping, culling, depth, blending) and textures, checked against Mesa's
+  OpenGL. Unreal Tournament's OpenGL build plays on the GPU and in
+  software; the installer offers the libraries, and on Mac OS 9 moves
+  Apple's to Extensions (Disabled) while syshm's are there.
   The groundwork (milestone 0):
   the 3D backend's texture units and stages, blend equations and color
   masks, with RAVE drawing through them, pixels unchanged; the software
@@ -696,8 +699,21 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 18. OpenGL for Mac OS 9 games
 
-- **Status:** milestones 0 to 2 done (docs/opengl-plan.md has the plan,
-  its milestones and what's built). Milestone 2: most gl calls recorded by
+- **Status:** milestones 0 to 3 done (docs/opengl-plan.md has the plan,
+  its milestones and what's built). Milestone 3: textures (`src/gltex.c`:
+  objects shared between contexts made to share, 1D and 2D images and
+  subimages in every format and type, parameters, completeness, two units
+  with their environments as the backend's stages, the texture matrices),
+  `glReadPixels`, the extensions string; swaps to a port paced by the
+  display's refresh as the 3D engine's frames are; the installer offers
+  the libraries, and on Mac OS 9 moves Apple's to Extensions (Disabled)
+  once syshm's are in Extensions, or offers to put them back if syshm's
+  are gone (checked on a clone of 9.2.2). Unreal Tournament's OpenGL build
+  plays (the intro and a match on 8.6, the intro on 9.2.2), on the GPU (60
+  frames a second in real time) and in software (about 50), its pictures
+  the RAVE build's; four textured scenes against Mesa differ only where Mesa's
+  `GL_CLAMP` blends with the border color and at three pixel centers on a
+  shared edge. Milestone 2: most gl calls recorded by
   code of the library's own into a buffer in the process's memory, done on
   the host at its next host call; the fixed-function front end
   (`src/glfront.c`): matrices, `glBegin`/`glEnd`'s primitives, clipping
@@ -738,8 +754,15 @@ the kernel); 8 onwards as the boot progresses.
   on macOS (with the next item) and Linux; on the GPU, 4 frames differ,
   each in one pixel's channel by one step. The 8.5 and 9.1 CDs boot to the same screenshots as
   main's.
-- **Next:** milestone 3, textures, then Unreal Tournament's OpenGL build
-  (and installing the libraries; Mac OS 9.x).
+- **Next:** milestone 4 (vertex arrays, fog, lighting, the rest of the
+  common state; Quake III Arena, if the user has it). Open items: lines
+  are `raster.c`'s, a pixel a step, not OpenGL's diamond-exit rule;
+  16-bit drawables take the top 5 bits of each component, not dithered
+  (`GL_DITHER` is on by default); `raster.c` leaves out a pixel whose center is
+  exactly on an edge two triangles share (its edge functions are floats,
+  and both come out just negative there: 3 pixels in the "texture" scene,
+  which the GPU and Mesa draw), and fixing that would change RAVE's
+  software pixels at such ties.
 
 ## Findings
 
