@@ -826,8 +826,11 @@ lacks: syshm says to install it again (and a window offers to update it).
 - User-mode PowerPC interpreter (integer, FP, string/multiple, reservations)
   with kernel exits for `sc`, traps, privileged instructions, faults and a
   host-call opcode (primary opcode 6). AltiVec is not implemented.
-- A JIT to AArch64, on Linux and macOS (`src/jit.c`, `src/a64.h`;
-  `--interp` turns it off, and x86_64 hosts interpret). Blocks of up to 128
+- A JIT to AArch64 and x86-64, on Linux and macOS (`src/jit.c`, the
+  runtime both share; `src/jit_a64.c` and `src/a64.h`, `src/jit_x86.c` and
+  `src/x86.h`, the translators; `--interp` turns it off). What follows is
+  the AArch64 JIT; the x86-64 one is under way (below, and
+  docs/x86-jit-plan.md). Blocks of up to 128
   instructions are translated
   natively once they have run 16 times (`SYSHM_JIT_HOT`). A block ends at
   an unconditional or computed branch; past a conditional one it goes on
@@ -937,6 +940,19 @@ lacks: syshm says to install it again (and a window offers to update it).
     code (`pthread_jit_write_protect_np()`, about 25 ns a switch). What's
     left that only macOS pays (those switches, its slower fault signals) is
     under 1% of a boot.
+  - x86-64 (docs/x86-jit-plan.md, milestone 1 of 5): the same blocks,
+    links, budget, exits, hooks and time base, with integer, compare,
+    condition-register and branch instructions translated; loads and
+    stores, floating point and the rest call the interpreter from inside
+    the block, and system calls, traps and host calls leave for it (which
+    makes kernel calls in place itself). It needs x86-64-v3 (AVX2, FMA3,
+    BMI1/2, LZCNT, MOVBE; other processors interpret, and syshm says
+    what's missing). Five guest registers live in host registers (CR, LR,
+    r3, r4, r24) and four more are cached within a block. Under Rosetta 2,
+    `ROSETTA_ADVERTISE_AVX=1` in the environment has it offer x86-64-v3.
+    The 8.5, 9.1 and 9.2.2 CD boots in instruction time end exactly as on
+    AArch64; under Rosetta on an M5 the 8.5 CD's 4 billion instructions
+    take 13 s (interpreted: 24 s).
   - `SYSHM_JIT_PROFILE=1` samples where host time goes (translated blocks
     by guest address, stubs, C functions) and prints it at the end;
     `SYSHM_JIT_PROFILE=FROM:TO` samples only from instruction FROM to TO.
@@ -1374,6 +1390,7 @@ make            # build/syshm (C11, and C++17 for the menu: Dear ImGui is in thi
 make test       # unit tests; the ROM test uses ./MOS.rom or $SYSHM_TEST_ROM if present,
                 # the GPU test any OpenGL 3.3 there is (else it's skipped)
 SYSHM_JIT_PROGRAMS=200000 build/syshm-tests jit    # longer JIT-vs-interpreter fuzzing
+tools/jit-timing.sh     # times the JIT here (its benchmark, the CD boots there are) into a log
 ```
 
 The guest's OpenGL is checked in the guest too, by a test application of
@@ -1395,8 +1412,11 @@ own OpenGL (its compatibility profile, which still has `glBegin`):
 from Apple's (Mac OS 9.2.2's) and the macOS SDK's OpenGL headers.
 
 CI (`.github/workflows/ci.yml`) builds and tests on Linux and macOS, each on
-x86_64 and AArch64, with warnings as errors; on AArch64 (Linux and macOS)
-it also fuzzes the JIT with 100,000 programs, and on Linux the GPU backend
+x86_64 and AArch64, with warnings as errors; it also fuzzes the JIT with
+100,000 programs (`SYSHM_TEST_JIT=1` makes a missing JIT a failure) and
+prints its synthetic benchmark (`SYSHM_JIT_BENCH=1 build/syshm-tests jit`:
+guest instructions a second for a few kernels, interpreted and
+translated), and on Linux the GPU backend
 is tested on Mesa's
 software OpenGL (llvmpipe; `SYSHM_TEST_GPU=1` makes the test fail rather than
 skip without a context). Each run uploads a `syshm-<os>-<arch>.tar.gz`, and
@@ -1543,8 +1563,9 @@ the one in the startup disk's System Folder.
 
 ```
 src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
-          ppc.c + ppc_exec.inc + ppc_fp.c (interpreter), jit.c + a64.h
-          (AArch64 JIT), nk.c (native kernel), mp.c (its Multiprocessing
+          ppc.c + ppc_exec.inc + ppc_fp.c (interpreter), jit.c (the JIT's
+          runtime), jit_a64.c + a64.h and jit_x86.c + x86.h (its AArch64
+          and x86-64 translators), nk.c (native kernel), mp.c (its Multiprocessing
           Services, NanoKernel 2's), priv.c (supervisor mode: the skeleton key),
           bootinfo.c + devtree.c (Trampoline replacement, device tree),
           rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
@@ -1571,7 +1592,8 @@ tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
           devtree.py (device-tree copy dumper), disasm.py (disassembler),
           gltable.py (the OpenGL libraries' functions, from Apple's)
-docs/     gpu-plan.md (the 3D engine's OpenGL backend), opengl-plan.md and
+docs/     x86-jit-plan.md (the x86-64 JIT, under way), gpu-plan.md (the
+          3D engine's OpenGL backend), opengl-plan.md and
           glide-plan.md (Mac OS 9's OpenGL, under way, and 3dfx Glide),
           nk2-reference.md (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2
           does)

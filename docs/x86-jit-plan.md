@@ -10,9 +10,33 @@ sharing everything that isn't about the host's instructions.
 
 ## Status
 
-Phase 0: this plan, for review. Nothing is built yet.
+Milestone 1 done (the split, then the integer core):
 
-Checked on the development machine (Apple M5, macOS 27.2, with Rosetta 2
+- **The split**: `jit.c` holds the runtime, `jit_a64.c` the AArch64
+  translator, `jit_int.h` what they share. AArch64's generated code is
+  byte for byte the same: a hash of every block over the fuzzer's programs
+  (with `SYSHM_JIT_FAR` and `SYSHM_JIT_FASTMEM=0` too) and over the 8.5,
+  9.1 and 9.2.2 CD boots came out equal, and so did timings. The fuzzer's
+  programs went into guest memory with stack garbage after them, which
+  blocks translated past the final `sc` read, so a seed didn't always make
+  the same run; they're zeros now.
+- **`x86.h`**: checked in `test_jit.c` against LLVM's assembler, 174
+  encodings (two of them another form as good, noted).
+- **`jit_x86.c`**: everything in milestone 1 below. The fuzzer passes
+  100,000 programs under Rosetta and 3,000 under QEMU (Linux), and all of
+  `make test` passes on both. The 8.5, 9.1 and 9.2.2 CD boots in
+  instruction time end exactly as on AArch64 (output and screenshots).
+  Under Rosetta on the M5: 13.2, 14.0 and 12.9 s (interpreted: 24 s for
+  the 8.5 CD); the synthetic benchmark, guest instructions a second, JIT
+  against interpreter: integer 7,200 million against 281 (AArch64's JIT on
+  the M5: 6,250), the dispatch loop 382 against 231, the copy loop 566
+  against 374, FP 63 against 98 (memory and FP still call the
+  interpreter).
+- **Elsewhere**: `jit_unavailable()` gives the reason there's no JIT, and
+  syshm says it; CI fuzzes and benchmarks the JIT on all four targets
+  (`SYSHM_TEST_JIT=1`); `tools/jit-timing.sh` (below) times a machine.
+
+Checked on the development machine before starting (Apple M5, macOS 27.2, with Rosetta 2
 and podman):
 
 - **Rosetta** advertises only x86-64-v2 by default (SSE4.2, POPCNT; no
@@ -482,6 +506,26 @@ candidate if profiles ask for it.
 - **Real hardware**: if the user has an x86 machine (an Intel Mac or a
   Linux PC), `SYSHM_PERF=1` on Linux gives the real instructions and
   cycles per guest instruction.
+
+## Timing on real hardware
+
+`tools/jit-timing.sh [runs]`, from the top of a checkout on the machine
+to time (Linux or macOS, x86_64 or AArch64, with a C compiler and make),
+does everything and writes it to `jit-timing-<host>-<date>.txt` to send
+back:
+
+- the processor and the commit;
+- the synthetic benchmark (`SYSHM_JIT_BENCH=1`);
+- each CD boot whose files it finds, in instruction time (the same guest
+  work on every host): `runs` times with the JIT (3 by default) and once
+  interpreted, with the JIT's statistics; on Linux also the processor's
+  counters (`SYSHM_PERF=1`: host instructions and cycles per guest
+  instruction), where `perf_event_paranoid` allows.
+
+The ROM and CD images are looked for at the top of the tree (`MOS.rom`,
+`85.iso`, `91.iso`, `922.iso`) or where `SYSHM_ROM`, `SYSHM_85_ISO`,
+`SYSHM_91_ISO` and `SYSHM_922_ISO` point; without them only the benchmark
+runs. A full run takes a few minutes, most of it the interpreted boots.
 
 ## Milestones
 
