@@ -1239,7 +1239,10 @@ lacks: syshm says to install it again (and a window offers to update it).
 
 What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 
-- Model `iMac,1`, a 266 MHz PowerPC 750 on a 66 MHz bus, timebase 16.6 MHz.
+- Model `iMac,1`, a 266 MHz PowerPC 750 on a 66.4 MHz bus, timebase 16.6 MHz:
+  a quarter of the bus clock, as the 750's is, and as Mac OS 9.1 and later
+  take it to be (their AbsoluteTime is converted with Gestalt's bus clock;
+  with a 66 MHz bus, their Microseconds ran 0.6% fast).
 - Grackle PCI host bridge; on it the display (device 1, framebuffer at
   `0x82000000`), up to four disks (devices 2-5; a shared folder is one),
   the USB controller (device 6, registers at `0x81000000`), the floppy

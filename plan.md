@@ -1945,3 +1945,20 @@ Facts later tasks need, added as they are found.
   more while it plays. The 8.5 and 9.1 CD checks (4 billion instructions),
   the 9.2.2 CD's (3 billion) and installed 8.6's (5 billion) end exactly
   as before (no 3D frames there). Tests: `tests/test_video.c`.
+- **Mac OS 9.1 and later take the timebase to be a quarter of the bus
+  clock:** 9.2.2's Microseconds (trap A193, which InterfaceLib's calls) is
+  native, UpTime times a factor its fragment sets up from
+  GetTimeBaseInfo's (`0xFFD1C810` in 10.2f1's image), 4,000,000,000 over
+  the bus clock: that from Gestalt `bclk` (`0xFFD1C794`; ProcessorInfo's
+  BusClockRateHz without it), the RTC's for a 601. 9.1's image has the
+  same code (`0xFFD276B0`); 8.5's and 8.6's don't, and their Microseconds
+  is the Time Manager's, from VIA timer 2. syshm's bus was 66 MHz and its
+  timebase 16.6 MHz, so 9.x's Microseconds and AbsoluteToNanoseconds ran
+  0.6% fast (factor 1/16.5; Unreal Tournament's clock 1.006 of guest time,
+  measured in real time). The bus is now four times the timebase, 66.4 MHz
+  (device tree, ProcessorInfo; the processor stays 266 MHz): the factor is
+  1/16.6 and UT's clock 1.0006 of guest time over 25 s. The 8.5 CD and
+  installed 8.6 checks end exactly as before; 9.1's CD (4 billion) ends
+  elsewhere in its startup's details (its timers' durations changed by
+  0.6%) with the same screen, and 9.2.2's CD (3 billion) with the same
+  screen but SimpleText's caret in the other phase of its blink.

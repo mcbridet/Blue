@@ -436,7 +436,12 @@ const char *nk_kcall_name(unsigned n)
 #define SYNC_INSNS 20000u               /* instructions between device updates */
 #define CPU_PVR 0x00080301u             /* PowerPC 750 */
 #define CPU_HZ 266000000u
-#define BUS_HZ 66000000u
+/*
+ * The 750's timebase counts every fourth bus clock, and Mac OS takes it to
+ * (9.1's and later ROM files convert AbsoluteTime with Gestalt's bus clock:
+ * Microseconds, AbsoluteToNanoseconds): a 66.4 MHz bus for this timebase.
+ */
+#define BUS_HZ (4u * TIMEBASE_HZ)
 
 /* Framebuffer: plain RAM in PCI memory space, described by the display node */
 #define FB_BASE 0x82000000u
@@ -656,7 +661,7 @@ static void init_info_records(struct machine *m)
 		put_be32(nki + NKI_TASK_COUNT, m->mp.tasks);
 	}
 
-	/* ProcessorInfo: a 266 MHz PowerPC 750 on a 66 MHz bus */
+	/* ProcessorInfo: a 266 MHz PowerPC 750 on a 66.4 MHz bus */
 	uint8_t *pi = k + proc_info;
 	put_be32(pi + 0x00, CPU_PVR);
 	put_be32(pi + 0x04, CPU_HZ);
