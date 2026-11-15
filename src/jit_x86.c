@@ -92,6 +92,17 @@ struct fixup {
 };
 
 #define MAX_LINKS 160u
+#define MAX_SLOW_STORES 160u
+
+/* Out-of-line path of a store to anything but plain writable memory (MEM_FAST_W clear) */
+struct slow_store {
+	uint8_t *at;                    /* the rel32 field of the jump to it */
+	uint8_t *rejoin;
+	unsigned k, size;
+	struct cache_state cs;
+	bool update, swap;              /* rA is still to update (from eax); a byte-reversed store */
+	unsigned ra, s;                 /* rA, and the host register holding the value */
+};
 
 /* A conditional branch the block continues past: its taken path, out of line */
 struct branch_exit {
@@ -122,6 +133,8 @@ struct tx {
 	unsigned nlinks;
 	struct branch_exit bexits[MAX_BLOCK_INSNS];
 	unsigned nbexits;
+	struct slow_store slow[MAX_SLOW_STORES];
+	unsigned nslow;
 	struct cache_state rc;
 	int8_t slot_of[NGUEST];
 	uint32_t used[NCACHE], tick;
@@ -838,6 +851,270 @@ static bool arith(struct tx *t, uint32_t i)
 	return true;
 }
 
+/* ---- loads and stores ------------------------------------------------------ */
+
+/*
+ * Loads and stores of 1, 2 or 4 bytes, the EA in eax. With fastmem, the
+ * access goes straight to generated code's view of guest memory (r15),
+ * where the host faults if the guest's page flags say no (or the page
+ * holds translated code, for stores); the fault handler sends it to the
+ * instruction's side exit, so the interpreter executes it, and the
+ * instruction is translated with checks from then on. Those, or all
+ * without fastmem, test page flags and access memory through C's view:
+ * loads leave for the interpreter unless the page (and the next) is
+ * readable; stores take a slow path (slow_stores()) unless MEM_FAST_W says
+ * the page is plain writable memory.
+ */
+
+/* An access that may fault (fastmem): if it does, the side exit for the instruction, with `cs` */
+static void add_site(struct tx *t, const struct cache_state *cs)
+{
+	if (t->nfix < MAX_FIXUPS)
+		t->fix[t->nfix++] = (struct fixup){ t->x.p, FIX_SITE, t->k, false, *cs };
+	else
+		t->x.overflow = true;
+}
+
+/* Whether the current instruction may access memory without checks */
+static bool fast_access(const struct tx *t)
+{
+	if (!t->j->fastmem)
+		return false;
+	const struct jit_page *pg = t->j->pages[t->pc >> MEM_PAGE_SHIFT];
+	unsigned w = (t->pc >> 2) & (PAGE_WORDS - 1);
+	return !pg || !(pg->slow[w / 64] >> (w % 64) & 1);
+}
+
+/* eax = (rA|0, or rA for update) + (rB or d) */
+static void effective_address(struct tx *t, bool update, bool indexed, unsigned ra, unsigned rb, int32_t d)
+{
+	bool base = update || ra;
+	if (indexed) {
+		unsigned b = rd(t, rb);
+		if (base) {
+			unsigned a = rd(t, ra);
+			x86_lea(B, 0, T0, x86_mx(a, b, 0, 0));
+		} else {
+			x86_mov_rr(B, 0, T0, b);
+		}
+	} else if (base) {
+		unsigned a = rd(t, ra);
+		if (d)
+			x86_lea(B, 0, T0, x86_m(a, d));
+		else
+			x86_mov_rr(B, 0, T0, a);
+	} else {
+		x86_mov_ri(B, T0, (uint32_t)d);
+	}
+}
+
+/* ecx = the flags of the page of the EA in eax; rdx = guest address 0 as C sees it */
+static void page_flags(struct tx *t)
+{
+	x86_mov_rr(B, 0, T1, T0);
+	x86_shift_ri(B, X86_SHR, 0, T1, MEM_PAGE_SHIFT);
+	x86_load(B, 8, false, T2, ST(pageflags));
+	x86_load(B, 1, false, T1, x86_mx(T2, T1, 0, 0));
+	x86_load(B, 8, false, T2, ST(membase));
+}
+
+/* Stores 1 << size bytes of register s at m (big-endian, unless `swap`) */
+static void store_value(struct tx *t, unsigned size, bool swap, unsigned s, struct x86_mem m)
+{
+	if (size == 0)
+		x86_store(B, 1, s, m);
+	else if (swap)
+		x86_store(B, 1u << size, s, m);
+	else
+		x86_movbe(B, true, 1u << size, s, m);
+}
+
+static void load_store(struct tx *t, unsigned size, bool load, bool sign, bool update, bool indexed, bool swap,
+		       unsigned rd_, unsigned ra, unsigned rb, int32_t d)
+{
+	effective_address(t, update, indexed, ra, rb, d);
+	bool fast = fast_access(t);
+	if (!fast)
+		page_flags(t);
+	struct x86_mem m = x86_mx(fast ? R_MEM : T2, T0, 0, 0);
+	if (load) {
+		if (!fast) {
+			x86_test_ri(B, 0, T1, size ? MEM_FAST_R : MEM_R);       /* (a byte can't run into the next page) */
+			exit_if(t, X86_E);
+		}
+		struct cache_state before = t->rc;              /* a fault leaves the registers as they are here */
+		unsigned v = wr(t, rd_);
+		if (fast)
+			add_site(t, &before);
+		if (size == 0) {
+			x86_load(B, 1, false, v, m);
+		} else if (swap) {
+			x86_load(B, 1u << size, false, v, m);
+		} else if (size == 1) {
+			x86_movbe(B, false, 2, v, m);
+			x86_extend(B, 2, sign, 0, v, v);
+		} else {
+			x86_movbe(B, false, 4, v, m);
+		}
+	} else {
+		unsigned s = rd(t, rd_);
+		if (fast) {
+			add_site(t, &t->rc);
+			store_value(t, size, swap, s, m);
+		} else if (t->nslow < MAX_SLOW_STORES) {
+			x86_test_ri(B, 0, T1, MEM_FAST_W);
+			struct slow_store *ss = &t->slow[t->nslow++];
+			*ss = (struct slow_store){ x86_jcc(B, X86_E, NULL), NULL, t->k, size, t->rc, update, swap, ra, s };
+			store_value(t, size, swap, s, m);
+			ss->rejoin = t->x.p;
+		} else {
+			x86_test_ri(B, 0, T1, MEM_FAST_W);
+			exit_if(t, X86_E);
+			store_value(t, size, swap, s, m);
+		}
+	}
+	if (update)
+		x86_mov_rr(B, 0, wr(t, ra), T0);
+}
+
+/*
+ * Stores that MEM_FAST_W (in ecx) turned away. Unless the page is writable
+ * and the store stays within it, the interpreter executes the instruction
+ * (device registers among them). Then, if the page holds no translated
+ * code, or the word stored to isn't one that code was translated from (the
+ * page's bitmap says), the store just happens. Otherwise a host function
+ * stores it, invalidating the blocks translated from those bytes; the
+ * registers in caller-saved host registers are reloaded afterwards, and if
+ * any code changed, the instruction completes (rA) and the block is left
+ * after it.
+ */
+static void slow_stores(struct tx *t)
+{
+	for (unsigned k = 0; k < t->nslow && !t->x.overflow; k++) {
+		struct slow_store *ss = &t->slow[k];
+		unsigned bytes = 1u << ss->size;
+		land(t, ss->at);
+		t->k = ss->k;
+		t->rc = ss->cs;
+		x86_test_ri(B, 0, T1, MEM_W);
+		exit_if(t, X86_E);
+		if (bytes > 1) {                                        /* within the page? */
+			x86_mov_rr(B, 0, T2, T0);
+			x86_alu_ri(B, X86_AND, 0, T2, MEM_PAGE_SIZE - 1);
+			x86_alu_ri(B, X86_CMP, 0, T2, (int32_t)(MEM_PAGE_SIZE - bytes));
+			exit_if(t, X86_A);
+		}
+		x86_test_ri(B, 0, T1, MEM_CODE);
+		uint8_t *plain[2] = { fwd(t, X86_E), NULL }, *call = NULL;
+		if (bytes > 1) {                                        /* within one word? */
+			x86_mov_rr(B, 0, T2, T0);
+			x86_alu_ri(B, X86_AND, 0, T2, 3);
+			x86_alu_ri(B, X86_CMP, 0, T2, (int32_t)(4 - bytes));
+			call = fwd(t, X86_A);
+		}
+		x86_load(B, 8, false, T2, ST(pages));                   /* the word's bit in its page's bitmap */
+		x86_mov_rr(B, 0, T1, T0);
+		x86_shift_ri(B, X86_SHR, 0, T1, MEM_PAGE_SHIFT);
+		x86_load(B, 8, false, T2, x86_mx(T2, T1, 3, 0));
+		x86_mov_rr(B, 0, T1, T0);
+		x86_shift_ri(B, X86_SHR, 0, T1, 8);
+		x86_alu_ri(B, X86_AND, 0, T1, PAGE_WORDS / 64 - 1);
+		x86_load(B, 8, false, T2, x86_mx(T2, T1, 3, (int32_t)offsetof(struct jit_page, words)));
+		x86_mov_rr(B, 0, T1, T0);
+		x86_shift_ri(B, X86_SHR, 0, T1, 2);
+		x86_op_rr(B, 0, 1, 0x0FA3, T1, T2, 0);                  /* bt rdx, rcx */
+		plain[1] = fwd(t, X86_AE);
+		land(t, call);
+
+		/* code_store(&jit_state, EA, the bytes in guest order, size) */
+		rc_store(t, &ss->cs);
+		fixed_store(t, CALLER_SAVED_FIXED);
+		x86_mov_rr(B, 0, T2, ss->s);
+		if (ss->size && !ss->swap) {
+			x86_bswap(B, 0, T2);
+			if (ss->size == 1)
+				x86_shift_ri(B, X86_SHR, 0, T2, 16);
+		}
+		if (ss->update)                                         /* eax must survive the call */
+			x86_store(B, 4, T0, ST(scratch));
+		x86_mov_rr(B, 0, X86_RSI, T0);
+		x86_lea(B, 1, X86_RDI, x86_rip(&t->j->st));
+		x86_mov_ri(B, X86_RCX, ss->size);
+		x86_call_m(B, ST(code_store));
+		fixed_load(t, CALLER_SAVED_FIXED);
+		for (unsigned c = 0; c < NCACHE; c++)
+			if (ss->cs.guest[c] >= 0)
+				ld32(t, cache_reg[c], guest_off((unsigned)ss->cs.guest[c]));
+		rc_reset(t);                                            /* (everything was written back) */
+		if (ss->update) {
+			x86_load(B, 4, false, T0, ST(scratch));
+			x86_alu_mi(B, X86_CMP, 4, ST(code_changed), 0);
+			x86_jcc(B, X86_E, ss->rejoin);
+			unsigned h = fixed_host(ss->ra);                /* code changed: rA = EA here, then leave */
+			if (h != NO_REG)
+				x86_mov_rr(B, 0, h, T0);
+			else
+				st32(t, T0, GPR(ss->ra));
+			exit_always(t);
+			t->fix[t->nfix - 1].after = true;
+		} else {
+			exit_if_code_changed(t);
+			x86_jmp(B, ss->rejoin);
+		}
+
+		for (unsigned p = 0; p < 2; p++)
+			land(t, plain[p]);
+		x86_load(B, 8, false, T2, ST(membase));
+		store_value(t, ss->size, ss->swap, ss->s, x86_mx(T2, T0, 0, 0));
+		x86_jmp(B, ss->rejoin);
+	}
+}
+
+/* The host address of the EA in eax into rdx, if the n bytes there are accessible within one page */
+static void block_access(struct tx *t, bool load, unsigned n)
+{
+	page_flags(t);
+	x86_test_ri(B, 0, T1, load ? MEM_R : MEM_W);
+	exit_if(t, X86_E);
+	if (!load) {
+		x86_test_ri(B, 0, T1, MEM_CODE);                /* the interpreter's job */
+		exit_if(t, X86_NE);
+	}
+	if (n > 1) {
+		x86_mov_rr(B, 0, T1, T0);
+		x86_alu_ri(B, X86_AND, 0, T1, MEM_PAGE_SIZE - 1);
+		x86_alu_ri(B, X86_CMP, 0, T1, (int32_t)(MEM_PAGE_SIZE - n));
+		exit_if(t, X86_A);
+	}
+	x86_lea(B, 1, T2, x86_mx(T2, T0, 0, 0));
+}
+
+/* lmw, stmw: rS..r31 at (rA|0) + d */
+static void load_store_multiple(struct tx *t, bool load, unsigned rs, unsigned ra, int32_t d)
+{
+	unsigned n = 32 - rs;
+	effective_address(t, false, false, ra, 0, d);
+	block_access(t, load, 4 * n);
+	t->pins = 0;                    /* each register is used once */
+	for (unsigned k = 0; k < n; k++) {
+		if (load)
+			x86_movbe(B, false, 4, wr(t, rs + k), x86_m(T2, 4 * (int32_t)k));
+		else
+			x86_movbe(B, true, 4, rd(t, rs + k), x86_m(T2, 4 * (int32_t)k));
+		t->pins = 0;
+	}
+}
+
+/* dcbz: 32 aligned bytes of zeros */
+static void zero_block(struct tx *t, unsigned ra, unsigned rb)
+{
+	effective_address(t, false, true, ra, rb, 0);
+	x86_alu_ri(B, X86_AND, 0, T0, ~31);
+	block_access(t, false, 1);      /* (32 aligned bytes don't cross a page) */
+	for (int k = 0; k < 4; k++)
+		x86_store_imm(B, 8, x86_m(T2, 8 * k), 0);
+}
+
 /* slw, srw, sraw: 64-bit shifts, whose 6-bit count is PowerPC's (rB & 63) */
 static void shift(struct tx *t, unsigned xo, unsigned d, unsigned s, unsigned b)
 {
@@ -1009,6 +1286,21 @@ static int insn31(struct tx *t, uint32_t i)
 			record(t, d);
 		return EMITTED;
 	}
+	case 1014:                                                      /* dcbz */
+		zero_block(t, ra, rb);
+		return EMITTED;
+
+	case 23: case 55:   load_store(t, 2, true, false, xo == 55, true, false, rd_, ra, rb, 0); return EMITTED;
+	case 87: case 119:  load_store(t, 0, true, false, xo == 119, true, false, rd_, ra, rb, 0); return EMITTED;
+	case 279: case 311: load_store(t, 1, true, false, xo == 311, true, false, rd_, ra, rb, 0); return EMITTED;
+	case 343: case 375: load_store(t, 1, true, true, xo == 375, true, false, rd_, ra, rb, 0); return EMITTED;
+	case 151: case 183: load_store(t, 2, false, false, xo == 183, true, false, rd_, ra, rb, 0); return EMITTED;
+	case 215: case 247: load_store(t, 0, false, false, xo == 247, true, false, rd_, ra, rb, 0); return EMITTED;
+	case 407: case 439: load_store(t, 1, false, false, xo == 439, true, false, rd_, ra, rb, 0); return EMITTED;
+	case 534: case 790: load_store(t, xo == 534 ? 2 : 1, true, false, false, true, true, rd_, ra, rb, 0); return EMITTED;
+	case 662: case 918: load_store(t, xo == 662 ? 2 : 1, false, false, false, true, true, rd_, ra, rb, 0);
+		return EMITTED;                                         /* (lwbrx lhbrx stwbrx sthbrx) */
+
 	case 54: case 86: case 246: case 278: case 758: case 982: case 598: case 854:
 		return EMITTED;         /* dcbst dcbf dcbtst dcbt dcba icbi sync eieio: no caches to manage */
 	default:
@@ -1185,7 +1477,15 @@ static int insn(struct tx *t, uint32_t i)
 	}
 	case 31:
 		return insn31(t, i);
-	default:                /* loads and stores, floating point, string operations, ... */
+	case 32: case 33: load_store(t, 2, true, false, op == 33, false, false, rd_, ra, 0, simm); return EMITTED;
+	case 34: case 35: load_store(t, 0, true, false, op == 35, false, false, rd_, ra, 0, simm); return EMITTED;
+	case 40: case 41: load_store(t, 1, true, false, op == 41, false, false, rd_, ra, 0, simm); return EMITTED;
+	case 42: case 43: load_store(t, 1, true, true, op == 43, false, false, rd_, ra, 0, simm); return EMITTED;
+	case 36: case 37: load_store(t, 2, false, false, op == 37, false, false, rd_, ra, 0, simm); return EMITTED;
+	case 38: case 39: load_store(t, 0, false, false, op == 39, false, false, rd_, ra, 0, simm); return EMITTED;
+	case 44: case 45: load_store(t, 1, false, false, op == 45, false, false, rd_, ra, 0, simm); return EMITTED;
+	case 46: case 47: load_store_multiple(t, op == 46, rd_, ra, simm); return EMITTED;
+	default:                /* floating point, string operations, ... */
 		call_step(t, i);
 		return EMITTED;
 	}
@@ -1265,6 +1565,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	t.nfix = 0;
 	t.nlinks = 0;
 	t.nbexits = 0;
+	t.nslow = 0;
 	rc_reset(&t);
 	uint32_t pc = pc0;
 	unsigned n = 0, budget_needed, cover = 0;
@@ -1323,6 +1624,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 		cover = budget_needed;
 
 	rc_reset(&t);                   /* (what follows is out of line) */
+	slow_stores(&t);
 	branch_exits(&t);
 	rc_reset(&t);
 

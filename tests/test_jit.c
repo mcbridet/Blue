@@ -421,13 +421,8 @@ static void check_fastmem(const struct jit *j)
 	const char *line = strstr(text, "fastmem: ");
 	if (mode && !strcmp(mode, "0"))
 		CHECK(line == NULL);
-#ifdef __x86_64__
-	else                    /* (x86-64's translator doesn't access memory itself yet) */
-		CHECK(line != NULL);
-#else
 	else
 		CHECK(line && strtoul(line + 9, NULL, 10) > 0);
-#endif
 	free(text);
 }
 
