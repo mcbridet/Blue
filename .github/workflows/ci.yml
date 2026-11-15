@@ -25,6 +25,7 @@ jobs:
         include:
           - target: linux-x86_64
             runner: ubuntu-24.04
+            jit: true
             gpu: true
           - target: linux-aarch64
             runner: ubuntu-24.04-arm
@@ -32,6 +33,7 @@ jobs:
             gpu: true
           - target: macos-x86_64
             runner: macos-26-intel
+            jit: true
           - target: macos-aarch64
             runner: macos-26
             jit: true
@@ -43,10 +45,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # (the x86-64 JIT needs x86-64-v3: AVX2, FMA, BMI1/2, LZCNT, MOVBE)
       - name: Toolchain
         run: |
           uname -m
           cc --version
+          if [ "$(uname -s)" = Darwin ]; then sysctl -n machdep.cpu.brand_string machdep.cpu.features machdep.cpu.leaf7_features 2>/dev/null || true
+          else grep -m2 -E '^(model name|flags)' /proc/cpuinfo || true; fi
 
       # Mesa's EGL and software OpenGL (llvmpipe), for the GPU backend's tests
       - name: OpenGL
@@ -64,9 +69,16 @@ jobs:
           if [ '${{ matrix.gpu }}' = true ]; then export SYSHM_TEST_GPU=1; fi
           make test
 
+      # SYSHM_TEST_JIT=1: no JIT here is a failure, not a skip
       - name: JIT fuzzing
         if: matrix.jit
-        run: SYSHM_JIT_PROGRAMS=100000 build/syshm-tests jit
+        run: SYSHM_TEST_JIT=1 SYSHM_JIT_PROGRAMS=100000 build/syshm-tests jit
+
+      # Guest instructions a second, interpreted and translated (for the log; not a test)
+      - name: JIT speed
+        if: matrix.jit
+        continue-on-error: true
+        run: SYSHM_JIT_BENCH=1 build/syshm-tests jit
 
       # A tarball keeps the executable bit, which artifact zips drop
       - name: Package

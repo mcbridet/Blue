@@ -14,6 +14,7 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "../src/a64.h"
 #include "../src/jit.h"
@@ -1111,10 +1112,130 @@ static void test_kcalls(void)
 	}
 }
 
+/* ---- SYSHM_JIT_BENCH=1: speed, not a test ---- */
+
+#define X_FORM(rt, ra, rb, xo) enc_x(31, rt, ra, rb, xo, 0)
+
+/* Guest instructions a second for `insns` instructions of a program, interpreted or translated */
+static double bench_run(const uint32_t *prog, unsigned n, bool jit, uint64_t insns)
+{
+	static struct side s;
+	setup(&s, false);
+	if (jit) {
+		s.cpu.jit = jit_create(&s.mem);
+		if (!s.cpu.jit) {
+			mem_free(&s.mem);
+			return 0;
+		}
+	}
+	for (unsigned k = 0; k < n; k++)
+		mem_w32(&s.mem, CODE + 4 * k, prog[k]);
+	uint64_t x = 0x9E3779B97F4A7C15ull;
+	for (uint32_t o = 0; o < DATA_SIZE; o += 2) {           /* the dispatch loop's "opcodes": handlers 0-7 */
+		x = x * 6364136223846793005ull + 1442695040888963407ull;
+		mem_w16(&s.mem, DATA + o, (uint16_t)(x >> 40));
+	}
+	mem_w16(&s.mem, DATA + 0x3FFE, 7);                      /* (the end) */
+	for (unsigned k = 0; k < 8; k++) {                      /* its table: handler k at CODE + 0x100 + 0x40 * k */
+		mem_w32(&s.mem, DATA + 0x8000 + 4 * k, CODE + 0x100 + 0x40 * k);
+		uint64_t d;
+		double v = 1.0 + k / 8.0;
+		memcpy(&d, &v, 8);
+		mem_w64(&s.mem, DATA + 0x9000 + 8 * k, d);
+	}
+	struct ppc_cpu *c = &s.cpu;
+	c->pc = CODE;
+	c->gpr[24] = DATA - 2;
+	c->gpr[25] = DATA + 0x3FFE;
+	c->gpr[26] = DATA - 2;
+	c->gpr[27] = DATA + 0x8000;
+	c->gpr[28] = DATA + 0xA000;
+	c->gpr[3] = DATA + 0x9000;
+	c->gpr[4] = DATA + 0xB000;
+	c->ctr = 1000;
+	static const double fp[] = { 0, 0, 0, 0.5, 0, 0.25, 0, 0, 0.5 };
+	for (unsigned k = 0; k < sizeof fp / sizeof fp[0]; k++)
+		memcpy(&c->fpr[k], &fp[k], 8);
+	struct timespec t0, t1;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	for (uint64_t left = insns; left;) {                    /* in the kernel's chunks */
+		uint64_t chunk = left < 20000 ? left : 20000, before = c->icount;
+		enum ppc_exit e = jit ? ppc_run(c, chunk) : ppc_interp(c, chunk);
+		CHECK_EQ(e, PPC_EXIT_BUDGET);
+		if (e != PPC_EXIT_BUDGET)
+			break;
+		left -= c->icount - before;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	double secs = (double)(t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) * 1e-9;
+	jit_free(s.cpu.jit);
+	mem_free(&s.mem);
+	return (double)insns / secs;
+}
+
+static void bench(uint64_t insns)
+{
+	/* the 68k emulator's way: fetch an opcode, look its handler up, jump there; handlers jump back */
+	uint32_t dispatch[0x300 / 4] = { 0 };
+	const uint32_t loop[] = { LHZ(3, 2, 24) | 1u << 26, RLWINM(4, 3, 2, 27, 29), X_FORM(5, 4, 27, 23), MTCTR(5),
+					 BCTR };
+	const uint32_t handlers[8][8] = {
+		{ ADDI(6, 6, 1), RLWIMI(7, 3, 8, 16, 23), CMPWI(1, 6, 100), ADD(8, 8, 3) },
+		{ LWZ(9, 0x100, 28), ADDI(9, 9, 3), STW(9, 0x100, 28) },
+		{ SUBF(10, 3, 10), SRAWI(11, 10, 2), X_FORM(3, 12, 11, 28) },
+		{ X_FORM(0, 3, 6, 32), BGT(0, 8), ADDI(6, 6, -1) },
+		{ RLWINM(14, 3, 24, 24, 31), X_FORM(15, 15, 14, 316), X_FORM(16, 16, 15, 444) },
+		{ MULLW(17, 3, 6), MFCR(18), MTCRF(0x80, 18) },
+		{ LHZ(19, 0, 24), STH(19, 0x200, 28) },
+		{ X_FORM(0, 24, 25, 0), BC(12, 0, 8), ADDI(24, 26, 0) },
+	};
+	memcpy(dispatch, loop, sizeof loop);
+	for (unsigned k = 0; k < 8; k++) {
+		unsigned at = (0x100 + 0x40 * k) / 4, m = 0;
+		while (m < 8 && handlers[k][m])
+			dispatch[at + m] = handlers[k][m], m++;
+		dispatch[at + m] = B(-4 * (int)(at + m));
+	}
+	/* compares, branches and arithmetic */
+	const uint32_t integer[] = {
+		ADDI(3, 3, 1), RLWINM(4, 3, 3, 0, 28), ADD(5, 5, 4), CMPWI(0, 5, 0), BC(12, 0, 8),
+		enc_xo(5, 5, 0, 0, 104, 0), X_FORM(5, 6, 6, 316), SUBF(7, 6, 3), X_FORM(7, 8, 4, 28), BDNZ(-36),
+		LIS(0, 0x7FFF), MTCTR(0), B(-48),
+	};
+	/* a copy loop */
+	const uint32_t copy[] = {
+		LWZ(6, 0, 3), STW(6, 0, 4), ADDI(3, 3, 4), ADDI(4, 4, 4), BDNZ(-16),
+		LIS(3, DATA >> 16), LIS(4, (DATA + 0x8000) >> 16), LI(0, 0x1000), MTCTR(0), B(-36),
+	};
+	/* floating point, MathLib's way with the FPSCR */
+	const uint32_t fpu[] = {
+		LFD(1, 0, 3), FMADD(2, 2, 3, 1), FMUL(4, 2, 5), FMADD(6, 6, 8, 4), STFD(6, 8, 3), FSUB(9, 4, 2),
+		MFFS(10), 63u << 26 | 0xFFu << 17 | 10u << 11 | 711u << 1, BDNZ(-32),
+		LI(0, 1000), MTCTR(0), B(-44),
+	};
+	const struct { const char *name; const uint32_t *prog; unsigned n; } kernels[] = {
+		{ "dispatch", dispatch, sizeof dispatch / 4 },
+		{ "integer", integer, sizeof integer / 4 },
+		{ "copy", copy, sizeof copy / 4 },
+		{ "fp", fpu, sizeof fpu / 4 },
+	};
+	for (unsigned k = 0; k < sizeof kernels / sizeof kernels[0]; k++) {
+		double interp = bench_run(kernels[k].prog, kernels[k].n, false, insns / 10);
+		double jit = bench_run(kernels[k].prog, kernels[k].n, true, insns);
+		printf("jit bench: %-8s interpreter %6.0f million/s, JIT %6.0f million/s (%.1fx)\n", kernels[k].name,
+		       interp / 1e6, jit / 1e6, jit / interp);
+	}
+}
+
 void test_jit(void)
 {
 	const char *n = getenv("SYSHM_JIT_PROGRAMS"), *need = getenv("SYSHM_TEST_JIT");
 	unsigned programs = n ? (unsigned)strtoul(n, NULL, 0) : 3000;
+	const char *speed = getenv("SYSHM_JIT_BENCH");
+	if (speed) {
+		bench(strtoull(speed, NULL, 0) * 500000000ull);
+		return;
+	}
 	if (need && !strcmp(need, "1")) {       /* (CI: a host that should have it) */
 		struct mem m;
 		CHECK_EQ(mem_init(&m), 0);
