@@ -161,7 +161,7 @@ static void test_depth(void)
 static void test_texture(void)
 {
 	static uint32_t texels[4] = { 0xFF000011u, 0xFF000022u, 0xFF000033u, 0xFF000044u };
-	struct raster_texture tx = { 1, { 2 }, { 2 }, { texels }, 0 };
+	struct raster_texture tx = { .levels = 1, .width = { 2 }, .height = { 2 }, .texels = { texels } };
 	struct raster_target t = target(color_a, depth_a);
 	raster_clear(&t, 0, 0, W, H, true, 0, true, 1);
 	struct raster_state s = plain();
@@ -195,7 +195,7 @@ static void test_threads(void)
 	static uint32_t texels[16 * 16];
 	for (unsigned k = 0; k < 16 * 16; k++)
 		texels[k] = 0xFF000000u | (uint32_t)(k * 2654435761u >> 8);
-	struct raster_texture tx = { 1, { 16 }, { 16 }, { texels }, 0 };
+	struct raster_texture tx = { .levels = 1, .width = { 16 }, .height = { 16 }, .texels = { texels } };
 
 	struct raster_state states[STATES];
 	for (int k = 0; k < STATES; k++) {
@@ -326,7 +326,7 @@ static struct raster_stage stage(unsigned op_rgb, unsigned r0, unsigned r1, unsi
 static void test_stages(void)
 {
 	static uint32_t texel = 0x80402010u;
-	struct raster_texture tx = { 1, { 1 }, { 1 }, { &texel }, 0 };
+	struct raster_texture tx = { .levels = 1, .width = { 1 }, .height = { 1 }, .texels = { &texel } };
 	const float ta = 128.0f / 255, tr = 64.0f / 255, tg = 32.0f / 255, tb = 16.0f / 255;
 	struct raster_vertex v = vertex(0, 0, 0.5f, 0.5f, 0.25f, 1);
 	v.color[0][3] = 0.75f;

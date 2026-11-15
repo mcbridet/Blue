@@ -115,15 +115,18 @@ Done:
   in place of the Driver Services timer. The restored 9.2.2 reaches the
   Finder in instruction time without a key. See Findings, "The display's
   interrupt".
-- **OpenGL** (Task 18; milestones 0 to 4 of docs/opengl-plan.md): the
+- **OpenGL** (Task 18; milestones 0 to 5 of docs/opengl-plan.md): the
   libraries, AGL and clears, checked by a test application in the guest;
   gl calls recorded in guest memory by the library's own code, and a
   fixed-function front end on the host drawing triangles (matrices,
   clipping, culling, depth, blending), textures, client arrays, lighting,
   fog, texture coordinate generation, clip planes, stencil, polygon offset
-  and modes, the attribute stacks, checked against Mesa's OpenGL. Unreal Tournament's OpenGL build plays on the GPU and in
-  software; the installer offers the libraries, and on Mac OS 9 moves
-  Apple's to Extensions (Disabled) while syshm's are there.
+  and modes, the attribute stacks, display lists, the raster position and
+  pixel rectangles, 3D textures, and OpenGLUtility on the host, checked
+  against Mesa's OpenGL. Unreal Tournament's OpenGL build plays on the GPU
+  and in software, and so does Quake III Arena's demo; the installer
+  offers the libraries, and on Mac OS 9 moves Apple's to Extensions
+  (Disabled) while syshm's are there.
   The groundwork (milestone 0):
   the 3D backend's texture units and stages, blend equations and color
   masks, with RAVE drawing through them, pixels unchanged; the software
@@ -702,8 +705,26 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 18. OpenGL for Mac OS 9 games
 
-- **Status:** milestones 0 to 4 done (docs/opengl-plan.md has the plan,
-  its milestones and what's built). Milestone 4: client arrays of every
+- **Status:** milestones 0 to 5 done (docs/opengl-plan.md has the plan,
+  its milestones and what's built). Milestone 5: display lists (kept with
+  the bytes their calls' pointers pointed to, arrays' draws as the
+  attribute calls they make; nested, shared), the raster position,
+  `glBitmap`, `glDrawPixels` and `glCopyPixels` of colors, depth and
+  stencil (zoomed, through the pixel transfer and maps), `glCopyTexImage`
+  and `glCopyTexSubImage`, `glGetTexImage`, 3D textures in both backends,
+  and OpenGLUtility on the host (`src/glu.c`: the matrices, projections,
+  scaled images and mipmaps, quadrics, as SGI's GLU 1.2 does them; Apple's
+  strings; tessellators and NURBS renderers kept but drawing nothing).
+  Four scenes against Mesa differ by 1 at most but in lines at a slope
+  (Mesa's libGLU drawing "glu"'s quadrics), every scene made into a list
+  draws the same pixels, and the test application's new scenes (lists of
+  quadrics made through OpenGLUtility; pixel rectangles) are the same
+  screenshots on macOS and Linux. Quake III Arena's demo (id's, from
+  archive.org) installs with its installer and plays `demo001` on a clone
+  of 8.6, the same frame on macOS and Linux in instruction time (with
+  `TZ=UTC`), and Unreal Tournament's runs are main's. Not yet: selection
+  and feedback, evaluators, `aglUseFont`, `aglSetFullScreen`, S3TC and
+  paletted textures. Milestone 4: client arrays of every
   type (interleaved, `glDrawElements`, `glDrawRangeElements`, compiled
   arrays), lighting (8 lights, two sides, separate specular, the color
   material, normalizing and rescaling), fog, texture coordinate generation
@@ -768,9 +789,10 @@ the kernel); 8 onwards as the boot progresses.
   on macOS (with the next item) and Linux; on the GPU, 4 frames differ,
   each in one pixel's channel by one step. The 8.5 and 9.1 CDs boot to the same screenshots as
   main's.
-- **Next:** milestone 5 (display lists, the raster position and pixel
-  paths, 3D textures, selection and feedback, `aglUseFont`, OpenGLUtility
-  on the host). Open items: lines and points aren't textured, and neither
+- **Next:** what's left of milestone 5 (selection and feedback,
+  evaluators, `aglUseFont`, `aglSetFullScreen`, S3TC and paletted
+  textures, OpenGLUtility's tessellators and NURBS), and milestone 6
+  (performance). Open items: lines and points aren't textured, and neither
   stipple is drawn; lines are `raster.c`'s, a pixel a step, not OpenGL's
   diamond-exit rule;
   16-bit drawables take the top 5 bits of each component, not dithered
@@ -826,6 +848,27 @@ Facts later tasks need, added as they are found.
   `GL_EXT_fog_coord` nor `GL_EXT_secondary_color` (the secondary color is
   there for separate specular and `GL_COLOR_SUM_EXT`). Fog goes by the
   eye-space depth alone, and `GL_FOG_COORDINATE_SOURCE` is an invalid enum.
+- **Pixel rectangles in Mesa** (OpenGL, milestone 5): Mesa 25.2 (llvmpipe)
+  draws an image from the raster position rounded to the nearest pixel
+  corner (`lroundf`), where OpenGL 1.2's 3.6.4 takes the position as it is
+  (the same pixels at a zoom of 1 but at half-way positions); syshm rounds
+  as Mesa does. For fractional and negative zooms, Mesa's rows and columns
+  fall where neither OpenGL 1.2's rectangles nor that rounding put them,
+  and its pixel maps quantize what they look up: syshm keeps OpenGL 1.2's
+  rectangles and maps (checked in `tests/test_glfront.c`), and the scenes
+  compared with Mesa zoom by whole numbers and use no maps.
+- **SGI's GLU, 1.2 and 1.3** (OpenGL, milestone 5): Apple's OpenGLUtility
+  is SGI's 1.2 ("1.2 MacOS 8.0"; it imports OpenGLLibrary's `glc_cc` as
+  data, `NewPtr` and `DisposePtr`). 1.2 makes every mipmap level through
+  16-bit images, each the last scaled (`scale_internal`); 1.3, Mesa's
+  libGLU, keeps 2D images in their own type, halving 8-bit ones directly
+  and scaling those that aren't powers of two by another box filter, up
+  to 35 levels apart from 1.2's at the first level of a 3 x 7 image (and
+  within a level where there's no scaling). `gluScaleImage` and 1D
+  mipmaps are the same in both. Both read normals they never computed for
+  quadrics drawn as points or silhouettes with flat normals (stale stack
+  memory: Mesa's libGLU gave a previous call's); syshm gives the smooth
+  ones there.
 
 - **CD audio, Apple's CD-ROM driver** (Technical Note DV22, "CD-ROM Driver
   Calls", developer.apple.com/library/archive/technotes/dv/dv_22.html):

@@ -260,7 +260,7 @@
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-chip"/></svg>CPU</span>
-          <span class="notes">PowerPC G3 (750) equivalent. JIT on Apple silicon and ARM64 (AArch64) Linux; interpreter only on x86_64. Fast start speeds through startup timeouts. Supports napping.</span>
+          <span class="notes">PowerPC G3 (750) equivalent. JIT on Apple silicon, ARM64 (AArch64) Linux and x86_64 (Intel from 2013, AMD from 2015; older processors interpret). Fast start speeds through startup timeouts. Supports napping.</span>
         </div>
         <div class="row unsupported">
           <span class="name"><svg aria-hidden="true"><use href="#i-chip"/></svg>AltiVec</span>
@@ -289,7 +289,7 @@
             <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/syshm-linux-aarch64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Linux<small>AArch64</small></span></a>
             <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/syshm-linux-x86_64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Linux<small>x86_64</small></span></a>
           </div>
-          <p class="fineprint">Or build it with <code>make</code>. SDL2 (window and sound) and libslirp (networking) are used if they’re installed. The JIT runs on AArch64, on Apple silicon Macs and Linux alike; x86_64 hosts interpret.</p>
+          <p class="fineprint">Or build it with <code>make</code>. SDL2 (window and sound) and libslirp (networking) are used if they’re installed. The JIT runs on AArch64 and on x86_64 processors with x86-64-v3 (Intel’s Haswell and AMD’s Excavator on), on macOS and Linux alike; older x86_64 processors interpret.</p>
 
           <h3>Install Mac OS</h3>
 <pre class="code">./syshm disk create hd.img 2G "Macintosh HD"

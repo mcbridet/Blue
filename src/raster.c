@@ -24,13 +24,13 @@ typedef int32_t vec4i __attribute__((vector_size(16)));
  * its state needs, wherever its layout puts them. Colors are a, r, g, b
  * there, each at a multiple of four.
  */
-enum { A_Z, A_W, A_FOG, A_C0 = 4, A_PLAIN = A_C0 + 4, A_MAX = A_C0 + 4 * RASTER_COLORS + 3 * RASTER_UNITS + 2 };
+enum { A_Z, A_W, A_FOG, A_C0 = 4, A_PLAIN = A_C0 + 4, A_MAX = A_C0 + 4 * RASTER_COLORS + 4 * RASTER_UNITS };
 _Static_assert(A_MAX % 4 == 0, "whole vectors of attributes");
 
 struct layout {
 	unsigned n;
 	uint8_t color[RASTER_COLORS];           /* (0: not interpolated) */
-	uint8_t tex[RASTER_UNITS], q[RASTER_UNITS];
+	uint8_t tex[RASTER_UNITS], q[RASTER_UNITS], r[RASTER_UNITS];   /* (r: 3D textures') */
 };
 
 static inline float clamp01(float x)
@@ -142,6 +142,8 @@ static void layout_of(const struct raster_state *s, bool textured, struct layout
 				n += 2;
 				if (s->unit[k].projective)
 					L->q[k] = (uint8_t)n++;
+				if (s->unit[k].texture && s->unit[k].texture->depth[0])
+					L->r[k] = (uint8_t)n++;
 			}
 	}
 	L->n = n;
@@ -168,6 +170,8 @@ static void attribs(const struct raster_vertex *v, const struct layout *L, float
 		}
 		if (L->q[k])
 			a[L->q[k]] = v->tex[k][2];
+		if (L->r[k])
+			a[L->r[k]] = v->texr[k];
 	}
 }
 
@@ -267,10 +271,10 @@ static inline uint32_t pack(const float c[4])
 
 struct sampler {
 	const uint32_t *p;
-	int w, h;
-	float fw, fh;
-	bool clamp_u, clamp_v;
-	bool pow2_u, pow2_v;                    /* (wrapping by mask) */
+	int w, h, d;                            /* (d: 3D textures') */
+	float fw, fh, fd;
+	bool clamp_u, clamp_v, clamp_w;
+	bool pow2_u, pow2_v, pow2_w;            /* (wrapping by mask) */
 	bool bilinear;
 };
 
@@ -280,12 +284,16 @@ static void sampler_init(struct sampler *sm, const struct raster_unit *u, unsign
 	sm->p = tx->texels[level];
 	sm->w = (int)tx->width[level];
 	sm->h = (int)tx->height[level];
+	sm->d = (int)tx->depth[level];
 	sm->fw = (float)sm->w;
 	sm->fh = (float)sm->h;
+	sm->fd = (float)sm->d;
 	sm->clamp_u = u->clamp_s;
 	sm->clamp_v = u->clamp_t;
+	sm->clamp_w = u->clamp_r;
 	sm->pow2_u = !(sm->w & (sm->w - 1));
 	sm->pow2_v = !(sm->h & (sm->h - 1));
+	sm->pow2_w = !(sm->d & (sm->d - 1));
 	sm->bilinear = bilinear;
 }
 
@@ -319,6 +327,26 @@ static ALWAYS_INLINE vec4 sample(const struct sampler *sm, float u, float v)
 	vec4 c11 = unpack(sm->p[(size_t)yb * (size_t)sm->w + (size_t)xb]);
 	vec4 top = c00 + (c10 - c00) * ax, bottom = c01 + (c11 - c01) * ax;
 	return top + (bottom - top) * ay;
+}
+
+/* A 3D texture's texel at (u, v, w): nearest, or trilinear (bilinear in each of the two slices nearest w) */
+static vec4 sample3(const struct sampler *sm, float u, float v, float w)
+{
+	size_t slice = (size_t)sm->w * (size_t)sm->h;
+	if (!sm->bilinear) {
+		int x = texel(u * sm->fw, sm->w, sm->clamp_u, sm->pow2_u);
+		int y = texel(v * sm->fh, sm->h, sm->clamp_v, sm->pow2_v);
+		int z = texel(w * sm->fd, sm->d, sm->clamp_w, sm->pow2_w);
+		return unpack(sm->p[(size_t)z * slice + (size_t)y * (size_t)sm->w + (size_t)x]);
+	}
+	float fz = fminf(fmaxf(w * sm->fd - 0.5f, -1e9f), 1e9f), z0f = floorf(fz), az = fz - z0f;
+	int za = texel(z0f, sm->d, sm->clamp_w, sm->pow2_w), zb = texel(z0f + 1, sm->d, sm->clamp_w, sm->pow2_w);
+	struct sampler s2 = *sm;
+	s2.p = sm->p + (size_t)za * slice;
+	vec4 a = sample(&s2, u, v);
+	s2.p = sm->p + (size_t)zb * slice;
+	vec4 b = sample(&s2, u, v);
+	return a + (b - a) * az;
 }
 
 /* ---- fragments -------------------------------------------------------------- */
@@ -451,7 +479,10 @@ static ALWAYS_INLINE void stages(const struct raster_state *s, const struct shad
 		float d = w;
 		if (sh->L->q[k])
 			d = a[sh->L->q[k]] != 0 ? 1.0f / a[sh->L->q[k]] : 1e30f;
-		src[RASTER_TEXTURE0 + k] = sample(&sh->sm[k], tc[0] * d, tc[1] * d);
+		if (sh->L->r[k])
+			src[RASTER_TEXTURE0 + k] = sample3(&sh->sm[k], tc[0] * d, tc[1] * d, a[sh->L->r[k]] * d);
+		else
+			src[RASTER_TEXTURE0 + k] = sample(&sh->sm[k], tc[0] * d, tc[1] * d);
 	}
 	src[RASTER_PREVIOUS] = src[RASTER_COLOR0];
 	_Static_assert(RASTER_STAGES == 4, "the stages, one by one");
@@ -968,6 +999,84 @@ void raster_bitmap(struct raster_target *t, const struct raster_state *s, const 
 	bitmap(t, s, rows, image, x, y, z);
 }
 
+/*
+ * The pixels [*lo, *hi) whose centers are in [o, o + z n) (or (o + z n, o]
+ * if z is negative), within [l, r)
+ */
+static void pixel_span(float o, float z, int n, int l, int r, int *lo, int *hi)
+{
+	float a = o, b = o + z * (float)n;
+	if (b < a) {
+		float t = a;
+		a = b;
+		b = t;
+	}
+	a = fmaxf(a - 1, (float)l);             /* (a pixel more each way: the texel test is exact) */
+	b = fminf(b + 1, (float)r);
+	*lo = a < b ? (int)floorf(a) : l;
+	*hi = a < b ? (int)ceilf(b) : l;
+}
+
+/* A texel coordinate of a pixel center c (o, 1 / zoom: see RASTER_CMD_PIXELS); n or more: none */
+static inline unsigned texel_of(float c, float o, float inv, unsigned n)
+{
+	float f = floorf((c - o) * inv);
+	return f >= 0 && f < (float)n ? (unsigned)f : n;
+}
+
+static void pixels(struct raster_target *t, const struct raster_state *s, const int rows[2], const struct raster_cmd *c)
+{
+	const struct raster_texture *im = c->image;
+	unsigned w = im->width[0], h = im->height[0];
+	float ox = c->v[0].x, oy = c->v[0].y, zx = c->v[1].x, zy = c->v[1].y;
+	if (!w || !h || !(zx != 0 && zy != 0) || !(fabsf(ox) < 1e6f && fabsf(oy) < 1e6f && fabsf(zx) < 1e4f &&
+						    fabsf(zy) < 1e4f))
+		return;
+	float ix = 1 / zx, iy = 1 / zy;
+	int l, top, r, b, x0, x1, y0, y1;
+	clip_rows(t, s, rows, &l, &top, &r, &b);
+	pixel_span(ox, zx, (int)w, l, r, &x0, &x1);
+	pixel_span(oy, zy, (int)h, top, b, &y0, &y1);
+	const struct shade sh = { .L = NULL };
+	float a[A_PLAIN] = { c->v[0].z, 1 };
+	const float *rc = c->v[0].color[0];     /* (r, g, b, a) */
+	const vec4 color = { rc[3], rc[0], rc[1], rc[2] };
+	for (int y = y0; y < y1; y++) {
+		unsigned j = texel_of((float)y + 0.5f, oy, iy, h);
+		if (j >= h)
+			continue;
+		const uint32_t *row = im->texels[0] + (size_t)j * w;
+		for (int x = x0; x < x1; x++) {
+			unsigned i = texel_of((float)x + 0.5f, ox, ix, w);
+			if (i >= w)
+				continue;
+			uint32_t v = row[i];
+			size_t k = (size_t)y * (size_t)t->width + (size_t)x;
+			float depth = c->v[0].z;
+			vec4 col = color;
+			switch (c->pixels) {
+			case RASTER_PIXELS_COLOR:
+				col = unpack(v);
+				break;
+			case RASTER_PIXELS_MASK:
+				if (!v)
+					continue;
+				break;
+			case RASTER_PIXELS_DEPTH:
+				memcpy(&depth, &v, 4);
+				break;
+			default:
+				if (t->stencil)
+					t->stencil[k] = (uint8_t)((t->stencil[k] & ~s->stencil_write) | (v & s->stencil_write));
+				continue;
+			}
+			memcpy(a + A_C0, &col, sizeof col);
+			a[A_Z] = depth;
+			test(t, s, k, a, &sh, 0, depth);
+		}
+	}
+}
+
 /* ---- command lists, run in bands of rows on several threads -------------------- */
 
 #define BAND_ROWS 16
@@ -1015,6 +1124,9 @@ static void run_band(struct raster_target *t, const struct raster_state *states,
 			break;
 		case RASTER_CMD_BITMAP:
 			bitmap(t, s, rows, c->image, c->v[0].x, c->v[0].y, c->v[0].z);
+			break;
+		case RASTER_CMD_PIXELS:
+			pixels(t, s, rows, c);
 			break;
 		case RASTER_CMD_CLEAR: {
 			int top = c->rect[1] > rows[0] ? c->rect[1] : rows[0];

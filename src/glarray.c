@@ -291,35 +291,46 @@ static void fetch(const struct gl_array *a, uint32_t i, bool normalized, float *
 		v[k] = value(p + (size_t)k * size, a->type, normalized);
 }
 
-void glf_array_element(struct gl_state *st, const struct gl_target *t, int32_t i)
+void glf_array_values(const struct gl_state *st, int32_t i, struct gl_element *el)
 {
+	static const bool normalized[GLF_ARRAY_TEX0] = { [GLF_ARRAY_NORMAL] = true, [GLF_ARRAY_COLOR] = true,
+							 [GLF_ARRAY_SECONDARY] = true };
+	el->has = 0;
 	if (i < 0)
 		return;
 	const struct gl_array *a = st->arrays;
 	uint32_t e = (uint32_t)i;
-	if (has(&a[GLF_ARRAY_EDGE], e))
-		st->edge_flag = a[GLF_ARRAY_EDGE].data[(size_t)(e - a[GLF_ARRAY_EDGE].first) *
-						      glf_array_stride(&a[GLF_ARRAY_EDGE])] != 0;
+	for (unsigned k = 0; k < GLF_ARRAYS; k++) {
+		float *v = el->v[k];
+		v[0] = v[1] = v[2] = 0;
+		v[3] = 1;
+		if (k == GLF_ARRAY_INDEX || !has(&a[k], e))
+			continue;
+		el->has |= 1u << k;
+		if (k == GLF_ARRAY_EDGE)
+			v[0] = a[k].data[(size_t)(e - a[k].first) * glf_array_stride(&a[k])] != 0;
+		else
+			fetch(&a[k], e, k < GLF_ARRAY_TEX0 && normalized[k], v);
+	}
+}
+
+void glf_array_element(struct gl_state *st, const struct gl_target *t, int32_t i)
+{
+	struct gl_element e;
+	glf_array_values(st, i, &e);
+	if (e.has >> GLF_ARRAY_EDGE & 1)
+		st->edge_flag = e.v[GLF_ARRAY_EDGE][0] != 0;
 	for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++)
-		if (has(&a[GLF_ARRAY_TEX0 + u], e)) {
-			float v[4] = { 0, 0, 0, 1 };
-			fetch(&a[GLF_ARRAY_TEX0 + u], e, false, v);
-			memcpy(st->tex[u], v, sizeof v);
-		}
-	if (has(&a[GLF_ARRAY_COLOR], e)) {
-		float v[4] = { 0, 0, 0, 1 };
-		fetch(&a[GLF_ARRAY_COLOR], e, true, v);
-		memcpy(st->color, v, sizeof v);
-	}
-	if (has(&a[GLF_ARRAY_SECONDARY], e))
-		fetch(&a[GLF_ARRAY_SECONDARY], e, true, st->secondary_color);
-	if (has(&a[GLF_ARRAY_NORMAL], e))
-		fetch(&a[GLF_ARRAY_NORMAL], e, true, st->normal);
-	if (has(&a[GLF_ARRAY_VERTEX], e)) {
-		float v[4] = { 0, 0, 0, 1 };
-		fetch(&a[GLF_ARRAY_VERTEX], e, false, v);
-		glf_vertex(st, t, v);
-	}
+		if (e.has >> (GLF_ARRAY_TEX0 + u) & 1)
+			memcpy(st->tex[u], e.v[GLF_ARRAY_TEX0 + u], sizeof st->tex[u]);
+	if (e.has >> GLF_ARRAY_COLOR & 1)
+		memcpy(st->color, e.v[GLF_ARRAY_COLOR], sizeof st->color);
+	if (e.has >> GLF_ARRAY_SECONDARY & 1)
+		memcpy(st->secondary_color, e.v[GLF_ARRAY_SECONDARY], 3 * sizeof *st->secondary_color);
+	if (e.has >> GLF_ARRAY_NORMAL & 1)
+		memcpy(st->normal, e.v[GLF_ARRAY_NORMAL], sizeof st->normal);
+	if (e.has >> GLF_ARRAY_VERTEX & 1)
+		glf_vertex(st, t, e.v[GLF_ARRAY_VERTEX]);
 }
 
 void glf_draw_arrays(struct gl_state *st, const struct gl_target *t, uint32_t mode, int32_t first, int32_t count)

@@ -824,11 +824,16 @@ small volume, "syshm Tools", holding them, which `--cdrom FILE` attaches
   lighting (`src/gllight.c`: 8 lights, materials, two sides, separate
   specular), fog, generated texture coordinates, user clip planes,
   stencil, polygon offset and modes, the attribute stacks
-  (`src/glarray.c`, `src/glattrib.c`); `glReadPixels`; clears, strings,
-  errors and queries; OpenGLMemory's allocations. Not yet: display lists,
-  the raster position and pixel paths, OpenGLUtility. Unreal Tournament's
-  OpenGL build (on the UT CD,
-  `Extras:OpenGL UT.sea`) plays with them, on the GPU and in software.
+  (`src/glarray.c`, `src/glattrib.c`); display lists (`src/gllist.c`);
+  the raster position, `glBitmap`, `glDrawPixels`, `glCopyPixels` and the
+  pixel transfer (`src/glpixel.c`); `glReadPixels`, `glCopyTexImage` and
+  `glGetTexImage`; 3D textures; clears, strings, errors and queries;
+  OpenGLMemory's allocations; and OpenGLUtility, done on the host as SGI's
+  GLU does it (`src/glu.c`: the matrices, `gluProject`, scaled images and
+  mipmaps, quadrics). Not yet: selection and feedback, evaluators,
+  `aglUseFont`, `aglSetFullScreen`, OpenGLUtility's tessellators and NURBS.
+  Unreal Tournament's OpenGL build (on the UT CD, `Extras:OpenGL UT.sea`)
+  and Quake III Arena's demo play with them, on the GPU and in software.
   Swaps to the screen or a window are paced as the 3D engine's frames are
   (above). `SYSHM_GL_FPS=1` prints the frame rate every second, and
   `SYSHM_LOG_GL=1` logs every call.
@@ -1456,20 +1461,25 @@ tools/jit-timing.sh     # times the JIT here (its benchmark, the CD boots there 
 
 The guest's OpenGL is checked in the guest too, by a test application of
 syshm's own, "syshm GL Test" (`src/gltest.c`: its logic is C in syshm
-calling the guest's OpenGLLibrary through the Code Fragment Manager's
-linking, as a game would). `SYSHM_TOOLS_GL_TEST=1 build/syshm tools create
-FILE` puts it on the tools volume; with the OpenGL libraries in a disk
-image's Extensions folder and it in Startup Items (hfsutils' `hcopy -m`
-copies them), a run in instruction time shows its window with the scene
-`SYSHM_GL_TEST_SCENE` names (`clear`: a clear, and a scissored one;
-`triangle`: in perspective, a floor cut by the near plane, a triangle and a
-quad crossing in depth, a flat-shaded fan; `lit`: a bump drawn from vertex
-and normal arrays, lit, fogged, and a quad drawn through the stencil) at the depth
-`SYSHM_GL_TEST_DEPTH` sets (16 or 32), the same on every host. On Linux,
+calling the guest's OpenGLLibrary and OpenGLUtility through the Code
+Fragment Manager's linking, as a game would). `SYSHM_TOOLS_GL_TEST=1
+build/syshm tools create FILE` puts it on the tools volume; with the OpenGL
+libraries in a disk image's Extensions folder and it in Startup Items
+(hfsutils' `hcopy -m` copies them), a run in instruction time shows its
+window with the scene `SYSHM_GL_TEST_SCENE` names (`clear`: a clear, and a
+scissored one; `triangle`: in perspective, a floor cut by the near plane, a
+triangle and a quad crossing in depth, a flat-shaded fan; `lit`: a bump
+drawn from vertex and normal arrays, lit, fogged, and a quad drawn through
+the stencil; `lists`: quadrics made into display lists through
+OpenGLUtility, called lit and as lines; `pixels`: an image zoomed, glyphs
+by `glBitmap`, a copy by `glCopyPixels`) at the depth
+`SYSHM_GL_TEST_DEPTH` sets (16 or 32), the same on every host (with the
+same time zone: the guest's clock is the host's local time). On Linux,
 `make test` draws scenes through the libraries and compares them with Mesa's
 own OpenGL (its compatibility profile, which still has `glBegin`):
 `SYSHM_TEST_VERBOSE=1` says how far apart they are, and
-`SYSHM_TEST_SAVE=DIR` saves them as PNGs.
+`SYSHM_TEST_SAVE=DIR` saves them as PNGs; `SYSHM_TEST_GLU=PATH` names
+Mesa's libGLU (`libGLU.so.1`), to compare OpenGLUtility's scene too.
 `tools/gltable.py` made `src/opengl_table.h`, the libraries' functions,
 from Apple's (Mac OS 9.2.2's) and the macOS SDK's OpenGL headers.
 

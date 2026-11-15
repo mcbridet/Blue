@@ -646,8 +646,12 @@ static void test_pixel_transfer(void)
 	glf_pixel_store(&st, 0x0CF0, 0);
 
 	/* the pixel stores: alignment, row length, skips */
-	struct gl_pixel_store ps = { 0, 0, 0, 4, false, false };
+	struct gl_pixel_store ps = { 0, 0, 0, 4, false, false, 0, 0 };
 	CHECK_EQ(glf_image_bytes(&ps, GL_RGB, GL_UNSIGNED_BYTE, 3, 2), 12 + 9);        /* (rows of 9, padded to 12) */
+	ps.image_height = 3;                    /* (3D images: 3 rows apart, after one) */
+	ps.skip_images = 1;
+	CHECK_EQ(glf_image_bytes_3d(&ps, GL_RGB, GL_UNSIGNED_BYTE, 3, 2, 2), 36 + 36 + 21);
+	ps.image_height = ps.skip_images = 0;
 	ps.alignment = 1;
 	CHECK_EQ(glf_image_bytes(&ps, GL_RGB, GL_UNSIGNED_BYTE, 3, 2), 18);
 	ps.row_length = 5;
@@ -1347,6 +1351,256 @@ static void test_queries(void)
 	CHECK_EQ(glf_get(&st, 0x1234, v), 0);
 }
 
+/* ---- the raster position, pixel rectangles, the pixel transfer --------------------------------------- */
+
+enum { GL_RGBA8_T = 0x8058, GL_PIXEL_MAP_I_TO_I = 0x0C70, GL_PIXEL_MAP_I_TO_R = 0x0C72, GL_PIXEL_MAP_R_TO_R = 0x0C76,
+       GL_MAP_COLOR_T = 0x0D10, GL_INDEX_OFFSET_T = 0x0D13, GL_RED_SCALE_T = 0x0D14, GL_GREEN_BIAS_T = 0x0D19,
+       GL_DEPTH_SCALE_T = 0x0D1E, GL_UNPACK_LSB_FIRST_T = 0x0CF1, GL_UNPACK_SKIP_PIXELS_T = 0x0CF4 };
+
+static void raster_pos(float x, float y, float z)
+{
+	const float v[4] = { x, y, z, 1 };
+	glf_raster_pos(&st, v);
+}
+
+static uint32_t argb(int r, int g, int b, int a)
+{
+	return (uint32_t)a << 24 | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+}
+
+static void test_raster_pos(void)
+{
+	start();
+	ortho();
+	color(0.5f, 0.25f, 1);
+	raster_pos(10.25f, 20.5f, 0.5f);
+	const struct gl_raster_pos *r = &st.rpos;
+	CHECK(r->valid && near(r->win[0], 10.25f, 1e-4f) && near(r->win[1], 20.5f, 1e-4f) && near(r->win[2], 0.25f, 1e-6f));
+	CHECK(r->color[1] == 0.25f && near(r->distance, sqrtf(10.25f * 10.25f + 20.5f * 20.5f + 0.25f), 1e-4f));
+	double v[4];
+	CHECK(glf_get(&st, 0x0B07, v) == 4 && near((float)v[0], 10.25f, 1e-4f) && v[3] == 1);
+	/* texture coordinates through the texture matrix */
+	glf_matrix_mode(&st, GL_TEXTURE);
+	glf_scale(&st, 2, 2, 2);
+	glf_matrix_mode(&st, GL_MODELVIEW);
+	st.tex[0][0] = 0.25f;
+	raster_pos(10, 10, 0);
+	CHECK(r->tex[0][0] == 0.5f);
+	/* outside the view volume: not valid, and nothing drawn or moved from it */
+	raster_pos(-5, 10, 0);
+	CHECK(!r->valid);
+	CHECK(glf_get(&st, 0x0B08, v) == 1 && v[0] == 0);
+	static const uint8_t bits[4] = { 0xFF, 0, 0, 0 };
+	glf_bitmap(&st, &target, 8, 1, 0, 0, 5, 5, bits);
+	static const uint8_t rgba[4] = { 255, 0, 0, 255 };
+	glf_draw_pixels(&st, &target, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+	CHECK(ncmds() == 0 && r->win[0] == 10);
+	CHECK_EQ(error(), GL_NO_ERROR);
+}
+
+static void test_draw_pixels(void)
+{
+	start();
+	ortho();
+	/* a zoomed image's texel (i, j) covers the pixels whose centers are in its rectangle (OpenGL 1.2's
+	 * 3.6.4), from the raster position rounded to a pixel's corner */
+	static uint8_t image[4 * 3 * 4];
+	for (int k = 0; k < 12; k++) {
+		image[4 * k] = (uint8_t)(20 * k + 10);
+		image[4 * k + 1] = (uint8_t)k;
+		image[4 * k + 2] = 0;
+		image[4 * k + 3] = 255;
+	}
+	const float z[2] = { 1.6f, -1.7f };
+	glf_pixel_zoom(&st, z[0], z[1]);
+	raster_pos(10.3f, 30.4f, 0);
+	glf_draw_pixels(&st, &target, 4, 3, GL_RGBA, GL_UNSIGNED_BYTE, image);
+	drawn();
+	unsigned wrong = 0, covered = 0;
+	for (int y = 20; y < 32; y++)
+		for (int x = 8; x < 20; x++) {
+			double i = floor((x + 0.5 - 10) / z[0]), j = floor((y + 0.5 - 30) / z[1]);
+			bool in = i >= 0 && i < 4 && j >= 0 && j < 3;
+			uint32_t want = in ? argb(20 * (int)(j * 4 + i) + 10, (int)(j * 4 + i), 0, 255) : 0;
+			wrong += pixel(x, y) != want;
+			covered += in;
+		}
+	CHECK(wrong == 0 && covered == 6 * 5);
+	glf_pixel_zoom(&st, 1, 1);
+	/* the transfer: scale and bias, then the maps (each component through its own) */
+	start();
+	ortho();
+	float flip[2] = { 1, 0 }, ident[256], blue[4] = { 0.1f, 0.2f, 0.4f, 0.8f }, one[1] = { 1 };
+	for (int k = 0; k < 256; k++)
+		ident[k] = (float)k / 255;
+	glf_pixel_map(&st, GL_PIXEL_MAP_R_TO_R, 2, flip);
+	glf_pixel_map(&st, GL_PIXEL_MAP_R_TO_R + 1, 256, ident);
+	glf_pixel_map(&st, GL_PIXEL_MAP_R_TO_R + 2, 4, blue);
+	glf_pixel_map(&st, GL_PIXEL_MAP_R_TO_R + 3, 1, one);
+	glf_pixel_transfer(&st, GL_MAP_COLOR_T, 1);
+	glf_pixel_transfer(&st, GL_GREEN_BIAS_T, 0.25f);
+	static const uint8_t px[4] = { 100, 37, 200, 0 };
+	raster_pos(4.2f, 4.4f, 0);                              /* (drawn from (4, 4): rounded) */
+	glf_draw_pixels(&st, &target, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+	drawn();
+	CHECK_EQ(pixel(4, 4), argb(255, 101, 102, 255));       /* (r 0.39: 1; g 37 + 64; b 0.78 of 3: 2) */
+	float got[256];
+	CHECK(glf_get_pixel_map(&st, GL_PIXEL_MAP_R_TO_R + 2, got) == 4 && got[3] == 0.8f);
+	glf_pixel_map(&st, GL_PIXEL_MAP_I_TO_I, 3, ident);      /* (from indices: powers of two) */
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	glf_pixel_map(&st, 0x0C7A, 1, ident);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	/* color indices: shifted and offset, then by the I_TO_ maps */
+	glf_pixels_init(&st);
+	const float ir[2] = { 0, 1 }, ig[2] = { 1, 0 }, ia[1] = { 1 };
+	glf_pixel_map(&st, GL_PIXEL_MAP_I_TO_R, 2, ir);
+	glf_pixel_map(&st, GL_PIXEL_MAP_I_TO_R + 1, 2, ig);
+	glf_pixel_map(&st, GL_PIXEL_MAP_I_TO_R + 3, 1, ia);
+	glf_pixel_transfer(&st, GL_INDEX_OFFSET_T, 1);
+	static const uint8_t index[2] = { 0, 1 };
+	raster_pos(10.4f, 3.6f, 0);
+	glf_draw_pixels(&st, &target, 2, 1, GL_COLOR_INDEX, GL_UNSIGNED_BYTE, index);
+	drawn();
+	CHECK(pixel(10, 4) == argb(255, 0, 0, 255) && pixel(11, 4) == argb(0, 255, 0, 255));
+	glf_pixels_init(&st);
+	/* errors */
+	glf_draw_pixels(&st, &target, 1, 1, 0x1234, GL_UNSIGNED_BYTE, px);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	glf_draw_pixels(&st, &target, 1, 1, GL_RGB, 0x8033, px);        /* (4_4_4_4: four components) */
+	CHECK_EQ(error(), GL_INVALID_OPERATION);
+	glf_draw_pixels(&st, &target, -1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	struct gl_target none = target;
+	none.depth_bits = 0;
+	glf_draw_pixels(&st, &none, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, px);
+	CHECK_EQ(error(), GL_INVALID_OPERATION);
+	glf_draw_pixels(&st, &target, 1, 1, GL_RGBA, GL_BITMAP, px);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+}
+
+static void test_bitmap(void)
+{
+	start();
+	ortho();
+	/* the raster color is the color when the raster position was set; least significant bits first, skipped */
+	color(1, 0, 0);
+	raster_pos(20.7f, 10.2f, 0);
+	color(0, 1, 0);
+	glf_pixel_store(&st, GL_UNPACK_LSB_FIRST_T, 1);
+	glf_pixel_store(&st, GL_UNPACK_SKIP_PIXELS_T, 2);
+	glf_pixel_store(&st, 0x0CF5, 1);                        /* GL_UNPACK_ALIGNMENT */
+	static const uint8_t bits[2] = { 0x08, 0x10 };         /* (bits 2 on: 0, 1, 0; 0, 0, 1) */
+	glf_bitmap(&st, &target, 3, 2, 1, 0, 4.5f, -1, bits);
+	drawn();
+	/* (its corner: floor(20.7 - 1), floor(10.2)) */
+	CHECK(pixel(19, 10) == 0 && pixel(20, 10) == argb(255, 0, 0, 255) && pixel(21, 10) == 0);
+	CHECK(pixel(19, 11) == 0 && pixel(20, 11) == 0 && pixel(21, 11) == argb(255, 0, 0, 255));
+	CHECK(near(st.rpos.win[0], 25.2f, 1e-5f) && near(st.rpos.win[1], 9.2f, 1e-5f));
+	glf_bitmap(&st, &target, 0, 0, 0, 0, 1, 1, NULL);       /* (nothing drawn: it still moves) */
+	CHECK(near(st.rpos.win[0], 26.2f, 1e-5f) && ncmds() == 0);
+	glf_bitmap(&st, &target, -1, 0, 0, 0, 1, 1, NULL);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+}
+
+static void test_depth_stencil_pixels(void)
+{
+	start();
+	ortho();
+	st.clear_depth = 0.25;
+	st.clear_stencil = 7;
+	glf_clear(&st, &target, GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+	drawn();
+	/* read: depth as floats and scaled shorts, through the depth scale; stencil through the offset, as bits */
+	uint8_t d[8];
+	glf_read_pixels(&st, &target, 3, 3, 2, 1, GL_DEPTH_COMPONENT, GL_FLOAT, d);
+	CHECK(d[0] == 0x3E && d[1] == 0x80 && d[2] == 0 && d[4] == 0x3E);      /* (0.25, big-endian) */
+	uint8_t be[2];
+	glf_pixel_transfer(&st, GL_DEPTH_SCALE_T, 2);
+	glf_read_pixels(&st, &target, 3, 3, 1, 1, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, be);
+	CHECK(be[0] == 0x80 && be[1] == 0x00);                  /* (0.5 of 65535, big-endian) */
+	glf_pixel_transfer(&st, GL_DEPTH_SCALE_T, 1);
+	uint8_t s[2];
+	glf_pixel_transfer(&st, GL_INDEX_OFFSET_T, 1);
+	glf_read_pixels(&st, &target, 3, 3, 2, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, s);
+	CHECK(s[0] == 8 && s[1] == 8);
+	glf_pixel_transfer(&st, GL_INDEX_OFFSET_T, 0);
+	uint8_t bit = 0xFF;
+	glf_read_pixels(&st, &target, 3, 3, 2, 1, GL_STENCIL_INDEX, GL_BITMAP, &bit);
+	CHECK_EQ(bit, 0xFF);                                    /* (7's low bit, twice: the rest left) */
+	glf_read_pixels(&st, &target, 3, 3, 1, 1, GL_COLOR_INDEX, GL_UNSIGNED_BYTE, s);
+	CHECK_EQ(error(), GL_INVALID_OPERATION);
+	/* drawn: depth (with the depth test: written, its color the raster's), stencil in the write mask */
+	glf_enable(&st, GL_DEPTH_TEST, true);
+	glf_depth_func(&st, GL_ALWAYS);
+	color(0, 0, 1);
+	raster_pos(10.2f, 10.3f, 0);
+	const float depths[2] = { 0.5f, 0.75f };
+	uint8_t dbe[8];
+	for (int k = 0; k < 2; k++) {
+		uint32_t w;
+		memcpy(&w, &depths[k], 4);
+		for (int b = 0; b < 4; b++)
+			dbe[4 * k + b] = (uint8_t)(w >> (24 - 8 * b));
+	}
+	glf_draw_pixels(&st, &target, 2, 1, GL_DEPTH_COMPONENT, GL_FLOAT, dbe);
+	glf_stencil_mask(&st, 0x0F);
+	static const uint8_t stencil[2] = { 0x35, 0x3A };
+	glf_draw_pixels(&st, &target, 2, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, stencil);
+	drawn();
+	size_t i = (size_t)(H - 1 - 10) * W + 10;
+	CHECK(surf.target.depth[i] == 0.5f && surf.target.depth[i + 1] == 0.75f && pixel(10, 10) == argb(0, 0, 255, 255));
+	CHECK(surf.target.stencil[i] == 0x05 && surf.target.stencil[i + 1] == 0x0A);
+	/* copied */
+	raster_pos(19.8f, 20.1f, 0);
+	glf_copy_pixels(&st, &target, 10, 10, 2, 1, GL_DEPTH);
+	glf_stencil_mask(&st, 0xFF);
+	glf_copy_pixels(&st, &target, 10, 10, 2, 1, GL_STENCIL);
+	drawn();
+	size_t j = (size_t)(H - 1 - 20) * W + 20;
+	CHECK(surf.target.depth[j] == 0.5f && surf.target.depth[j + 1] == 0.75f && surf.target.stencil[j] == 0x05);
+	glf_enable(&st, GL_DEPTH_TEST, false);                  /* (a color copy's fragments have the raster's z) */
+	glf_copy_pixels(&st, &target, 10, 10, 2, 1, GL_COLOR);
+	drawn();
+	CHECK(pixel(21, 20) == argb(0, 0, 255, 255) && surf.target.depth[j + 1] == 0.75f);
+	glf_copy_pixels(&st, &target, 0, 0, 1, 1, 0x1234);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+}
+
+static void test_copy_get_tex_image(void)
+{
+	start();
+	ortho();
+	static const uint8_t px[4] = { 10, 20, 30, 255 };
+	for (int k = 0; k < 4; k++) {
+		raster_pos(2.2f + (float)k, 3.3f, 0);
+		glf_draw_pixels(&st, &target, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+	}
+	drawn();
+	glf_bind_texture(&st, GL_TEXTURE_2D, 1);
+	glf_copy_tex_image(&st, &target, GL_TEXTURE_2D, 0, GL_RGBA8_T, 1, 2, 4, 2, 0);
+	CHECK_EQ(error(), GL_NO_ERROR);
+	const struct gl_texture *t = glf_texture(&st, 1);
+	CHECK(t->level[0].width == 4 && t->level[0].height == 2);
+	CHECK(t->level[0].texels[4 + 1] == argb(10, 20, 30, 255) && t->level[0].texels[0] == 0);
+	glf_copy_tex_sub_image(&st, &target, GL_TEXTURE_2D, 0, 0, 0, 2, 3, 1, 1);
+	CHECK_EQ(t->level[0].texels[0], argb(10, 20, 30, 255));
+	glf_copy_tex_image(&st, &target, GL_TEXTURE_2D, 0, GL_RGBA8_T, 0, 0, 3, 2, 0);
+	CHECK_EQ(error(), GL_INVALID_VALUE);
+	/* glGetTexImage: a luminance texture as RGBA (L, 0, 0, 1) and as luminance */
+	static const uint8_t lum[4] = { 9, 99, 199, 255 };
+	glf_pixel_store(&st, 0x0CF5, 1);                        /* GL_UNPACK_ALIGNMENT */
+	glf_pixel_store(&st, 0x0D05, 1);                        /* GL_PACK_ALIGNMENT */
+	glf_tex_image(&st, GL_TEXTURE_2D, 0, GL_LUMINANCE, 2, 2, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, lum);
+	CHECK_EQ(glf_tex_image_bytes(&st, GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE), 16);
+	uint8_t out[16];
+	glf_get_tex_image(&st, GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, out);
+	CHECK(out[4] == 99 && out[5] == 0 && out[6] == 0 && out[7] == 255);
+	glf_get_tex_image(&st, GL_TEXTURE_2D, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, out);
+	CHECK(out[0] == 9 && out[1] == 99 && out[2] == 199 && out[3] == 255);
+	glf_get_tex_image(&st, GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, out);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+}
+
 void test_glfront(void)
 {
 	test_sincos();
@@ -1368,6 +1622,11 @@ void test_glfront(void)
 	test_attrib();
 	test_arrays();
 	test_queries();
+	test_raster_pos();
+	test_draw_pixels();
+	test_bitmap();
+	test_depth_stencil_pixels();
+	test_copy_get_tex_image();
 	surface_free(&surf);
 	glf_detach(&st, NULL);
 }

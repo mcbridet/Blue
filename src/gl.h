@@ -121,6 +121,8 @@ typedef struct __GLsync *GLsync;
 #define GL_PACK_ALIGNMENT 0x0D05
 
 #define GL_TEXTURE_2D 0x0DE1
+#define GL_TEXTURE_3D 0x806F
+#define GL_TEXTURE_WRAP_R 0x8072
 #define GL_TEXTURE0 0x84C0
 #define GL_TEXTURE_MAG_FILTER 0x2800
 #define GL_TEXTURE_MIN_FILTER 0x2801
@@ -145,6 +147,8 @@ typedef struct __GLsync *GLsync;
 #define GL_COLOR_ATTACHMENT0 0x8CE0
 #define GL_DEPTH_ATTACHMENT 0x8D00
 #define GL_DEPTH_STENCIL_ATTACHMENT 0x821A
+#define GL_DEPTH_STENCIL 0x84F9
+#define GL_FLOAT_32_UNSIGNED_INT_24_8_REV 0x8DAD
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
 
 #define GL_ARRAY_BUFFER 0x8892
@@ -209,6 +213,8 @@ typedef struct __GLsync *GLsync;
 	X(void, ActiveTexture, (GLenum texture)) \
 	X(void, TexImage2D, (GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, \
 			     GLint border, GLenum format, GLenum type, const void *pixels)) \
+	X(void, TexImage3D, (GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, \
+			     GLsizei depth, GLint border, GLenum format, GLenum type, const void *pixels)) \
 	X(void, TexSubImage2D, (GLenum target, GLint level, GLint x, GLint y, GLsizei width, GLsizei height, \
 				GLenum format, GLenum type, const void *pixels)) \
 	X(void, TexParameteri, (GLenum target, GLenum pname, GLint param)) \

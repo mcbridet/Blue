@@ -5,9 +5,10 @@
  * offscreen buffer), clears and swaps, strings and errors, the dispatch
  * table's calls; OpenGLMemory's allocations; the fragments themselves.
  * OpenGLLibrary's own code, run by the processor (interpreted and by the
- * JIT), recording calls. Scenes drawn through it all in software and on
- * the GPU, and (on Linux) by Mesa's OpenGL in its compatibility profile,
- * the reference.
+ * JIT), recording calls. OpenGLUtility's. Scenes drawn through it all in
+ * software and on the GPU, and (on Linux) by Mesa's OpenGL in its
+ * compatibility profile, the reference (and SGI's GLU, Mesa's libGLU, if
+ * SYSHM_TEST_GLU is where it is).
  */
 #include <math.h>
 #include <stdlib.h>
@@ -24,6 +25,7 @@
 
 #define TOC 0x10000u            /* OpenGLLibrary's data (a process's instance) */
 #define MEM_TOC 0x38000u        /* OpenGLMemory's */
+#define GLU_TOC 0x3C000u        /* OpenGLUtility's */
 #define FRAME 0x40000u          /* the stub's stack frame */
 #define ATTRIBS 0x48000u
 #define OUT 0x48100u
@@ -95,6 +97,90 @@ static uint32_t call_entry(unsigned k, const uint32_t *w, unsigned nw, const dou
 #define CALL0(name) call_entry((unsigned)opengl_entry(#name), NULL, 0, NULL, 0)
 #define CALL_F(name, ...) call_entry((unsigned)opengl_entry(#name), NULL, 0, (const double[]){ __VA_ARGS__ }, \
 				     sizeof (double[]){ __VA_ARGS__ } / 8)
+
+/* OpenGLUtility's functions: their names and arguments' types */
+static const struct {
+	const char *name, *args;
+} glu_functions[] = {
+#define X(name, result, args, offset) { #name, args },
+	OPENGL_UTILITY_FUNCTIONS(X)
+#undef X
+};
+
+static unsigned glu_entry(const char *name)
+{
+	for (unsigned k = 0; k < sizeof glu_functions / sizeof glu_functions[0]; k++)
+		if (!strcmp(glu_functions[k].name, name))
+			return k;
+	CHECK(!"no such glu function");
+	return 0;
+}
+
+/*
+ * A call to OpenGLUtility, its callouts answered: NewPtrClear's blocks
+ * from GLU_HEAP on, DisposePtr's counted, others (quadrics' error
+ * callbacks) noted
+ */
+#define GLU_HEAP 0x4C000u
+#define NEW_PTR_CLEAR_TV 0x7040u
+#define DISPOSE_PTR_TV 0x7050u
+#define ERROR_TV 0x7060u
+static uint32_t glu_heap = GLU_HEAP, glu_disposed, glu_error;
+static unsigned glu_errors;
+
+static uint32_t call_glu(const char *name, const uint32_t *w, unsigned nw, const double *f, unsigned nf)
+{
+	struct ndrv_call c;
+	memset(&c, 0, sizeof c);
+	c.mem = &mem;
+	c.entry = glu_entry(name);
+	c.toc = GLU_TOC;
+	c.frame = FRAME;
+	for (unsigned j = 0; j < nw && j < 8; j++)
+		c.arg[j] = w[j];
+	for (unsigned j = 8; j < nw; j++)
+		mem_w32(&mem, FRAME + NDRV_FRAME_SIZE + 24 + 4 * j, w[j]);
+	for (unsigned j = 0; j < nf; j++)
+		memcpy(&c.f[j], &f[j], 8);
+	opengl_utility_call(&gl, &c);
+	for (unsigned n = 0; !c.done && n < 4; n++) {
+		uint32_t r = 0;
+		if (c.tvector == NEW_PTR_CLEAR_TV) {
+			r = glu_heap;
+			memset(mem_ptr(&mem, r), 0, c.out[0]);
+			glu_heap += (c.out[0] + 15) & ~15u;
+		} else if (c.tvector == DISPOSE_PTR_TV) {
+			glu_disposed = c.out[0];
+		} else {
+			CHECK_EQ(c.tvector, ERROR_TV);
+			glu_errors++;
+			glu_error = c.out[0];
+		}
+		c.entry = NDRV_ENTRY_RESUME;
+		c.arg[0] = r;
+		opengl_utility_call(&gl, &c);
+	}
+	CHECK(c.done);
+	return c.result;
+}
+
+#define CALLU(name, ...) call_glu(#name, (const uint32_t[]){ __VA_ARGS__ }, sizeof (uint32_t[]){ __VA_ARGS__ } / 4, \
+				  NULL, 0)
+#define CALLU0(name) call_glu(#name, NULL, 0, NULL, 0)
+
+/* OpenGLUtility as the Code Fragment Manager loads it (its data at GLU_TOC, its imports resolved) */
+static void glu_load(void)
+{
+	static uint8_t buf[OPENGL_LIBRARY_MAX];
+	struct ndrv_layout l;
+	CHECK(opengl_build_utility(buf, sizeof buf, &l) > 0);
+	const uint8_t *section = buf + 40 + 28;
+	memset(mem_ptr(&mem, GLU_TOC), 0, be32(section + 8));
+	memcpy(mem_ptr(&mem, GLU_TOC), buf + be32(section + 20), be32(section + 12));
+	mem_w32(&mem, GLU_TOC + gl.utility.import[0], TOC + gl.library.extra + OPENGL_DATA_CURRENT);
+	mem_w32(&mem, GLU_TOC + gl.utility.import[1], NEW_PTR_CLEAR_TV);
+	mem_w32(&mem, GLU_TOC + gl.utility.import[2], DISPOSE_PTR_TV);
+}
 
 static void put_attribs(const uint32_t *a, unsigned n)
 {
@@ -613,7 +699,7 @@ static void test_recording(bool jit)
 /* A call by name, its arguments as doubles (each made its parameter's type) */
 struct op {
 	const char *name;
-	double a[6];
+	double a[12];
 };
 
 #define ORTHO { "glMatrixMode", { GL_PROJECTION } }, { "glLoadIdentity", { 0 } }, \
@@ -746,7 +832,9 @@ static const uint8_t *image(unsigned k, int w, int h)
 #define VECDATA 0x130000u       /* (a parameter vector: glLightfv's, glFogfv's...) */
 #define ARRAYDATA 0x140000u     /* (array k at ARRAYDATA + k * 0x1000) */
 enum { ARR_MESH_POS, ARR_MESH_NORMAL, ARR_MESH_INDEX, ARR_SHORT_POS, ARR_UBYTE_COLOR, ARR_DOUBLE_POS, ARR_FLOAT_RGB,
-       ARR_BYTE_INDEX, ARR_INTERLEAVED, ARR_UINT_INDEX, ARR_SECONDARY, ARR_BYTE_NORMAL, ARRAYS };
+       ARR_BYTE_INDEX, ARR_INTERLEAVED, ARR_UINT_INDEX, ARR_SECONDARY, ARR_BYTE_NORMAL, ARR_LIST_UBYTE,
+       ARR_LIST_2BYTES, ARR_LIST_FLOAT, ARR_PIX_RGBA, ARR_PIX_RGB, ARR_PIX_LUM, ARR_MAP4, ARR_BITMAP, ARR_PIX_DEPTH,
+       ARR_PIX_STENCIL, ARR_MAP_IDENTITY, ARR_VOLUME, ARR_SLICE, ARR_MIP, ARRAYS };
 #define MESH_X 9                /* (a mesh's vertices: a bent sheet, its normals) */
 #define MESH_Y 7
 #define MESH_INDICES ((MESH_X - 1) * (MESH_Y - 1) * 6)
@@ -877,6 +965,98 @@ static size_t array_bytes(unsigned k, bool big, uint8_t *out)
 		for (int v = 0; v < 4; v++)
 			PUT(GL_UNSIGNED_INT, v);
 		break;
+	case ARR_PIX_RGBA:                      /* (images: 16 x 12, 8 x 6) */
+		for (int j = 0; j < 12; j++)
+			for (int i = 0; i < 16; i++) {
+				PUT(GL_UNSIGNED_BYTE, 16 * i);
+				PUT(GL_UNSIGNED_BYTE, 21 * j);
+				PUT(GL_UNSIGNED_BYTE, (i ^ j) & 4 ? 230 : 40);
+				PUT(GL_UNSIGNED_BYTE, 255);
+			}
+		break;
+	case ARR_PIX_RGB:
+		for (int j = 0; j < 6; j++)
+			for (int i = 0; i < 8; i++) {
+				PUT(GL_UNSIGNED_BYTE, i == 0 || j == 0 ? 255 : 30 * i);
+				PUT(GL_UNSIGNED_BYTE, 200 - 30 * j);
+				PUT(GL_UNSIGNED_BYTE, (i + j) & 1 ? 250 : 10);
+			}
+		break;
+	case ARR_PIX_LUM:
+		for (int j = 0; j < 12; j++)
+			for (int i = 0; i < 16; i++)
+				PUT(GL_UNSIGNED_BYTE, 15 * i + 3 * j);
+		break;
+	case ARR_MAP4:                          /* (a pixel map) */
+		PUT(GL_FLOAT, 0.9);
+		PUT(GL_FLOAT, 0.1);
+		PUT(GL_FLOAT, 0.7);
+		PUT(GL_FLOAT, 0.3);
+		break;
+	case ARR_VOLUME:                        /* (4 x 4 x 4 RGBA; a 4 x 4 slice) */
+		for (int k = 0; k < 4; k++)
+			for (int j = 0; j < 4; j++)
+				for (int i = 0; i < 4; i++) {
+					PUT(GL_UNSIGNED_BYTE, 60 * i + 30);
+					PUT(GL_UNSIGNED_BYTE, 60 * j + 30);
+					PUT(GL_UNSIGNED_BYTE, 80 * k);
+					PUT(GL_UNSIGNED_BYTE, 255);
+				}
+		break;
+	case ARR_SLICE:
+		for (int j = 0; j < 16; j++) {
+			PUT(GL_UNSIGNED_BYTE, j & 1 ? 255 : 20);
+			PUT(GL_UNSIGNED_BYTE, 230);
+			PUT(GL_UNSIGNED_BYTE, j & 2 ? 0 : 200);
+			PUT(GL_UNSIGNED_BYTE, 255);
+		}
+		break;
+	case ARR_MIP:                           /* (16 x 8 RGB, for mipmaps: checkered by 4 x 4) */
+		for (int j = 0; j < 8; j++)
+			for (int i = 0; i < 16; i++) {
+				PUT(GL_UNSIGNED_BYTE, (i / 4 + j / 4) & 1 ? 240 : 30);
+				PUT(GL_UNSIGNED_BYTE, 15 * i);
+				PUT(GL_UNSIGNED_BYTE, 30 * j + 20);
+			}
+		break;
+	case ARR_MAP_IDENTITY:                  /* (256 entries: 8 bits each as they are) */
+		for (int k = 0; k < 256; k++)
+			PUT(GL_FLOAT, k / 255.0);
+		break;
+	case ARR_BITMAP: {                      /* (16 x 8, rows of 4 bytes) */
+		static const uint16_t rows[8] = { 0x0FF0, 0x1818, 0x300C, 0x6006, 0x7FFE, 0x6006, 0x6006, 0xF00F };
+		for (int j = 0; j < 8; j++) {
+			PUT(GL_UNSIGNED_BYTE, rows[j] >> 8);
+			PUT(GL_UNSIGNED_BYTE, rows[j] & 0xFF);
+			PUT(GL_UNSIGNED_BYTE, 0);
+			PUT(GL_UNSIGNED_BYTE, 0);
+		}
+		break;
+	}
+	case ARR_PIX_DEPTH:
+		for (int j = 0; j < 6; j++)
+			for (int i = 0; i < 8; i++)
+				PUT(GL_FLOAT, 0.2 + 0.08 * i + 0.01 * j);
+		break;
+	case ARR_PIX_STENCIL:
+		for (int j = 0; j < 6; j++)
+			for (int i = 0; i < 8; i++)
+				PUT(GL_UNSIGNED_BYTE, (i + j) % 3 == 0 ? 1 : 2);
+		break;
+	case ARR_LIST_UBYTE:                    /* (glCallLists' names) */
+		for (int v = 0; v < 3; v++)
+			PUT(GL_UNSIGNED_BYTE, v);
+		break;
+	case ARR_LIST_2BYTES:
+		for (int v = 1; v < 3; v++) {
+			PUT(GL_UNSIGNED_BYTE, 0);
+			PUT(GL_UNSIGNED_BYTE, v);
+		}
+		break;
+	case ARR_LIST_FLOAT:
+		PUT(GL_FLOAT, 2);
+		PUT(GL_FLOAT, 0);
+		break;
 	case ARR_SECONDARY:                     /* (rgb, a stride of 4) */
 		for (int v = 0; v < 8; v++) {
 			PUT(GL_UNSIGNED_BYTE, v & 1 ? 0 : 90);
@@ -894,7 +1074,9 @@ static size_t array_bytes(unsigned k, bool big, uint8_t *out)
 static bool takes_array(const char *name)
 {
 	return strstr(name, "Pointer") || !strcmp(name, "glInterleavedArrays") || !strcmp(name, "glDrawElements") ||
-	       !strcmp(name, "glDrawRangeElements");
+	       !strcmp(name, "glDrawRangeElements") || !strcmp(name, "glCallLists") || !strcmp(name, "glDrawPixels") ||
+	       !strcmp(name, "glBitmap") || !strcmp(name, "glPixelMapfv") || !strcmp(name, "glTexImage3D") ||
+	       !strcmp(name, "glTexSubImage3D");
 }
 
 /* A parameter vector's values (from a[first]): as doubles for glClipPlane, else floats */
@@ -1161,6 +1343,180 @@ static const struct op scene_clip[] = {
 };
 
 /*
+ * Display lists: nested, made and done at once, called by name when run
+ * (a list redefined), the client's arrays and a texture's image (and the
+ * pixel store it was unpacked by) as they were when made, glCallLists'
+ * types with a list base, deleted lists
+ */
+enum { GL_COMPILE = 0x1300, GL_COMPILE_AND_EXECUTE, GL_2_BYTES = 0x1407, GL_UNPACK_SKIP_PIXELS = 0x0CF4 };
+#define LIST(n, mode) { "glNewList", { n, mode } }
+#define ENDLIST { "glEndList", { 0 } }
+#define CALLLIST(n) { "glCallList", { n } }
+static const struct op scene_lists[] = {
+	ORTHO, CLEAR(0.1, 0.1, 0.2),
+	LIST(1, GL_COMPILE), C3(0.9, 0.3, 0.2), BEGIN(GL_TRIANGLES), V2(2.3, 2.2), V2(13.6, 3.1), V2(6.2, 14.7), END,
+	{ "glTranslatef", { 15, 0, 0 } }, ENDLIST,
+	LIST(2, GL_COMPILE_AND_EXECUTE), { "glPushMatrix", { 0 } }, { "glTranslatef", { 0, 17, 0 } }, CALLLIST(1),
+	CALLLIST(1), { "glPopMatrix", { 0 } }, ENDLIST,
+	CALLLIST(1), CALLLIST(2),
+	/* list 1 again: list 2 calls the new one */
+	LIST(1, GL_COMPILE), C3(0.2, 0.9, 0.3), { "glRectf", { 2.3, 2.2, 11.6, 12.7 } }, { "glTranslatef", { 15, 0, 0 } },
+	ENDLIST,
+	{ "glLoadIdentity", { 0 } }, { "glTranslatef", { 0, 34, 0 } }, CALLLIST(2),
+	/* arrays: as they were when the list was made */
+	{ "glEnableClientState", { GL_VERTEX_ARRAY } }, { "glEnableClientState", { GL_COLOR_ARRAY } },
+	{ "glVertexPointer", { 2, GL_SHORT, 0, ARR_SHORT_POS } },
+	{ "glColorPointer", { 4, GL_UNSIGNED_BYTE, 0, ARR_UBYTE_COLOR } },
+	LIST(3, GL_COMPILE), { "glDrawArrays", { GL_TRIANGLE_STRIP, 0, 8 } }, ENDLIST,
+	{ "glVertexPointer", { 3, GL_DOUBLE, 0, ARR_DOUBLE_POS } }, { "glDisableClientState", { GL_COLOR_ARRAY } },
+	{ "glLoadIdentity", { 0 } }, { "glTranslatef", { 0, 50, 0 } }, CALLLIST(3),
+	{ "glDisableClientState", { GL_VERTEX_ARRAY } },
+	/* glCallLists' types, from the list base */
+	LIST(10, GL_COMPILE), C3(1, 1, 0.2), { "glRecti", { 50, 4, 56, 10 } }, { "glTranslatef", { 7, 0, 0 } }, ENDLIST,
+	LIST(11, GL_COMPILE), C3(0.2, 1, 1), { "glRecti", { 50, 4, 56, 10 } }, { "glTranslatef", { 7, 0, 0 } }, ENDLIST,
+	LIST(12, GL_COMPILE), C3(1, 0.2, 1), { "glRecti", { 50, 4, 56, 10 } }, { "glTranslatef", { 7, 0, 0 } }, ENDLIST,
+	{ "glLoadIdentity", { 0 } }, { "glListBase", { 10 } },
+	{ "glCallLists", { 3, GL_UNSIGNED_BYTE, ARR_LIST_UBYTE } }, { "glTranslatef", { -21, 8, 0 } },
+	{ "glCallLists", { 2, GL_2_BYTES, ARR_LIST_2BYTES } }, { "glTranslatef", { -14, 8, 0 } },
+	{ "glCallLists", { 2, GL_FLOAT, ARR_LIST_FLOAT } },
+	{ "glDeleteLists", { 11, 2 } }, { "glTranslatef", { -14, 8, 0 } },
+	{ "glCallLists", { 3, GL_UNSIGNED_BYTE, ARR_LIST_UBYTE } }, { "glListBase", { 0 } },
+	/* a texture's image (unpacked as it was when the list was made) */
+	{ "glBindTexture", { 0x0DE1, 3 } }, TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST),
+	TEXP(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	LIST(20, GL_COMPILE), TEX(3, 4, 4, IMAGE_CHECKER), ENDLIST,
+	TEX(3, 4, 4, IMAGE_GRADIENT), { "glPixelStorei", { GL_UNPACK_SKIP_PIXELS, 1 } }, CALLLIST(20),
+	{ "glPixelStorei", { GL_UNPACK_SKIP_PIXELS, 0 } },
+	{ "glLoadIdentity", { 0 } }, EN(GL_TEXTURE_2D), C3(1, 1, 1),
+	BEGIN(GL_QUADS), TC(0, 0), V2(70.3, 40.2), TC(1, 0), V2(90.6, 40.2), TC(1, 1), V2(90.6, 66.7), TC(0, 1),
+	V2(70.3, 66.7), END, DIS(GL_TEXTURE_2D),
+	{ NULL, { 0 } },
+};
+
+/*
+ * Pixel rectangles: images of each kind of format at the raster position,
+ * zoomed by whole numbers (once upside down: Mesa's fractional zooms put
+ * rows where neither OpenGL 1.2's rectangles nor rounding would, see
+ * test_glfront.c), through the pixel transfer's scales and biases
+ * (Mesa's pixel maps quantize: those are checked in test_pixel_maps()); bitmaps
+ * moving the raster position; a copy of what's drawn; a depth image tested
+ * against, a stencil image stenciled by
+ */
+enum { GL_RGBA_T = 0x1908, GL_RGB_T = 0x1907, GL_LUMINANCE_T = 0x1909, GL_RED_SCALE = 0x0D14, GL_BLUE_SCALE = 0x0D1A,
+       GL_BLUE_BIAS = 0x0D1B, GL_ALPHA_SCALE = 0x0D1C, GL_COLOR_T = 0x1800, GL_DEPTH_COMPONENT_T = 0x1902,
+       GL_STENCIL_INDEX_T = 0x1901 };
+#define RPOS(x, y) { "glRasterPos2f", { x, y } }
+#define DRAWPIX(w, h, format, type, image) { "glDrawPixels", { w, h, format, type, image } }
+static const struct op scene_pixels[] = {
+	ORTHO, CLEAR(0.1, 0.15, 0.2),
+	RPOS(4.3, 4.2), DRAWPIX(16, 12, GL_RGBA_T, GL_UNSIGNED_BYTE, ARR_PIX_RGBA),
+	RPOS(24.3, 4.2), { "glPixelZoom", { 2, 1 } }, DRAWPIX(8, 6, GL_RGB_T, GL_UNSIGNED_BYTE, ARR_PIX_RGB),
+	{ "glPixelZoom", { 1, -2 } }, RPOS(48.6, 21.4), DRAWPIX(8, 6, GL_RGB_T, GL_UNSIGNED_BYTE, ARR_PIX_RGB),
+	{ "glPixelZoom", { 1, 1 } },
+	{ "glPixelTransferf", { GL_RED_SCALE, 0.5 } }, { "glPixelTransferf", { GL_BLUE_BIAS, 0.3 } },
+	RPOS(64.3, 4.2), DRAWPIX(16, 12, GL_LUMINANCE_T, GL_UNSIGNED_BYTE, ARR_PIX_LUM),
+	{ "glPixelTransferf", { GL_RED_SCALE, 1 } }, { "glPixelTransferf", { GL_BLUE_BIAS, 0 } },
+	{ "glPixelTransferf", { GL_BLUE_SCALE, -0.5 } }, { "glPixelTransferf", { GL_ALPHA_SCALE, 0.4 } },
+	RPOS(80.3, 4.2), DRAWPIX(16, 12, GL_RGBA_T, GL_UNSIGNED_BYTE, ARR_PIX_RGBA),
+	{ "glPixelTransferf", { GL_BLUE_SCALE, 1 } }, { "glPixelTransferf", { GL_ALPHA_SCALE, 1 } },
+	/* bitmaps, each moving the raster position on */
+	C3(1, 0.9, 0.2), RPOS(4.5, 22.5),
+	{ "glBitmap", { 16, 8, 0, 0, 18, 0, ARR_BITMAP } }, { "glBitmap", { 16, 8, 0, 0, 18, 1, ARR_BITMAP } },
+	C3(0.3, 1, 1), { "glBitmap", { 16, 8, 2.5, 0, 18, 0, ARR_BITMAP } },
+	/* a copy of the first image */
+	RPOS(76.4, 36.3), { "glCopyPixels", { 4, 4, 16, 12, GL_COLOR_T } },
+	/* a depth image (its color the raster position's), then a quad in front of some of it */
+	EN(GL_DEPTH_TEST), { "glDepthFunc", { GL_LESS } }, C3(0.9, 0.2, 0.9), RPOS(4.3, 36.2),
+	{ "glPixelZoom", { 3, 2 } }, DRAWPIX(8, 6, GL_DEPTH_COMPONENT_T, GL_FLOAT, ARR_PIX_DEPTH),
+	{ "glPixelZoom", { 1, 1 } }, C3(0.2, 0.9, 0.3),
+	BEGIN(GL_QUADS), V3(2.2, 34.3, -0.2), V3(30.6, 34.3, -0.2), V3(30.6, 50.4, -0.2), V3(2.2, 50.4, -0.2), END,
+	DIS(GL_DEPTH_TEST),
+	/* a stencil image, then a quad where it's 1 */
+	{ "glClearStencil", { 0 } }, { "glClear", { GL_STENCIL_BUFFER_BIT } }, RPOS(40.3, 36.2),
+	{ "glPixelZoom", { 3, 3 } }, DRAWPIX(8, 6, GL_STENCIL_INDEX_T, GL_UNSIGNED_BYTE, ARR_PIX_STENCIL),
+	{ "glPixelZoom", { 1, 1 } }, EN(GL_STENCIL_TEST), { "glStencilFunc", { GL_EQUAL, 1, 0xFF } },
+	C3(1, 0.5, 0.1), QUAD2(38.2, 34.3, 66.6, 56.5), DIS(GL_STENCIL_TEST),
+	/* the depth image and the quad copied as depths (the GPU's read back), a quad in front of some of them */
+	EN(GL_DEPTH_TEST), C3(0.3, 0.3, 0.9), RPOS(68.3, 59.2), { "glCopyPixels", { 4, 36, 24, 12, GL_DEPTH } },
+	C3(0.9, 0.9, 0.2),
+	BEGIN(GL_QUADS), V3(66.2, 57.3, -0.4), V3(94.6, 57.3, -0.4), V3(94.6, 71.6, -0.4), V3(66.2, 71.6, -0.4), END,
+	DIS(GL_DEPTH_TEST),
+	{ NULL, { 0 } },
+};
+
+/*
+ * 3D textures: nearest and trilinear, r clamped and repeated, r generated
+ * (object linear), a slice replaced
+ */
+#define TC3(s, t, r) { "glTexCoord3f", { s, t, r } }
+#define TEX3P(pname, v) { "glTexParameteri", { GL_TEXTURE_3D, pname, v } }
+enum { GL_TEXTURE_WRAP_R_T = 0x8072 };
+static const struct op scene_texture3d[] = {
+	ORTHO, CLEAR(0.1, 0.1, 0.1), EN(GL_TEXTURE_3D), { "glBindTexture", { GL_TEXTURE_3D, 5 } },
+	{ "glTexImage3D", { GL_TEXTURE_3D, 0, 0x8058, 4, 4, 4, 0, 0x1908, GL_UNSIGNED_BYTE, ARR_VOLUME } },
+	TEX3P(GL_TEXTURE_MIN_FILTER, GL_NEAREST), TEX3P(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	TEX3P(GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE), TEX3P(GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE),
+	TEX3P(GL_TEXTURE_WRAP_R_T, GL_CLAMP_TO_EDGE), { "glTexEnvi", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE } },
+	BEGIN(GL_QUADS), TC3(0, 0, 0.05), V2(4.3, 4.2), TC3(1, 0, 0.95), V2(44.6, 4.2), TC3(1, 1, 0.95), V2(44.6, 34.7),
+	TC3(0, 1, 0.05), V2(4.3, 34.7), END,
+	/* trilinear, r repeated past both ends */
+	TEX3P(GL_TEXTURE_MIN_FILTER, GL_LINEAR), TEX3P(GL_TEXTURE_MAG_FILTER, GL_LINEAR),
+	TEX3P(GL_TEXTURE_WRAP_R_T, GL_REPEAT),
+	BEGIN(GL_QUADS), TC3(0, 0, -0.3), V2(50.3, 4.2), TC3(1, 0, -0.3), V2(92.6, 4.2), TC3(1, 1, 1.3), V2(92.6, 34.7),
+	TC3(0, 1, 1.3), V2(50.3, 34.7), END,
+	/* a slice replaced; r from the object's y */
+	{ "glTexSubImage3D", { GL_TEXTURE_3D, 0, 0, 0, 2, 4, 4, 1, 0x1908, GL_UNSIGNED_BYTE, ARR_SLICE } },
+	TEX3P(GL_TEXTURE_MIN_FILTER, GL_NEAREST), TEX3P(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	{ "glTexGeni", { GL_R, GL_TEXTURE_GEN_MODE, GL_OBJECT_LINEAR } },
+	{ "glTexGenfv", { GL_R, GL_OBJECT_PLANE, 0, 0.0283, 0, -1.03 } }, EN(GL_TEXTURE_GEN_S + 2),
+	BEGIN(GL_QUADS), TC3(0, 0, 0), V2(4.3, 40.2), TC3(1, 0, 0), V2(92.6, 40.2), TC3(1, 1, 0), V2(92.6, 69.7),
+	TC3(0, 1, 0), V2(4.3, 69.7), END,
+	DIS(GL_TEXTURE_GEN_S + 2), DIS(GL_TEXTURE_3D),
+	{ NULL, { 0 } },
+};
+
+/*
+ * OpenGLUtility's: a perspective and a viewpoint (gluPerspective,
+ * gluLookAt), quadrics of each kind (the scene's quadric's), lit smooth
+ * and flat, one inside out, textured from gluBuild2DMipmaps' levels (the
+ * first, and the third alone), and drawn as lines, silhouettes and points
+ */
+enum { GLU_SMOOTH_T = 100000, GLU_FLAT_T, GLU_POINT_T = 100010, GLU_LINE_T, GLU_FILL_T, GLU_SILHOUETTE_T,
+       GLU_OUTSIDE_T = 100020, GLU_INSIDE_T, GLU_ERROR_T = 100103, GLU_INVALID_ENUM_T = 100900, GLU_INVALID_VALUE_T };
+#define QSET(name, v) { name, { 0, v } }
+#define PUSH { "glPushMatrix", { 0 } }
+#define POP { "glPopMatrix", { 0 } }
+#define MOVE(x, y, z) { "glTranslatef", { x, y, z } }
+#define TURN(a, x, y, z) { "glRotatef", { a, x, y, z } }
+static const struct op scene_glu[] = {
+	CLEAR(0.1, 0.1, 0.15), { "glMatrixMode", { GL_PROJECTION } }, { "glLoadIdentity", { 0 } },
+	{ "gluPerspective", { 40, 96.0 / 72, 1, 20 } }, { "glMatrixMode", { GL_MODELVIEW } }, { "glLoadIdentity", { 0 } },
+	{ "gluLookAt", { 0.3, 1.7, 6.1, 0.1, 0, 0, 0, 1, 0 } },
+	EN(GL_DEPTH_TEST), EN(GL_LIGHTING), EN(GL_LIGHT0), LIGHTV(GL_LIGHT0, GL_POSITION, 0.4, 0.8, 1, 0),
+	MATV(GL_FRONT, GL_DIFFUSE, 0.8, 0.6, 0.4, 1),
+	PUSH, MOVE(-1.7, 0.7, 0), { "gluSphere", { 0, 0.9, 14, 9 } }, POP,
+	QSET("gluQuadricNormals", GLU_FLAT_T), PUSH, MOVE(0.2, 0.4, -0.3), TURN(-75, 1, 0, 0),
+	{ "gluCylinder", { 0, 0.6, 0.25, 1.3, 9, 3 } }, POP, QSET("gluQuadricNormals", GLU_SMOOTH_T),
+	QSET("gluQuadricOrientation", GLU_INSIDE_T), PUSH, MOVE(-1.4, -1.1, 0.3), TURN(-60, 1, 0, 0),
+	{ "gluDisk", { 0, 0.2, 0.8, 10, 2 } }, POP, QSET("gluQuadricOrientation", GLU_OUTSIDE_T), DIS(GL_LIGHTING),
+	/* textured: the first level, then the third alone (4 x 2) */
+	C3(1, 1, 1), { "glBindTexture", { GL_TEXTURE_2D, 3 } },
+	{ "gluBuild2DMipmaps", { GL_TEXTURE_2D, 3, 16, 8, GL_RGB, GL_UNSIGNED_BYTE, ARR_MIP } },
+	TEXP(GL_TEXTURE_MIN_FILTER, GL_LINEAR), TEXP(GL_TEXTURE_MAG_FILTER, GL_LINEAR), EN(GL_TEXTURE_2D),
+	QSET("gluQuadricTexture", 1), PUSH, MOVE(1.8, 0.8, 0), TURN(-90, 1, 0, 0), { "gluSphere", { 0, 0.8, 16, 10 } },
+	POP, TEXP(0x813C, 2), TEXP(0x813D, 2), PUSH, MOVE(1.1, -1.0, 0.6), { "gluDisk", { 0, 0, 0.6, 12, 1 } }, POP,
+	QSET("gluQuadricTexture", 0), DIS(GL_TEXTURE_2D),
+	/* lines, silhouettes, points */
+	C3(1, 1, 0.3), QSET("gluQuadricDrawStyle", GLU_LINE_T), PUSH, MOVE(-0.4, -1.5, 0.8),
+	{ "gluPartialDisk", { 0, 0.2, 0.7, 7, 2, 20, 230 } }, POP,
+	C3(0.3, 1, 1), QSET("gluQuadricDrawStyle", GLU_SILHOUETTE_T), PUSH, MOVE(0.9, 0.3, 1.2), TURN(-80, 1, 0, 0),
+	{ "gluCylinder", { 0, 0.3, 0.3, 0.5, 8, 2 } }, POP,
+	C3(1, 0.5, 1), QSET("gluQuadricDrawStyle", GLU_POINT_T), PUSH, MOVE(-0.3, 1.7, -1), { "gluSphere", { 0, 0.5, 8, 5 } },
+	POP, QSET("gluQuadricDrawStyle", GLU_FILL_T), DIS(GL_DEPTH_TEST),
+	{ NULL, { 0 } },
+};
+
+/*
  * Against Mesa's: pixels that may differ by more than 2, and that one draws
  * on and the other doesn't. Both snap vertices to 1/256 of a pixel and give
  * a pixel whose center is on an edge to the same side (none differ so in
@@ -1175,7 +1531,9 @@ static const struct op scene_clip[] = {
  * far distance; and in "clamp", GL_CLAMP past the texture's edges is Mesa's
  * blend with the border color, and clamping to the edge texels in ours (see
  * glfront.h; checked the same where the coordinates are within the
- * texture, test_mesa()).
+ * texture, test_mesa()). In "glu", lines at any slope go from one pixel to
+ * the next at different points in Mesa's and ours (only the lines differ:
+ * the quadrics' filled faces are drawn alike).
  */
 static const struct {
 	const char *name;
@@ -1188,14 +1546,49 @@ static const struct {
 	{ "edge", scene_edge, 0, 0 }, { "multitexture", scene_multitexture, 0, 0 },
 	{ "lighting", scene_lighting, 24, 2 }, { "specular", scene_specular, 4, 2 }, { "fog", scene_fog, 4, 2 },
 	{ "texgen", scene_texgen, 4, 2 }, { "arrays", scene_arrays, 4, 2 }, { "stencil", scene_stencil, 4, 2 },
-	{ "offset", scene_offset, 4, 2 }, { "clip", scene_clip, 4, 2 },
+	{ "offset", scene_offset, 4, 2 }, { "clip", scene_clip, 4, 2 }, { "lists", scene_lists, 4, 2 },
+	{ "pixels", scene_pixels, 4, 2 }, { "texture3d", scene_texture3d, 4, 2 }, { "glu", scene_glu, 40, 40 },
 };
 #define SCENES (sizeof scenes / sizeof scenes[0])
 
 static uint32_t images[2][SCENES][SW * SH];     /* drawn in software, on the GPU: 0xAARRGGBB, rows top first */
 
+/* A scene's call to OpenGLUtility (a quadric's: the scene's quadric's) */
+static uint32_t scene_quadric;
+
+static void glu_invoke(const struct op *op)
+{
+	const char *sig = glu_functions[glu_entry(op->name)].args;
+	uint32_t w[16] = { 0 };
+	double f[13];
+	unsigned nw = 0, nf = 0;
+	for (const char *c = sig; *c; c++) {
+		double v = op->a[c - sig];
+		if (*c == 'p' && c == sig) {
+			w[nw++] = scene_quadric;
+		} else if (*c == 'p') {
+			uint32_t at = ARRAYDATA + 0x1000u * (unsigned)v;
+			array_bytes((unsigned)v, true, mem_ptr(&mem, at));
+			w[nw++] = at;
+		} else if (*c == 'f') {
+			f[nf++] = (float)v;
+			nw++;
+		} else if (*c == 'd') {
+			f[nf++] = v;
+			nw += 2;
+		} else {
+			w[nw++] = (uint32_t)(int64_t)v;
+		}
+	}
+	call_glu(op->name, w, nw, f, nf);
+}
+
 static void our_invoke(const struct op *op)
 {
+	if (!strncmp(op->name, "glu", 3)) {
+		glu_invoke(op);
+		return;
+	}
 	int fn = opengl_entry(op->name);
 	CHECK(fn >= 0);
 	if (fn < 0)
@@ -1254,8 +1647,11 @@ static void our_scene(const struct op *ops, uint32_t *out)
 	CALL(aglDestroyPixelFormat, pf);
 	CHECK_EQ(CALL(aglSetOffScreen, ctx, SW, SH, SW * 4, OFFSCREEN), 1);
 	CHECK_EQ(CALL(aglSetCurrentContext, ctx), 1);
+	glu_heap = GLU_HEAP;
+	scene_quadric = CALLU0(gluNewQuadric);
 	for (const struct op *op = ops; op->name; op++)
 		our_invoke(op);
+	CALLU(gluDeleteQuadric, scene_quadric);
 	CHECK_EQ(CALL0(glGetError), 0);
 	CALL(aglSwapBuffers, ctx);
 	for (unsigned k = 0; k < SW * SH; k++)
@@ -1281,12 +1677,369 @@ static void save(const char *what, unsigned k, const uint32_t *img)
 	png_write_rgb(path, rgb, SW, SH);
 }
 
+static unsigned differing(const uint32_t *a, const uint32_t *b, unsigned tolerance, unsigned *most);
+
+/* A context on an offscreen drawable of the scenes' size, current; its AGLContext */
+static uint32_t scene_context(void)
+{
+	call_entry(OPENGL_ENTRY_INIT, NULL, 0, NULL, 0);
+	make_port(32);
+	const uint32_t attribs[] = { AGL_RGBA, AGL_DOUBLEBUFFER, AGL_DEPTH_SIZE, 24, AGL_STENCIL_SIZE, 8, AGL_NONE };
+	put_attribs(attribs, 7);
+	uint32_t pf = CALL(aglChoosePixelFormat, 0, 0, ATTRIBS), ctx = CALL(aglCreateContext, pf, 0);
+	CALL(aglDestroyPixelFormat, pf);
+	CHECK_EQ(CALL(aglSetOffScreen, ctx, SW, SH, SW * 4, OFFSCREEN), 1);
+	CHECK_EQ(CALL(aglSetCurrentContext, ctx), 1);
+	return ctx;
+}
+
+/* Display lists' names, errors and state: what's kept and what's done there and then, nesting, glRect's v forms */
+static void test_lists(void)
+{
+	uint32_t ctx = scene_context();
+	const struct opengl_context *x = context_of(ctx);
+	CHECK(x != NULL);
+	if (!x)
+		return;
+	uint32_t first = CALL(glGenLists, 3);
+	CHECK(first && CALL(glIsList, first) && CALL(glIsList, first + 2) && !CALL(glIsList, first + 3));
+	CHECK_EQ(CALL(glGenLists, 0), 0);
+	CALL(glDeleteLists, first + 1, 1);
+	CHECK(!CALL(glIsList, first + 1) && CALL(glIsList, first + 2));
+	CHECK_EQ(CALL(glGenLists, 2), first + 3);
+	CHECK_EQ(CALL0(glGetError), 0);
+	CALL(glGenLists, (uint32_t)-1);
+	CHECK_EQ(CALL0(glGetError), GL_INVALID_VALUE);
+	CALL(glNewList, 0, GL_COMPILE);
+	CHECK_EQ(CALL0(glGetError), GL_INVALID_VALUE);
+	CALL(glNewList, 5, 0x1234);
+	CHECK_EQ(CALL0(glGetError), GL_INVALID_ENUM);
+	CALL0(glEndList);
+	CHECK_EQ(CALL0(glGetError), GL_INVALID_OPERATION);
+	/* while one's made: its name and mode; state kept, not set; queries answered */
+	CALL(glNewList, 5, GL_COMPILE);
+	CALL(glGetIntegerv, 0x0B33, OUT);                       /* GL_LIST_INDEX */
+	CALL(glGetIntegerv, 0x0B30, OUT + 4);                   /* GL_LIST_MODE */
+	CHECK(mem_r32(&mem, OUT) == 5 && mem_r32(&mem, OUT + 4) == GL_COMPILE);
+	CALL(glNewList, 6, GL_COMPILE);
+	CHECK_EQ(CALL0(glGetError), GL_INVALID_OPERATION);
+	CALL_F(glClearColor, 1, 0.5, 0, 1);
+	CALL0(glEndList);
+	CALL(glGetIntegerv, 0x0B33, OUT);
+	CHECK(mem_r32(&mem, OUT) == 0 && x->st.clear_color[0] == 0);
+	CALL(glCallList, 5);
+	CHECK(x->st.clear_color[0] == 1 && x->st.clear_color[1] == 0.5f);
+	CALL_F(glClearColor, 0, 0, 0, 0);
+	CALL(glNewList, 9, GL_COMPILE_AND_EXECUTE);
+	CALL_F(glClearColor, 0.25, 0, 0, 1);
+	CALL0(glEndList);
+	CHECK(x->st.clear_color[0] == 0.25f && CALL(glIsList, 9));
+	/* a list calling itself: as deep as lists nest (64), then no deeper */
+	CALL(glNewList, 7, GL_COMPILE);
+	CALL_F(glTranslatef, 1, 0, 0);
+	CALL(glCallList, 7);
+	CALL0(glEndList);
+	CALL0(glLoadIdentity);
+	CALL(glCallList, 7);
+	CALL(glGetDoublev, 0x0BA6, OUT);                        /* GL_MODELVIEW_MATRIX */
+	uint64_t b = mem_r64(&mem, OUT + 8 * 12);
+	double tx;
+	memcpy(&tx, &b, 8);
+	CHECK(tx == 64);
+	CALL0(glLoadIdentity);
+	/* glRectfv kept as its values were */
+	static const float corners[4] = { 2.5f, 3.5f, 10.5f, 12.5f };
+	for (int k = 0; k < 4; k++)
+		mem_w32(&mem, ARRAY + 4 * (uint32_t)k, fbits(corners[k]));
+	CALL(glNewList, 8, GL_COMPILE);
+	CALL(glRectfv, ARRAY, ARRAY + 8);
+	CALL0(glEndList);
+	for (int k = 0; k < 4; k++)
+		mem_w32(&mem, ARRAY + 4 * (uint32_t)k, fbits(40));
+	CALL(glMatrixMode, GL_PROJECTION);
+	CALL_F(glOrtho, 0, SW, 0, SH, -1, 1);
+	CALL(glMatrixMode, GL_MODELVIEW);
+	CALL(glClear, GL_COLOR_BUFFER_BIT);
+	CALL(glCallList, 8);
+	CHECK_EQ(CALL0(glGetError), 0);
+	CALL(aglSwapBuffers, ctx);
+	CHECK(mem_r32(&mem, OFFSCREEN + 4 * ((SH - 1 - 5) * SW + 5)) == 0xFFFFFFFFu);    /* (white: the color) */
+	CHECK(mem_r32(&mem, OFFSCREEN + 4 * ((SH - 1 - 20) * SW + 20)) != 0xFFFFFFFFu);
+	/* glListBase: its attribute group's */
+	CALL(glListBase, 30);
+	CALL(glPushAttrib, 0x20000);                            /* GL_LIST_BIT */
+	CALL(glListBase, 40);
+	CALL0(glPopAttrib);
+	CALL(glGetIntegerv, 0x0B32, OUT);                       /* GL_LIST_BASE */
+	CHECK_EQ(mem_r32(&mem, OUT), 30);
+	CALL(glNewList, 10, GL_COMPILE);                        /* (a context gone while it makes one) */
+	CALL(aglDestroyContext, ctx);
+	call_entry(OPENGL_ENTRY_TERM, NULL, 0, NULL, 0);
+}
+
+/* ---- OpenGLUtility ------------------------------------------------------------------- */
+
+enum { GL_MODELVIEW_MATRIX_T = 0x0BA6, GL_PROJECTION_MATRIX_T = 0x0BA7, GL_TEXTURE_WIDTH_T = 0x1000 };
+
+static bool string_at(uint32_t at, const char *s)
+{
+	return at && !strcmp((const char *)mem_ptr(&mem, at), s);
+}
+
+static double mem_double(uint32_t at)
+{
+	uint64_t b = mem_r64(&mem, at);
+	double d;
+	memcpy(&d, &b, 8);
+	return d;
+}
+
+static void put_doubles(uint32_t at, const double *v, unsigned n)
+{
+	for (unsigned k = 0; k < n; k++)
+		mem_w64(&mem, at + 8 * k, dbits(v[k]));
+}
+
+/* A matrix (glGetDoublev's) as expected: within float's precision */
+static bool matrix_is(uint32_t pname, const double want[16])
+{
+	CALL(glGetDoublev, pname, OUT);
+	for (unsigned k = 0; k < 16; k++)
+		if (fabs(mem_double(OUT + 8 * k) - want[k]) > 1e-6 * (1 + fabs(want[k])))
+			return false;
+	return true;
+}
+
+/* The width of a texture's level (0: none) */
+static uint32_t level_width(uint32_t target, uint32_t level)
+{
+	CALL(glGetTexLevelParameteriv, target, level, GL_TEXTURE_WIDTH_T, OUT);
+	return mem_r32(&mem, OUT);
+}
+
+/* As SGI's GLU scales: four 8-bit components' mean in 16 bits, back to 8 */
+static uint8_t mean4(uint8_t a, uint8_t b, uint8_t c, uint8_t d)
+{
+	return (uint8_t)(((uint32_t)(a + b + c + d) * 257 + 2) / 4 >> 8);
+}
+
+static void test_glu(void)
+{
+	/* the fragment: OpenGLLibrary's glc_cc imported as data (as Apple's OpenGLUtility does), the Memory Manager's */
+	static uint8_t buf[OPENGL_LIBRARY_MAX];
+	struct ndrv_layout l;
+	CHECK(opengl_build_utility(buf, sizeof buf, &l) > 0);
+	const uint8_t *ld = buf + be32(buf + 40 + 56 + 20), *symbols = ld + 56 + 24 * 2;
+	CHECK(be32(ld + 24) == 2 && be32(ld + 28) == 3);       /* (two libraries, three symbols) */
+	CHECK(symbols[0] == 1 && symbols[4] == 2 && symbols[8] == 2);   /* (data, then TVectors) */
+	glu_load();
+	call_entry(OPENGL_ENTRY_INIT, NULL, 0, NULL, 0);
+
+	/* strings, as Apple's */
+	CHECK(string_at(CALLU(gluGetString, 100800), "1.2 MacOS 8.0"));
+	CHECK(string_at(CALLU(gluGetString, 100801), "GL_EXT_texture"));
+	CHECK_EQ(CALLU(gluGetString, 5), 0);
+	CHECK(string_at(CALLU(gluErrorString, 0), "no error"));
+	CHECK(string_at(CALLU(gluErrorString, 0x0503), "stack overflow"));
+	CHECK(string_at(CALLU(gluErrorString, GLU_INVALID_VALUE_T), "invalid value"));
+	CHECK(string_at(CALLU(gluErrorString, 100251), "spline order un-supported"));
+	CHECK(string_at(CALLU(gluErrorString, 100261), "missing or extra domain data"));
+	CHECK(string_at(CALLU(gluErrorString, 100287), "duplicate point on pwlcurve"));
+	CHECK(string_at(CALLU(gluErrorString, 100156), "need combine callback"));
+	CHECK_EQ(CALLU(gluErrorString, 100903), 0);             /* (GLU_INCOMPATIBLE_GL_VERSION: Apple's has none) */
+
+	/* quadrics: the program's NewPtrClear's blocks, with the defaults; errors to their callback */
+	glu_heap = GLU_HEAP;
+	uint32_t q = CALLU0(gluNewQuadric);
+	CHECK(q == GLU_HEAP && mem_r32(&mem, q) == 0x73795175u && mem_r32(&mem, q + 4) == GLU_FILL_T);
+	CHECK(mem_r32(&mem, q + 8) == GLU_SMOOTH_T && mem_r32(&mem, q + 12) == GLU_OUTSIDE_T);
+	CALLU(gluQuadricCallback, q, GLU_ERROR_T, ERROR_TV);
+	glu_errors = 0;
+	CALLU(gluQuadricDrawStyle, q, 5);
+	CHECK(glu_errors == 1 && glu_error == GLU_INVALID_ENUM_T);
+	call_glu("gluSphere", WORDS(q, 0, 0, 4, 4), DOUBLES(-1));
+	CHECK(glu_errors == 2 && glu_error == GLU_INVALID_VALUE_T);
+	CALLU(gluQuadricNormals, q, GLU_FLAT_T);
+	CHECK_EQ(mem_r32(&mem, q + 8), GLU_FLAT_T);
+	/* tessellators' and NURBS renderers' properties */
+	uint32_t t = CALLU0(gluNewTess), n = CALLU0(gluNewNurbsRenderer);
+	CHECK(t && n && t != q && n != t);
+	call_glu("gluTessProperty", WORDS(t, 100140), DOUBLES(100132));        /* GLU_TESS_WINDING_POSITIVE */
+	CALLU(gluGetTessProperty, t, 100140, OUT);
+	CHECK(mem_double(OUT) == 100132);
+	call_glu("gluTessProperty", WORDS(t, 100142), DOUBLES(2));             /* (a tolerance past 1: kept as it was) */
+	CALLU(gluGetTessProperty, t, 100142, OUT);
+	CHECK(mem_double(OUT) == 0);
+	CALLU(gluGetNurbsProperty, n, 100203, OUT);                             /* GLU_SAMPLING_TOLERANCE */
+	CHECK_EQ(mem_r32(&mem, OUT), fbits(50));
+	call_glu("gluNurbsProperty", WORDS(n, 100203), DOUBLES(25));
+	CALLU(gluGetNurbsProperty, n, 100203, OUT);
+	CHECK_EQ(mem_r32(&mem, OUT), fbits(25));
+	glu_disposed = 0;
+	CALLU(gluDeleteNurbsRenderer, n);
+	CHECK_EQ(glu_disposed, n);
+	CALLU(gluDeleteTess, t);
+	CHECK_EQ(glu_disposed, t);
+	CALLU(gluDeleteQuadric, q);
+	CHECK(glu_disposed == q && mem_r32(&mem, q) == 0);
+	glu_disposed = 0;
+	CALLU(gluDeleteQuadric, q);                             /* (no longer one: nothing) */
+	CHECK_EQ(glu_disposed, 0);
+
+	/* matrices, as SGI's make them */
+	uint32_t ctx = scene_context();
+	struct opengl_context *x = context_of(ctx);
+	CHECK(x != NULL);
+	if (!x)
+		return;
+	CALL(glMatrixMode, GL_PROJECTION);
+	call_glu("gluOrtho2D", NULL, 0, DOUBLES(0, 96, 0, 72));
+	const double ortho[16] = { 2.0 / 96, 0, 0, 0, 0, 2.0 / 72, 0, 0, 0, 0, -1, 0, -1, -1, 0, 1 };
+	CHECK(matrix_is(GL_PROJECTION_MATRIX_T, ortho));
+	CALL0(glLoadIdentity);
+	call_glu("gluPerspective", NULL, 0, DOUBLES(90, 2, 1, 3));
+	const double persp[16] = { 0.5, 0, 0, 0, 0, 1, 0, 0, 0, 0, -2, -1, 0, 0, -3, 0 };
+	CHECK(matrix_is(GL_PROJECTION_MATRIX_T, persp));
+	CALL(glMatrixMode, GL_MODELVIEW);
+	call_glu("gluLookAt", NULL, 0, DOUBLES(1, 2, 5, 1, 2, 0, 0, 1, 0));
+	const double look[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -1, -2, -5, 1 };
+	CHECK(matrix_is(GL_MODELVIEW_MATRIX_T, look));
+	CALL0(glLoadIdentity);
+	call_glu("gluLookAt", NULL, 0, DOUBLES(0, 0, 0, 3, 0, 0, 0, 0, 1));    /* (looking along x, z up) */
+	const double side[16] = { 0, 0, -1, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1 };
+	CHECK(matrix_is(GL_MODELVIEW_MATRIX_T, side));
+	CALL0(glLoadIdentity);
+	const uint32_t vp = ARRAY + 0x100;
+	const uint32_t viewport[4] = { 0, 0, 96, 72 };
+	for (int k = 0; k < 4; k++)
+		mem_w32(&mem, vp + 4 * (uint32_t)k, viewport[k]);
+	call_glu("gluPickMatrix", WORDS(0, 0, 0, 0, 0, 0, 0, 0, vp), DOUBLES(24, 36, 4, 6));
+	const double pick[16] = { 24, 0, 0, 0, 0, 12, 0, 0, 0, 0, 1, 0, 12, 0, 0, 1 };
+	CHECK(matrix_is(GL_MODELVIEW_MATRIX_T, pick));
+	CALL0(glLoadIdentity);
+
+	/* gluProject, and gluUnProject back: through a translation and a frustum, onto a viewport */
+	const double model[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5, -0.25, -3, 1 };
+	const double proj[16] = { 1.5, 0, 0, 0, 0, 2, 0, 0, 0, 0, -11.0 / 9, -1, 0, 0, -20.0 / 9, 0 };
+	const uint32_t mm = ARRAY, pm = ARRAY + 0x80, vp2 = ARRAY + 0x110;
+	const uint32_t viewport2[4] = { 10, 20, 200, 100 };
+	put_doubles(mm, model, 16);
+	put_doubles(pm, proj, 16);
+	for (int k = 0; k < 4; k++)
+		mem_w32(&mem, vp2 + 4 * (uint32_t)k, viewport2[k]);
+	CHECK_EQ(call_glu("gluProject", WORDS(0, 0, 0, 0, 0, 0, mm, pm, vp2, OUT, OUT + 8, OUT + 16),
+			  DOUBLES(0.2, 0.3, 0.1)), 1);
+	/* (eye (0.7, 0.05, -2.9); clip w 2.9) */
+	double ex = 1.5 * 0.7 / 2.9, ey = 2 * 0.05 / 2.9, ez = (-11.0 / 9 * -2.9 - 20.0 / 9) / 2.9;
+	CHECK(fabs(mem_double(OUT) - ((ex * 0.5 + 0.5) * 200 + 10)) < 1e-9);
+	CHECK(fabs(mem_double(OUT + 8) - ((ey * 0.5 + 0.5) * 100 + 20)) < 1e-9);
+	CHECK(fabs(mem_double(OUT + 16) - (ez * 0.5 + 0.5)) < 1e-9);
+	double win[3] = { mem_double(OUT), mem_double(OUT + 8), mem_double(OUT + 16) };
+	CHECK_EQ(call_glu("gluUnProject", WORDS(0, 0, 0, 0, 0, 0, mm, pm, vp2, OUT + 32, OUT + 40, OUT + 48),
+			  DOUBLES(win[0], win[1], win[2])), 1);
+	CHECK(fabs(mem_double(OUT + 32) - 0.2) < 1e-9 && fabs(mem_double(OUT + 40) - 0.3) < 1e-9 &&
+	      fabs(mem_double(OUT + 48) - 0.1) < 1e-9);
+	const double zeros[16] = { 0 };
+	put_doubles(mm, zeros, 16);
+	CHECK_EQ(call_glu("gluUnProject", WORDS(0, 0, 0, 0, 0, 0, mm, pm, vp2, OUT, OUT + 8, OUT + 16),
+			  DOUBLES(1, 2, 0.5)), 0);      /* (no inverse) */
+
+	/* gluScaleImage: 16-bit means (2 x 2 halved), a pixel enlarged, luminance boxed; errors */
+	static const uint8_t px[16] = { 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 131, 141, 151, 161 };
+	memcpy(mem_ptr(&mem, ARRAY), px, 16);
+	CHECK_EQ(CALLU(gluScaleImage, GL_RGBA, 2, 2, GL_UNSIGNED_BYTE, ARRAY, 1, 1, GL_UNSIGNED_BYTE, OUT), 0);
+	for (int k = 0; k < 4; k++)
+		CHECK_EQ(mem_r8(&mem, OUT + (uint32_t)k), mean4(px[k], px[4 + k], px[8 + k], px[12 + k]));
+	CHECK_EQ(CALLU(gluScaleImage, GL_RGBA, 1, 1, GL_UNSIGNED_BYTE, ARRAY, 3, 2, GL_UNSIGNED_BYTE, OUT), 0);
+	CHECK(!memcmp(mem_ptr(&mem, OUT + 20), px, 4));
+	mem_w8(&mem, ARRAY, 10);
+	mem_w8(&mem, ARRAY + 1, 21);
+	CHECK_EQ(CALLU(gluScaleImage, GL_LUMINANCE, 2, 1, GL_UNSIGNED_BYTE, ARRAY, 1, 1, GL_UNSIGNED_BYTE, OUT), 0);
+	CHECK_EQ(mem_r8(&mem, OUT), 15);                        /* ((10 + 21) x 257 / 2: 3983.75, of 65535) */
+	CHECK_EQ(CALLU(gluScaleImage, GL_RGBA, -1, 1, GL_UNSIGNED_BYTE, ARRAY, 1, 1, GL_UNSIGNED_BYTE, OUT),
+		 GLU_INVALID_VALUE_T);
+	CHECK_EQ(CALLU(gluScaleImage, GL_COLOR_INDEX, 1, 1, GL_UNSIGNED_BYTE, ARRAY, 1, 1, GL_UNSIGNED_BYTE, OUT),
+		 GLU_INVALID_ENUM_T);
+	CHECK_EQ(CALLU(gluScaleImage, GL_RGBA, 0, 1, GL_UNSIGNED_BYTE, ARRAY, 1, 1, GL_UNSIGNED_BYTE, OUT), 0);
+
+	/* mipmaps: halved down to 1 x 1, from the image scaled to powers of two (as SGI's GLU 1.2) */
+	memcpy(mem_ptr(&mem, ARRAY), px, 16);
+	memcpy(mem_ptr(&mem, ARRAY + 16), px, 16);
+	CALL(glBindTexture, GL_TEXTURE_2D, 7);
+	CHECK_EQ(CALLU(gluBuild2DMipmaps, GL_TEXTURE_2D, GL_RGBA, 4, 2, GL_RGBA, GL_UNSIGNED_BYTE, ARRAY), 0);
+	CHECK(level_width(GL_TEXTURE_2D, 0) == 4 && level_width(GL_TEXTURE_2D, 1) == 2);
+	CHECK(level_width(GL_TEXTURE_2D, 2) == 1 && level_width(GL_TEXTURE_2D, 3) == 0);
+	CALL(glPixelStorei, 0x0D05, 1);                         /* GL_PACK_ALIGNMENT */
+	CALL(glGetTexImage, GL_TEXTURE_2D, 1, GL_RGBA, GL_UNSIGNED_BYTE, OUT);
+	for (int k = 0; k < 4; k++)                             /* (the 4 x 2 image's left half) */
+		CHECK(abs(mem_r8(&mem, OUT + (uint32_t)k) - mean4(px[k], px[4 + k], px[k], px[4 + k])) <= 1);
+	CHECK_EQ(CALLU(gluBuild2DMipmaps, GL_TEXTURE_2D, 3, 3, 3, GL_RGB, GL_UNSIGNED_BYTE, ARRAY), 0);
+	CHECK(level_width(GL_TEXTURE_2D, 0) == 4 && level_width(GL_TEXTURE_2D, 2) == 1);
+	CALL(glBindTexture, GL_TEXTURE_1D, 8);
+	CHECK_EQ(CALLU(gluBuild1DMipmaps, GL_TEXTURE_1D, 3, 5, GL_RGB, GL_UNSIGNED_BYTE, ARRAY), 0);
+	CHECK(level_width(GL_TEXTURE_1D, 0) == 4 && level_width(GL_TEXTURE_1D, 2) == 1);
+	CHECK_EQ(CALL0(glGetError), 0);
+	CHECK_EQ(CALLU(gluBuild2DMipmaps, GL_TEXTURE_2D, 3, 0, 3, GL_RGB, GL_UNSIGNED_BYTE, ARRAY), GLU_INVALID_VALUE_T);
+	CHECK_EQ(CALLU(gluBuild2DMipmaps, GL_TEXTURE_2D, 3, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, ARRAY),
+		 GLU_INVALID_ENUM_T);
+
+	/* a quadric made into a display list: its gl calls kept; drawn */
+	q = CALLU0(gluNewQuadric);
+	CALL(glNewList, 3, GL_COMPILE);
+	call_glu("gluDisk", WORDS(q, 0, 0, 0, 0, 12, 1), DOUBLES(0, 0.5));
+	CALL0(glEndList);
+	const struct gl_list *list = glf_list(&x->st, 3);
+	CHECK(list && list->len > 0);
+	CALL(glMatrixMode, GL_PROJECTION);
+	CALL0(glLoadIdentity);
+	CALL(glMatrixMode, GL_MODELVIEW);
+	CALL(glClear, GL_COLOR_BUFFER_BIT);
+	CALL(glCallList, 3);
+	CHECK_EQ(CALL0(glGetError), 0);
+	CALL(aglSwapBuffers, ctx);
+	CHECK_EQ(mem_r32(&mem, OFFSCREEN + 4 * ((SH / 2) * SW + SW / 2)), 0xFFFFFFFFu);         /* (white) */
+	CHECK_EQ(mem_r32(&mem, OFFSCREEN), 0);                  /* (the clear color: 0, 0, 0, 0) */
+	CALL(aglDestroyContext, ctx);
+	call_entry(OPENGL_ENTRY_TERM, NULL, 0, NULL, 0);
+	/* no context (the process gone): nothing drawn, images still scaled */
+	call_glu("gluSphere", WORDS(q, 0, 0, 4, 4), DOUBLES(1));
+	CHECK_EQ(CALLU(gluScaleImage, GL_RGBA, 1, 1, GL_UNSIGNED_BYTE, ARRAY, 1, 1, GL_UNSIGNED_BYTE, OUT), 0);
+	CHECK(!memcmp(mem_ptr(&mem, OUT), px, 4));
+}
+
+/* Each scene made into a display list, then called: exactly the same pixels */
+static void test_scenes_listed(unsigned backend)
+{
+	static struct op listed[1024];
+	static uint32_t img[SW * SH];
+	for (unsigned k = 0; k < SCENES; k++) {
+		unsigned n = 0;
+		bool lists = false;                     /* (lists aren't made while one is) */
+		listed[n++] = (struct op){ "glNewList", { 99, GL_COMPILE } };
+		for (const struct op *op = scenes[k].ops; op->name && n < 1020; op++) {
+			listed[n++] = *op;
+			lists |= !strcmp(op->name, "glNewList");
+		}
+		if (lists)
+			continue;
+		listed[n++] = (struct op){ "glEndList", { 0 } };
+		listed[n++] = (struct op){ "glCallList", { 99 } };
+		listed[n] = (struct op){ NULL, { 0 } };
+		our_scene(listed, img);
+		unsigned most, d = differing(img, images[backend][k], 0, &most);
+		if (d)
+			printf("opengl: %s made into a list: %u pixels differ, by up to %u\n", scenes[k].name, d, most);
+		CHECK_EQ(d, 0);
+	}
+}
+
 static void test_scenes(unsigned backend)
 {
 	for (unsigned k = 0; k < SCENES; k++) {
 		our_scene(scenes[k].ops, images[backend][k]);
 		save(backend ? "gpu" : "soft", k, images[backend][k]);
 	}
+	test_scenes_listed(backend);
 }
 
 static unsigned channel_diff(uint32_t a, uint32_t b)
@@ -1341,6 +2094,8 @@ static struct {
 	unsigned (*MakeCurrent)(void *, void *, void *, void *);
 } egl;
 
+static void *glu_lib, *mesa_quadric;   /* (SGI's GLU: SYSHM_TEST_GLU's) */
+
 static void (*mesa_fn(const char *name))(void)
 {
 	void (*f)(void) = egl.GetProcAddress(name);
@@ -1368,6 +2123,11 @@ static bool mesa_open(void)
 	    !egl.CreateContext || !egl.DestroyContext || !egl.MakeCurrent)
 		return false;
 	egl.gl_lib = dlopen("libGL.so.1", RTLD_NOW | RTLD_LOCAL);
+	const char *glu = getenv("SYSHM_TEST_GLU");
+	if (glu && *glu) {
+		glu_lib = dlopen(glu, RTLD_NOW | RTLD_LOCAL);
+		CHECK(glu_lib != NULL);
+	}
 	void *d = egl.GetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA_, NULL, NULL);
 	int32_t major, minor, n = 0;
 	const int32_t attribs[] = { EGL_RENDERABLE_TYPE_, EGL_OPENGL_BIT_, EGL_SURFACE_TYPE_, 0, EGL_NONE_ };
@@ -1380,9 +2140,55 @@ static bool mesa_open(void)
 
 #define GLFN(type, name) ((type)mesa_fn(name))
 
+/* A call to SGI's GLU by its signature (those the scenes use; a quadric's: the scene's) */
+static void mesa_glu_invoke(const struct op *op)
+{
+	void (*p)(void) = NULL;
+	if (glu_lib)
+		*(void **)&p = dlsym(glu_lib, op->name);
+	CHECK(p != NULL);
+	if (!p)
+		return;
+	const char *sig = glu_functions[glu_entry(op->name)].args;
+	const double *a = op->a;
+	void *q = mesa_quadric;
+	static uint8_t data[0x1000];
+	if (!strcmp(sig, "dddd"))
+		((void (*)(double, double, double, double))p)(a[0], a[1], a[2], a[3]);
+	else if (!strcmp(sig, "ddddddddd"))
+		((void (*)(double, double, double, double, double, double, double, double, double))p)(
+			a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
+	else if (!strcmp(sig, "pdii"))
+		((void (*)(void *, double, int32_t, int32_t))p)(q, a[1], (int32_t)a[2], (int32_t)a[3]);
+	else if (!strcmp(sig, "pdddii"))
+		((void (*)(void *, double, double, double, int32_t, int32_t))p)(q, a[1], a[2], a[3], (int32_t)a[4],
+										   (int32_t)a[5]);
+	else if (!strcmp(sig, "pddii"))
+		((void (*)(void *, double, double, int32_t, int32_t))p)(q, a[1], a[2], (int32_t)a[3], (int32_t)a[4]);
+	else if (!strcmp(sig, "pddiidd"))
+		((void (*)(void *, double, double, int32_t, int32_t, double, double))p)(q, a[1], a[2], (int32_t)a[3],
+											 (int32_t)a[4], a[5], a[6]);
+	else if (!strcmp(sig, "pI"))
+		((void (*)(void *, uint32_t))p)(q, (uint32_t)a[1]);
+	else if (!strcmp(sig, "pB"))
+		((void (*)(void *, uint8_t))p)(q, (uint8_t)a[1]);
+	else if (!strcmp(sig, "IiiiIIp")) {
+		array_bytes((unsigned)a[6], false, data);
+		CHECK_EQ(((int32_t (*)(uint32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t, const void *))p)(
+				 (uint32_t)a[0], (int32_t)a[1], (int32_t)a[2], (int32_t)a[3], (uint32_t)a[4], (uint32_t)a[5],
+				 data), 0);
+	} else {
+		CHECK(!"a signature mesa_glu_invoke doesn't take");
+	}
+}
+
 /* A call by its signature (those the scenes use) */
 static void mesa_invoke(const struct op *op)
 {
+	if (!strncmp(op->name, "glu", 3)) {
+		mesa_glu_invoke(op);
+		return;
+	}
 	int fn = opengl_entry(op->name);
 	void (*p)(void) = fn >= 0 ? mesa_fn(op->name) : NULL;
 	CHECK(p != NULL);
@@ -1424,6 +2230,23 @@ static void mesa_invoke(const struct op *op)
 	}
 	if (!strcmp(sig, "IIp"))
 		((void (*)(uint32_t, uint32_t, const void *))p)(U(0), U(1), hp);
+	else if (!strcmp(sig, "iIp"))
+		((void (*)(int32_t, uint32_t, const void *))p)(I(0), U(1), hp);
+	else if (!strcmp(sig, "dddd"))
+		((void (*)(double, double, double, double))p)(a[0], a[1], a[2], a[3]);
+	else if (!strcmp(sig, "IiiiiiiIIp"))
+		((void (*)(uint32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t,
+			   const void *))p)(U(0), I(1), I(2), I(3), I(4), I(5), I(6), U(7), U(8), hp);
+	else if (!strcmp(sig, "IiiiiiiiIIp"))
+		((void (*)(uint32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t,
+			   const void *))p)(U(0), I(1), I(2), I(3), I(4), I(5), I(6), I(7), U(8), U(9), hp);
+	else if (!strcmp(sig, "iiIIp"))
+		((void (*)(int32_t, int32_t, uint32_t, uint32_t, const void *))p)(I(0), I(1), U(2), U(3), hp);
+	else if (!strcmp(sig, "iiffffp"))
+		((void (*)(int32_t, int32_t, float, float, float, float, const void *))p)(I(0), I(1), F(2), F(3), F(4),
+											 F(5), hp);
+	else if (!strcmp(sig, "iiiiI"))
+		((void (*)(int32_t, int32_t, int32_t, int32_t, uint32_t))p)(I(0), I(1), I(2), I(3), U(4));
 	else if (!strcmp(sig, "Ip"))
 		((void (*)(uint32_t, const void *))p)(U(0), hp);
 	else if (!strcmp(sig, "iIip"))
@@ -1508,8 +2331,17 @@ static bool mesa_scene(const struct op *ops, uint32_t *out)
 	/* (as ours start: the viewport and scissor box the drawable's) */
 	GLFN(void (*)(int32_t, int32_t, int32_t, int32_t), "glViewport")(0, 0, SW, SH);
 	GLFN(void (*)(int32_t, int32_t, int32_t, int32_t), "glScissor")(0, 0, SW, SH);
+	void *(*new_quadric)(void) = NULL;
+	void (*delete_quadric)(void *) = NULL;
+	if (glu_lib) {
+		*(void **)&new_quadric = dlsym(glu_lib, "gluNewQuadric");
+		*(void **)&delete_quadric = dlsym(glu_lib, "gluDeleteQuadric");
+		mesa_quadric = new_quadric();
+	}
 	for (const struct op *op = ops; op->name; op++)
 		mesa_invoke(op);
+	if (glu_lib)
+		delete_quadric(mesa_quadric);
 	CHECK_EQ(GLFN(uint32_t (*)(void), "glGetError")(), 0);
 	static uint8_t rgba[SW * SH * 4];
 	GLFN(void (*)(int32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t, void *), "glReadPixels")(
@@ -1526,6 +2358,15 @@ static bool mesa_scene(const struct op *ops, uint32_t *out)
 	return true;
 }
 
+/* Whether a scene calls OpenGLUtility */
+static bool uses_glu(const struct op *ops)
+{
+	for (const struct op *op = ops; op->name; op++)
+		if (!strncmp(op->name, "glu", 3))
+			return true;
+	return false;
+}
+
 /* Ours against Mesa's */
 static void test_mesa(void)
 {
@@ -1537,6 +2378,10 @@ static void test_mesa(void)
 	}
 	static uint32_t ref[SW * SH];
 	for (unsigned k = 0; k < SCENES; k++) {
+		if (uses_glu(scenes[k].ops) && !glu_lib) {
+			printf("opengl: %s: no GLU to compare with (SYSHM_TEST_GLU: Mesa's libGLU)\n", scenes[k].name);
+			continue;
+		}
 		CHECK(mesa_scene(scenes[k].ops, ref));
 		save("mesa", k, ref);
 		unsigned most, n = differing(images[0][k], ref, 2, &most);
@@ -1575,6 +2420,8 @@ static void run(struct gpu *gpu)
 	CHECK_EQ(gl.gpu_frames, gpu ? 4 : 0);
 	test_recording(false);
 	test_recording(true);
+	test_lists();
+	test_glu();
 	test_scenes(gpu != NULL);
 	opengl_free(&gl);
 	mem_free(&mem);

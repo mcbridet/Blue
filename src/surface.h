@@ -59,6 +59,12 @@ bool surface_busy(const struct surface *s);
  */
 bool surface_finish(struct surface *s);
 
+/*
+ * After surface_finish(): the depth and stencil buffers on the host too (the
+ * GPU's read back, if it draws). False if that fails (then it's lost).
+ */
+bool surface_read_depth(struct surface *s);
+
 /* Waits for drawing in the background (textures it uses may then go) */
 void surface_wait(struct surface *s);
 

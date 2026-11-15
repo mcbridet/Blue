@@ -72,7 +72,8 @@ enum { GL_ALPHA = 0x1906, GL_RGB, GL_RGBA, GL_LUMINANCE, GL_LUMINANCE_ALPHA, GL_
 /* glEnable's capabilities the front end draws by (the rest are kept: see glf_enable()) */
 enum { GL_POINT_SMOOTH = 0x0B10, GL_LINE_SMOOTH = 0x0B20, GL_CULL_FACE = 0x0B44, GL_LIGHTING = 0x0B50,
        GL_FOG = 0x0B60, GL_DEPTH_TEST = 0x0B71, GL_ALPHA_TEST = 0x0BC0, GL_DITHER = 0x0BD0, GL_BLEND = 0x0BE2,
-       GL_SCISSOR_TEST = 0x0C11, GL_TEXTURE_1D = 0x0DE0, GL_TEXTURE_2D = 0x0DE1, GL_TEXTURE_GEN_S = 0x0C60,
+       GL_SCISSOR_TEST = 0x0C11, GL_TEXTURE_1D = 0x0DE0, GL_TEXTURE_2D = 0x0DE1, GL_TEXTURE_3D = 0x806F,
+       GL_TEXTURE_GEN_S = 0x0C60,
        GL_LIGHT0 = 0x4000, GL_NORMALIZE = 0x0BA1, GL_RESCALE_NORMAL = 0x803A, GL_COLOR_MATERIAL = 0x0B57,
        GL_COLOR_SUM_EXT = 0x8458, GL_CLIP_PLANE0 = 0x3000, GL_POLYGON_OFFSET_POINT = 0x2A01,
        GL_POLYGON_OFFSET_LINE = 0x2A02, GL_POLYGON_OFFSET_FILL = 0x8037, GL_STENCIL_TEST = 0x0B90 };
@@ -94,6 +95,9 @@ enum { GL_KEEP = 0x1E00, GL_INCR = 0x1E02, GL_DECR, GL_INVERT = 0x150A, GL_INCR_
 /* Types of arrays' and indices' values */
 enum { GL_BYTE = 0x1400, GL_SHORT = 0x1402, GL_UNSIGNED_SHORT, GL_INT, GL_UNSIGNED_INT, GL_FLOAT,
        GL_DOUBLE = 0x140A };
+/* Pixels */
+enum { GL_COLOR_INDEX = 0x1900, GL_STENCIL_INDEX, GL_DEPTH_COMPONENT, GL_RED, GL_GREEN, GL_BLUE, GL_BITMAP = 0x1A00,
+       GL_COLOR = 0x1800, GL_DEPTH, GL_STENCIL };
 
 #define GLF_GUARD 4.0f                  /* the guard band, in view volumes (see above) */
 #define GLF_MAX_SIZE 4096               /* viewports, drawables */
@@ -103,10 +107,12 @@ enum { GL_BYTE = 0x1400, GL_SHORT = 0x1402, GL_UNSIGNED_SHORT, GL_INT, GL_UNSIGN
 #define GLF_TEXTURE_UNITS RASTER_UNITS
 #define GLF_MAX_TEXTURE_SIZE 1024
 #define GLF_TEXTURE_LEVELS 11                   /* (1024 down to 1) */
+#define GLF_MAX_3D_TEXTURE_SIZE 128             /* (3D textures': 8 levels) */
 #define GLF_LIGHTS 8
 #define GLF_CLIP_PLANES 6
 #define GLF_ATTRIB_DEPTH 16                     /* glPushAttrib's stack, and glPushClientAttrib's */
 #define GLF_MAX_ELEMENTS 65536                  /* (GL_MAX_ELEMENTS_VERTICES and _INDICES: advice) */
+#define GLF_PIXEL_MAP 256                       /* (GL_MAX_PIXEL_MAP_TABLE) */
 _Static_assert(GLF_TEXTURE_LEVELS <= RASTER_MAX_LEVELS, "raster.h's levels");
 
 struct gl_matrices {
@@ -134,20 +140,20 @@ enum { GLF_CAP_DEPTH_TEST, GLF_CAP_CULL_FACE, GLF_CAP_BLEND, GLF_CAP_ALPHA_TEST,
        GLF_CAP_LIGHTING = GLF_CAP_TEXTURE_GEN_S + 4, GLF_CAP_LIGHT0, GLF_CAP_NORMALIZE = GLF_CAP_LIGHT0 + GLF_LIGHTS,
        GLF_CAP_RESCALE_NORMAL, GLF_CAP_COLOR_MATERIAL, GLF_CAP_FOG, GLF_CAP_COLOR_SUM, GLF_CAP_CLIP_PLANE0,
        GLF_CAP_OFFSET_POINT = GLF_CAP_CLIP_PLANE0 + GLF_CLIP_PLANES, GLF_CAP_OFFSET_LINE, GLF_CAP_OFFSET_FILL,
-       GLF_CAP_STENCIL_TEST, GLF_CAP_NAMED, GLF_CAPS = 80 };
+       GLF_CAP_STENCIL_TEST, GLF_CAP_TEXTURE_3D, GLF_CAP_NAMED, GLF_CAPS = 80 };
 
-/* A texture object (1D or 2D): its levels, its parameters */
-enum { GLF_1D, GLF_2D, GLF_TARGETS };
+/* A texture object (1D, 2D or 3D): its levels, its parameters */
+enum { GLF_1D, GLF_2D, GLF_3D, GLF_TARGETS };
 struct gl_level {
-	int width, height;                      /* (0: not specified) */
+	int width, height, depth;               /* (0: not specified; depth 1 but in 3D textures) */
 	uint32_t internal, base;                /* as given; its base format (GL_ALPHA ... GL_RGBA) */
-	uint32_t *texels;                       /* 0xAARRGGBB, row 0 at t = 0 (see gltex.c for each base format) */
+	uint32_t *texels;                       /* 0xAARRGGBB, row 0 at t = 0, slice 0 at r = 0 (see gltex.c) */
 };
 struct gl_texture {
 	uint32_t name;
-	int target;                             /* GLF_1D or GLF_2D (-1: not bound yet) */
+	int target;                             /* GLF_1D, GLF_2D or GLF_3D (-1: not bound yet) */
 	struct gl_level level[GLF_TEXTURE_LEVELS];
-	uint32_t min_filter, mag_filter, wrap_s, wrap_t;
+	uint32_t min_filter, mag_filter, wrap_s, wrap_t, wrap_r;
 	float border[4], priority, min_lod, max_lod;
 	int base_level, max_level;
 	struct raster_texture *drawn;           /* what's drawn with (its texels are the levels'), or NULL */
@@ -155,12 +161,22 @@ struct gl_texture {
 	struct gl_texture *next;                /* (in its namespace's chain) */
 };
 
-/* The texture objects contexts share (aglCreateContext's share context) */
+/* A display list: what it holds is the libraries' (opengl.c's entries) */
+struct gl_list {
+	uint32_t name;
+	uint8_t *data;
+	size_t len;
+	struct gl_list *next;                   /* (in its namespace's chain) */
+};
+
+/* The texture objects and display lists contexts share (aglCreateContext's share context) */
 #define GLF_NAME_CHAINS 256
 struct gl_names {
 	unsigned users;
 	struct gl_texture *chain[GLF_NAME_CHAINS];
 	uint32_t next_name;                     /* glGenTextures' next */
+	struct gl_list *lists[GLF_NAME_CHAINS];
+	uint32_t next_list;                     /* (where glGenLists looks first) */
 	struct raster_texture **retired;        /* to be freed when nothing recorded can use them */
 	unsigned nretired, retired_cap;
 };
@@ -169,6 +185,7 @@ struct gl_names {
 struct gl_pixel_store {
 	int32_t row_length, skip_rows, skip_pixels, alignment;
 	bool swap_bytes, lsb_first;
+	int32_t image_height, skip_images;      /* (3D images') */
 };
 
 /* A texture unit's */
@@ -206,6 +223,32 @@ struct gl_array {
 	/* (for drawing: elements [first, first + count) on the host, element `first` at data; NULL: none) */
 	const uint8_t *data;
 	uint32_t first, count;
+};
+
+/*
+ * The raster position (glRasterPos): window coordinates (x, y in pixels up
+ * from the bottom left, z 0..1) and clip w; whether it's valid; the color,
+ * texture coordinates and distance it was given
+ */
+struct gl_raster_pos {
+	float win[4];
+	bool valid;
+	float color[4], secondary[4], tex[GLF_TEXTURE_UNITS][4], distance;
+};
+
+/* The pixel transfer (glPixelTransfer) and zoom (glPixelZoom); the pixel maps (glPixelMap) */
+struct gl_transfer {
+	bool map_color, map_stencil;
+	int32_t index_shift, index_offset;
+	float scale[4], bias[4];                /* r, g, b, a */
+	float depth_scale, depth_bias;
+	float zoom[2];
+};
+enum { GLF_MAP_I_TO_I, GLF_MAP_S_TO_S, GLF_MAP_I_TO_R, GLF_MAP_I_TO_G, GLF_MAP_I_TO_B, GLF_MAP_I_TO_A,
+       GLF_MAP_R_TO_R, GLF_MAP_G_TO_G, GLF_MAP_B_TO_B, GLF_MAP_A_TO_A, GLF_MAPS };
+struct gl_pixel_map {
+	unsigned size;
+	float v[GLF_PIXEL_MAP];
 };
 
 struct gl_saved;                                /* (glPushAttrib's) */
@@ -253,6 +296,11 @@ struct gl_state {
 	/* client arrays (glarray.c) */
 	struct gl_array arrays[GLF_ARRAYS];
 	int32_t lock_first, lock_count;         /* glLockArraysEXT's */
+	uint32_t list_base;                     /* glListBase's */
+	/* the raster position, the pixel transfer, the pixel maps (glpixel.c) */
+	struct gl_raster_pos rpos;
+	struct gl_transfer transfer;
+	struct gl_pixel_map maps[GLF_MAPS];
 	/* glPushAttrib's and glPushClientAttrib's stacks */
 	struct gl_saved *attrib_stack[GLF_ATTRIB_DEPTH];
 	struct gl_client_saved *client_stack[GLF_ATTRIB_DEPTH];
@@ -465,6 +513,33 @@ void glf_draw_elements(struct gl_state *st, const struct gl_target *t, uint32_t 
 /* The bytes an index of this type takes (0: not a type of index) */
 unsigned glf_index_size(uint32_t type);
 
+/*
+ * The values element i has in the enabled arrays, as glArrayElement would
+ * set them (bit GLF_ARRAY_k of `has`: array k has one; the rest of each
+ * vector as glArrayElement leaves it: 0, 0, 0, 1)
+ */
+struct gl_element {
+	unsigned has;
+	float v[GLF_ARRAYS][4];
+};
+void glf_array_values(const struct gl_state *st, int32_t i, struct gl_element *e);
+
+/* ---- display lists (gllist.c): their names and contents ---- */
+
+/*
+ * glGenLists (the first of `range` names, each an empty list; 0 if there
+ * are none), glDeleteLists, glIsList; a list (NULL: none of that name);
+ * what a list holds from now on (data from malloc(), the list's then;
+ * false if there's no memory, data freed); every list freed with the
+ * namespace (glf_detach()'s).
+ */
+uint32_t glf_gen_lists(struct gl_state *st, int32_t range);
+void glf_delete_lists(struct gl_state *st, uint32_t first, int32_t range);
+bool glf_is_list(struct gl_state *st, uint32_t name);
+const struct gl_list *glf_list(struct gl_state *st, uint32_t name);
+bool glf_define_list(struct gl_state *st, uint32_t name, uint8_t *data, size_t len);
+void glf_free_lists(struct gl_names *n);
+
 /* ---- textures (gltex.c) ---- */
 
 /* (glf_init()'s part: the default textures, units, pixel stores) */
@@ -479,16 +554,6 @@ void glf_bind_texture(struct gl_state *st, uint32_t target, uint32_t name);
 /* A texture deleted (in another context of the namespace): bindings to it go back to the defaults */
 void glf_unbind(struct gl_state *st, const struct gl_texture *t);
 
-/* glPixelStore (false: not a parameter of it) */
-void glf_pixel_store(struct gl_state *st, uint32_t pname, int32_t v);
-
-/*
- * The bytes of the program's memory an image (or a part, for glReadPixels)
- * of this size, format and type takes as packed or unpacked by `ps`; 0 if
- * the format or type isn't one OpenGL takes (or they don't go together)
- */
-size_t glf_image_bytes(const struct gl_pixel_store *ps, uint32_t format, uint32_t type, int32_t w, int32_t h);
-
 /*
  * glTexImage1D and 2D (h 1 for 1D) and glTexSubImage: the image from
  * `pixels` (the program's memory, big-endian, glf_image_bytes() of it; NULL:
@@ -498,6 +563,14 @@ void glf_tex_image(struct gl_state *st, uint32_t target, int32_t level, int32_t 
 		   int32_t border, uint32_t format, uint32_t type, const uint8_t *pixels);
 void glf_tex_sub_image(struct gl_state *st, uint32_t target, int32_t level, int32_t x, int32_t y, int32_t w,
 		       int32_t h, uint32_t format, uint32_t type, const uint8_t *pixels);
+/* glTexImage3D and glTexSubImage3D (pixels: glf_image_bytes_3d() of them), glCopyTexSubImage3D */
+void glf_tex_image_3d(struct gl_state *st, uint32_t target, int32_t level, int32_t internal, int32_t w, int32_t h,
+		      int32_t d, int32_t border, uint32_t format, uint32_t type, const uint8_t *pixels);
+void glf_tex_sub_image_3d(struct gl_state *st, uint32_t target, int32_t level, int32_t x, int32_t y, int32_t z,
+			  int32_t w, int32_t h, int32_t d, uint32_t format, uint32_t type, const uint8_t *pixels);
+void glf_copy_tex_sub_image_3d(struct gl_state *st, const struct gl_target *t, uint32_t target, int32_t level,
+			       int32_t xoffset, int32_t yoffset, int32_t zoffset, int32_t x, int32_t y, int32_t w,
+			       int32_t h);
 
 /* glTexParameter (values: as many as pname takes) and glTexEnv; glGetTexParameter, glGetTexEnv, glGetTexLevelParameter */
 void glf_tex_parameter(struct gl_state *st, uint32_t target, uint32_t pname, const float *v);
@@ -507,16 +580,92 @@ unsigned glf_get_tex_env(struct gl_state *st, uint32_t target, uint32_t pname, d
 unsigned glf_get_tex_level_parameter(struct gl_state *st, uint32_t target, int32_t level, uint32_t pname, double *v);
 
 /*
- * glReadPixels: [x, x + w) x [y, y + h) (OpenGL's: from the bottom) of the
- * target's pixels (finished) into `out` (the program's memory)
- */
-void glf_read_pixels(struct gl_state *st, const struct gl_target *t, int32_t x, int32_t y, int32_t w, int32_t h,
-		     uint32_t format, uint32_t type, uint8_t *out);
-
-/*
  * For drawing: a unit's texture, if it's enabled and complete (its
  * raster_texture made if need be), else NULL
  */
 struct gl_texture *glf_unit_texture(struct gl_state *st, unsigned unit, struct raster_texture **drawn);
+
+/* A backend texture retired at once (freed by glf_free_retired()) */
+void glf_retire(struct gl_names *n, struct raster_texture *r);
+
+/*
+ * glCopyTexImage1D and 2D (h 1 for 1D), glCopyTexSubImage1D and 2D: from
+ * the target's pixels at (x, y) (finished), through the pixel transfer
+ */
+void glf_copy_tex_image(struct gl_state *st, const struct gl_target *t, uint32_t target, int32_t level,
+			int32_t internal, int32_t x, int32_t y, int32_t w, int32_t h, int32_t border);
+void glf_copy_tex_sub_image(struct gl_state *st, const struct gl_target *t, uint32_t target, int32_t level,
+			    int32_t xoffset, int32_t yoffset, int32_t x, int32_t y, int32_t w, int32_t h);
+/* glGetTexImage: the level into `out` (the program's memory, as glf_tex_image_bytes() says it takes) */
+void glf_get_tex_image(struct gl_state *st, uint32_t target, int32_t level, uint32_t format, uint32_t type,
+		       uint8_t *out);
+size_t glf_tex_image_bytes(struct gl_state *st, uint32_t target, int32_t level, uint32_t format, uint32_t type);
+
+/* ---- pixels (glpixel.c) ---- */
+
+/* (glf_init()'s part: the raster position, the pixel transfer and maps) */
+void glf_pixels_init(struct gl_state *st);
+
+/* glPixelStore, glPixelTransfer, glPixelZoom, glPixelMap (v as floats: colors 0..1), glGetPixelMap (how many) */
+void glf_pixel_store(struct gl_state *st, uint32_t pname, int32_t v);
+void glf_pixel_transfer(struct gl_state *st, uint32_t pname, float v);
+void glf_pixel_zoom(struct gl_state *st, float x, float y);
+void glf_pixel_map(struct gl_state *st, uint32_t map, int32_t size, const float *v);
+unsigned glf_get_pixel_map(struct gl_state *st, uint32_t map, float *v);
+/* glf_get()'s for the pixel transfer, maps and zoom and the raster position (0: not theirs) */
+unsigned glf_get_pixels(struct gl_state *st, uint32_t pname, double *v);
+
+/* Whether a format and type go together (GL_NO_ERROR), or the error they make */
+uint32_t glf_pixel_check(uint32_t format, uint32_t type);
+
+/*
+ * The bytes of the program's memory an image (or a part, for glReadPixels)
+ * of this size, format and type takes as packed or unpacked by `ps`; 0 if
+ * the format or type isn't one OpenGL takes (or they don't go together)
+ */
+size_t glf_image_bytes(const struct gl_pixel_store *ps, uint32_t format, uint32_t type, int32_t w, int32_t h);
+/* The same for a 3D image (d images of w x h, image_height rows apart, skip_images of them first); one's stride */
+size_t glf_image_bytes_3d(const struct gl_pixel_store *ps, uint32_t format, uint32_t type, int32_t w, int32_t h,
+			  int32_t d);
+size_t glf_image_stride(const struct gl_pixel_store *ps, uint32_t format, uint32_t type, int32_t w, int32_t h);
+
+/*
+ * An image (from `src`, as `ps` unpacks it; a color format, or color
+ * indices) as R, G, B, A bytes (w x h, rows from the first), through the
+ * pixel transfer if `transfer` (color indices always through their maps);
+ * false if the format and type aren't such an image's
+ */
+bool glf_unpack_rgba(const struct gl_state *st, const struct gl_pixel_store *ps, uint32_t format, uint32_t type,
+		     int32_t w, int32_t h, const uint8_t *src, uint8_t *rgba, bool transfer);
+/* R, G, B, A bytes (w x h) into `out` as the pack store packs a color format and type (no pixel transfer) */
+void glf_pack_rgba(const struct gl_state *st, uint32_t format, uint32_t type, int32_t w, int32_t h,
+		   const uint8_t *rgba, uint8_t *out);
+
+/*
+ * glReadPixels: [x, x + w) x [y, y + h) (OpenGL's: from the bottom) of the
+ * target's pixels (finished; depth and stencil read too, for them) into
+ * `out` (the program's memory)
+ */
+void glf_read_pixels(struct gl_state *st, const struct gl_target *t, int32_t x, int32_t y, int32_t w, int32_t h,
+		     uint32_t format, uint32_t type, uint8_t *out);
+/* The same target's colors as R, G, B, A bytes (w x h), through the pixel transfer (glCopyTexImage's) */
+void glf_read_rgba(const struct gl_state *st, const struct gl_target *t, int32_t x, int32_t y, int32_t w, int32_t h,
+		   uint8_t *rgba);
+
+/*
+ * glRasterPos (glfront.c's); glBitmap (bits as unpacked: NULL, none drawn),
+ * glDrawPixels, glCopyPixels (the target finished, and its depth and
+ * stencil read: see glf_read_pixels())
+ */
+void glf_raster_pos(struct gl_state *st, const float obj[4]);
+void glf_bitmap(struct gl_state *st, const struct gl_target *t, int32_t w, int32_t h, float xorig, float yorig,
+		float xmove, float ymove, const uint8_t *bits);
+void glf_draw_pixels(struct gl_state *st, const struct gl_target *t, int32_t w, int32_t h, uint32_t format,
+		     uint32_t type, const uint8_t *pixels);
+void glf_copy_pixels(struct gl_state *st, const struct gl_target *t, int32_t x, int32_t y, int32_t w, int32_t h,
+		     uint32_t type);
+
+/* The raster state drawing in the target takes now (glfront.c's) */
+const struct raster_state *glf_raster_state(struct gl_state *st, const struct gl_target *t);
 
 #endif

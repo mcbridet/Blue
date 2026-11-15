@@ -262,7 +262,12 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   - Compressed images: UDIF `.dmg` (zlib, bzip2, ADC or LZFSE chunks,
     read-only, decompressed as read) and Disk Copy 6 NDIF `.img` (whose map
     is in the resource fork, so only where the fork survived, or from
-    MacBinary). Meanwhile, macOS's `hdiutil convert` makes a plain image.
+    MacBinary). Meanwhile, macOS's `hdiutil convert` makes a plain image,
+    except of early UDIF images (Disk Copy 6.3 to Mac OS X 10.1) whose block
+    table is a `blkx` resource in a resource fork appended to the data fork,
+    with each partition's chunk offsets relative to its own data offset:
+    `hdiutil` and 7-Zip both call those corrupt. One such (Apple Hardware
+    Test 1.2.2, ADC chunks) was converted with a 100-line script.
 - **CD audio, what's left:** recording from the CD (the codec's input DMA
   records silence even with the CD selected); de-emphasis for tracks
   flagged with pre-emphasis (played as stored); CD-Text (titles); a check

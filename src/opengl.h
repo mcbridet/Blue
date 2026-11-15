@@ -53,6 +53,17 @@ struct opengl_context {
 	int32_t swap_rect[4], buffer_rect[4], swap_interval;
 	struct gl_state st;
 	unsigned long frames;
+	/* a display list being made (glNewList; name 0: none): its mode, its entries so far (see opengl.c) */
+	uint32_t list_name, list_mode;
+	uint8_t *list;
+	size_t list_len, list_cap;
+	unsigned list_depth;            /* (lists being run: glCallList's nesting) */
+	/*
+	 * The bytes a call's pointer argument points to, given (a list's entry's,
+	 * or an image OpenGLUtility made); NULL: the program's memory
+	 */
+	const uint8_t *given;
+	size_t given_len;
 };
 
 struct opengl_instance {
@@ -93,6 +104,30 @@ void opengl_utility_call(struct opengl *o, struct ndrv_call *c);
 size_t opengl_build_library(uint8_t *out, size_t size, struct ndrv_layout *layout);
 size_t opengl_build_memory(uint8_t *out, size_t size, struct ndrv_layout *layout);
 size_t opengl_build_utility(uint8_t *out, size_t size, struct ndrv_layout *layout);
+
+/* A call's argument (as opengl_table.h's types: integers as u or i, floats as f, doubles as d) */
+union gl_arg {
+	uint32_t u;
+	int32_t i;
+	float f;
+	double d;
+};
+
+/*
+ * For OpenGLUtility (glu.c): a gl call (fn: opengl_table.h's order) to a
+ * context (NULL: none, nothing done), as the library's are made; or with
+ * the bytes its pointer argument points to given (unpacked by `unpack`, if
+ * it unpacks an image)
+ */
+uint32_t opengl_gl(struct opengl *o, struct opengl_context *x, unsigned fn, const union gl_arg *a);
+uint32_t opengl_gl_given(struct opengl *o, struct opengl_context *x, unsigned fn, const union gl_arg *a,
+			 const uint8_t *data, size_t len, const struct gl_pixel_store *unpack);
+/*
+ * The program's memory: len bytes at `at` there to be read, or written (any
+ * code translated from them dropped); NULL if they aren't
+ */
+const uint8_t *opengl_in(struct opengl *o, uint32_t at, size_t len);
+uint8_t *opengl_out(struct opengl *o, uint32_t at, size_t len);
 
 /*
  * OpenGLLibrary's entries: its functions' (by name; -1: none), its

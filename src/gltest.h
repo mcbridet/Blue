@@ -1,9 +1,10 @@
 /*
  * The OpenGL test application, "syshm GL Test": a generated application
  * whose logic runs on the host (see ndrv.h). It opens a window and draws a
- * scene in it through the guest's OpenGLLibrary, by callouts to what it
- * imports from there (so through the Code Fragment Manager's linking, as a
- * game would), and draws it again at each update event. For checking the
+ * scene in it through the guest's OpenGLLibrary and OpenGLUtility, by
+ * callouts to what it imports from them (so through the Code Fragment
+ * Manager's linking, as a game would), and draws it again at each update
+ * event. For checking the
  * libraries by screenshots, in instruction time: `syshm tools create` puts
  * it on the tools volume with SYSHM_TOOLS_GL_TEST=1 (put it in Startup
  * Items to run it), SYSHM_GL_TEST_SCENE names the scene and

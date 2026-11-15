@@ -8,7 +8,7 @@
 #include "be.h"
 #include "tools.h"
 
-/* What it calls: the Toolbox to start and for a window and events; OpenGLLibrary */
+/* What it calls: the Toolbox to start and for a window and events; OpenGLLibrary; OpenGLUtility */
 #define TOOLBOX_IMPORTS(X) X(InitGraf) X(InitFonts) X(InitWindows) X(InitMenus) X(TEInit) X(InitDialogs) \
 	X(InitCursor) X(GetMainDevice) X(SetDepth) X(NewCWindow) X(SetPort) X(WaitNextEvent) X(BeginUpdate) \
 	X(EndUpdate)
@@ -19,11 +19,14 @@
 	X(glEnd) X(glColor3f) X(glColor3ub) X(glVertex3f) X(glVertex3fv) X(glClearStencil) X(glLightfv) \
 	X(glMaterialfv) X(glMaterialf) X(glFogi) X(glFogf) X(glFogfv) X(glEnableClientState) \
 	X(glDisableClientState) X(glVertexPointer) X(glNormalPointer) X(glDrawElements) X(glStencilFunc) \
-	X(glStencilOp) X(glColorMask)
+	X(glStencilOp) X(glColorMask) X(glNewList) X(glEndList) X(glCallList) X(glRasterPos2f) X(glDrawPixels) \
+	X(glBitmap) X(glCopyPixels) X(glPixelZoom)
+#define GLU_IMPORTS(X) X(gluNewQuadric) X(gluDeleteQuadric) X(gluQuadricDrawStyle) X(gluQuadricNormals) \
+	X(gluSphere) X(gluDisk) X(gluPerspective) X(gluLookAt) X(gluOrtho2D)
 
 enum {
 #define X(name) I_##name,
-	TOOLBOX_IMPORTS(X) GL_IMPORTS(X)
+	TOOLBOX_IMPORTS(X) GL_IMPORTS(X) GLU_IMPORTS(X)
 #undef X
 	I_COUNT
 };
@@ -35,11 +38,14 @@ static const struct ndrv_import imports[I_COUNT] = {
 #define X(name) { "OpenGLLibrary", #name },
 	GL_IMPORTS(X)
 #undef X
+#define X(name) { "OpenGLUtility", #name },
+	GLU_IMPORTS(X)
+#undef X
 };
 
 static const char *const import_names[I_COUNT] = {
 #define X(name) #name,
-	TOOLBOX_IMPORTS(X) GL_IMPORTS(X)
+	TOOLBOX_IMPORTS(X) GL_IMPORTS(X) GLU_IMPORTS(X)
 #undef X
 };
 
@@ -47,19 +53,21 @@ static const char *const import_names[I_COUNT] = {
  * Its data (after the entry's TVector): QuickDraw's globals (thePort last),
  * an event record, the window's rectangle and title, the pixel format's
  * attributes, a vertex for glVertex3fv, the variables (the window, the
- * pixel format, the context), then "lit"'s vectors (a light's position
- * and color, a material's colors, the fog's color) and a mesh's arrays
- * (positions, normals, indices)
+ * pixel format, the context, a quadric), then "lit"'s vectors (a light's
+ * position and color, a material's colors, the fog's color) and a mesh's
+ * arrays (positions, normals, indices), "lists"' colors, "pixels"' image
+ * (16 x 16 RGBA) and glyph (16 x 16 bits, in rows of 4 bytes)
  */
 #define MESH_X 7
 #define MESH_Z 5
 #define MESH_INDICES ((MESH_X - 1) * (MESH_Z - 1) * 6)
+enum { V_NONE, V_WINDOW, V_FORMAT, V_CONTEXT, V_DEVICE, V_QUADRIC, V_COUNT };
 enum { D_QD = 0, D_THE_PORT = 202, D_EVENT = 208, D_RECT = 224, D_TITLE = 232, D_ATTRIBS = 264, D_VERTEX = 316,
-       D_VARS = 328, D_LIGHT_POSITION = 348, D_LIGHT_COLOR = D_LIGHT_POSITION + 16, D_DIFFUSE = D_LIGHT_COLOR + 16,
-       D_SPECULAR = D_DIFFUSE + 16, D_FOG_COLOR = D_SPECULAR + 16, D_POSITIONS = D_FOG_COLOR + 16,
-       D_NORMALS = D_POSITIONS + 12 * MESH_X * MESH_Z, D_INDICES = D_NORMALS + 12 * MESH_X * MESH_Z,
-       D_SIZE = D_INDICES + 2 * MESH_INDICES };
-enum { V_NONE, V_WINDOW, V_FORMAT, V_CONTEXT, V_DEVICE };
+       D_VARS = 328, D_LIGHT_POSITION = D_VARS + 4 * V_COUNT, D_LIGHT_COLOR = D_LIGHT_POSITION + 16,
+       D_DIFFUSE = D_LIGHT_COLOR + 16, D_SPECULAR = D_DIFFUSE + 16, D_FOG_COLOR = D_SPECULAR + 16,
+       D_POSITIONS = D_FOG_COLOR + 16, D_NORMALS = D_POSITIONS + 12 * MESH_X * MESH_Z,
+       D_INDICES = D_NORMALS + 12 * MESH_X * MESH_Z, D_RED = D_INDICES + 2 * MESH_INDICES, D_GREEN = D_RED + 16,
+       D_IMAGE = D_GREEN + 16, D_GLYPH = D_IMAGE + 16 * 16 * 4, D_SIZE = D_GLYPH + 16 * 4 };
 #define WINDOW_LEFT 40
 #define WINDOW_TOP 60
 #define WINDOW_WIDTH 320
@@ -111,6 +119,13 @@ enum { V_NONE, V_WINDOW, V_FORMAT, V_CONTEXT, V_DEVICE };
 #define GL_EQUAL 0x0202u
 #define GL_KEEP 0x1E00u
 #define GL_REPLACE 0x1E01u
+#define GL_COMPILE 0x1300u
+#define GL_RGBA 0x1908u
+#define GL_UNSIGNED_BYTE 0x1401u
+#define GL_COLOR 0x1800u
+#define GLU_FLAT 100001u
+#define GLU_LINE 100011u
+#define GLU_FILL 100012u
 
 #define UPDATE_EVENT 6u
 #define EVERY_EVENT 0xFFFFu
@@ -145,6 +160,24 @@ size_t gltest_build(uint8_t *out, size_t size, struct ndrv_layout *layout)
 	for (unsigned k = 0; k < 5; k++)
 		for (unsigned j = 0; j < 4; j++)
 			put_be32(data + D_LIGHT_POSITION + 16 * k + 4 * j, float_bits(vectors[k][j]));
+	static const float colors[2][4] = { { 0.9f, 0.25f, 0.2f, 1 }, { 0.3f, 0.85f, 0.35f, 1 } };
+	for (unsigned k = 0; k < 2; k++)
+		for (unsigned j = 0; j < 4; j++)
+			put_be32(data + D_RED + 16 * k + 4 * j, float_bits(colors[k][j]));
+	/* "pixels": an image of four colors' gradients, a glyph (an arrow) */
+	for (unsigned j = 0; j < 16; j++)
+		for (unsigned i = 0; i < 16; i++) {
+			uint8_t *p = data + D_IMAGE + 4 * (16 * j + i);
+			bool left = i < 8, low = j < 8;
+			p[0] = (uint8_t)(left ? 40 + 12 * j : 230);
+			p[1] = (uint8_t)(low ? 60 + 10 * i : 200 - 8 * i);
+			p[2] = (uint8_t)(left == low ? 220 : 30 + 6 * (i + j));
+			p[3] = 255;
+		}
+	static const uint16_t glyph[16] = { 0x0180, 0x03C0, 0x07E0, 0x0FF0, 0x1FF8, 0x3FFC, 0x7FFE, 0xFFFF,
+					    0x03C0, 0x03C0, 0x03C0, 0x03C0, 0x03C0, 0x03C0, 0x03C0, 0x03C0 };
+	for (unsigned j = 0; j < 16; j++)               /* (rows from the bottom: the arrow points down) */
+		put_be16(data + D_GLYPH + 4 * j, glyph[j]);
 	for (int z = 0; z < MESH_Z; z++)
 		for (int x = 0; x < MESH_X; x++) {
 			float px = -1.5f + 0.5f * (float)x, pz = -1 + 0.5f * (float)z;
@@ -186,7 +219,7 @@ struct gltest_step {
 	uint8_t result;                 /* the variable it goes to (V_NONE: none) */
 	bool show;                      /* print it: a C string */
 	uint32_t w[8];
-	double f[6];
+	double f[9];
 	bool single;
 };
 
@@ -368,6 +401,109 @@ static const struct gltest_step scene_lit[] = {
 	CALL(aglSwapBuffers, VAR(V_CONTEXT)),
 };
 
+/*
+ * A call with words and floating-point arguments both: the words where
+ * the PowerPC calling convention puts them (a double skips two, a float
+ * one), the floating-point values in f1 on
+ */
+#define CALL_WF(name, single, words, ...) { I_##name, sizeof (uint32_t[])words / sizeof(uint32_t), \
+					    sizeof (double[]){ __VA_ARGS__ } / sizeof(double), V_NONE, false, words, \
+					    { __VA_ARGS__ }, single }
+#define W(...) { __VA_ARGS__ }
+
+/*
+ * "lists": through OpenGLUtility, a perspective and a viewpoint, a
+ * quadric; display lists of it (a sphere; a sphere as lines; a ring
+ * beneath a call to the first), each called lit in its own color or
+ * plain, then the quadric gone
+ */
+static const struct gltest_step scene_lists[] = {
+	CALL_F(glClearColor, 0.15, 0.15, 0.2, 1.0),
+	CALL_D(glClearDepth, 1.0),
+	CALL(glClear, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT),
+	CALL(glEnable, GL_DEPTH_TEST),
+	CALL(glMatrixMode, GL_PROJECTION),
+	CALL0(glLoadIdentity),
+	CALL_D(gluPerspective, 45.0, 4.0 / 3, 1.0, 20.0),
+	CALL(glMatrixMode, GL_MODELVIEW),
+	CALL0(glLoadIdentity),
+	CALL_D(gluLookAt, 0.2, 1.6, 5.2, 0.0, -0.1, 0.0, 0.0, 1.0, 0.0),
+	CALL(glEnable, GL_LIGHTING),
+	CALL(glEnable, GL_LIGHT0),
+	CALL(glLightfv, GL_LIGHT0, GL_POSITION, DATA(D_LIGHT_POSITION)),
+	CALL(glLightfv, GL_LIGHT0, GL_DIFFUSE, DATA(D_LIGHT_COLOR)),
+	{ I_gluNewQuadric, 0, 0, V_QUADRIC, false, { 0 }, { 0 }, false },
+	CALL(glNewList, 1, GL_COMPILE),
+	CALL_WF(gluSphere, false, W(VAR(V_QUADRIC), 0, 0, 24, 16), 0.6),
+	CALL0(glEndList),
+	CALL(gluQuadricDrawStyle, VAR(V_QUADRIC), GLU_LINE),
+	CALL(glNewList, 2, GL_COMPILE),
+	CALL_WF(gluSphere, false, W(VAR(V_QUADRIC), 0, 0, 12, 8), 0.6),
+	CALL0(glEndList),
+	CALL(gluQuadricDrawStyle, VAR(V_QUADRIC), GLU_FILL),
+	CALL(gluQuadricNormals, VAR(V_QUADRIC), GLU_FLAT),
+	CALL(glNewList, 3, GL_COMPILE),
+	CALL0(glPushMatrix),
+	CALL_F(glTranslatef, 0.0, -0.75, 0.0),
+	CALL_F(glRotatef, -90.0, 1.0, 0.0, 0.0),
+	CALL_WF(gluDisk, false, W(VAR(V_QUADRIC), 0, 0, 0, 0, 20, 3), 0.35, 1.1),
+	CALL0(glPopMatrix),
+	CALL(glCallList, 1),
+	CALL0(glEndList),
+	CALL(glMaterialfv, GL_FRONT, GL_DIFFUSE, DATA(D_DIFFUSE)),
+	CALL0(glPushMatrix),
+	CALL_F(glTranslatef, -1.7, 0.1, 0.0),
+	CALL(glCallList, 1),
+	CALL0(glPopMatrix),
+	CALL(glMaterialfv, GL_FRONT, GL_DIFFUSE, DATA(D_RED)),
+	CALL(glCallList, 3),
+	CALL(glMaterialfv, GL_FRONT, GL_DIFFUSE, DATA(D_GREEN)),
+	CALL0(glPushMatrix),
+	CALL_F(glTranslatef, 1.7, 0.1, 0.0),
+	CALL_F(glRotatef, 30.0, 0.0, 1.0, 0.0),
+	CALL(glCallList, 1),
+	CALL0(glPopMatrix),
+	CALL(glDisable, GL_LIGHTING),
+	CALL_F(glColor3f, 1.0, 0.9, 0.3),
+	CALL0(glPushMatrix),
+	CALL_F(glTranslatef, 0.0, 1.35, -1.0),
+	CALL(glCallList, 2),
+	CALL0(glPopMatrix),
+	CALL(gluDeleteQuadric, VAR(V_QUADRIC)),
+	CALL(aglSwapBuffers, VAR(V_CONTEXT)),
+};
+
+/*
+ * "pixels": in window coordinates (gluOrtho2D), an image drawn four times
+ * its size, a glyph drawn by glBitmap four times along (each moving the
+ * raster position on), the image copied by glCopyPixels, half its size
+ * the other way up
+ */
+static const struct gltest_step scene_pixels[] = {
+	CALL_F(glClearColor, 0.2, 0.2, 0.25, 1.0),
+	CALL(glClear, GL_COLOR_BUFFER_BIT),
+	CALL(glMatrixMode, GL_PROJECTION),
+	CALL0(glLoadIdentity),
+	CALL_D(gluOrtho2D, 0.0, 320.0, 0.0, 240.0),
+	CALL(glMatrixMode, GL_MODELVIEW),
+	CALL0(glLoadIdentity),
+	CALL_F(glRasterPos2f, 20.3, 30.2),
+	CALL_F(glPixelZoom, 4.0, 4.0),
+	CALL(glDrawPixels, 16, 16, GL_RGBA, GL_UNSIGNED_BYTE, DATA(D_IMAGE)),
+	CALL_F(glPixelZoom, 1.0, 1.0),
+	CALL_F(glColor3f, 1.0, 0.85, 0.2),
+	CALL_F(glRasterPos2f, 120.3, 40.2),
+	CALL_WF(glBitmap, true, W(16, 16, 0, 0, 0, 0, DATA(D_GLYPH)), 0.0, 0.0, 20.0, 0.0),
+	CALL_WF(glBitmap, true, W(16, 16, 0, 0, 0, 0, DATA(D_GLYPH)), 0.0, 0.0, 20.0, 6.0),
+	CALL_WF(glBitmap, true, W(16, 16, 0, 0, 0, 0, DATA(D_GLYPH)), 0.0, 0.0, 20.0, 12.0),
+	CALL_WF(glBitmap, true, W(16, 16, 0, 0, 0, 0, DATA(D_GLYPH)), 0.0, 0.0, 20.0, 0.0),
+	CALL_F(glRasterPos2f, 200.3, 180.2),
+	CALL_F(glPixelZoom, 0.5, -0.5),
+	CALL(glCopyPixels, 20, 30, 64, 64, GL_COLOR),
+	CALL_F(glPixelZoom, 1.0, 1.0),
+	CALL(aglSwapBuffers, VAR(V_CONTEXT)),
+};
+
 static const struct {
 	const char *name;
 	const struct gltest_step *steps;
@@ -376,6 +512,8 @@ static const struct {
 	{ "clear", scene_clear, sizeof scene_clear / sizeof scene_clear[0] },
 	{ "triangle", scene_triangle, sizeof scene_triangle / sizeof scene_triangle[0] },
 	{ "lit", scene_lit, sizeof scene_lit / sizeof scene_lit[0] },
+	{ "lists", scene_lists, sizeof scene_lists / sizeof scene_lists[0] },
+	{ "pixels", scene_pixels, sizeof scene_pixels / sizeof scene_pixels[0] },
 };
 
 void gltest_init(struct gltest *t)

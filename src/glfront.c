@@ -47,8 +47,8 @@ static const struct cap {
 	[GLF_CAP_OFFSET_LINE] = { GL_POLYGON_OFFSET_LINE, false, false },
 	[GLF_CAP_OFFSET_FILL] = { GL_POLYGON_OFFSET_FILL, false, false },
 	[GLF_CAP_STENCIL_TEST] = { GL_STENCIL_TEST, false, false },
+	[GLF_CAP_TEXTURE_3D] = { GL_TEXTURE_3D, true, false },
 	/* (kept, not drawn by) */
-	{ 0x806F, true, false },                                        /* 3D */
 	{ GL_POINT_SMOOTH, false, false }, { GL_LINE_SMOOTH, false, false }, { 0x0B24, false, false },
 	{ 0x0B41, false, false }, { 0x0B42, false, false }, { 0x0BF1, false, false }, { 0x0BF2, false, false },
 	{ 0x0D80, false, false },
@@ -159,6 +159,7 @@ void glf_init(struct gl_state *st)
 	glf_textures_init(st);
 	glf_lighting_init(st);
 	glf_arrays_init(st);
+	glf_pixels_init(st);
 	st->color[0] = st->color[1] = st->color[2] = st->color[3] = 1;
 	st->secondary_color[3] = 1;
 	st->normal[2] = 1;
@@ -722,7 +723,8 @@ static void env_stage(struct raster_stage *s, unsigned unit, uint32_t mode, uint
 static const struct gl_texture *unit_candidate(const struct gl_state *st, unsigned unit)
 {
 	unsigned bit = 1u << unit;
-	int k = st->caps[GLF_CAP_TEXTURE_2D] & bit ? GLF_2D : st->caps[GLF_CAP_TEXTURE_1D] & bit ? GLF_1D : -1;
+	int k = st->caps[GLF_CAP_TEXTURE_3D] & bit ? GLF_3D : st->caps[GLF_CAP_TEXTURE_2D] & bit ? GLF_2D :
+		st->caps[GLF_CAP_TEXTURE_1D] & bit ? GLF_1D : -1;
 	return k < 0 ? NULL : st->units[unit].bound[k];
 }
 
@@ -757,6 +759,7 @@ static void textures(struct gl_state *st, struct raster_state *s)
 		r->mag_filter = (uint8_t)(RASTER_NEAREST + (t->mag_filter - GL_NEAREST));
 		r->clamp_s = t->wrap_s != GL_REPEAT;           /* (GL_CLAMP as GL_CLAMP_TO_EDGE: see glfront.h) */
 		r->clamp_t = t->wrap_t != GL_REPEAT;
+		r->clamp_r = t->wrap_r != GL_REPEAT;
 		env_stage(&s->stage[n++], u, st->units[u].env_mode, t->level[t->base_level].base,
 			  st->units[u].env_color);
 	}
@@ -932,6 +935,7 @@ static bool project(const struct gl_state *st, const struct gl_target *t, const 
 		r->tex[u][0] = v->tex[u][0] * iw;
 		r->tex[u][1] = v->tex[u][1] * iw;
 		r->tex[u][2] = v->tex[u][3] * iw;
+		r->texr[u] = v->tex[u][2] * iw;
 	}
 	win[0] = x;
 	win[1] = y;
@@ -1233,6 +1237,39 @@ static void seg(struct gl_state *st, const struct gl_target *t, const struct gl_
 	}
 }
 
+const struct raster_state *glf_raster_state(struct gl_state *st, const struct gl_target *t)
+{
+	return raster(st, t);
+}
+
+void glf_raster_pos(struct gl_state *st, const float obj[4])
+{
+	const float *m = mvp(st);
+	struct gl_vertex v;
+	for (int i = 0; i < 4; i++)
+		v.clip[i] = m[i] * obj[0] + m[4 + i] * obj[1] + m[8 + i] * obj[2] + m[12 + i] * obj[3];
+	glf_shade(st, obj, &v);
+	struct gl_raster_pos *r = &st->rpos;
+	const float *c = v.clip;
+	r->valid = c[0] >= -c[3] && c[0] <= c[3] && c[1] >= -c[3] && c[1] <= c[3] && c[2] >= -c[3] && c[2] <= c[3];
+	for (unsigned k = 0; k < GLF_CLIP_PLANES; k++)
+		r->valid = r->valid && !(v.user[k] < 0);
+	if (!r->valid)
+		return;                         /* (the rest of it undefined: as it was) */
+	float iw = 1.0f / c[3];
+	for (int k = 0; k < 3; k++)
+		r->win[k] = c[k] * iw * st->vp_scale[k] + st->vp_offset[k];
+	r->win[3] = c[3];
+	memcpy(r->color, v.color[0], sizeof r->color);
+	memcpy(r->secondary, v.secondary[0], sizeof r->secondary);
+	memcpy(r->tex, v.tex, sizeof r->tex);
+	const float *mv = st->modelview.m[st->modelview.depth - 1];
+	float eye[3];
+	for (int i = 0; i < 3; i++)
+		eye[i] = mv[i] * obj[0] + mv[4 + i] * obj[1] + mv[8 + i] * obj[2] + mv[12 + i] * obj[3];
+	r->distance = sqrtf(eye[0] * eye[0] + eye[1] * eye[1] + eye[2] * eye[2]);
+}
+
 void glf_vertex(struct gl_state *st, const struct gl_target *t, const float obj[4])
 {
 	if (!st->inside)
@@ -1457,8 +1494,8 @@ unsigned glf_get(struct gl_state *st, uint32_t pname, double *v)
 	case GL_CURRENT_TEXTURE_COORDS: return values(v, st->tex[st->active_texture], 4);
 	case GL_CURRENT_FOG_COORDINATE_EXT: v[0] = st->fog_coord; return 1;
 	case GL_EDGE_FLAG: v[0] = st->edge_flag; return 1;
-	case 0x8068: case 0x8069: {             /* GL_TEXTURE_BINDING_1D, 2D */
-		const struct gl_texture *t = st->units[st->active_texture].bound[pname == 0x8069 ? GLF_2D : GLF_1D];
+	case 0x8068: case 0x8069: case 0x806A: {        /* GL_TEXTURE_BINDING_1D, 2D, 3D */
+		const struct gl_texture *t = st->units[st->active_texture].bound[pname - 0x8068];
 		v[0] = t->name;
 		return 1;
 	}
@@ -1503,28 +1540,18 @@ unsigned glf_get(struct gl_state *st, uint32_t pname, double *v)
 	case 0x0C21: v[0] = 255; return 1;                              /* GL_INDEX_WRITEMASK */
 	case 0x0BF0: v[0] = 0x1503; return 1;                           /* GL_LOGIC_OP_MODE: GL_COPY */
 	case 0x0C40: v[0] = 0x1C00; return 1;                           /* GL_RENDER_MODE: GL_RENDER */
-	case 0x0B30: case 0x0B32: case 0x0B33: case 0x0D70: v[0] = 0; return 1;
-						/* (display lists: none being made, list base, name stack) */
+	case 0x0B32: v[0] = st->list_base; return 1;                    /* GL_LIST_BASE */
+	case 0x0D70: v[0] = 0; return 1;                                /* GL_NAME_STACK_DEPTH */
 	case 0x0B31: case 0x0D37: v[0] = 64; return 1;                  /* GL_MAX_LIST_NESTING, _NAME_STACK_DEPTH */
 	case 0x0D30: v[0] = 8; return 1;                                /* GL_MAX_EVAL_ORDER */
-	case 0x0D34: v[0] = 32; return 1;                               /* GL_MAX_PIXEL_MAP_TABLE */
-	case 0x8073: v[0] = 16; return 1;                               /* GL_MAX_3D_TEXTURE_SIZE */
-	case 0x806A: v[0] = 0; return 1;                                /* GL_TEXTURE_BINDING_3D */
-	case 0x806B: case 0x806C: case 0x806D: case 0x806E: v[0] = 0; return 1;    /* (3D images' pixel stores) */
-	/* (the raster position and pixel transfers, as they start: milestone 5's) */
-	case 0x0B07: v[0] = v[1] = v[2] = 0; v[3] = 1; return 4;        /* GL_CURRENT_RASTER_POSITION */
-	case 0x0B08: v[0] = 1; return 1;                                /* ..._VALID */
-	case 0x0B04: v[0] = v[1] = v[2] = v[3] = 1; return 4;           /* GL_CURRENT_RASTER_COLOR */
-	case 0x0B06: v[0] = v[1] = v[2] = 0; v[3] = 1; return 4;        /* ..._TEXTURE_COORDS */
-	case 0x0B09: v[0] = 0; return 1;                                /* ..._DISTANCE */
-	case 0x0B05: v[0] = 1; return 1;                                /* ..._INDEX */
-	case 0x0D10: case 0x0D11: case 0x0D12: case 0x0D13: v[0] = 0; return 1;
-	case 0x0D14: case 0x0D18: case 0x0D1A: case 0x0D1C: case 0x0D1E: case 0x0D16: case 0x0D17: v[0] = 1; return 1;
-	case 0x0D15: case 0x0D19: case 0x0D1B: case 0x0D1D: case 0x0D1F: v[0] = 0; return 1;
-	case 0x0CB0: case 0x0CB1: case 0x0CB2: case 0x0CB3: case 0x0CB4: case 0x0CB5: case 0x0CB6: case 0x0CB7:
-	case 0x0CB8: case 0x0CB9: v[0] = 1; return 1;                   /* (pixel maps' sizes) */
+	case 0x8073: v[0] = GLF_MAX_3D_TEXTURE_SIZE; return 1;          /* GL_MAX_3D_TEXTURE_SIZE */
+	case 0x806B: v[0] = st->pack.skip_images; return 1;             /* GL_PACK_SKIP_IMAGES */
+	case 0x806C: v[0] = st->pack.image_height; return 1;
+	case 0x806D: v[0] = st->unpack.skip_images; return 1;
+	case 0x806E: v[0] = st->unpack.image_height; return 1;
 	default: {
 		unsigned n = glf_get_lighting(st, pname, v);
+		n = n ? n : glf_get_pixels(st, pname, v);
 		return n ? n : glf_get_arrays(st, pname, v);
 	}
 	}

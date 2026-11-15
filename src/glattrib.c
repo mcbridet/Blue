@@ -12,15 +12,17 @@
  * and glPopClientAttrib: the pixel stores, the arrays.
  */
 
-enum { A_CURRENT = 0x1, A_POINT = 0x2, A_LINE = 0x4, A_POLYGON = 0x8, A_POLYGON_STIPPLE = 0x10, A_LIGHTING = 0x40,
+enum { A_CURRENT = 0x1, A_POINT = 0x2, A_LINE = 0x4, A_POLYGON = 0x8, A_POLYGON_STIPPLE = 0x10, A_PIXEL_MODE = 0x20,
+       A_LIGHTING = 0x40,
        A_FOG = 0x80, A_DEPTH = 0x100, A_STENCIL = 0x400, A_VIEWPORT = 0x800, A_TRANSFORM = 0x1000,
-       A_ENABLE = 0x2000, A_COLOR = 0x4000, A_HINT = 0x8000, A_TEXTURE = 0x40000, A_SCISSOR = 0x80000 };
+       A_ENABLE = 0x2000, A_COLOR = 0x4000, A_HINT = 0x8000, A_LIST = 0x20000, A_TEXTURE = 0x40000,
+       A_SCISSOR = 0x80000 };
 enum { C_PIXEL_STORE = 0x1, C_VERTEX_ARRAY = 0x2 };
 
 /* A texture's parameters (glTexParameter's), as they were */
 struct tex_params {
 	uint32_t name;
-	uint32_t min_filter, mag_filter, wrap_s, wrap_t;
+	uint32_t min_filter, mag_filter, wrap_s, wrap_t, wrap_r;
 	float border[4], priority, min_lod, max_lod;
 	int base_level, max_level;
 };
@@ -60,6 +62,7 @@ void glf_push_attrib(struct gl_state *st, uint32_t mask)
 			p->mag_filter = t->mag_filter;
 			p->wrap_s = t->wrap_s;
 			p->wrap_t = t->wrap_t;
+			p->wrap_r = t->wrap_r;
 			memcpy(p->border, t->border, sizeof p->border);
 			p->priority = t->priority;
 			p->min_lod = t->min_lod;
@@ -86,7 +89,7 @@ static void caps(struct gl_state *st, const struct gl_state *was, unsigned first
 /* The textures bound as they were, with their parameters (the active unit's binding is per unit) */
 static void textures(struct gl_state *st, const struct gl_saved *s)
 {
-	static const uint32_t targets[GLF_TARGETS] = { GL_TEXTURE_1D, GL_TEXTURE_2D };
+	static const uint32_t targets[GLF_TARGETS] = { GL_TEXTURE_1D, GL_TEXTURE_2D, GL_TEXTURE_3D };
 	for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++) {
 		st->active_texture = u;
 		for (int k = 0; k < GLF_TARGETS; k++) {
@@ -103,6 +106,7 @@ static void textures(struct gl_state *st, const struct gl_saved *s)
 			PARAM(mag_filter, 0x2800)
 			PARAM(wrap_s, 0x2802)
 			PARAM(wrap_t, 0x2803)
+			PARAM(wrap_r, 0x8072)
 			PARAM(priority, 0x8066)
 			PARAM(min_lod, 0x813A)
 			PARAM(max_lod, 0x813B)
@@ -132,7 +136,10 @@ void glf_pop_attrib(struct gl_state *st)
 		memcpy(st->tex, o->tex, sizeof st->tex);
 		st->fog_coord = o->fog_coord;
 		st->edge_flag = o->edge_flag;
+		st->rpos = o->rpos;
 	}
+	if (m & A_PIXEL_MODE)
+		st->transfer = o->transfer;
 	if (m & A_POINT) {
 		st->point_size = o->point_size;
 		cap(st, o, GL_POINT_SMOOTH);
@@ -225,6 +232,8 @@ void glf_pop_attrib(struct gl_state *st)
 	}
 	if (m & A_HINT)
 		memcpy(st->hints, o->hints, sizeof st->hints);
+	if (m & A_LIST)
+		st->list_base = o->list_base;
 	if (m & A_TEXTURE) {
 		for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++) {
 			st->units[u].env_mode = o->units[u].env_mode;
@@ -233,7 +242,7 @@ void glf_pop_attrib(struct gl_state *st)
 		memcpy(st->texgen, o->texgen, sizeof st->texgen);
 		caps(st, o, GLF_CAP_TEXTURE_1D, 2);
 		caps(st, o, GLF_CAP_TEXTURE_GEN_S, 4);
-		cap(st, o, 0x806F);                             /* GL_TEXTURE_3D */
+		cap(st, o, GL_TEXTURE_3D);
 		textures(st, s);
 		st->active_texture = o->active_texture;
 	}

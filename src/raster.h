@@ -23,9 +23,14 @@
 #define RASTER_COLORS 3                 /* colors per vertex */
 #define RASTER_STAGES 4                 /* combining stages */
 
+/*
+ * A texture: a 2D one, or a 3D one if its levels have depths (each level's
+ * width x height texels a slice, `depth` of them, slice k at r = k / depth)
+ */
 struct raster_texture {
 	unsigned levels;
 	unsigned width[RASTER_MAX_LEVELS], height[RASTER_MAX_LEVELS];
+	unsigned depth[RASTER_MAX_LEVELS];      /* (0: a 2D texture) */
 	uint32_t *texels[RASTER_MAX_LEVELS];    /* row k at t = k / height (bitmaps: rows top to bottom) */
 	uint32_t gpu;                           /* the GPU backend's copy (gpu.c's; 0: none yet) */
 };
@@ -41,6 +46,7 @@ struct raster_vertex {
 	float color[RASTER_COLORS][4];          /* r, g, b, a: 0 is the primary color, the stages use the others */
 	float fog;                              /* fog coordinate / w (see fog_coord) */
 	float tex[RASTER_UNITS][3];             /* each unit's s/w, t/w, q/w */
+	float texr[RASTER_UNITS];               /* ... and r/w (3D textures') */
 };
 
 /* Values as RAVE's (kQAZFunction_ etc.) */
@@ -62,14 +68,17 @@ enum { RASTER_ALPHA_NONE, RASTER_ALPHA_LT, RASTER_ALPHA_EQ, RASTER_ALPHA_LE, RAS
 enum { RASTER_STENCIL_KEEP, RASTER_STENCIL_ZERO, RASTER_STENCIL_REPLACE, RASTER_STENCIL_INCR, RASTER_STENCIL_DECR,
        RASTER_STENCIL_INVERT, RASTER_STENCIL_INCR_WRAP, RASTER_STENCIL_DECR_WRAP };
 
-/* Texture filters (as OpenGL's; raster.c takes one mipmap level per triangle, so *_LINEAR as *_NEAREST) */
+/*
+ * Texture filters (as OpenGL's; raster.c takes one mipmap level per
+ * triangle, so *_LINEAR as *_NEAREST, and a 3D texture's by s and t alone)
+ */
 enum { RASTER_NEAREST, RASTER_LINEAR, RASTER_NEAREST_MIPMAP_NEAREST, RASTER_LINEAR_MIPMAP_NEAREST,
        RASTER_NEAREST_MIPMAP_LINEAR, RASTER_LINEAR_MIPMAP_LINEAR };
 
 struct raster_unit {
 	const struct raster_texture *texture;
 	uint8_t min_filter, mag_filter;
-	bool clamp_s, clamp_t;                  /* to the edge texels (else repeating) */
+	bool clamp_s, clamp_t, clamp_r;         /* to the edge texels (else repeating) */
 	bool projective;                        /* coordinates divided by the unit's q/w (else by 1/w: q is 1) */
 	float anisotropy;                       /* the most the GPU may use, where it has some (1 or 0: none) */
 };
@@ -181,8 +190,21 @@ void raster_point(struct raster_target *t, const struct raster_state *s, const s
 void raster_bitmap(struct raster_target *t, const struct raster_state *s, const struct raster_texture *image,
 		   float x, float y, float z);
 
-/* Drawing recorded to be done later, all together */
-enum { RASTER_CMD_TRIANGLE, RASTER_CMD_LINE, RASTER_CMD_POINT, RASTER_CMD_BITMAP, RASTER_CMD_CLEAR };
+/*
+ * Drawing recorded to be done later, all together. RASTER_CMD_PIXELS: an
+ * image whose texel (i, j) covers the pixels whose centers are in
+ * [x + i zx, x + (i + 1) zx) x [y + j zy, y + (j + 1) zy) (either way round:
+ * the zoom may be negative), from (x, y) = (v[0].x, v[0].y), (zx, zy) =
+ * (v[1].x, v[1].y): each such pixel a fragment of the texel's color
+ * (RASTER_PIXELS_COLOR), or of v[0].color[0] where the texel isn't 0
+ * (_MASK) or at the depth whose float bits the texel is (_DEPTH), at depth
+ * v[0].z otherwise; through the state's tests, blending and masks but not
+ * textured or fogged. Or each such pixel's stencil set to the texel's low
+ * 8 bits, in the state's stencil_write (_STENCIL: no tests).
+ */
+enum { RASTER_CMD_TRIANGLE, RASTER_CMD_LINE, RASTER_CMD_POINT, RASTER_CMD_BITMAP, RASTER_CMD_CLEAR,
+       RASTER_CMD_PIXELS };
+enum { RASTER_PIXELS_COLOR, RASTER_PIXELS_MASK, RASTER_PIXELS_DEPTH, RASTER_PIXELS_STENCIL };
 
 struct raster_cmd {
 	uint8_t kind;
@@ -191,9 +213,10 @@ struct raster_cmd {
 						/* for color_keep's bits) and z, */
 	bool clear_stencil;                     /* ... and the stencil's bits in stencil_write to `stencil` */
 	uint8_t stencil;
+	uint8_t pixels;                         /* (RASTER_CMD_PIXELS: RASTER_PIXELS_...) */
 	unsigned state;                         /* index into the states given with the commands */
 	struct raster_vertex v[3];              /* (bitmaps: at v[0].x, y, z) */
-	const struct raster_texture *image;     /* bitmaps */
+	const struct raster_texture *image;     /* bitmaps, pixels */
 	int rect[4];                            /* left, top, right, bottom */
 	uint32_t argb;
 	float z;

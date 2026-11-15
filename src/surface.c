@@ -139,6 +139,14 @@ bool surface_finish(struct surface *s)
 	return false;
 }
 
+bool surface_read_depth(struct surface *s)
+{
+	if (!s->gpu || gpu_read_depth(s->gpu, s->gpu_target, s->target.depth, s->target.stencil))
+		return true;
+	surface_lose_gpu(s);
+	return false;
+}
+
 /* ---- guest memory --------------------------------------------------------------- */
 
 /* Whether [addr, addr + len) can be read or (with translated code there dropped) written: page by page */

@@ -345,7 +345,8 @@ size_t ndrv_build(const struct ndrv_spec *spec, uint8_t *out, size_t size, struc
 		s += strlen(lib_name[k]) + 1;
 	}
 	for (unsigned k = 0; k < nimp; k++) {
-		put_be32(l + imp_tab + 4 * k, (uint32_t)SYM_TVECTOR << 24 | (uint32_t)s);
+		bool data = k < 64 && spec->data_imports >> k & 1;
+		put_be32(l + imp_tab + 4 * k, (uint32_t)(data ? SYM_DATA : SYM_TVECTOR) << 24 | (uint32_t)s);
 		memcpy(str + s, spec->imports[k].name, strlen(spec->imports[k].name) + 1);
 		s += strlen(spec->imports[k].name) + 1;
 	}

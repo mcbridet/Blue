@@ -13,12 +13,124 @@ It should come first (see Order).
 ## Status
 
 Milestones 0 (the groundwork, shared with Glide), 1 (AGL and a clear), 2
-(a triangle), 3 (textures, and Unreal Tournament's OpenGL build) and 4
-(arrays, fog, lighting and the rest of the common state) are built;
-milestones 5 and 6 are to do. The user chose OpenGL before Glide, and
+(a triangle), 3 (textures, and Unreal Tournament's OpenGL build), 4
+(arrays, fog, lighting and the rest of the common state) and 5 (display
+lists, pixel paths, 3D textures, OpenGLUtility) are built; Quake III
+Arena's demo plays. Of what milestone 5 listed, selection and feedback,
+`aglUseFont`, `aglSetFullScreen`, and S3TC and paletted textures are still
+to do, and milestone 6 is. The user chose OpenGL before Glide, and
 accepted the proposed decisions below for now (replacing the libraries,
 recording in guest memory, fixed function in C on the host, frames read
 back into guest memory, a Rage 128's identity).
+
+Milestone 5:
+
+- **Display lists** (`src/gllist.c`, `src/opengl.c`): `glNewList` and
+  `glEndList` (compile, and compile and execute), `glCallList` and
+  `glCallLists` (every type of name, with `glListBase`), `glGenLists`,
+  `glDeleteLists`, `glIsList`; lists call lists 64 deep, and are shared
+  as textures are. A list keeps what OpenGL 1.2 says it keeps (queries,
+  client state and the like are done there and then), each call with the
+  bytes its pointer pointed to and, for images, the pixel store as it was;
+  `glDrawArrays` and the other array draws are kept as the `glBegin`,
+  attribute calls and `glEnd` they make, so later changes to the arrays
+  don't show. Every scene against Mesa (below) made into a list and called
+  gives the same pixels as drawn directly, in software and on the GPU.
+- **The raster position and pixels** (`src/glpixel.c`): `glRasterPos`
+  (a vertex's transform and clipping; its color, texture coordinates and
+  distance), `glBitmap` (moving the raster position), `glDrawPixels` and
+  `glCopyPixels` of colors, depth and stencil (color indices through the
+  maps), zoomed by any amount (backwards too), `glPixelTransfer` (scales,
+  biases, the index shift and offset, `GL_MAP_COLOR` and
+  `GL_MAP_STENCIL`), `glPixelMap` (the ten maps, 256 entries each),
+  `glReadPixels` of depth and stencil, `glCopyTexImage1D` and `2D`,
+  `glCopyTexSubImage1D`, `2D` and `3D`, `glGetTexImage`. Both backends
+  draw a pixel rectangle as fragments through the per-fragment operations
+  (`RASTER_CMD_PIXELS`), without texturing, fog or the color sum; the GPU's
+  depth and stencil are read back when they're read or copied. Images go
+  from the raster position rounded to the nearest pixel corner, as Mesa
+  does (see Findings in plan.md for where Mesa departs from OpenGL 1.2's
+  rectangles).
+- **3D textures:** `glTexImage3D`, `glTexSubImage3D`, `GL_TEXTURE_3D`
+  (before 2D and 1D in a unit), the r coordinate's wrap, the image height
+  and skip images pixel stores, up to 128 texels a side; `raster.c` samples
+  them trilinearly between the two slices nearest r (its level by s and t,
+  as for 2D), `gpu.c` with a `sampler3D`.
+- **OpenGLUtility** (`src/glu.c`): the matrices (`gluOrtho2D`,
+  `gluPerspective`, `gluLookAt`, `gluPickMatrix`), `gluProject` and
+  `gluUnProject`, `gluScaleImage`, `gluBuild1DMipmaps` and
+  `gluBuild2DMipmaps`, and the quadrics (spheres, cylinders, disks and
+  partial disks in each style, with flat or smooth normals, either way out,
+  textured), done on the host as SGI's GLU does them, by gl calls to the
+  current context (so lists keep them). Its quadrics' calls are SGI's call
+  for call (compared with Mesa's libGLU, SGI's code), but where SGI's reads
+  normals it never set (flat ones for points and silhouettes): there the
+  smooth ones. Images are scaled through 16 bits a component, as SGI's GLU
+  1.2 does (Apple's is "1.2 MacOS 8.0"): Mesa's libGLU (SGI's 1.3) makes 2D
+  mipmaps from 8-bit images by another filter, within a level of these when
+  the image needs no scaling. Its strings are Apple's (its version, its
+  extensions, `gluErrorString`'s). Quadrics, tessellators and NURBS
+  renderers are blocks from the program's Memory Manager (`NewPtrClear`, by
+  a callout); quadrics' errors go to their callbacks. Tessellators and
+  NURBS renderers keep their properties but draw nothing yet. Like Apple's,
+  it imports OpenGLLibrary's `glc_cc` (as data: the fragment builder's
+  data imports are new) to find the process's current context.
+- **Checked against Mesa** (`tests/test_opengl.c`, on Linux), four more
+  scenes, as milestone 4's table:
+
+  | scene | GPU | Mesa |
+  |---|---|---|
+  | lists (lists calling lists, one redefined, compile and execute, arrays and an image as they were, `glCallLists`' types from a list base) | 0 (1) | 0 (1) |
+  | pixels (each kind of image, zoomed, the transfer, bitmaps, copies of colors and depths, a stencil image) | 0 (1) | 0 (1) |
+  | texture3d (nearest and trilinear, r clamped and repeated, r generated, a slice replaced) | 0 (1) | 0 (1) |
+  | glu (perspective and viewpoint, quadrics of each kind and style, mipmaps' first and third levels) | 0 (2) | 31 (229): lines |
+
+  In "glu", Mesa's lines at any slope step to the next pixel at other
+  points than ours (30 pixels drawn by one only); its filled quadrics are
+  drawn alike. "glu" is compared when `SYSHM_TEST_GLU` names Mesa's
+  libGLU (`libGLU.so.1`). Unit tests (`tests/test_glfront.c`,
+  `tests/test_opengl.c`) check what Mesa can't: OpenGL 1.2's rectangles
+  for fractional and negative zooms, pixel maps, color indices, depth and
+  stencil images read and drawn, OpenGLUtility's matrices, projections,
+  images, objects, strings and errors.
+- **The test application** imports OpenGLUtility now. Scene `lists`: a
+  sphere, a sphere as lines and a ring under a call to the first made into
+  lists through OpenGLUtility (`gluPerspective`, `gluLookAt`, quadrics),
+  called lit in three colors and plain; scene `pixels`: in `gluOrtho2D`'s
+  window coordinates, an image drawn four times its size, a glyph by
+  `glBitmap` four times along, the image copied half its size the other
+  way up. On installed 8.5 in instruction time: the same screenshots on
+  macOS and Linux; on the GPU (Metal), `pixels` is the same and in `lists`
+  1,302 pixels differ, by 1. `clear`'s, `triangle`'s and `lit`'s are as
+  they were.
+- **Quake III Arena's demo** (id's Mac demo of December 1999, from
+  archive.org's mirror of id's FTP site; kept out of the tree): its
+  installer (Installer VISE) installs it on a clone of the 8.6 disk with
+  syshm's libraries, and it plays: the menus, and `demo001` in q3dm7 with
+  its lightmaps, models, effects and HUD (scripted in instruction time:
+  the Finder opens it, the menus are driven by keys and mouse motion). It
+  calls no gl function syshm doesn't do. With `TZ=UTC` the same frame
+  comes out on macOS and Linux 17 billion instructions in; on the GPU,
+  the same calls and frames (306,893 and 4,511 by then), and pixels mostly
+  within a step of the 16-bit screen (200 differ by more, at edges and in
+  an explosion: mipmap levels chosen per pixel there, per triangle in
+  `raster.c`).
+- **Unreal Tournament's OpenGL build** still plays: in instruction time
+  the same calls and frames as before, and its eight screenshots the same
+  as main's.
+- **Done when** display lists, pixel paths, 3D textures and OpenGLUtility
+  are checked by scenes against Mesa, the test application and UT, and
+  Quake III's demo plays (what this milestone was given): as above.
+  Apple's OpenGL SDK samples (GLUT demos for Mac OS 9) weren't found to
+  download (archive.org has none; the Wayback Machine, where Apple's pages
+  are, wasn't reachable).
+- Not yet: selection and feedback, evaluators, `aglUseFont`,
+  `aglSetFullScreen`, S3TC and paletted textures, OpenGLUtility's
+  tessellators and NURBS (their objects and properties only), the
+  accumulation buffer (pixel formats asking for one are refused, as
+  before), logic ops; line and polygon stipples are kept but not drawn;
+  lines and points aren't textured; smooth points and lines are drawn as
+  aliased ones.
 
 Milestone 4:
 
@@ -1248,7 +1360,8 @@ Shared pieces may already exist from Glide.
   links to syshm's, even in the session that moved Apple's); 9.1 isn't
   tried (installing 9.1 onto a disk image isn't done yet in syshm).
 - Did a Mac OS 9 `aglMacro.h` exist, and does any target call through
-  `glc_cc` or the context's table?
+  `glc_cc` or the context's table? (Apple's OpenGLUtility reads `glc_cc`:
+  it imports it.)
 - Which games use `aglSetFullScreen` rather than DrawSprocket, and what
   Apple's did with the menu bar and other applications' windows.
 - Which folder Apple's engine searches for renderers (the `FindFolder`
