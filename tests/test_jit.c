@@ -634,8 +634,10 @@ static void test_logic_imm(void)
 	unsigned count = 0;
 	for (uint32_t nrs = 0; nrs < 1u << 13; nrs++) {
 		uint64_t v = decode_logic_imm(nrs);
+		if (!v)
+			continue;
 		unsigned size = 1u << (31 - __builtin_clz((nrs >> 12 & 1) << 6 | (~nrs & 63)));
-		if (!v || (nrs >> 6 & 63) >= size)     /* (larger rotations repeat the same values) */
+		if ((nrs >> 6 & 63) >= size)                    /* (larger rotations repeat the same values) */
 			continue;
 		uint32_t got = 0;
 		CHECK(a64_logic_imm_encode(1, v, &got) && decode_logic_imm(got) == v);
