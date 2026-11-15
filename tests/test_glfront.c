@@ -1900,7 +1900,27 @@ static void test_evaluators(void)
 	glf_enable(&st, GL_LIGHTING, false);
 	CHECK(!memcmp(st.normal, normal, sizeof normal));
 
+	/* a filled mesh is quad strips (5.1's): outlined, each quad's four edges, no diagonals */
+	const uint32_t *w;
+	size_t n;
+	glf_enable(&st, AUTO_NORMAL, false);
+	glf_map(&st, 2, MAP2_VERTEX_3, unit, 3, 2, 6, 2, flat);
+	glf_map_grid2(&st, 2, 0, 1, 1, 0, 1);
+	glf_polygon_mode(&st, GL_FRONT_AND_BACK, GL_LINE);
+	glf_feedback_buffer(&st, 1024, 0x0600, 0x3000);         /* GL_2D */
+	render_mode(GL_FEEDBACK, &w, &n);
+	glf_eval_mesh(&st, &target, 2, GL_FILL, 0, 2, 0, 1);
+	render_mode(GL_RENDER, &w, &n);
+	glf_polygon_mode(&st, GL_FRONT_AND_BACK, GL_FILL);
+	unsigned lines = 0;
+	for (size_t i = 0; i + 5 <= n; i += 5) {
+		uint32_t tok = (uint32_t)word_float(w[i]);
+		lines += tok == GL_LINE_TOKEN || tok == GL_LINE_RESET_TOKEN;
+	}
+	CHECK(lines == 8 && n == 8 * 5);
+
 	/* GL_EVAL_BIT: the grids and the enables as they were, not the maps */
+	glf_enable(&st, AUTO_NORMAL, true);
 	glf_push_attrib(&st, EVAL_BIT);
 	glf_map_grid2(&st, 5, -1, 2, 7, 3, 4);
 	glf_enable(&st, AUTO_NORMAL, false);
@@ -1908,6 +1928,7 @@ static void test_evaluators(void)
 	glf_map(&st, 2, MAP2_VERTEX_3, unit, 3, 2, 6, 2, flat);
 	glf_pop_attrib(&st);
 	CHECK(glf_get(&st, 0x0DD2, v) == 4 && v[0] == 0 && v[1] == 1);         /* GL_MAP2_GRID_DOMAIN */
+	CHECK(glf_get(&st, 0x0DD3, v) == 2 && v[0] == 2 && v[1] == 1);         /* GL_MAP2_GRID_SEGMENTS */
 	CHECK(glf_get(&st, 0x0DD1, v) == 1 && v[0] == 3);                      /* GL_MAP1_GRID_SEGMENTS */
 	CHECK(glf_is_enabled(&st, AUTO_NORMAL) == 1 && glf_is_enabled(&st, MAP2_COLOR_4) == 0);
 	CHECK(glf_get_map(&st, MAP2_VERTEX_3, Q_DOMAIN, v) == 4 && v[0] == 0 && v[1] == 1);
