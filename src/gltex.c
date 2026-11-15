@@ -15,7 +15,7 @@
  */
 
 enum { GL_TEXTURE_1D_TARGET = 0x0DE0, GL_TEXTURE_2D_TARGET = 0x0DE1, GL_PROXY_TEXTURE_1D = 0x8063,
-       GL_PROXY_TEXTURE_2D = 0x8064 };
+       GL_PROXY_TEXTURE_2D = 0x8064, GL_PROXY_TEXTURE_3D = 0x8070, GL_TEXTURE_DEPTH = 0x8071 };
 
 /* ---- namespaces ---------------------------------------------------------------- */
 
@@ -26,14 +26,14 @@ static void texture_init(struct gl_texture *t, uint32_t name)
 	t->target = -1;
 	t->min_filter = GL_NEAREST_MIPMAP_LINEAR;
 	t->mag_filter = GL_LINEAR;
-	t->wrap_s = t->wrap_t = GL_REPEAT;
+	t->wrap_s = t->wrap_t = t->wrap_r = GL_REPEAT;
 	t->priority = 1;
 	t->min_lod = -1000;
 	t->max_lod = 1000;
 	t->max_level = 1000;
 }
 
-static void retire(struct gl_names *n, struct raster_texture *r)
+void glf_retire(struct gl_names *n, struct raster_texture *r)
 {
 	if (!r)
 		return;
@@ -80,14 +80,14 @@ static bool changing(struct gl_names *n, struct gl_texture *t)
 		struct gl_level *l = &t->level[k];
 		if (!shared(t, l->texels))
 			continue;
-		size_t bytes = (size_t)l->width * (size_t)l->height * 4;
+		size_t bytes = (size_t)l->width * (size_t)l->height * (size_t)l->depth * 4;
 		uint32_t *copy = malloc(bytes);
 		if (!copy)
 			return false;
 		memcpy(copy, l->texels, bytes);
 		l->texels = copy;
 	}
-	retire(n, t->drawn);
+	glf_retire(n, t->drawn);
 	t->drawn = NULL;
 	return true;
 }
@@ -98,7 +98,7 @@ static void free_texture(struct gl_names *n, struct gl_texture *t)
 	for (unsigned k = 0; k < GLF_TEXTURE_LEVELS; k++)
 		if (!shared(t, t->level[k].texels))
 			free(t->level[k].texels);
-	retire(n, t->drawn);
+	glf_retire(n, t->drawn);
 	t->drawn = NULL;
 }
 
@@ -146,6 +146,7 @@ void glf_detach(struct gl_state *st, struct gpu *gpu)
 			free_texture(n, t);
 			free(t);
 		}
+	glf_free_lists(n);
 	glf_free_retired(n, gpu);
 	free(n->retired);
 	free(n);
@@ -235,7 +236,8 @@ bool glf_is_texture(struct gl_state *st, uint32_t name)
 
 static int target_of(uint32_t target)
 {
-	return target == GL_TEXTURE_2D_TARGET ? GLF_2D : target == GL_TEXTURE_1D_TARGET ? GLF_1D : -1;
+	return target == GL_TEXTURE_2D_TARGET ? GLF_2D : target == GL_TEXTURE_1D_TARGET ? GLF_1D :
+	       target == GL_TEXTURE_3D ? GLF_3D : -1;
 }
 
 void glf_bind_texture(struct gl_state *st, uint32_t target, uint32_t name)
@@ -265,201 +267,6 @@ void glf_bind_texture(struct gl_state *st, uint32_t target, uint32_t name)
 	st->raster_stale = true;
 }
 
-/* ---- pixel transfer -------------------------------------------------------------- */
-
-enum { GL_COLOR_INDEX = 0x1900, GL_RED = 0x1903, GL_GREEN, GL_BLUE, GL_ABGR_EXT = 0x8000 };
-enum { GL_UNPACK_SWAP_BYTES = 0x0CF0, GL_UNPACK_LSB_FIRST, GL_UNPACK_ROW_LENGTH, GL_UNPACK_SKIP_ROWS,
-       GL_UNPACK_SKIP_PIXELS, GL_UNPACK_ALIGNMENT, GL_PACK_SWAP_BYTES = 0x0D00, GL_PACK_LSB_FIRST,
-       GL_PACK_ROW_LENGTH, GL_PACK_SKIP_ROWS, GL_PACK_SKIP_PIXELS, GL_PACK_ALIGNMENT };
-
-void glf_pixel_store(struct gl_state *st, uint32_t pname, int32_t v)
-{
-	bool pack = pname >= GL_PACK_SWAP_BYTES;
-	struct gl_pixel_store *ps = pack ? &st->pack : &st->unpack;
-	switch (pack ? pname - GL_PACK_SWAP_BYTES + GL_UNPACK_SWAP_BYTES : pname) {
-	case GL_UNPACK_SWAP_BYTES: ps->swap_bytes = v != 0; return;
-	case GL_UNPACK_LSB_FIRST: ps->lsb_first = v != 0; return;
-	case GL_UNPACK_ROW_LENGTH:
-	case GL_UNPACK_SKIP_ROWS:
-	case GL_UNPACK_SKIP_PIXELS:
-		if (v < 0) {
-			glf_error(st, GL_INVALID_VALUE);
-			return;
-		}
-		*(pname % 16 == 2 ? &ps->row_length : pname % 16 == 3 ? &ps->skip_rows : &ps->skip_pixels) = v;
-		return;
-	case GL_UNPACK_ALIGNMENT:
-		if (v != 1 && v != 2 && v != 4 && v != 8)
-			glf_error(st, GL_INVALID_VALUE);
-		else
-			ps->alignment = v;
-		return;
-	default:
-		glf_error(st, GL_INVALID_ENUM);
-		return;
-	}
-}
-
-/* Where a format's components go: R, G, B, A, or L (R, G and B); how many there are (0: not a format) */
-enum { C_R, C_G, C_B, C_A, C_L };
-static unsigned format_layout(uint32_t format, uint8_t comp[4])
-{
-	static const struct {
-		uint32_t format;
-		uint8_t n, comp[4];
-	} formats[] = {
-		{ GL_RED, 1, { C_R } }, { GL_GREEN, 1, { C_G } }, { GL_BLUE, 1, { C_B } }, { GL_ALPHA, 1, { C_A } },
-		{ GL_RGB, 3, { C_R, C_G, C_B } }, { GL_RGBA, 4, { C_R, C_G, C_B, C_A } }, { GL_LUMINANCE, 1, { C_L } },
-		{ GL_LUMINANCE_ALPHA, 2, { C_L, C_A } }, { GL_BGR, 3, { C_B, C_G, C_R } },
-		{ GL_BGRA, 4, { C_B, C_G, C_R, C_A } }, { GL_ABGR_EXT, 4, { C_A, C_B, C_G, C_R } },
-	};
-	for (unsigned k = 0; k < sizeof formats / sizeof formats[0]; k++)
-		if (formats[k].format == format) {
-			memcpy(comp, formats[k].comp, 4);
-			return formats[k].n;
-		}
-	return 0;
-}
-
-/* A type: bytes an element takes (packed: a pixel), and packed fields' widths, from the top bits (rev: the bottom) */
-struct type_info {
-	uint8_t bytes, fields;
-	bool packed, rev, sign, real;
-	uint8_t bits[4];
-};
-
-static bool type_info(uint32_t type, struct type_info *ti)
-{
-	static const struct {
-		uint32_t type;
-		struct type_info ti;
-	} types[] = {
-		{ GL_UNSIGNED_BYTE, { 1, 0, false, false, false, false, { 0 } } },
-		{ GL_BYTE, { 1, 0, false, false, true, false, { 0 } } },
-		{ GL_UNSIGNED_SHORT, { 2, 0, false, false, false, false, { 0 } } },
-		{ GL_SHORT, { 2, 0, false, false, true, false, { 0 } } },
-		{ GL_UNSIGNED_INT, { 4, 0, false, false, false, false, { 0 } } },
-		{ GL_INT, { 4, 0, false, false, true, false, { 0 } } },
-		{ GL_FLOAT, { 4, 0, false, false, false, true, { 0 } } },
-		{ 0x8032, { 1, 3, true, false, false, false, { 3, 3, 2 } } },           /* 3_3_2 */
-		{ 0x8362, { 1, 3, true, true, false, false, { 3, 3, 2 } } },            /* 2_3_3_REV */
-		{ 0x8363, { 2, 3, true, false, false, false, { 5, 6, 5 } } },           /* 5_6_5 */
-		{ 0x8364, { 2, 3, true, true, false, false, { 5, 6, 5 } } },
-		{ 0x8033, { 2, 4, true, false, false, false, { 4, 4, 4, 4 } } },        /* 4_4_4_4 */
-		{ 0x8365, { 2, 4, true, true, false, false, { 4, 4, 4, 4 } } },
-		{ 0x8034, { 2, 4, true, false, false, false, { 5, 5, 5, 1 } } },        /* 5_5_5_1 */
-		{ 0x8366, { 2, 4, true, true, false, false, { 5, 5, 5, 1 } } },         /* 1_5_5_5_REV */
-		{ 0x8035, { 4, 4, true, false, false, false, { 8, 8, 8, 8 } } },        /* 8_8_8_8 */
-		{ 0x8367, { 4, 4, true, true, false, false, { 8, 8, 8, 8 } } },
-		{ 0x8036, { 4, 4, true, false, false, false, { 10, 10, 10, 2 } } },     /* 10_10_10_2 */
-		{ 0x8368, { 4, 4, true, true, false, false, { 10, 10, 10, 2 } } },
-	};
-	for (unsigned k = 0; k < sizeof types / sizeof types[0]; k++)
-		if (types[k].type == type) {
-			*ti = types[k].ti;
-			return true;
-		}
-	return false;
-}
-
-/* An image's layout in the program's memory: bytes a pixel and a row, and where the first pixel is */
-struct layout {
-	uint8_t comp[4];
-	unsigned n;
-	struct type_info ti;
-	size_t pixel, row, start;
-};
-
-static bool layout_of(const struct gl_pixel_store *ps, uint32_t format, uint32_t type, int32_t w, struct layout *L)
-{
-	L->n = format_layout(format, L->comp);
-	if (!L->n || !type_info(type, &L->ti) || (L->ti.packed && L->ti.fields != L->n))
-		return false;
-	size_t elem = L->ti.bytes, group = L->ti.packed ? elem : elem * L->n;
-	size_t length = ps->row_length > 0 ? (size_t)ps->row_length : (size_t)(w > 0 ? w : 0);
-	size_t a = ps->alignment > 0 ? (size_t)ps->alignment : 4;
-	L->pixel = group;
-	L->row = elem >= a ? group * length : (group * length + a - 1) / a * a;
-	L->start = (size_t)ps->skip_rows * L->row + (size_t)ps->skip_pixels * group;
-	return true;
-}
-
-size_t glf_image_bytes(const struct gl_pixel_store *ps, uint32_t format, uint32_t type, int32_t w, int32_t h)
-{
-	struct layout L;
-	if (!layout_of(ps, format, type, w, &L))
-		return 0;
-	if (w <= 0 || h <= 0)
-		return 1;
-	return L.start + (size_t)(h - 1) * L.row + (size_t)w * L.pixel;
-}
-
-static uint32_t read_unit(const uint8_t *p, unsigned bytes, bool swap)
-{
-	uint32_t v = 0;
-	for (unsigned k = 0; k < bytes; k++)
-		v = v << 8 | p[swap ? bytes - 1 - k : k];
-	return v;
-}
-
-static void write_unit(uint8_t *p, unsigned bytes, bool swap, uint32_t v)
-{
-	for (unsigned k = 0; k < bytes; k++)
-		p[swap ? k : bytes - 1 - k] = (uint8_t)(v >> 8 * k);
-}
-
-/* A component (of a type, its bits as read) as 0..255 */
-static uint8_t to8(const struct type_info *ti, uint32_t v)
-{
-	if (ti->real) {
-		float f;
-		memcpy(&f, &v, 4);
-		return (uint8_t)(f > 0 ? (f < 1 ? f * 255 + 0.5f : 255) : 0);
-	}
-	unsigned bits = 8u * ti->bytes;
-	if (ti->sign) {                         /* ((2c + 1) / (2^bits - 1), from below 0 clamped) */
-		int64_t c = bits == 8 ? (int8_t)v : bits == 16 ? (int16_t)v : (int32_t)v;
-		if (c < 0)
-			return 0;
-		uint64_t max = (1ull << bits) - 1;
-		return (uint8_t)(((uint64_t)(2 * c + 1) * 255 + max / 2) / max);
-	}
-	uint64_t max = (1ull << bits) - 1;
-	return (uint8_t)(((uint64_t)v * 255 + max / 2) / max);
-}
-
-static uint8_t field8(uint32_t v, unsigned bits)
-{
-	uint32_t max = (1u << bits) - 1;
-	return (uint8_t)((v * 255 + max / 2) / max);
-}
-
-/* One pixel of an image as R, G, B, A (0..255) */
-static void unpack_pixel(const struct layout *L, const uint8_t *p, bool swap, uint8_t rgba[4])
-{
-	uint8_t c[4];
-	if (L->ti.packed) {
-		uint32_t v = read_unit(p, L->ti.bytes, swap);
-		unsigned total = 8u * L->ti.bytes, at = 0;
-		for (unsigned k = 0; k < L->n; k++) {
-			unsigned b = L->ti.bits[k], shift = L->ti.rev ? at : total - at - b;
-			c[k] = field8(v >> shift & ((1u << b) - 1), b);
-			at += b;
-		}
-	} else {
-		for (unsigned k = 0; k < L->n; k++)
-			c[k] = to8(&L->ti, read_unit(p + k * L->ti.bytes, L->ti.bytes, swap));
-	}
-	rgba[0] = rgba[1] = rgba[2] = 0;
-	rgba[3] = 255;
-	for (unsigned k = 0; k < L->n; k++) {
-		if (L->comp[k] == C_L)
-			rgba[0] = rgba[1] = rgba[2] = c[k];
-		else
-			rgba[L->comp[k]] = c[k];
-	}
-}
-
 /* R, G, B, A as a texel of a base format (see the top) */
 static uint32_t texel(uint32_t base, const uint8_t c[4])
 {
@@ -474,18 +281,14 @@ static uint32_t texel(uint32_t base, const uint8_t c[4])
 	}
 }
 
-/* An image (w x h, from `src` as unpacked) into texels [x, x + w) x [y, y + h) of a level `stride` wide */
-static void unpack_image(const struct gl_pixel_store *ps, const struct layout *L, const uint8_t *src, int32_t w,
-			 int32_t h, uint32_t base, uint32_t *texels, int32_t stride, int32_t x, int32_t y)
+/* An image's R, G, B, A bytes (w x h) into texels [x, x + w) x [y, y + h) of a level `stride` wide */
+static void put_texels(uint32_t *texels, int32_t stride, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t base,
+		       const uint8_t *rgba)
 {
 	for (int32_t j = 0; j < h; j++) {
-		const uint8_t *p = src + L->start + (size_t)j * L->row;
 		uint32_t *out = texels + (size_t)(y + j) * (size_t)stride + (size_t)x;
-		for (int32_t i = 0; i < w; i++, p += L->pixel) {
-			uint8_t c[4];
-			unpack_pixel(L, p, ps->swap_bytes, c);
-			out[i] = texel(base, c);
-		}
+		for (int32_t i = 0; i < w; i++, rgba += 4)
+			out[i] = texel(base, rgba);
 	}
 }
 
@@ -524,83 +327,359 @@ static struct gl_texture *bound(struct gl_state *st, uint32_t target)
 	return k < 0 ? NULL : st->units[st->active_texture].bound[k];
 }
 
-void glf_tex_image(struct gl_state *st, uint32_t target, int32_t level, int32_t internal, int32_t w, int32_t h,
-		   int32_t border, uint32_t format, uint32_t type, const uint8_t *pixels)
+/* A level's image defined (w x h x d, slices one after another, from R, G, B, A bytes; NULL: texels undefined) */
+static void define(struct gl_state *st, struct gl_texture *t, int32_t level, int32_t internal, uint32_t base,
+		   int32_t w, int32_t h, int32_t d, const uint8_t *rgba)
 {
-	if (target == GL_PROXY_TEXTURE_1D || target == GL_PROXY_TEXTURE_2D)
-		return;                         /* (proxies: nothing kept) */
-	struct gl_texture *t = bound(st, target);
-	uint32_t base = base_format(internal);
-	struct layout L;
-	if (!t) {
-		glf_error(st, GL_INVALID_ENUM);
-		return;
-	}
-	if (!layout_of(&st->unpack, format, type, w, &L)) {
-		uint8_t comp[4];
-		struct type_info ti;
-		glf_error(st, format_layout(format, comp) && type_info(type, &ti) ? GL_INVALID_OPERATION : GL_INVALID_ENUM);
-		return;
-	}
-	bool one = target == GL_TEXTURE_1D_TARGET;
-	int32_t iw = w - 2 * border, ih = one ? 1 : h - 2 * border;
-	if (level < 0 || level >= GLF_TEXTURE_LEVELS || !base || (border != 0 && border != 1) ||
-	    !power_of_two(iw) || !power_of_two(ih) || iw > GLF_MAX_TEXTURE_SIZE >> level ||
-	    ih > GLF_MAX_TEXTURE_SIZE >> level || (one && h != 1)) {
-		glf_error(st, GL_INVALID_VALUE);
-		return;
-	}
-	uint32_t *texels = malloc((size_t)iw * (size_t)ih * 4);
+	size_t n = (size_t)w * (size_t)h * (size_t)d;
+	uint32_t *texels = malloc(n * 4);
 	if (!texels || !changing(st->names, t)) {
 		free(texels);
 		glf_error(st, GL_OUT_OF_MEMORY);
 		return;
 	}
+	if (rgba)
+		put_texels(texels, w, 0, 0, w, h * d, base, rgba);
+	else
+		memset(texels, 0, n * 4);
+	struct gl_level *l = &t->level[level];
+	free(l->texels);                        /* (the texture's own: see changing()) */
+	*l = (struct gl_level){ w, h, d, (uint32_t)internal, base, texels };
+}
+
+/* glTexImage's and glCopyTexImage's checks: the texture, and the image's size without its border (false: an error) */
+static struct gl_texture *image_target(struct gl_state *st, uint32_t target, int32_t level, int32_t internal,
+				       int32_t w, int32_t h, int32_t border, int32_t *iw, int32_t *ih)
+{
+	struct gl_texture *t = bound(st, target);
+	if (!t) {
+		glf_error(st, GL_INVALID_ENUM);
+		return NULL;
+	}
+	bool one = target == GL_TEXTURE_1D_TARGET;
+	*iw = w - 2 * border;
+	*ih = one ? 1 : h - 2 * border;
+	if (level < 0 || level >= GLF_TEXTURE_LEVELS || !base_format(internal) || (border != 0 && border != 1) ||
+	    !power_of_two(*iw) || !power_of_two(*ih) || *iw > GLF_MAX_TEXTURE_SIZE >> level ||
+	    *ih > GLF_MAX_TEXTURE_SIZE >> level || (one && h != 1)) {
+		glf_error(st, GL_INVALID_VALUE);
+		return NULL;
+	}
+	return t;
+}
+
+/* Whether a format and type make a texture's image (colors or color indices), else the error they make */
+static uint32_t image_check(uint32_t format, uint32_t type)
+{
+	if (format == GL_STENCIL_INDEX || format == GL_DEPTH_COMPONENT)
+		return GL_INVALID_ENUM;
+	return glf_pixel_check(format, type);
+}
+
+void glf_tex_image(struct gl_state *st, uint32_t target, int32_t level, int32_t internal, int32_t w, int32_t h,
+		   int32_t border, uint32_t format, uint32_t type, const uint8_t *pixels)
+{
+	if (target == GL_PROXY_TEXTURE_1D || target == GL_PROXY_TEXTURE_2D)
+		return;                         /* (proxies: nothing kept) */
+	if (target != GL_TEXTURE_1D_TARGET && target != GL_TEXTURE_2D_TARGET) {
+		glf_error(st, GL_INVALID_ENUM);
+		return;
+	}
+	uint32_t e = image_check(format, type);
+	if (e) {
+		glf_error(st, e);
+		return;
+	}
+	int32_t iw, ih;
+	struct gl_texture *t = image_target(st, target, level, internal, w, h, border, &iw, &ih);
+	if (!t)
+		return;
+	uint8_t *rgba = NULL;
 	if (pixels) {                           /* (a border's texels left out) */
 		struct gl_pixel_store ps = st->unpack;
 		ps.skip_pixels += border;
-		ps.skip_rows += one ? 0 : border;
+		ps.skip_rows += target == GL_TEXTURE_1D_TARGET ? 0 : border;
 		if (ps.row_length <= 0)
 			ps.row_length = w;
-		layout_of(&ps, format, type, iw, &L);
-		unpack_image(&ps, &L, pixels, iw, ih, base, texels, iw, 0, 0);
-	} else {
-		memset(texels, 0, (size_t)iw * (size_t)ih * 4);
+		rgba = malloc((size_t)iw * (size_t)ih * 4);
+		if (!rgba) {
+			glf_error(st, GL_OUT_OF_MEMORY);
+			return;
+		}
+		glf_unpack_rgba(st, &ps, format, type, iw, ih, pixels, rgba, true);
 	}
-	struct gl_level *l = &t->level[level];
-	free(l->texels);                        /* (the texture's own: see changing()) */
-	*l = (struct gl_level){ iw, ih, (uint32_t)internal, base, texels };
+	define(st, t, level, internal, base_format(internal), iw, ih, 1, rgba);
+	free(rgba);
+}
+
+void glf_copy_tex_image(struct gl_state *st, const struct gl_target *tg, uint32_t target, int32_t level,
+			int32_t internal, int32_t x, int32_t y, int32_t w, int32_t h, int32_t border)
+{
+	int32_t iw, ih;
+	if (target != GL_TEXTURE_1D_TARGET && target != GL_TEXTURE_2D_TARGET) {
+		glf_error(st, GL_INVALID_ENUM);
+		return;
+	}
+	struct gl_texture *t = image_target(st, target, level, internal, w, h, border, &iw, &ih);
+	if (!t)
+		return;
+	uint8_t *rgba = malloc((size_t)iw * (size_t)ih * 4);
+	if (!rgba) {
+		glf_error(st, GL_OUT_OF_MEMORY);
+		return;
+	}
+	glf_read_rgba(st, tg, x + border, y + (target == GL_TEXTURE_1D_TARGET ? 0 : border), iw, ih, rgba);
+	define(st, t, level, internal, base_format(internal), iw, ih, 1, rgba);
+	free(rgba);
+}
+
+/* glTexSubImage's and glCopyTexSubImage's checks: the level, the rectangle within it (NULL: an error, or nothing) */
+static struct gl_level *sub_target(struct gl_state *st, uint32_t target, int32_t level, int32_t x, int32_t y,
+				   int32_t w, int32_t h, struct gl_texture **tp)
+{
+	struct gl_texture *t = bound(st, target);
+	if (!t) {
+		glf_error(st, GL_INVALID_ENUM);
+		return NULL;
+	}
+	struct gl_level *l = level >= 0 && level < GLF_TEXTURE_LEVELS ? &t->level[level] : NULL;
+	if (!l || !l->texels) {
+		glf_error(st, l ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
+		return NULL;
+	}
+	if (w < 0 || h < 0 || x < 0 || y < 0 || x + w > l->width || y + h > l->height) {
+		glf_error(st, GL_INVALID_VALUE);
+		return NULL;
+	}
+	if (!w || !h)
+		return NULL;
+	*tp = t;
+	return l;
 }
 
 void glf_tex_sub_image(struct gl_state *st, uint32_t target, int32_t level, int32_t x, int32_t y, int32_t w,
 		       int32_t h, uint32_t format, uint32_t type, const uint8_t *pixels)
 {
-	struct gl_texture *t = bound(st, target);
-	struct layout L;
-	if (!t) {
+	if (target != GL_TEXTURE_1D_TARGET && target != GL_TEXTURE_2D_TARGET) {
 		glf_error(st, GL_INVALID_ENUM);
 		return;
 	}
-	if (!layout_of(&st->unpack, format, type, w, &L)) {
+	uint32_t e = image_check(format, type);
+	if (e) {
 		glf_error(st, GL_INVALID_ENUM);
 		return;
 	}
-	struct gl_level *l = level >= 0 && level < GLF_TEXTURE_LEVELS ? &t->level[level] : NULL;
-	if (!l || !l->texels) {
-		glf_error(st, l ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
+	struct gl_texture *t;
+	struct gl_level *l = sub_target(st, target, level, x, y, w, h, &t);
+	if (!l || !pixels)
 		return;
-	}
-	if (w < 0 || h < 0 || x < 0 || y < 0 || x + w > l->width || y + h > l->height) {
-		glf_error(st, GL_INVALID_VALUE);
-		return;
-	}
-	if (!w || !h || !pixels)
-		return;
-	if (!changing(st->names, t)) {
+	uint8_t *rgba = malloc((size_t)w * (size_t)h * 4);
+	if (!rgba || !changing(st->names, t)) {
+		free(rgba);
 		glf_error(st, GL_OUT_OF_MEMORY);
 		return;
 	}
-	unpack_image(&st->unpack, &L, pixels, w, h, l->base, l->texels, l->width, x, y);
+	glf_unpack_rgba(st, &st->unpack, format, type, w, h, pixels, rgba, true);
+	put_texels(l->texels, l->width, x, y, w, h, l->base, rgba);
+	free(rgba);
+}
+
+void glf_copy_tex_sub_image(struct gl_state *st, const struct gl_target *tg, uint32_t target, int32_t level,
+			    int32_t xoffset, int32_t yoffset, int32_t x, int32_t y, int32_t w, int32_t h)
+{
+	if (target != GL_TEXTURE_1D_TARGET && target != GL_TEXTURE_2D_TARGET) {
+		glf_error(st, GL_INVALID_ENUM);
+		return;
+	}
+	struct gl_texture *t;
+	struct gl_level *l = sub_target(st, target, level, xoffset, yoffset, w, h, &t);
+	if (!l)
+		return;
+	uint8_t *rgba = malloc((size_t)w * (size_t)h * 4);
+	if (!rgba || !changing(st->names, t)) {
+		free(rgba);
+		glf_error(st, GL_OUT_OF_MEMORY);
+		return;
+	}
+	glf_read_rgba(st, tg, x, y, w, h, rgba);
+	put_texels(l->texels, l->width, xoffset, yoffset, w, h, l->base, rgba);
+	free(rgba);
+}
+
+/* ---- 3D images ---- */
+
+void glf_tex_image_3d(struct gl_state *st, uint32_t target, int32_t level, int32_t internal, int32_t w, int32_t h,
+		      int32_t d, int32_t border, uint32_t format, uint32_t type, const uint8_t *pixels)
+{
+	if (target == GL_PROXY_TEXTURE_3D)
+		return;                         /* (proxies: nothing kept) */
+	if (target != GL_TEXTURE_3D) {
+		glf_error(st, GL_INVALID_ENUM);
+		return;
+	}
+	uint32_t e = image_check(format, type);
+	if (e) {
+		glf_error(st, e);
+		return;
+	}
+	struct gl_texture *t = bound(st, target);
+	int32_t iw = w - 2 * border, ih = h - 2 * border, id = d - 2 * border, most = GLF_MAX_3D_TEXTURE_SIZE >> level;
+	if (level < 0 || most < 1 || !base_format(internal) || (border != 0 && border != 1) || !power_of_two(iw) ||
+	    !power_of_two(ih) || !power_of_two(id) || iw > most || ih > most || id > most) {
+		glf_error(st, GL_INVALID_VALUE);
+		return;
+	}
+	size_t slice = (size_t)iw * (size_t)ih * 4;
+	uint8_t *rgba = NULL;
+	if (pixels) {                           /* (a border's texels left out: rows, pixels and images) */
+		struct gl_pixel_store ps = st->unpack;
+		ps.skip_pixels += border;
+		ps.skip_rows += border;
+		if (ps.row_length <= 0)
+			ps.row_length = w;
+		size_t stride = glf_image_stride(&ps, format, type, w, h);
+		rgba = malloc(slice * (size_t)id);
+		if (!rgba) {
+			glf_error(st, GL_OUT_OF_MEMORY);
+			return;
+		}
+		for (int32_t k = 0; k < id; k++)
+			glf_unpack_rgba(st, &ps, format, type, iw, ih,
+					pixels + ((size_t)ps.skip_images + (size_t)border + (size_t)k) * stride,
+					rgba + (size_t)k * slice, true);
+	}
+	define(st, t, level, internal, base_format(internal), iw, ih, id, rgba);
+	free(rgba);
+}
+
+/* glTexSubImage3D's and glCopyTexSubImage3D's checks: the level, the box within it (NULL: an error, or nothing) */
+static struct gl_level *sub_target_3d(struct gl_state *st, uint32_t target, int32_t level, int32_t x, int32_t y,
+				      int32_t z, int32_t w, int32_t h, int32_t d, struct gl_texture **tp)
+{
+	if (target != GL_TEXTURE_3D) {
+		glf_error(st, GL_INVALID_ENUM);
+		return NULL;
+	}
+	struct gl_texture *t = bound(st, target);
+	struct gl_level *l = level >= 0 && level < GLF_TEXTURE_LEVELS ? &t->level[level] : NULL;
+	if (!l || !l->texels) {
+		glf_error(st, l ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
+		return NULL;
+	}
+	if (w < 0 || h < 0 || d < 0 || x < 0 || y < 0 || z < 0 || x + w > l->width || y + h > l->height ||
+	    z + d > l->depth) {
+		glf_error(st, GL_INVALID_VALUE);
+		return NULL;
+	}
+	if (!w || !h || !d || !changing(st->names, t))
+		return NULL;
+	*tp = t;
+	return l;
+}
+
+void glf_tex_sub_image_3d(struct gl_state *st, uint32_t target, int32_t level, int32_t x, int32_t y, int32_t z,
+			  int32_t w, int32_t h, int32_t d, uint32_t format, uint32_t type, const uint8_t *pixels)
+{
+	if (image_check(format, type)) {
+		glf_error(st, GL_INVALID_ENUM);
+		return;
+	}
+	struct gl_texture *t;
+	struct gl_level *l = sub_target_3d(st, target, level, x, y, z, w, h, d, &t);
+	if (!l || !pixels)
+		return;
+	size_t slice = (size_t)w * (size_t)h * 4, stride = glf_image_stride(&st->unpack, format, type, w, h);
+	uint8_t *rgba = malloc(slice);
+	if (!rgba) {
+		glf_error(st, GL_OUT_OF_MEMORY);
+		return;
+	}
+	for (int32_t k = 0; k < d; k++) {
+		glf_unpack_rgba(st, &st->unpack, format, type, w, h,
+				pixels + ((size_t)st->unpack.skip_images + (size_t)k) * stride, rgba, true);
+		put_texels(l->texels + (size_t)(z + k) * (size_t)l->width * (size_t)l->height, l->width, x, y, w, h,
+			   l->base, rgba);
+	}
+	free(rgba);
+}
+
+void glf_copy_tex_sub_image_3d(struct gl_state *st, const struct gl_target *tg, uint32_t target, int32_t level,
+			       int32_t xoffset, int32_t yoffset, int32_t zoffset, int32_t x, int32_t y, int32_t w,
+			       int32_t h)
+{
+	struct gl_texture *t;
+	struct gl_level *l = sub_target_3d(st, target, level, xoffset, yoffset, zoffset, w, h, 1, &t);
+	if (!l)
+		return;
+	uint8_t *rgba = malloc((size_t)w * (size_t)h * 4);
+	if (!rgba) {
+		glf_error(st, GL_OUT_OF_MEMORY);
+		return;
+	}
+	glf_read_rgba(st, tg, x, y, w, h, rgba);
+	put_texels(l->texels + (size_t)zoffset * (size_t)l->width * (size_t)l->height, l->width, xoffset, yoffset, w,
+		   h, l->base, rgba);
+	free(rgba);
+}
+
+/* A level of a texture glGetTexImage reads (NULL: an error, or nothing to read) */
+static const struct gl_level *get_level(struct gl_state *st, uint32_t target, int32_t level, uint32_t format,
+					uint32_t type)
+{
+	if (target != GL_TEXTURE_1D_TARGET && target != GL_TEXTURE_2D_TARGET && target != GL_TEXTURE_3D) {
+		glf_error(st, GL_INVALID_ENUM);
+		return NULL;
+	}
+	uint32_t e = format == GL_COLOR_INDEX || format == GL_STENCIL_INDEX || format == GL_DEPTH_COMPONENT ||
+		     type == GL_BITMAP ? GL_INVALID_ENUM : glf_pixel_check(format, type);
+	if (e) {
+		glf_error(st, e);
+		return NULL;
+	}
+	if (level < 0 || level >= GLF_TEXTURE_LEVELS) {
+		glf_error(st, GL_INVALID_VALUE);
+		return NULL;
+	}
+	const struct gl_level *l = &bound(st, target)->level[level];
+	return l->texels ? l : NULL;
+}
+
+size_t glf_tex_image_bytes(struct gl_state *st, uint32_t target, int32_t level, uint32_t format, uint32_t type)
+{
+	struct gl_texture *t = bound(st, target);
+	if (!t || level < 0 || level >= GLF_TEXTURE_LEVELS || !t->level[level].texels)
+		return 0;
+	const struct gl_level *l = &t->level[level];
+	return glf_image_bytes_3d(&st->pack, format, type, l->width, l->height, l->depth);
+}
+
+void glf_get_tex_image(struct gl_state *st, uint32_t target, int32_t level, uint32_t format, uint32_t type,
+		       uint8_t *out)
+{
+	const struct gl_level *l = get_level(st, target, level, format, type);
+	if (!l)
+		return;
+	size_t n = (size_t)l->width * (size_t)l->height * (size_t)l->depth;
+	uint8_t *rgba = malloc(n * 4);
+	if (!rgba) {
+		glf_error(st, GL_OUT_OF_MEMORY);
+		return;
+	}
+	/* (as OpenGL 1.2's table 6.1: luminance and intensity as red, what the base format hasn't 0, alpha 1) */
+	for (size_t k = 0; k < n; k++) {
+		uint32_t v = l->texels[k];
+		uint8_t *c = rgba + 4 * k, a = (uint8_t)(v >> 24), r = (uint8_t)(v >> 16);
+		bool rgb = l->base == GL_RGB || l->base == GL_RGBA;
+		c[0] = l->base == GL_ALPHA ? 0 : r;
+		c[1] = rgb ? (uint8_t)(v >> 8) : 0;
+		c[2] = rgb ? (uint8_t)v : 0;
+		c[3] = l->base == GL_ALPHA || l->base == GL_LUMINANCE_ALPHA || l->base == GL_RGBA ? a : 255;
+	}
+	size_t stride = glf_image_stride(&st->pack, format, type, l->width, l->height), slice = n / (size_t)l->depth;
+	for (int32_t k = 0; k < l->depth; k++)          /* (slices image_height rows apart, skip_images first) */
+		glf_pack_rgba(st, format, type, l->width, l->height, rgba + (size_t)k * slice * 4,
+			      out + ((size_t)st->pack.skip_images + (size_t)k) * stride);
+	free(rgba);
 }
 
 /* ---- parameters ------------------------------------------------------------------ */
@@ -643,8 +722,7 @@ void glf_tex_parameter(struct gl_state *st, uint32_t target, uint32_t pname, con
 			glf_error(st, GL_INVALID_ENUM);
 			return;
 		}
-		if (pname != GL_TEXTURE_WRAP_R)
-			*(pname == GL_TEXTURE_WRAP_S ? &t->wrap_s : &t->wrap_t) = e;
+		*(pname == GL_TEXTURE_WRAP_S ? &t->wrap_s : pname == GL_TEXTURE_WRAP_T ? &t->wrap_t : &t->wrap_r) = e;
 		break;
 	case GL_TEXTURE_BORDER_COLOR:
 		for (int k = 0; k < 4; k++)
@@ -708,7 +786,7 @@ unsigned glf_get_tex_parameter(struct gl_state *st, uint32_t target, uint32_t pn
 	case GL_TEXTURE_MAG_FILTER: v[0] = t->mag_filter; return 1;
 	case GL_TEXTURE_WRAP_S: v[0] = t->wrap_s; return 1;
 	case GL_TEXTURE_WRAP_T: v[0] = t->wrap_t; return 1;
-	case GL_TEXTURE_WRAP_R: v[0] = GL_REPEAT; return 1;
+	case GL_TEXTURE_WRAP_R: v[0] = t->wrap_r; return 1;
 	case GL_TEXTURE_BORDER_COLOR: for (int k = 0; k < 4; k++) v[k] = t->border[k]; return 4;
 	case GL_TEXTURE_PRIORITY: v[0] = t->priority; return 1;
 	case GL_TEXTURE_RESIDENT: v[0] = 1; return 1;
@@ -750,6 +828,7 @@ unsigned glf_get_tex_level_parameter(struct gl_state *st, uint32_t target, int32
 	switch (pname) {
 	case GL_TEXTURE_WIDTH: v[0] = l->width; return 1;
 	case GL_TEXTURE_HEIGHT: v[0] = l->height; return 1;
+	case GL_TEXTURE_DEPTH: v[0] = l->texels ? l->depth : 0; return 1;
 	case GL_TEXTURE_INTERNAL_FORMAT: v[0] = l->internal ? l->internal : 1; return 1;
 	case GL_TEXTURE_BORDER: v[0] = 0; return 1;
 	case GL_TEXTURE_RED_SIZE: case GL_TEXTURE_GREEN_SIZE: case GL_TEXTURE_BLUE_SIZE:
@@ -776,18 +855,19 @@ static unsigned complete_levels(const struct gl_texture *t)
 	if (b < 0 || b >= GLF_TEXTURE_LEVELS || b > t->max_level || !t->level[b].texels)
 		return 0;
 	const struct gl_level *first = &t->level[b];
-	int w = first->width, h = first->height;
+	int w = first->width, h = first->height, d = first->depth;
 	unsigned n = 1;
-	while ((w > 1 || h > 1) && b + (int)n <= t->max_level && b + (int)n < GLF_TEXTURE_LEVELS) {
-		int nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1;
+	while ((w > 1 || h > 1 || d > 1) && b + (int)n <= t->max_level && b + (int)n < GLF_TEXTURE_LEVELS) {
+		int nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1, nd = d > 1 ? d / 2 : 1;
 		const struct gl_level *l = &t->level[b + (int)n];
-		if (!l->texels || l->width != nw || l->height != nh || l->internal != first->internal)
+		if (!l->texels || l->width != nw || l->height != nh || l->depth != nd || l->internal != first->internal)
 			break;
 		w = nw;
 		h = nh;
+		d = nd;
 		n++;
 	}
-	bool chain = (w == 1 && h == 1) || b + (int)n > t->max_level || b + (int)n >= GLF_TEXTURE_LEVELS;
+	bool chain = (w == 1 && h == 1 && d == 1) || b + (int)n > t->max_level || b + (int)n >= GLF_TEXTURE_LEVELS;
 	if (mipmapped(t->min_filter) && !chain)
 		return 0;
 	return chain && mipmapped(t->min_filter) ? n : 1;
@@ -796,7 +876,8 @@ static unsigned complete_levels(const struct gl_texture *t)
 struct gl_texture *glf_unit_texture(struct gl_state *st, unsigned unit, struct raster_texture **drawn)
 {
 	unsigned bit = 1u << unit;
-	int k = st->caps[GLF_CAP_TEXTURE_2D] & bit ? GLF_2D : st->caps[GLF_CAP_TEXTURE_1D] & bit ? GLF_1D : -1;
+	int k = st->caps[GLF_CAP_TEXTURE_3D] & bit ? GLF_3D : st->caps[GLF_CAP_TEXTURE_2D] & bit ? GLF_2D :
+		st->caps[GLF_CAP_TEXTURE_1D] & bit ? GLF_1D : -1;
 	if (k < 0)
 		return NULL;
 	struct gl_texture *t = st->units[unit].bound[k];
@@ -813,6 +894,7 @@ struct gl_texture *glf_unit_texture(struct gl_state *st, unsigned unit, struct r
 			const struct gl_level *l = &t->level[t->base_level + (int)j];
 			r->width[j] = (unsigned)l->width;
 			r->height[j] = (unsigned)l->height;
+			r->depth[j] = k == GLF_3D ? (unsigned)l->depth : 0;
 			r->texels[j] = l->texels;
 		}
 		r->levels = n;
@@ -821,70 +903,4 @@ struct gl_texture *glf_unit_texture(struct gl_state *st, unsigned unit, struct r
 	}
 	*drawn = t->drawn;
 	return t;
-}
-
-/* ---- reading pixels ---------------------------------------------------------------- */
-
-static uint32_t from8(const struct type_info *ti, uint8_t c, unsigned bits)
-{
-	if (ti->packed) {
-		uint32_t max = (1u << bits) - 1;
-		return (c * max + 127) / 255;
-	}
-	if (ti->real) {
-		float f = c / 255.0f;
-		uint32_t v;
-		memcpy(&v, &f, 4);
-		return v;
-	}
-	unsigned b = 8u * ti->bytes;
-	uint64_t max = ti->sign ? (1ull << (b - 1)) - 1 : (1ull << b) - 1;
-	return (uint32_t)(((uint64_t)c * max + 127) / 255);
-}
-
-void glf_read_pixels(struct gl_state *st, const struct gl_target *t, int32_t x, int32_t y, int32_t w, int32_t h,
-		     uint32_t format, uint32_t type, uint8_t *out)
-{
-	struct layout L;
-	if (w < 0 || h < 0) {
-		glf_error(st, GL_INVALID_VALUE);
-		return;
-	}
-	if (!layout_of(&st->pack, format, type, w, &L)) {
-		glf_error(st, GL_INVALID_ENUM);
-		return;
-	}
-	const struct surface *s = t->surface;
-	for (int32_t j = 0; j < h; j++) {
-		int32_t gy = y + j, row = t->height - 1 - gy;  /* (OpenGL's rows go up) */
-		uint8_t *p = out + L.start + (size_t)j * L.row;
-		for (int32_t i = 0; i < w; i++, p += L.pixel) {
-			int32_t gx = x + i;
-			if (!s || gx < 0 || gx >= t->width || row < 0 || row >= t->height)
-				continue;               /* (outside the drawable: undefined, left alone) */
-			uint32_t argb = s->target.color[(size_t)row * (size_t)t->width + (size_t)gx];
-			uint8_t c[4] = { (uint8_t)(argb >> 16), (uint8_t)(argb >> 8), (uint8_t)argb,
-					 (uint8_t)(t->alpha_bits ? argb >> 24 : 255) };
-			uint32_t v[4];
-			for (unsigned k = 0; k < L.n; k++) {
-				unsigned comp = L.comp[k];
-				uint8_t value = comp == C_L ? (uint8_t)(c[0] + c[1] + c[2] > 255 ? 255 : c[0] + c[1] + c[2]) :
-					c[comp];
-				v[k] = from8(&L.ti, value, L.ti.packed ? L.ti.bits[k] : 0);
-			}
-			if (L.ti.packed) {
-				uint32_t word = 0;
-				unsigned total = 8u * L.ti.bytes, at = 0;
-				for (unsigned k = 0; k < L.n; k++) {
-					unsigned b = L.ti.bits[k], shift = L.ti.rev ? at : total - at - b;
-					word |= v[k] << shift;
-					at += b;
-				}
-				write_unit(p, L.ti.bytes, st->pack.swap_bytes, word);
-			} else {
-				for (unsigned k = 0; k < L.n; k++)
-					write_unit(p + k * L.ti.bytes, L.ti.bytes, st->pack.swap_bytes, v[k]);
-			}
-		}
-	}
 }

@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "be.h"
+#include "glu.h"
 #include "opengl_table.h"
 #include "tools.h"
 
@@ -246,6 +247,7 @@ struct attrib {
 };
 static struct attrib attribs[GL_FUNCTIONS];
 static bool inside_ok[GL_FUNCTIONS];    /* what may be called between glBegin and glEnd */
+static bool compiled[GL_FUNCTIONS];     /* what a display list being made keeps (the rest is done there and then) */
 
 /* An attribute function's name, parsed; false if it isn't one */
 static bool parse_attrib(const char *name, struct attrib *a)
@@ -312,12 +314,21 @@ static unsigned array_of(const char *name, char *type)
 	return 0;
 }
 
-/* What's recorded, what sets attributes, what may come between glBegin and glEnd */
+/* What's recorded, what sets attributes, what may come between glBegin and glEnd, what lists keep */
 static void make_tables(void)
 {
 	static const char *const not_recorded[] = { "glFlush", "glFinish", "glArrayElement", "glDrawArrays",
 						    "glDrawElements", "glDrawRangeElements", "glLockArraysEXT",
 						    "glUnlockArraysEXT" };
+	/* (OpenGL 1.2's 5.4, and the extensions' client state) */
+	static const char *const not_compiled[] = {
+		"glNewList", "glEndList", "glDeleteLists", "glFeedbackBuffer", "glSelectBuffer", "glColorPointer",
+		"glEdgeFlagPointer", "glIndexPointer", "glNormalPointer", "glTexCoordPointer", "glVertexPointer",
+		"glSecondaryColorPointerEXT", "glInterleavedArrays", "glEnableClientState", "glDisableClientState",
+		"glPushClientAttrib", "glPopClientAttrib", "glClientActiveTextureARB", "glReadPixels", "glPixelStorei",
+		"glPixelStoref", "glGenTextures", "glDeleteTextures", "glFlush", "glFinish", "glLockArraysEXT",
+		"glUnlockArraysEXT",
+	};
 	static bool made;
 	if (made)
 		return;
@@ -331,6 +342,9 @@ static void make_tables(void)
 		bool skip = f->result[0] != 'v';
 		for (unsigned k = 0; k < sizeof not_recorded / sizeof not_recorded[0]; k++)
 			skip |= !strcmp(f->name, not_recorded[k]);
+		compiled[fn] = f->result[0] == 'v' && strncmp(f->name, "glGet", 5);
+		for (unsigned k = 0; k < sizeof not_compiled / sizeof not_compiled[0]; k++)
+			compiled[fn] = compiled[fn] && strcmp(f->name, not_compiled[k]);
 		struct recorded r;
 		memset(&r, 0, sizeof r);
 		unsigned size = 4, fprs = 0, n = 0;
@@ -555,14 +569,19 @@ size_t opengl_build_memory(uint8_t *out, size_t size, struct ndrv_layout *layout
 	return ndrv_build(&spec, out, size, layout);
 }
 
+/* OpenGLUtility: its strings in its data; it imports OpenGLLibrary's glc_cc, as Apple's does (see glu.h) */
 size_t opengl_build_utility(uint8_t *out, size_t size, struct ndrv_layout *layout)
 {
 	static struct ndrv_export exports[U_LIBRARY];
 	for (unsigned k = 0; k < U_LIBRARY; k++)
 		exports[k] = (struct ndrv_export){ .name = utility_functions[k].name, .entry = k };
+	size_t len;
+	const uint8_t *data = glu_data(&len);
 	const struct ndrv_spec spec = {
 		.kind = FRAG_LIBRARY, .entries = U_LIBRARY, .init_entry = -1, .exports = exports,
-		.export_count = U_LIBRARY, .hostcall = HOSTCALL_TOOLS_GLU, .current_version = 1,
+		.export_count = U_LIBRARY, .hostcall = HOSTCALL_TOOLS_GLU, .imports = glu_imports,
+		.import_count = GLU_IMPORTS, .data_imports = 1u << GLU_IMPORT_CURRENT, .extra = data, .extra_len = len,
+		.current_version = 1,
 	};
 	return ndrv_build(&spec, out, size, layout);
 }
@@ -615,6 +634,16 @@ static bool writable(struct mem *m, uint32_t addr, uint32_t len)
 	return true;
 }
 
+const uint8_t *opengl_in(struct opengl *o, uint32_t at, size_t len)
+{
+	return len <= (64u << 20) && readable(o->mem, at, (uint32_t)len) ? mem_ptr(o->mem, at) : NULL;
+}
+
+uint8_t *opengl_out(struct opengl *o, uint32_t at, size_t len)
+{
+	return len <= (64u << 20) && writable(o->mem, at, (uint32_t)len) ? mem_ptr(o->mem, at) : NULL;
+}
+
 static void put_word(struct mem *m, uint32_t addr, uint32_t v)
 {
 	if (addr && writable(m, addr, 4))
@@ -646,6 +675,7 @@ static uint32_t data_of(const struct opengl *o, const struct opengl_instance *in
 
 static void free_context(struct opengl *o, struct opengl_context *x)
 {
+	free(x->list);
 	if (x->has_surface)
 		surface_free(&x->surface);
 	glf_detach(&x->st, o->gpu);
@@ -869,15 +899,8 @@ static void show(struct opengl *o, struct opengl_context *x)
 
 /* ---- arguments ------------------------------------------------------------------------ */
 
-union arg {
-	uint32_t u;
-	int32_t i;
-	float f;
-	double d;
-};
-
 /* A call's arguments by its function's signature (after `skip` words) */
-static unsigned get_args(const struct ndrv_call *c, const char *sig, unsigned skip, union arg *a)
+static unsigned get_args(const struct ndrv_call *c, const char *sig, unsigned skip, union gl_arg *a)
 {
 	struct ndrv_args it = ndrv_args(c);
 	for (unsigned k = 0; k < skip; k++)
@@ -905,7 +928,7 @@ static unsigned get_args(const struct ndrv_call *c, const char *sig, unsigned sk
 	return n;
 }
 
-static void log_call(const char *lib_name, const char *name, const char *types, const union arg *a, unsigned n,
+static void log_call(const char *lib_name, const char *name, const char *types, const union gl_arg *a, unsigned n,
 		     const char *what)
 {
 	printf("%s: %s(", lib_name, name);
@@ -945,7 +968,7 @@ static float clampf(float v)
 }
 
 /* An attribute's value given as type t: colors' and normals' integers mapped to 0..1 (or -1..1 if signed) */
-static float attrib_value(const union arg *a, char t, bool normalized)
+static float attrib_value(const union gl_arg *a, char t, bool normalized)
 {
 	switch (t) {
 	case 'f': return a->f;
@@ -960,7 +983,7 @@ static float attrib_value(const union arg *a, char t, bool normalized)
 }
 
 /* glVertex, glColor and the rest (attribs[fn]) */
-static void set_attrib(struct opengl *o, struct opengl_context *x, unsigned fn, const union arg *a)
+static void set_attrib(struct opengl *o, struct opengl_context *x, unsigned fn, const union gl_arg *a)
 {
 	const struct attrib *at = &attribs[fn];
 	struct gl_state *st = &x->st;
@@ -988,12 +1011,13 @@ static void set_attrib(struct opengl *o, struct opengl_context *x, unsigned fn, 
 	case A_EDGEFLAG: st->edge_flag = a[0].u != 0; break;
 	case A_FOGCOORD: st->fog_coord = v[0]; break;
 	case A_INDEX: break;                    /* (there's no color index mode) */
-	default: not_yet(o, fn); break;         /* (raster positions, evaluators) */
+	case A_RASTERPOS: glf_raster_pos(st, v); break;
+	default: not_yet(o, fn); break;         /* (evaluators) */
 	}
 }
 
 /* glLoadMatrix and its kin's argument (as glLoadMatrixf's) */
-static void matrix_arg(unsigned fn, const union arg *a, float m[16])
+static void matrix_arg(unsigned fn, const union gl_arg *a, float m[16])
 {
 	bool doubles = recorded[fn].args[0] == 'd';
 	bool transpose = fn == F_glLoadTransposeMatrixfARB || fn == F_glLoadTransposeMatrixdARB ||
@@ -1025,6 +1049,8 @@ static unsigned gl_get(struct opengl_context *x, uint32_t pname, double *v)
 	case GL_ALPHA_BITS: v[0] = deep ? 8 : 0; return 1;
 	case GL_DEPTH_BITS: v[0] = x->depth_bits; return 1;
 	case GL_STENCIL_BITS: v[0] = x->stencil_bits; return 1;
+	case 0x0B30: v[0] = x->list_mode; return 1;             /* GL_LIST_MODE */
+	case 0x0B33: v[0] = x->list_name; return 1;             /* GL_LIST_INDEX */
 	default: return 0;
 	}
 }
@@ -1061,21 +1087,37 @@ static float int_color(int32_t c)
 	return (float)((2.0 * c + 1) / 4294967295.0);
 }
 
-/* glTexParameterv's and glTexEnvv's values (4 for colors, else 1), as floats; false if they can't be read */
-static bool vector_arg(struct mem *m, uint32_t at, uint32_t pname, bool ints, float *v)
+/*
+ * The bytes a call's pointer argument `at` points to, `len` of them: those
+ * given (see opengl_context), or the program's memory; NULL if they aren't
+ * all there
+ */
+static const uint8_t *in_data(struct opengl *o, const struct opengl_context *x, uint32_t at, size_t len)
 {
-	bool color = pname == 0x1004 || pname == GL_TEXTURE_ENV_COLOR;     /* (GL_TEXTURE_BORDER_COLOR) */
-	unsigned n = color ? 4 : 1;
-	if (!readable(m, at, 4 * n))
-		return false;
+	if (x->given)
+		return len <= x->given_len ? x->given : NULL;
+	if (len > (64u << 20) || !readable(o->mem, at, (uint32_t)len))
+		return NULL;
+	return mem_ptr(o->mem, at);
+}
+
+/* glTexParameterv's and glTexEnvv's values: 4 for colors, else 1 */
+static unsigned vector_values(uint32_t pname)
+{
+	return pname == 0x1004 || pname == GL_TEXTURE_ENV_COLOR ? 4 : 1;     /* (GL_TEXTURE_BORDER_COLOR) */
+}
+
+/* ... as floats, from p (big-endian) */
+static void vector_arg(const uint8_t *p, uint32_t pname, bool ints, float *v)
+{
+	unsigned n = vector_values(pname);
 	for (unsigned k = 0; k < n; k++) {
-		uint32_t w = mem_r32(m, at + 4 * k);
+		uint32_t w = be32(p + 4 * k);
 		if (!ints)
 			memcpy(&v[k], &w, 4);
 		else
-			v[k] = color ? int_color((int32_t)w) : (float)(int32_t)w;
+			v[k] = n == 4 ? int_color((int32_t)w) : (float)(int32_t)w;
 	}
-	return true;
 }
 
 /* ---- lighting, fog, texture coordinate generation: their vectors ---- */
@@ -1100,27 +1142,29 @@ static unsigned pname_values(uint32_t pname)
 	}
 }
 
-/* A parameter vector from the program's memory as floats (of type 'f', 'i' or 'd'); false if it can't be read */
-static bool param_vector(struct mem *m, uint32_t at, char type, uint32_t pname, unsigned n, float *v)
+/* A double from p (big-endian) */
+static double be_double(const uint8_t *p)
 {
-	unsigned size = type == 'd' ? 8 : 4;
-	if (!readable(m, at, n * size))
-		return false;
+	uint64_t b = be64(p);
+	double d;
+	memcpy(&d, &b, 8);
+	return d;
+}
+
+/* A parameter vector from p as floats (of type 'f', 'i' or 'd') */
+static void param_vector(const uint8_t *p, char type, uint32_t pname, unsigned n, float *v)
+{
 	for (unsigned k = 0; k < n; k++) {
 		if (type == 'd') {
-			uint64_t b = mem_r64(m, at + 8 * k);
-			double d;
-			memcpy(&d, &b, 8);
-			v[k] = (float)d;
+			v[k] = (float)be_double(p + 8 * k);
 		} else {
-			uint32_t w = mem_r32(m, at + 4 * k);
+			uint32_t w = be32(p + 4 * k);
 			if (type == 'f')
 				memcpy(&v[k], &w, 4);
 			else
 				v[k] = color_pname(pname) ? int_color((int32_t)w) : (float)(int32_t)w;
 		}
 	}
-	return true;
 }
 
 /* glGetLight..., glGetMaterial..., glGetTexGen..., glGetClipPlane's values into the program's memory */
@@ -1174,21 +1218,30 @@ static void draw_elements(struct opengl *o, struct opengl_context *x, uint32_t m
 }
 
 /* glTexImage1D and 2D, glTexSubImage1D and 2D: the image's bytes there to be read (or none given) */
-static void tex_image(struct opengl *o, struct gl_state *st, bool sub, uint32_t target, int32_t level, int32_t internal,
-		      int32_t x, int32_t y, int32_t w, int32_t h, int32_t border, uint32_t format, uint32_t type,
-		      uint32_t pixels)
+static void tex_image(struct opengl *o, struct opengl_context *x, bool sub, uint32_t target, int32_t level,
+		      int32_t internal, int32_t px, int32_t py, int32_t w, int32_t h, int32_t border, uint32_t format,
+		      uint32_t type, uint32_t pixels)
 {
+	struct gl_state *st = &x->st;
 	size_t bytes = glf_image_bytes(&st->unpack, format, type, w, h);
 	const uint8_t *p = NULL;
 	if (pixels && bytes) {
-		if (bytes > (64u << 20) || !readable(o->mem, pixels, (uint32_t)bytes))
+		p = in_data(o, x, pixels, bytes);
+		if (!p)
 			return;                 /* (the program would have crashed reading it) */
-		p = mem_ptr(o->mem, pixels);
 	}
+	int32_t x0 = px, y0 = py;
 	if (sub)
-		glf_tex_sub_image(st, target, level, x, y, w, h, format, type, p);
+		glf_tex_sub_image(st, target, level, x0, y0, w, h, format, type, p);
 	else
 		glf_tex_image(st, target, level, internal, w, h, border, format, type, p);
+}
+
+/* The context's drawing done, its pixels on the host (and its depth and stencil, if those are to be read) */
+static void finish(struct opengl *o, struct opengl_context *x, bool depth)
+{
+	if (x->has_surface && (!surface_finish(&x->surface) || (depth && !surface_read_depth(&x->surface))))
+		lose_gpu(o);
 }
 
 /* glDeleteTextures' one: no longer bound in any context of its namespace */
@@ -1204,10 +1257,369 @@ static void delete_texture(struct opengl *o, struct opengl_context *x, uint32_t 
 	glf_delete_texture(&x->st, name);
 }
 
-static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn, const union arg *a)
+/* ---- display lists ---- */
+
+/*
+ * A list's entries, one after another: a header (the function, how many
+ * arguments, whether the pixel store its image is unpacked by follows them,
+ * how many bytes of what its pointer argument pointed to follow that), the
+ * arguments as gl_call() takes them, that store, those bytes: each part a
+ * multiple of 8 bytes long. A list run gives each call those bytes (see
+ * in_data()) and that store, as they were when it was made. Calls that
+ * read the client's arrays there and then (glDrawArrays and the rest) are
+ * kept as the glBegin, attribute calls and glEnd they make; glRect's v forms
+ * as glRectd.
+ */
+struct entry {
+	uint16_t fn;
+	uint8_t nargs, unpack;
+	uint32_t data;
+};
+#define ROUND8(n) (((n) + 7) & ~(size_t)7)
+#define MAX_LIST_NESTING 64
+#define MAX_ARGS 24
+enum { GL_COMPILE = 0x1300, GL_COMPILE_AND_EXECUTE };
+enum { GL_2_BYTES = 0x1407, GL_3_BYTES, GL_4_BYTES };
+
+static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn, const union gl_arg *a);
+
+/* How many arguments gl_call() gets for fn (recorded ones' arrays as their elements) */
+static unsigned nargs_of(unsigned fn)
+{
+	return (unsigned)strlen(recorded[fn].size ? recorded[fn].args : library_functions[fn].args);
+}
+
+/* Calls that unpack an image by the pixel store */
+static bool unpacks(unsigned fn)
+{
+	return fn == F_glTexImage1D || fn == F_glTexImage2D || fn == F_glTexSubImage1D || fn == F_glTexSubImage2D ||
+	       fn == F_glTexImage3D || fn == F_glTexSubImage3D || fn == F_glDrawPixels || fn == F_glBitmap;
+}
+
+/* The bytes an element of glCallLists' list of names takes (0: not a type it takes) */
+static unsigned name_size(uint32_t type)
+{
+	switch (type) {
+	case GL_BYTE: case GL_UNSIGNED_BYTE: return 1;
+	case GL_SHORT: case GL_UNSIGNED_SHORT: case GL_2_BYTES: return 2;
+	case GL_3_BYTES: return 3;
+	case GL_INT: case GL_UNSIGNED_INT: case GL_FLOAT: case GL_4_BYTES: return 4;
+	default: return 0;
+	}
+}
+
+/* The bytes a call's pointer argument points to that a list keeps (0: none, or not known) */
+static size_t data_len(const struct opengl_context *x, unsigned fn, const union gl_arg *a)
+{
+	const struct gl_pixel_store *ps = &x->st.unpack;
+	switch (fn) {
+	case F_glTexParameteriv: case F_glTexParameterfv: case F_glTexEnviv: case F_glTexEnvfv:
+		return 4 * vector_values(a[1].u);
+	case F_glLightModelfv: case F_glLightModeliv: case F_glFogfv: case F_glFogiv:
+		return 4 * pname_values(a[0].u);
+	case F_glLightfv: case F_glLightiv: case F_glMaterialfv: case F_glMaterialiv: case F_glTexGenfv:
+	case F_glTexGeniv:
+		return 4 * pname_values(a[1].u);
+	case F_glTexGendv: return 8 * pname_values(a[1].u);
+	case F_glClipPlane: return 32;
+	case F_glPolygonStipple: return sizeof x->st.polygon_stipple;
+	case F_glTexImage1D: return glf_image_bytes(ps, a[5].u, a[6].u, a[3].i, 1);
+	case F_glTexImage2D: return glf_image_bytes(ps, a[6].u, a[7].u, a[3].i, a[4].i);
+	case F_glTexSubImage1D: return glf_image_bytes(ps, a[4].u, a[5].u, a[3].i, 1);
+	case F_glTexSubImage2D: return glf_image_bytes(ps, a[6].u, a[7].u, a[4].i, a[5].i);
+	case F_glTexImage3D: return glf_image_bytes_3d(ps, a[7].u, a[8].u, a[3].i, a[4].i, a[5].i);
+	case F_glTexSubImage3D: return glf_image_bytes_3d(ps, a[8].u, a[9].u, a[5].i, a[6].i, a[7].i);
+	case F_glCallLists: return a[0].i > 0 && a[0].i <= (1 << 24) ? (size_t)a[0].u * name_size(a[1].u) : 0;
+	case F_glDrawPixels: return glf_image_bytes(ps, a[2].u, a[3].u, a[0].i, a[1].i);
+	case F_glBitmap: return glf_image_bytes(ps, GL_COLOR_INDEX, GL_BITMAP, a[0].i, a[1].i);
+	case F_glPixelMapfv: case F_glPixelMapuiv:
+		return a[1].i > 0 && a[1].i <= GLF_PIXEL_MAP ? 4 * (size_t)a[1].u : 0;
+	case F_glPixelMapusv: return a[1].i > 0 && a[1].i <= GLF_PIXEL_MAP ? 2 * (size_t)a[1].u : 0;
+	default: return 0;
+	}
+}
+
+/* An entry added to the list being made (data: len bytes; the pixel store's unpacking too, if unpack) */
+static void put_entry(struct opengl_context *x, unsigned fn, const union gl_arg *a, unsigned nargs, bool unpack,
+		      const uint8_t *data, size_t len)
+{
+	size_t store = unpack ? ROUND8(sizeof(struct gl_pixel_store)) : 0;
+	size_t size = sizeof(struct entry) + nargs * sizeof *a + store + ROUND8(len);
+	if (len > UINT32_MAX || x->list_len + size > ((size_t)1 << 30)) {
+		glf_error(&x->st, GL_OUT_OF_MEMORY);
+		return;
+	}
+	if (x->list_len + size > x->list_cap) {
+		size_t cap = x->list_cap ? 2 * x->list_cap : 4096;
+		while (cap < x->list_len + size)
+			cap *= 2;
+		uint8_t *p = realloc(x->list, cap);
+		if (!p) {
+			glf_error(&x->st, GL_OUT_OF_MEMORY);
+			return;
+		}
+		x->list = p;
+		x->list_cap = cap;
+	}
+	uint8_t *p = x->list + x->list_len;
+	memset(p, 0, size);
+	const struct entry e = { (uint16_t)fn, (uint8_t)nargs, unpack, (uint32_t)len };
+	memcpy(p, &e, sizeof e);
+	p += sizeof e;
+	if (nargs)
+		memcpy(p, a, nargs * sizeof *a);
+	p += nargs * sizeof *a;
+	if (unpack)
+		memcpy(p, &x->st.unpack, sizeof x->st.unpack);
+	p += store;
+	if (len)
+		memcpy(p, data, len);
+	x->list_len += size;
+}
+
+/* The calls glArrayElement makes for element i (as it would: see glf_array_element()) */
+static void compile_element(struct opengl_context *x, int32_t i)
+{
+	struct gl_element e;
+	glf_array_values(&x->st, i, &e);
+	union gl_arg a[5];
+	if (e.has >> GLF_ARRAY_EDGE & 1) {
+		a[0].u = e.v[GLF_ARRAY_EDGE][0] != 0;
+		put_entry(x, F_glEdgeFlag, a, 1, false, NULL, 0);
+	}
+	for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++)
+		if (e.has >> (GLF_ARRAY_TEX0 + u) & 1) {
+			a[0].u = GL_TEXTURE0_ARB + u;
+			for (int k = 0; k < 4; k++)
+				a[1 + k].f = e.v[GLF_ARRAY_TEX0 + u][k];
+			put_entry(x, F_glMultiTexCoord4fARB, a, 5, false, NULL, 0);
+		}
+	static const struct {
+		unsigned array, fn, n;
+	} calls[] = { { GLF_ARRAY_COLOR, F_glColor4f, 4 }, { GLF_ARRAY_SECONDARY, F_glSecondaryColor3fEXT, 3 },
+		      { GLF_ARRAY_NORMAL, F_glNormal3f, 3 }, { GLF_ARRAY_VERTEX, F_glVertex4f, 4 } };
+	for (unsigned k = 0; k < sizeof calls / sizeof calls[0]; k++)
+		if (e.has >> calls[k].array & 1) {
+			for (unsigned j = 0; j < calls[k].n; j++)
+				a[j].f = e.v[calls[k].array][j];
+			put_entry(x, calls[k].fn, a, calls[k].n, false, NULL, 0);
+		}
+}
+
+/* glArrayElement, glDrawArrays, glDrawElements and glDrawRangeElements, as the calls they make */
+static void compile_arrays(struct opengl *o, struct opengl_context *x, unsigned fn, const union gl_arg *a)
+{
+	struct gl_state *st = &x->st;
+	if (fn == F_glArrayElement) {
+		arrays_at(o, st, a[0].i < 0 ? 0 : a[0].u, 1);
+		compile_element(x, a[0].i);
+		return;
+	}
+	bool range = fn == F_glDrawRangeElements, elements = fn != F_glDrawArrays;
+	uint32_t mode = a[0].u, type = range ? a[4].u : a[2].u;
+	int32_t count = fn == F_glDrawArrays ? a[2].i : range ? a[3].i : a[1].i;
+	if (mode > GL_POLYGON || (elements && !glf_index_size(type))) {
+		glf_error(st, GL_INVALID_ENUM);
+		return;
+	}
+	if (count < 0 || (fn == F_glDrawArrays && a[1].i < 0) || (range && a[2].u < a[1].u)) {
+		glf_error(st, GL_INVALID_VALUE);
+		return;
+	}
+	const uint8_t *indices = NULL;
+	unsigned size = glf_index_size(type);
+	if (elements) {
+		if (count > (1 << 24) || !(indices = in_data(o, x, range ? a[5].u : a[3].u, (size_t)count * size)))
+			return;
+		uint32_t lo = UINT32_MAX, hi = 0;
+		for (int32_t k = 0; k < count; k++) {
+			const uint8_t *q = indices + (size_t)k * size;
+			uint32_t i = size == 1 ? q[0] : size == 2 ? be16(q) : be32(q);
+			lo = i < lo ? i : lo;
+			hi = i > hi ? i : hi;
+		}
+		if (count)
+			arrays_at(o, st, lo, hi - lo + 1);
+	} else if (count) {
+		arrays_at(o, st, a[1].u, a[2].u);
+	}
+	union gl_arg m = { .u = mode };
+	put_entry(x, F_glBegin, &m, 1, false, NULL, 0);
+	for (int32_t k = 0; k < count; k++) {
+		int64_t i;
+		if (elements) {
+			const uint8_t *q = indices + (size_t)k * size;
+			i = size == 1 ? q[0] : size == 2 ? be16(q) : be32(q);
+		} else {
+			i = (int64_t)a[1].i + k;
+		}
+		compile_element(x, i > INT32_MAX ? -1 : (int32_t)i);
+	}
+	put_entry(x, F_glEnd, NULL, 0, false, NULL, 0);
+}
+
+/* glRect's corners (the v forms' from the program's memory); false if they can't be read */
+static bool rect_args(struct opengl *o, unsigned fn, const union gl_arg *a, double v[4])
+{
+	const char *name = library_functions[fn].name;
+	char type = name[6];                    /* (glRect...) */
+	if (!name[7]) {
+		for (int k = 0; k < 4; k++)
+			v[k] = type == 'd' ? a[k].d : type == 'f' ? (double)a[k].f : (double)a[k].i;
+		return true;
+	}
+	unsigned size = type == 'd' ? 8 : type == 's' ? 2 : 4;
+	for (int k = 0; k < 2; k++) {
+		if (!readable(o->mem, a[k].u, 2 * size))
+			return false;
+		const uint8_t *p = mem_ptr(o->mem, a[k].u);
+		for (unsigned j = 0; j < 2; j++, p += size) {
+			if (type == 'd') {
+				v[2 * k + (int)j] = be_double(p);
+			} else if (type == 'f') {
+				uint32_t w = be32(p);
+				float f;
+				memcpy(&f, &w, 4);
+				v[2 * k + (int)j] = f;
+			} else {
+				v[2 * k + (int)j] = type == 's' ? (int16_t)be16(p) : (int32_t)be32(p);
+			}
+		}
+	}
+	return true;
+}
+
+/* Whether a call is kept in the list being made (proxy textures' images are done there and then) */
+static bool compiles(unsigned fn, const union gl_arg *a)
+{
+	if ((fn == F_glTexImage1D || fn == F_glTexImage2D || fn == F_glTexImage3D) &&
+	    (a[0].u == 0x8063 || a[0].u == 0x8064 || a[0].u == 0x8070))
+		return false;
+	return compiled[fn];
+}
+
+/* A call kept in the list being made */
+static void compile(struct opengl *o, struct opengl_context *x, unsigned fn, const union gl_arg *a)
+{
+	switch (fn) {
+	case F_glArrayElement: case F_glDrawArrays: case F_glDrawElements: case F_glDrawRangeElements:
+		compile_arrays(o, x, fn, a);
+		return;
+	case F_glRectdv: case F_glRectfv: case F_glRectiv: case F_glRectsv: {
+		double v[4];
+		union gl_arg r[4];
+		if (!rect_args(o, fn, a, v))
+			return;
+		for (int k = 0; k < 4; k++)
+			r[k].d = v[k];
+		put_entry(x, F_glRectd, r, 4, false, NULL, 0);
+		return;
+	}
+	default:
+		break;
+	}
+	const char *args = library_functions[fn].args, *p = strchr(args, 'p');
+	const uint8_t *data = NULL;
+	size_t len = 0;
+	if (p && !recorded[fn].size) {
+		len = data_len(x, fn, a);
+		data = len ? in_data(o, x, a[p - args].u, len) : NULL;
+		len = data ? len : 0;
+	}
+	put_entry(x, fn, a, nargs_of(fn), unpacks(fn), data, len);
+}
+
+/* glCallList: a list's calls done, as they were made */
+static void call_list(struct opengl *o, struct opengl_context *x, uint32_t name)
+{
+	const struct gl_list *l = glf_list(&x->st, name);
+	if (!l || !l->len || x->list_depth >= MAX_LIST_NESTING)
+		return;
+	x->list_depth++;
+	const uint8_t *given = x->given;
+	size_t given_len = x->given_len;
+	for (size_t at = 0; at + sizeof(struct entry) <= l->len;) {
+		struct entry e;
+		memcpy(&e, l->data + at, sizeof e);
+		const uint8_t *p = l->data + at + sizeof e;
+		union gl_arg a[MAX_ARGS];
+		unsigned n = e.nargs < MAX_ARGS ? e.nargs : MAX_ARGS;
+		memcpy(a, p, n * sizeof *a);
+		p += e.nargs * sizeof *a;
+		struct gl_pixel_store unpack;
+		if (e.unpack) {
+			unpack = x->st.unpack;
+			memcpy(&x->st.unpack, p, sizeof x->st.unpack);
+			p += ROUND8(sizeof x->st.unpack);
+		}
+		x->given = p;
+		x->given_len = e.data;
+		if (e.fn < GL_FUNCTIONS)
+			gl_call(o, x, e.fn, a);
+		if (e.unpack)
+			x->st.unpack = unpack;
+		at = (size_t)(p - l->data) + ROUND8(e.data);
+	}
+	x->given = given;
+	x->given_len = given_len;
+	x->list_depth--;
+}
+
+/* glCallLists: n names of a type (each with the list base added) */
+static void call_lists(struct opengl *o, struct opengl_context *x, int32_t n, uint32_t type, uint32_t names)
+{
+	struct gl_state *st = &x->st;
+	unsigned size = name_size(type);
+	if (n < 0) {
+		glf_error(st, GL_INVALID_VALUE);
+		return;
+	}
+	if (!size) {
+		glf_error(st, GL_INVALID_ENUM);
+		return;
+	}
+	const uint8_t *p = n <= (1 << 24) ? in_data(o, x, names, (size_t)n * size) : NULL;
+	for (int32_t k = 0; p && k < n; k++, p += size) {
+		uint32_t v;
+		switch (type) {
+		case GL_BYTE: v = (uint32_t)(int32_t)(int8_t)p[0]; break;
+		case GL_UNSIGNED_BYTE: v = p[0]; break;
+		case GL_SHORT: v = (uint32_t)(int32_t)(int16_t)be16(p); break;
+		case GL_UNSIGNED_SHORT: case GL_2_BYTES: v = be16(p); break;
+		case GL_3_BYTES: v = (uint32_t)p[0] << 16 | (uint32_t)p[1] << 8 | p[2]; break;
+		case GL_FLOAT: {
+			uint32_t w = be32(p);
+			float f;
+			memcpy(&f, &w, 4);
+			v = f >= 0 && f < 4294967296.0f ? (uint32_t)f : (uint32_t)(int32_t)(f > -2147483648.0f ? f : 0);
+			break;
+		}
+		default: v = be32(p); break;
+		}
+		call_list(o, x, st->list_base + v);
+	}
+}
+
+/* glRect: a polygon (x1, y1), (x2, y1), (x2, y2), (x1, y2) */
+static void rect(struct gl_state *st, const struct gl_target *t, const double v[4])
+{
+	const float c[4][4] = { { (float)v[0], (float)v[1], 0, 1 }, { (float)v[2], (float)v[1], 0, 1 },
+				{ (float)v[2], (float)v[3], 0, 1 }, { (float)v[0], (float)v[3], 0, 1 } };
+	glf_begin(st, GL_POLYGON);
+	for (int k = 0; k < 4; k++)
+		glf_vertex(st, t, c[k]);
+	glf_end(st, t);
+}
+
+static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn, const union gl_arg *a)
 {
 	struct gl_state *st = &x->st;
 	struct mem *m = o->mem;
+	if (x->list_name && !x->list_depth && compiles(fn, a)) {
+		compile(o, x, fn, a);
+		if (x->list_mode == GL_COMPILE)
+			return 0;
+	}
 	if (st->inside && !inside_ok[fn]) {
 		glf_error(st, GL_INVALID_OPERATION);
 		return 0;
@@ -1342,16 +1754,36 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 	case F_glAreTexturesResident: return 1;         /* (all are: then the list isn't written) */
 	case F_glPrioritizeTextures: return 0;
 	case F_glTexImage1D:
-		tex_image(o, st, false, a[0].u, a[1].i, a[2].i, 0, 0, a[3].i, 1, a[4].i, a[5].u, a[6].u, a[7].u);
+		tex_image(o, x, false, a[0].u, a[1].i, a[2].i, 0, 0, a[3].i, 1, a[4].i, a[5].u, a[6].u, a[7].u);
 		return 0;
 	case F_glTexImage2D:
-		tex_image(o, st, false, a[0].u, a[1].i, a[2].i, 0, 0, a[3].i, a[4].i, a[5].i, a[6].u, a[7].u, a[8].u);
+		tex_image(o, x, false, a[0].u, a[1].i, a[2].i, 0, 0, a[3].i, a[4].i, a[5].i, a[6].u, a[7].u, a[8].u);
 		return 0;
 	case F_glTexSubImage1D:
-		tex_image(o, st, true, a[0].u, a[1].i, 0, a[2].i, 0, a[3].i, 1, 0, a[4].u, a[5].u, a[6].u);
+		tex_image(o, x, true, a[0].u, a[1].i, 0, a[2].i, 0, a[3].i, 1, 0, a[4].u, a[5].u, a[6].u);
 		return 0;
 	case F_glTexSubImage2D:
-		tex_image(o, st, true, a[0].u, a[1].i, 0, a[2].i, a[3].i, a[4].i, a[5].i, 0, a[6].u, a[7].u, a[8].u);
+		tex_image(o, x, true, a[0].u, a[1].i, 0, a[2].i, a[3].i, a[4].i, a[5].i, 0, a[6].u, a[7].u, a[8].u);
+		return 0;
+	case F_glTexImage3D:
+	case F_glTexSubImage3D: {
+		bool sub = fn == F_glTexSubImage3D;
+		const union gl_arg *b = sub ? a + 5 : a + 3;     /* (width, height, depth, [border,] format, type, pixels) */
+		uint32_t format = b[sub ? 3 : 4].u, type = b[sub ? 4 : 5].u, pixels = b[sub ? 5 : 6].u;
+		size_t bytes = glf_image_bytes_3d(&st->unpack, format, type, b[0].i, b[1].i, b[2].i);
+		const uint8_t *p = NULL;
+		if (pixels && bytes && !(p = in_data(o, x, pixels, bytes)))
+			return 0;               /* (the program would have crashed reading it) */
+		if (sub)
+			glf_tex_sub_image_3d(st, a[0].u, a[1].i, a[2].i, a[3].i, a[4].i, b[0].i, b[1].i, b[2].i, format, type,
+					     p);
+		else
+			glf_tex_image_3d(st, a[0].u, a[1].i, a[2].i, b[0].i, b[1].i, b[2].i, b[3].i, format, type, p);
+		return 0;
+	}
+	case F_glCopyTexSubImage3D:
+		finish(o, x, false);
+		glf_copy_tex_sub_image_3d(st, &t, a[0].u, a[1].i, a[2].i, a[3].i, a[4].i, a[5].i, a[6].i, a[7].i, a[8].i);
 		return 0;
 	case F_glTexParameteri:
 	case F_glTexParameterf:
@@ -1370,12 +1802,14 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 	case F_glTexEnvfv: {
 		float v[4];
 		bool env = fn == F_glTexEnviv || fn == F_glTexEnvfv;
-		if (vector_arg(m, a[2].u, a[1].u, fn == F_glTexParameteriv || fn == F_glTexEnviv, v)) {
-			if (env)
-				glf_tex_env(st, a[0].u, a[1].u, v);
-			else
-				glf_tex_parameter(st, a[0].u, a[1].u, v);
-		}
+		const uint8_t *p = in_data(o, x, a[2].u, 4 * vector_values(a[1].u));
+		if (!p)
+			return 0;
+		vector_arg(p, a[1].u, fn == F_glTexParameteriv || fn == F_glTexEnviv, v);
+		if (env)
+			glf_tex_env(st, a[0].u, a[1].u, v);
+		else
+			glf_tex_parameter(st, a[0].u, a[1].u, v);
 		return 0;
 	}
 	case F_glGetTexParameteriv:
@@ -1401,8 +1835,9 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 	case F_glPixelStoref: glf_pixel_store(st, a[0].u, (int32_t)floorf(a[1].f + 0.5f)); return 0;
 	case F_glReadPixels: {
 		size_t bytes = glf_image_bytes(&st->pack, a[4].u, a[5].u, a[2].i, a[3].i);
-		if (!bytes) {
-			glf_error(st, GL_INVALID_ENUM);
+		uint32_t e = glf_pixel_check(a[4].u, a[5].u);
+		if (e) {
+			glf_error(st, e);
 			return 0;
 		}
 		if (a[2].i < 0 || a[3].i < 0) {
@@ -1411,9 +1846,97 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 		}
 		if (bytes > (64u << 20) || !writable(m, a[6].u, (uint32_t)bytes))
 			return 0;
-		if (x->has_surface && !surface_finish(&x->surface))
-			lose_gpu(o);
+		finish(o, x, a[4].u == GL_DEPTH_COMPONENT || a[4].u == GL_STENCIL_INDEX);
 		glf_read_pixels(st, &t, a[0].i, a[1].i, a[2].i, a[3].i, a[4].u, a[5].u, mem_ptr(m, a[6].u));
+		return 0;
+	}
+	/* pixels: at the raster position, the pixel transfer, into textures */
+	case F_glBitmap: {
+		size_t bytes = a[0].i > 0 && a[1].i > 0 ? glf_image_bytes(&st->unpack, GL_COLOR_INDEX, GL_BITMAP, a[0].i,
+									  a[1].i) : 0;
+		const uint8_t *p = bytes && a[6].u ? in_data(o, x, a[6].u, bytes) : NULL;
+		glf_bitmap(st, &t, a[0].i, a[1].i, a[2].f, a[3].f, a[4].f, a[5].f, p);
+		return 0;
+	}
+	case F_glDrawPixels: {
+		size_t bytes = glf_image_bytes(&st->unpack, a[2].u, a[3].u, a[0].i, a[1].i);
+		const uint8_t *p = bytes && a[4].u ? in_data(o, x, a[4].u, bytes) : NULL;
+		glf_draw_pixels(st, &t, a[0].i, a[1].i, a[2].u, a[3].u, p);
+		return 0;
+	}
+	case F_glCopyPixels:
+		finish(o, x, a[4].u != GL_COLOR);
+		glf_copy_pixels(st, &t, a[0].i, a[1].i, a[2].i, a[3].i, a[4].u);
+		return 0;
+	case F_glPixelZoom: glf_pixel_zoom(st, a[0].f, a[1].f); return 0;
+	case F_glPixelTransferf: glf_pixel_transfer(st, a[0].u, a[1].f); return 0;
+	case F_glPixelTransferi: glf_pixel_transfer(st, a[0].u, (float)a[1].i); return 0;
+	case F_glPixelMapfv: case F_glPixelMapuiv: case F_glPixelMapusv: {
+		float v[GLF_PIXEL_MAP];
+		bool color = a[0].u >= 0x0C72, us = fn == F_glPixelMapusv;        /* (I_TO_R on: colors) */
+		if (a[1].i < 1 || a[1].i > GLF_PIXEL_MAP) {
+			glf_error(st, GL_INVALID_VALUE);
+			return 0;
+		}
+		const uint8_t *p = in_data(o, x, a[2].u, (us ? 2 : 4) * (size_t)a[1].u);
+		if (!p)
+			return 0;
+		for (int32_t k = 0; k < a[1].i; k++) {
+			uint32_t w = us ? be16(p + 2 * k) : be32(p + 4 * k);
+			if (fn == F_glPixelMapfv)
+				memcpy(&v[k], &w, 4);
+			else
+				v[k] = color ? (float)(w / (us ? 65535.0 : 4294967295.0)) : (float)w;
+		}
+		glf_pixel_map(st, a[0].u, a[1].i, v);
+		return 0;
+	}
+	case F_glGetPixelMapfv: case F_glGetPixelMapuiv: case F_glGetPixelMapusv: {
+		float v[GLF_PIXEL_MAP];
+		bool color = a[0].u >= 0x0C72, us = fn == F_glGetPixelMapusv;
+		unsigned n = glf_get_pixel_map(st, a[0].u, v);
+		if (!n || !writable(m, a[1].u, (us ? 2 : 4) * n))
+			return 0;
+		for (unsigned k = 0; k < n; k++) {
+			uint32_t w;
+			if (fn == F_glGetPixelMapfv)
+				memcpy(&w, &v[k], 4);
+			else if (color)
+				w = (uint32_t)floor(v[k] * (us ? 65535.0 : 4294967295.0) + 0.5);
+			else
+				w = v[k] > 0 ? (uint32_t)floorf(v[k] + 0.5f) : 0;
+			if (us)
+				mem_w16(m, a[1].u + 2 * k, (uint16_t)w);
+			else
+				mem_w32(m, a[1].u + 4 * k, w);
+		}
+		return 0;
+	}
+	case F_glCopyTexImage1D:
+		finish(o, x, false);
+		glf_copy_tex_image(st, &t, a[0].u, a[1].i, a[2].i, a[3].i, a[4].i, a[5].i, 1, a[6].i);
+		return 0;
+	case F_glCopyTexImage2D:
+		finish(o, x, false);
+		glf_copy_tex_image(st, &t, a[0].u, a[1].i, a[2].i, a[3].i, a[4].i, a[5].i, a[6].i, a[7].i);
+		return 0;
+	case F_glCopyTexSubImage1D:
+		finish(o, x, false);
+		glf_copy_tex_sub_image(st, &t, a[0].u, a[1].i, a[2].i, 0, a[3].i, a[4].i, a[5].i, 1);
+		return 0;
+	case F_glCopyTexSubImage2D:
+		finish(o, x, false);
+		glf_copy_tex_sub_image(st, &t, a[0].u, a[1].i, a[2].i, a[3].i, a[4].i, a[5].i, a[6].i, a[7].i);
+		return 0;
+	case F_glGetTexImage: {
+		size_t bytes = glf_tex_image_bytes(st, a[0].u, a[1].i, a[2].u, a[3].u);
+		uint8_t scratch = 0;
+		uint8_t *out = &scratch;        /* (no level: nothing written, the errors still) */
+		if (bytes > (64u << 20) || (bytes && !writable(m, a[4].u, (uint32_t)bytes)))
+			return 0;
+		if (bytes)
+			out = mem_ptr(m, a[4].u);
+		glf_get_tex_image(st, a[0].u, a[1].i, a[2].u, a[3].u, out);
 		return 0;
 	}
 	case F_glReadBuffer:
@@ -1430,7 +1953,7 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 	case F_glMateriali: case F_glFogf: case F_glFogi: case F_glTexGenf: case F_glTexGeni: case F_glTexGend: {
 		bool two = fn == F_glLightModelf || fn == F_glLightModeli || fn == F_glFogf || fn == F_glFogi;
 		uint32_t pname = a[two ? 0 : 1].u;
-		const union arg *val = &a[two ? 1 : 2];
+		const union gl_arg *val = &a[two ? 1 : 2];
 		char type = library_functions[fn].args[two ? 1 : 2];
 		float v[4] = { type == 'f' ? val->f : type == 'd' ? (float)val->d : (float)val->i, 0, 0, 0 };
 		if (pname_values(pname) != 1) {
@@ -1459,8 +1982,11 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 		const char *name = library_functions[fn].name;
 		char type = name[strlen(name) - 2];             /* ('f', 'i' or 'd': ...fv, ...iv, ...dv) */
 		float v[4] = { 0, 0, 0, 0 };
-		if (!param_vector(m, a[two ? 1 : 2].u, type, pname, pname_values(pname), v))
+		unsigned n = pname_values(pname);
+		const uint8_t *p = in_data(o, x, a[two ? 1 : 2].u, n * (type == 'd' ? 8u : 4u));
+		if (!p)
 			return 0;
+		param_vector(p, type, pname, n, v);
 		if (fn == F_glLightfv || fn == F_glLightiv)
 			glf_light(st, a[0].u, pname, v);
 		else if (fn == F_glMaterialfv || fn == F_glMaterialiv)
@@ -1471,12 +1997,8 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 			glf_fog(st, pname, v);
 		else if (fn == F_glTexGendv) {
 			double d[4];
-			if (!readable(m, a[2].u, 8 * pname_values(pname)))
-				return 0;
-			for (unsigned k = 0; k < pname_values(pname); k++) {
-				uint64_t b = mem_r64(m, a[2].u + 8 * k);
-				memcpy(&d[k], &b, 8);
-			}
+			for (unsigned k = 0; k < n; k++)
+				d[k] = be_double(p + 8 * k);
 			glf_tex_gen(st, a[0].u, pname, d);
 		} else {
 			double d[4] = { v[0], v[1], v[2], v[3] };
@@ -1487,12 +2009,11 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 	case F_glColorMaterial: glf_color_material(st, a[0].u, a[1].u); return 0;
 	case F_glClipPlane: {
 		double eq[4];
-		if (!readable(m, a[1].u, 32))
+		const uint8_t *p = in_data(o, x, a[1].u, 32);
+		if (!p)
 			return 0;
-		for (int k = 0; k < 4; k++) {
-			uint64_t b = mem_r64(m, a[1].u + 8 * (uint32_t)k);
-			memcpy(&eq[k], &b, 8);
-		}
+		for (int k = 0; k < 4; k++)
+			eq[k] = be_double(p + 8 * k);
 		glf_clip_plane(st, a[0].u, eq);
 		return 0;
 	}
@@ -1514,10 +2035,12 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 	case F_glPolygonMode: glf_polygon_mode(st, a[0].u, a[1].u); return 0;
 	case F_glPolygonOffset: glf_polygon_offset(st, a[0].f, a[1].f); return 0;
 	case F_glLineStipple: glf_line_stipple(st, a[0].i, (uint16_t)a[1].u); return 0;
-	case F_glPolygonStipple:
-		if (readable(m, a[0].u, sizeof st->polygon_stipple))
-			memcpy(st->polygon_stipple, mem_ptr(m, a[0].u), sizeof st->polygon_stipple);
+	case F_glPolygonStipple: {
+		const uint8_t *p = in_data(o, x, a[0].u, sizeof st->polygon_stipple);
+		if (p)
+			memcpy(st->polygon_stipple, p, sizeof st->polygon_stipple);
 		return 0;
+	}
 	case F_glGetPolygonStipple:
 		if (writable(m, a[0].u, sizeof st->polygon_stipple))
 			mem_load(m, a[0].u, st->polygon_stipple, sizeof st->polygon_stipple);
@@ -1578,6 +2101,48 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 		}
 		draw_elements(o, x, a[0].u, a[3].i, a[4].u, a[5].u);
 		return 0;
+	case F_glRectd: case F_glRectf: case F_glRecti: case F_glRects: case F_glRectdv: case F_glRectfv:
+	case F_glRectiv: case F_glRectsv: {
+		double v[4];
+		if (rect_args(o, fn, a, v))
+			rect(st, &t, v);
+		return 0;
+	}
+	/* display lists */
+	case F_glNewList:
+		if (!a[0].u) {
+			glf_error(st, GL_INVALID_VALUE);
+			return 0;
+		}
+		if (a[1].u != GL_COMPILE && a[1].u != GL_COMPILE_AND_EXECUTE) {
+			glf_error(st, GL_INVALID_ENUM);
+			return 0;
+		}
+		if (x->list_name) {
+			glf_error(st, GL_INVALID_OPERATION);
+			return 0;
+		}
+		x->list_name = a[0].u;
+		x->list_mode = a[1].u;
+		x->list_len = 0;
+		return 0;
+	case F_glEndList:
+		if (!x->list_name) {
+			glf_error(st, GL_INVALID_OPERATION);
+			return 0;
+		}
+		if (!glf_define_list(st, x->list_name, x->list, x->list_len))
+			glf_error(st, GL_OUT_OF_MEMORY);
+		x->list = NULL;
+		x->list_len = x->list_cap = 0;
+		x->list_name = x->list_mode = 0;
+		return 0;
+	case F_glGenLists: return glf_gen_lists(st, a[0].i);
+	case F_glDeleteLists: glf_delete_lists(st, a[0].u, a[1].i); return 0;
+	case F_glIsList: return glf_is_list(st, a[0].u);
+	case F_glListBase: st->list_base = a[0].u; return 0;
+	case F_glCallList: call_list(o, x, a[0].u); return 0;
+	case F_glCallLists: call_lists(o, x, a[0].i, a[1].u, a[2].u); return 0;
 	default:
 		not_yet(o, fn);
 		return 0;
@@ -1587,7 +2152,7 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 /* ---- doing records ------------------------------------------------------------------- */
 
 /* A record's arguments (after its first word), by the types recorded */
-static unsigned record_args(const uint8_t *p, const char *types, union arg *a)
+static unsigned record_args(const uint8_t *p, const char *types, union gl_arg *a)
 {
 	unsigned k = 0;
 	for (; types[k]; k++) {
@@ -1654,7 +2219,7 @@ static bool make_record(struct opengl *o, const struct ndrv_call *c, unsigned fn
 /* Does a record of fn's (to x, if there's a context) */
 static void run_record(struct opengl *o, struct opengl_context *x, unsigned fn, const uint8_t *r)
 {
-	union arg a[24];
+	union gl_arg a[24];
 	unsigned n = record_args(r + 4, recorded[fn].args, a);
 	if (o->log)
 		log_call("gl", library_functions[fn].name, recorded[fn].args, a, n, "");
@@ -1953,7 +2518,7 @@ static struct opengl_context *new_context(struct opengl *o, struct opengl_instan
 }
 
 static uint32_t agl_call(struct opengl *o, struct ndrv_call *c, struct opengl_instance *in, unsigned fn,
-			 const union arg *a)
+			 const union gl_arg *a)
 {
 	struct mem *m = o->mem;
 	uint32_t data = data_of(o, in);
@@ -2280,7 +2845,7 @@ void opengl_library_call(struct opengl *o, struct ndrv_call *c)
 		ndrv_finish(c, 0);
 		return;
 	}
-	union arg a[16];
+	union gl_arg a[16];
 	unsigned n = get_args(c, f->args, skip, a);
 	uint32_t result = fn >= GL_FUNCTIONS ? agl_call(o, c, in, fn, a) : x ? gl_call(o, x, fn, a) : 0;
 	if (o->log) {
@@ -2333,7 +2898,7 @@ void opengl_memory_call(struct opengl *o, struct ndrv_call *c)
 		return;
 	}
 	const struct function *f = &memory_functions[c->entry];
-	union arg a[8];
+	union gl_arg a[8];
 	unsigned n = get_args(c, f->args, 0, a);
 	if (o->log)
 		log_call("glm", f->name, f->args, a, n, "");
@@ -2396,21 +2961,47 @@ void opengl_memory_call(struct opengl *o, struct ndrv_call *c)
 	ndrv_finish(c, 0);
 }
 
+uint32_t opengl_gl(struct opengl *o, struct opengl_context *x, unsigned fn, const union gl_arg *a)
+{
+	return x && fn < GL_FUNCTIONS ? gl_call(o, x, fn, a) : 0;
+}
+
+uint32_t opengl_gl_given(struct opengl *o, struct opengl_context *x, unsigned fn, const union gl_arg *a,
+			 const uint8_t *data, size_t len, const struct gl_pixel_store *unpack)
+{
+	if (!x)
+		return 0;
+	const uint8_t *given = x->given;
+	size_t given_len = x->given_len;
+	struct gl_pixel_store store = x->st.unpack;
+	x->given = data;
+	x->given_len = len;
+	if (unpack)
+		x->st.unpack = *unpack;
+	uint32_t r = opengl_gl(o, x, fn, a);
+	x->st.unpack = store;
+	x->given = given;
+	x->given_len = given_len;
+	return r;
+}
+
+/* OpenGLUtility (glu.c): to the context current in the process (its OpenGLLibrary's instance's glc_cc) */
 void opengl_utility_call(struct opengl *o, struct ndrv_call *c)
 {
-	if (c->entry >= U_LIBRARY) {
-		ndrv_finish(c, 0);
-		return;
+	uint32_t cc = ndrv_import(c, &o->utility, GLU_IMPORT_CURRENT);
+	struct opengl_instance *in = cc > D_CURRENT + o->library.extra ?
+				     instance_of(o, cc - D_CURRENT - o->library.extra, false) : NULL;
+	struct opengl_context *x = NULL;
+	if (in) {
+		drain(o, in);                   /* (what was recorded comes first) */
+		x = current(o, in);
 	}
-	const struct function *f = &utility_functions[c->entry];
-	union arg a[16];
-	unsigned n = get_args(c, f->args, 0, a);
-	if (o->log)
-		log_call("glu", f->name, f->args, a, n, "");
-	if (!(o->glu_told >> c->entry & 1)) {
-		o->glu_told |= 1ull << c->entry;
-		printf("opengl: %s isn't done yet\n", f->name);
-		fflush(stdout);
+	union gl_arg a[16];
+	if (c->entry < U_LIBRARY) {
+		const struct function *f = &utility_functions[c->entry];
+		unsigned n = get_args(c, f->args, 0, a);
+		if (o->log)
+			log_call("glu", f->name, f->args, a, n, "");
 	}
-	ndrv_finish(c, 0);
+	glu_call(o, x, c, a);
 }

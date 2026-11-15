@@ -101,6 +101,7 @@ struct ndrv_spec {
 	uint32_t hostcall;              /* selector the code traps with */
 	const struct ndrv_import *imports;
 	unsigned import_count;
+	uint64_t data_imports;          /* (bit k: import k is a data symbol, its slot its address; else a TVector) */
 	const uint8_t *extra;           /* driver data, copied after the description */
 	size_t extra_len;
 	uint32_t zero_len;              /* zero-filled data after it */

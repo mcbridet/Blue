@@ -64,6 +64,12 @@ void gpu_wait(struct gpu *g);
  */
 bool gpu_read(struct gpu *g, struct gpu_target *t, uint32_t *color);
 
+/*
+ * The same for its depth (as raster.c keeps it, for states without
+ * perspective_z) and stencil (NULL: not read)
+ */
+bool gpu_read_depth(struct gpu *g, struct gpu_target *t, float *depth, uint8_t *stencil);
+
 /* Forgets a texture's GPU copy (tex->gpu), before raster.c's copy is freed */
 void gpu_texture_free(struct gpu *g, struct raster_texture *tex);
 
