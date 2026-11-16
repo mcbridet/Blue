@@ -6,7 +6,7 @@
  * at triangle edges and in filtering, and mipmapping, which the GPU does per
  * pixel (trilinear with the *_MIPMAP_LINEAR filters). Each way of drawing (a
  * state's stages, above all) gets a program of its own, made the first time
- * it's needed. See docs/gpu-plan.md.
+ * it's needed. See docs/3d.md.
  *
  * One thread (the emulator's) calls these. Every call but gpu_open() and
  * gpu_ready() first waits for the job the previous one started.

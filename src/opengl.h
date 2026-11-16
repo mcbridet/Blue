@@ -8,7 +8,7 @@
  * end (glfront.h) draws with the 3D backend (surface.h: the GPU or
  * raster.c), and a frame goes into the context's drawable in guest memory
  * (a window's or the screen's port, an offscreen buffer, or the whole
- * screen) when it's swapped. See docs/opengl-plan.md.
+ * screen) when it's swapped. See docs/3d.md.
  *
  * A context (AGLContext) is a structure in the library's data laid out as
  * Apple's: its handle, then the dispatch table of its gl functions, which

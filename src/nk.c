@@ -3504,7 +3504,7 @@ static const char *frame_wait(struct machine *m)
  * sound plays, guest time ahead is sound played ahead, which the host's
  * sound output can only drop: a movie streaming from disk ran guest time
  * 1.1 to 2.3 times as fast as the host clock, its sound in pieces
- * (docs/plan.md, Findings). So while sound plays, a transfer takes host
+ * (docs/findings.md). So while sound plays, a transfer takes host
  * time instead, all of it, as a real drive's DMA does while the processor
  * goes on: the guest waits in the driver's call until it's over, taking
  * interrupts meanwhile (it makes the call again, which goes no further

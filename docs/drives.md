@@ -41,7 +41,8 @@ time, all of it, as a real drive's DMA does while the processor goes
 on. The guest waits in the driver's call until the transfer is over,
 taking interrupts meanwhile, so the sound keeps the host clock's pace (a
 movie streaming from disk used to run guest time 1.1 to 2.3 times as
-fast, its sound dropped in pieces; [plan.md](plan.md#findings), Findings).
+fast, its sound dropped in pieces; [findings.md](findings.md), "A movie's sound
+stuttered").
 
 ## Removable drives
 
@@ -321,7 +322,7 @@ mounted again after a restart (checked on 8.5, 8.6, 9.1 and 9.2.2):
 Command-E, Put Away and the Trash eject it (and the next of several
 `--floppy` images goes in), a restart doesn't. A floppy is never the
 startup disk: the drive is empty as far as Mac OS knows until applications
-run (see [plan.md](plan.md#findings), Findings), and Blue doesn't look for a ROM file on it.
+run (see [findings.md](findings.md), "Media changes"), and Blue doesn't look for a ROM file on it.
 Transfers take guest time at the disks' rate. The status bar's floppy light
 (with a floppy drive only) is dimmed while it's empty. Disk Copy can't
 make floppies from images in this drive (it looks for Apple's floppy

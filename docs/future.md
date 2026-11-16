@@ -1,7 +1,8 @@
 # Future features
 
-Ideas worth doing some day, not planned yet. Each says what the real iMac
-had, what it would be good for under Blue, and what it would take.
+Ideas worth doing some day, beyond the [roadmap](roadmap.md). Each says
+what the real iMac had, what it would be good for under Blue, and what it
+would take.
 
 The modem, a serial port and infrared all need the same thing first: a
 serial controller that carries data. Blue's Z8530 SCC (`src/scc.c`) has
@@ -185,6 +186,33 @@ only, as with Ethernet, with input-script commands for reproducible tests.
 - **Size:** large, comparable to a big part of the JIT. Worth it when a
   program needs AltiVec, or vector-heavy work turns out too slow; try the
   program first.
+
+## 3dfx Glide
+
+Glide is 3dfx's own API for its Voodoo cards, which some Mac games of
+1997-2001 draw with (Unreal Tournament's Mac version has a Glide renderer
+beside its RAVE one, importing 54 functions from a library whose fragment
+is `3DfxGlideLib2.x`); a Glide library of Blue's own could hand the calls
+to the host and draw with the 3D backend ([3d.md](3d.md)). An old plan for
+it, `docs/glide-plan.md`, is in git history.
+
+## Pictures on the clipboard
+
+- **Where Blue is:** the clipboard carries text only
+  ([guest-tools.md](guest-tools.md#the-clipboard)); pictures (`PICT`) and
+  styles (`styl`) stay on their side.
+- **How:** Mac OS to host, the scrap's `PICT` is QuickDraw drawing, so it's
+  simplest to have Mac OS draw it (`DrawPicture` into a GWorld, from Blue
+  Enhancements) and hand the host the pixels. Host to Mac OS: decode PNG
+  (which needs an inflater: zlib, or stb_image in `third_party`) and make a
+  `PICT` of one DirectBitsRect (32-bit pixels), minding the 4 MB limit.
+- **The host side** is the bigger part: SDL2's clipboard is text only.
+  SDL3's (`SDL_SetClipboardData` and MIME types) would do X11, Wayland and
+  macOS alike; without it, NSPasteboard through the Objective-C runtime on
+  macOS, and on Linux the X11 CLIPBOARD selection (an `image/png` target,
+  answering SelectionRequest events) and a Wayland data source, each
+  separately.
+- **Size:** moderate.
 
 ## Printing
 
