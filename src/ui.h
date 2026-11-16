@@ -47,6 +47,7 @@ enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI
 		 UI_INSTALL_TOOLS,              /* (the offer to install the guest tools, asked for) */
 		 UI_SHARE_REFRESH,              /* (the shared folder's volume put away, written back, offered again) */
 		 UI_PADS,                       /* (game controllers as the keyboard and mouse, or not) */
+		 UI_MIC,                        /* (sound input from the host's microphone, or silence) */
 		 UI_EJECT,                      /* (+ the drive's number in the menu's list) */
 		 UI_EJECT_LAST = UI_EJECT + UI_DRIVES - 1,
 		 UI_INSERT,                     /* (likewise: an image chosen with the host's file chooser) */
@@ -87,8 +88,8 @@ struct ui_pads {
 	char mapping[200];              /* ... how ("as an AppleJack, by marathon.ppc's mapping") */
 };
 
-/* The status bar's lights */
-enum ui_led { UI_LED_CPU, UI_LED_DISK, UI_LED_CDROM, UI_LED_FLOPPY, UI_LED_NET, UI_LEDS };
+/* The status bar's lights (the microphone's only while it's open) */
+enum ui_led { UI_LED_CPU, UI_LED_DISK, UI_LED_CDROM, UI_LED_FLOPPY, UI_LED_NET, UI_LED_MIC, UI_LEDS };
 
 struct ui_light {
 	uint8_t level;                  /* how brightly it's lit: 0 (off) to 255 */
@@ -119,6 +120,8 @@ struct ui_state {
 	const char *prompt, *prompt_yes, *prompt_no, *prompt_alt;
 	const struct ui_drives *drives; /* the drives with removable media, or NULL without any */
 	const struct ui_pads *pads;     /* the game controllers, or NULL if the window can't have any */
+	const char *mic;                /* the microphone: what it's doing ("in use"), or NULL (not shown) */
+	bool mic_on;                    /* ... sound input on (the menu's checkbox; off: Mac OS records silence) */
 	/* the menu's Install Guest Tools... (`tools`), and why it's disabled (or NULL) */
 	bool tools;
 	const char *tools_why_not;

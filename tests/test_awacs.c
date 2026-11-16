@@ -1,7 +1,8 @@
 /*
  * The AWACS-family sound chip: its registers as Mac OS's driver uses them
  * (little-endian, through lwbrx/stwbrx, so mmio_ops values are swapped
- * here), and sample frames moving through DBDMA at the pace of guest time.
+ * here), and sample frames moving through DBDMA at the pace of guest time:
+ * played, and recorded from the input selector's inputs at the input gain.
  */
 #include <string.h>
 
@@ -300,6 +301,130 @@ static void test_analog_input(void)
 	snd.input = (struct awacs_input){ 0 };
 }
 
+/* The microphone: frames (k, -k) counting up while `on`, otherwise silent */
+static struct {
+	bool on;
+	int16_t next;
+	unsigned long taken;
+	unsigned rate;
+} mic;
+
+static bool mic_pull(void *ctx, int16_t *frames, unsigned count, unsigned rate)
+{
+	(void)ctx;
+	mic.rate = rate;
+	if (!mic.on)
+		return false;
+	for (unsigned k = 0; k < count; k++, mic.next++)
+		frames[2 * k] = mic.next, frames[2 * k + 1] = (int16_t)-mic.next;
+	mic.taken += count;
+	return true;
+}
+
+/* A recorded frame's left (0) or right (1) sample */
+static int16_t rec(unsigned frame, unsigned c)
+{
+	return (int16_t)be16(mem_ptr(&mem, BUF + 4 * frame + 2 * c));
+}
+
+static void test_recording(void)
+{
+	reset();
+	snd.mic = (struct awacs_input){ NULL, mic_pull, NULL, NULL };
+	mic.on = true;
+	mic.next = 1;
+	mic.taken = 0;
+
+	/* nothing selected: silence, the microphone not taken */
+	start_ring(AWACS_DMA_IN, DBDMA_INPUT_MORE);
+	CHECK_EQ(awacs_recording(&snd), 0);
+	awacs_set_time(&snd, 10);
+	CHECK_EQ(rec(0, 0), 0);
+	CHECK_EQ(rec(9, 1), 0);
+	CHECK_EQ(mic.taken, 0);
+
+	/* the microphone, or sound in: its frames at the codec's rate, big-endian, left then right */
+	wr(0x10, 0x00000400);
+	CHECK_EQ(awacs_recording(&snd), AWACS_IN_MIC);
+	awacs_set_time(&snd, 20);
+	CHECK_EQ(rec(10, 0), 1);
+	CHECK_EQ(rec(10, 1), -1);
+	CHECK_EQ(rec(19, 0), 10);
+	CHECK_EQ(mic.taken, 10);
+	CHECK_EQ(mic.rate, 44100);
+	CHECK_EQ(snd.frames_heard, 10);
+	wr(0x10, 0x00000800);
+	CHECK_EQ(awacs_recording(&snd), AWACS_IN_LINE);
+	awacs_set_time(&snd, 30);
+	CHECK_EQ(rec(20, 0), 11);
+
+	/* the input gain: left 3 steps (4.5 dB), right 15 (22.5 dB: clipped, and counted) */
+	rd(0x30);
+	mic.next = 1000;
+	wr(0x10, 0x0000043F);
+	awacs_set_time(&snd, 40);
+	CHECK_EQ(rec(30, 0), 1678);
+	CHECK_EQ(rec(30, 1), -13335);
+	CHECK_EQ(rd(0x30), 0);
+	mic.next = 3000;
+	awacs_set_time(&snd, 50);
+	CHECK_EQ(rec(40, 0), 5036);
+	CHECK_EQ(rec(40, 1), -32768);
+	CHECK_EQ(rd(0x30), 10);
+
+	/* run dry: silence */
+	mic.on = false;
+	wr(0x10, 0x00000400);
+	awacs_set_time(&snd, 60);
+	CHECK_EQ(rec(50, 0), 0);
+	CHECK_EQ(rec(59, 1), 0);
+
+	/* the CD: its frames as the codec takes them, played through or not */
+	snd.input = (struct awacs_input){ analog_run, analog_pull, analog_active, NULL };
+	analog.on = true;
+	analog.l = 500, analog.r = -500;
+	analog.pulled = 0;
+	wr(0x10, 0x00000200);
+	CHECK(!awacs_through(&snd));
+	awacs_set_time(&snd, 200);
+	CHECK_EQ(analog.pulled, 140);
+	CHECK_EQ(rec(60, 0), 500);
+	CHECK_EQ(rec(199, 1), -500);
+	CHECK_EQ(mic.taken, 40);                        /* (not taken since: not selected) */
+
+	/* both: mixed */
+	mic.on = true;
+	mic.next = 1;
+	wr(0x10, 0x00000600);
+	awacs_set_time(&snd, 210);
+	CHECK_EQ(rec(200, 0), 501);
+	CHECK_EQ(rec(209, 1), -510);
+
+	/* stopped: not recording */
+	dma_control(AWACS_DMA_IN, DBDMA_RUN, 0);
+	CHECK_EQ(awacs_recording(&snd), 0);
+	analog.on = false;
+	snd.input = (struct awacs_input){ 0 };
+
+	/* a frame cut short at the end of a command goes on in the next */
+	reset();
+	snd.mic = (struct awacs_input){ NULL, mic_pull, NULL, NULL };
+	mic.next = 0x1234;
+	put_cmd(0, DBDMA_INPUT_MORE, 0, 0, 6, BUF, 0);
+	put_cmd(1, DBDMA_INPUT_LAST, 0, 0, 6, BUF + 6, 0);
+	put_cmd(2, DBDMA_STOP, 0, 0, 0, 0, 0);
+	dbdma_mmio_ops.write(&dma, AWACS_DMA_IN * DBDMA_CHANNEL_SIZE + DBDMA_CMDPTR, 4, __builtin_bswap32(LIST));
+	wr(0x10, 0x00000400);
+	dma_control(AWACS_DMA_IN, DBDMA_RUN, DBDMA_RUN);
+	awacs_set_time(&snd, 10);
+	CHECK_EQ(rec(0, 0), 0x1234);
+	CHECK_EQ(rec(1, 1), -0x1235);
+	CHECK_EQ(rec(2, 0), 0x1236);
+	CHECK_EQ(mic.next, 0x1237);
+	CHECK_EQ(awacs_recording(&snd), 0);             /* (idle at the STOP) */
+	snd.mic = (struct awacs_input){ 0 };
+}
+
 void test_awacs(void)
 {
 	if (mem_init(&mem))
@@ -309,5 +434,6 @@ void test_awacs(void)
 	test_output();
 	test_input();
 	test_analog_input();
+	test_recording();
 	mem_free(&mem);
 }

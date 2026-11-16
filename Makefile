@@ -11,7 +11,7 @@ IMGUI_FLAGS := -std=c++17 -fno-exceptions -fno-rtti -DIMGUI_DISABLE_OBSOLETE_FUN
 LDFLAGS ?= -g
 BUILD := build
 
-LIB_SRC := src/adb.c src/audio.c src/audiodec.c src/awacs.c src/bootinfo.c src/raster.c src/rave.c src/cdaudio.c src/cdformats.c src/cdimage.c src/cdrom.c src/chooser.c src/clip.c src/clock.c src/cuda.c src/dbdma.c src/density.c src/devtree.c src/display.c src/disk.c src/dmg.c src/drives.c src/env.c src/floppy.c src/font.c src/gl.c src/glarray.c src/glattrib.c src/gleval.c src/glfront.c src/gllight.c src/gllist.c src/glpixel.c src/glselect.c src/gltest.c src/gltex.c src/glu.c src/gpu.c src/hfs.c src/hfsread.c src/hostlib.c src/icon.c src/install.c src/isp.c src/jit.c src/jit_a64.c src/jit_x86.c src/lzss.c src/macio.c src/mem.c src/mmio.c src/mp.c src/ndrv.c src/net.c src/nk.c src/nvram.c src/ofnvram.c src/ohci.c src/opengl.c src/parcels.c src/pad.c src/pci.c src/perf.c src/pippin.c src/png.c src/ppc.c src/ppc_fp.c src/priv.c src/putaway.c src/rom.c src/rsrc.c src/rtas.c src/scc.c src/share.c src/startup.c src/surface.c src/tools.c src/via.c src/video.c src/welcome.c
+LIB_SRC := src/adb.c src/audio.c src/audiodec.c src/awacs.c src/bootinfo.c src/raster.c src/rave.c src/cdaudio.c src/cdformats.c src/cdimage.c src/cdrom.c src/chooser.c src/clip.c src/clock.c src/cuda.c src/dbdma.c src/density.c src/devtree.c src/display.c src/disk.c src/dmg.c src/drives.c src/env.c src/floppy.c src/font.c src/gl.c src/glarray.c src/glattrib.c src/gleval.c src/glfront.c src/gllight.c src/gllist.c src/glpixel.c src/glselect.c src/gltest.c src/gltex.c src/glu.c src/gpu.c src/hfs.c src/hfsread.c src/hostlib.c src/icon.c src/install.c src/isp.c src/jit.c src/jit_a64.c src/jit_x86.c src/lzss.c src/macio.c src/mem.c src/mic.c src/mmio.c src/mp.c src/ndrv.c src/net.c src/nk.c src/nvram.c src/ofnvram.c src/ohci.c src/opengl.c src/parcels.c src/pad.c src/pci.c src/perf.c src/pippin.c src/png.c src/ppc.c src/ppc_fp.c src/priv.c src/putaway.c src/rom.c src/rsrc.c src/rtas.c src/scc.c src/share.c src/startup.c src/surface.c src/tools.c src/via.c src/video.c src/welcome.c
 IMGUI_SRC := third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
 # CD and disk image formats: libchdr (MAME's CHD, with the LZMA decoder, miniz and zstd's decoder it carries),
 # bzip2, lzfse's decoder, the LZMA SDK's LZMA2 decoder (for xz), dr_mp3 and stb_vorbis (dr_flac is libchdr's)
@@ -38,17 +38,18 @@ VERSION := $(shell sed -n 's/^\#define BLUE_VERSION "\(.*\)"/\1/p' src/version.h
 
 all: $(BUILD)/blue
 
-# On macOS, an Info.plist in the executable names the program Blue (in the menu bar and the Dock), the file
-# chooser is AppKit's (src/chooser_mac.m), the menu bar Blue's own (src/menubar_mac.m), displays' physical
-# sizes are CoreGraphics' (src/density.c), and Blue.app's libraries are found in its Frameworks
-# (src/hostlib.c, and @rpath for theirs). The oldest macOS it runs on is MACOSX_DEPLOYMENT_TARGET's.
+# On macOS, an Info.plist in the executable names the program Blue (in the menu bar and the Dock) and says why
+# it asks for the microphone, the file chooser is AppKit's (src/chooser_mac.m), the menu bar Blue's own
+# (src/menubar_mac.m), the microphone's permission AVFoundation's (src/mic_mac.m), displays' physical sizes are
+# CoreGraphics' (src/density.c), and Blue.app's libraries are found in its Frameworks (src/hostlib.c, and @rpath
+# for theirs). The oldest macOS it runs on is MACOSX_DEPLOYMENT_TARGET's.
 ifeq ($(shell uname -s),Darwin)
 export MACOSX_DEPLOYMENT_TARGET ?= 11.0
 INFO_PLIST := $(BUILD)/Info.plist
 INFO_PLIST_FLAGS := -Wl,-sectcreate,__TEXT,__info_plist,$(INFO_PLIST) -Wl,-rpath,@executable_path/../Frameworks
 OBJCFLAGS ?= -O2 -g
-LIB_OBJ += $(BUILD)/chooser_mac.o $(BUILD)/menubar_mac.o
-HOST_LIBS := -framework AppKit -framework CoreGraphics
+LIB_OBJ += $(BUILD)/chooser_mac.o $(BUILD)/menubar_mac.o $(BUILD)/mic_mac.o
+HOST_LIBS := -framework AppKit -framework AVFoundation -framework CoreGraphics
 endif
 
 $(BUILD)/blue: $(BUILD)/main.o $(LIB_OBJ) $(INFO_PLIST)

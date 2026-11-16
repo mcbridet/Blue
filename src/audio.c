@@ -11,6 +11,9 @@
 /* The parts of the SDL2 audio ABI we use (stable across SDL 2.x). */
 #define SDL_INIT_AUDIO 0x00000010u
 #define AUDIO_S16MSB 0x9010u
+#define AUDIO_S16LSB 0x8010u
+#define SDL_AUDIO_ALLOW_FREQUENCY_CHANGE 0x1
+#define SDL_AUDIO_ALLOW_CHANNELS_CHANGE 0x4
 
 typedef struct {
 	int freq;
@@ -32,6 +35,7 @@ struct sdl_audio {
 	void (*PauseAudioDevice)(uint32_t, int);
 	int (*QueueAudio)(uint32_t, const void *, uint32_t);
 	uint32_t (*GetQueuedAudioSize)(uint32_t);
+	uint32_t (*DequeueAudio)(uint32_t, void *, uint32_t);   /* (SDL 2.0.5 and later: for sound input) */
 };
 
 #define FRAME_BYTES 4u
@@ -89,6 +93,7 @@ static bool load(struct sdl_audio *s)
 	SYM(QueueAudio, "SDL_QueueAudio");
 	SYM(GetQueuedAudioSize, "SDL_GetQueuedAudioSize");
 #undef SYM
+	*(void **)&s->DequeueAudio = dlsym(s->lib, "SDL_DequeueAudio");
 	return true;
 }
 
@@ -252,4 +257,102 @@ void audio_take_stats(struct audio *a, struct audio_stats *s)
 	*s = a->stats;
 	s->rate = a->rate;
 	memset(&a->stats, 0, sizeof a->stats);
+}
+
+#ifndef __APPLE__
+int audio_mic_permission(void)
+{
+	return 1;               /* (no system asks: the device is the user's to set up) */
+}
+#endif
+
+struct audio_capture {
+	struct sdl_audio sdl;
+	uint32_t dev;
+	unsigned channels;
+};
+
+/* Says why there's no sound input, once for each reason in a row (1: no SDL2, 2: no device, 3: asking, 4: not allowed; 0: there is) */
+static void capture_note(int why, const char *detail)
+{
+	static int said;
+	if (said == why)
+		return;
+	said = why;
+	switch (why) {
+	case 0:
+		break;
+	case 1:
+		fprintf(stderr, "mic: SDL2 (2.0.5 or later) is not available; Mac OS records silence\n");
+		break;
+	case 2:
+		fprintf(stderr, "mic: no sound input (%s); Mac OS records silence\n", detail);
+		break;
+	case 3:
+		fprintf(stderr, "mic: macOS asks whether Blue may use the microphone; Mac OS records silence until it "
+			"may\n");
+		break;
+	default:
+		fprintf(stderr, "mic: macOS doesn't let Blue use the microphone (System Settings, Privacy & Security, "
+			"Microphone); Mac OS records silence\n");
+		break;
+	}
+}
+
+struct audio_capture *audio_capture_open(unsigned *rate, unsigned *channels)
+{
+	int allowed = audio_mic_permission();
+	if (allowed <= 0) {
+		capture_note(allowed < 0 ? 3 : 4, NULL);
+		return NULL;
+	}
+	struct audio_capture *c = calloc(1, sizeof *c);
+	if (!c)
+		return NULL;
+	if (!load(&c->sdl) || !c->sdl.DequeueAudio) {
+		capture_note(1, NULL);
+		goto fail;
+	}
+	if (c->sdl.InitSubSystem(SDL_INIT_AUDIO) != 0) {
+		capture_note(2, c->sdl.GetError());
+		goto fail;
+	}
+	/* (the device's own rate and channels, 16-bit: mic.c makes them stereo at the codec's rate) */
+	SDL_AudioSpec want = { .freq = 48000, .format = AUDIO_S16LSB, .channels = 2, .samples = 512 }, have;
+	c->dev = c->sdl.OpenAudioDevice(NULL, 1, &want, &have,
+					SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE);
+	if (!c->dev || have.freq <= 0 || !have.channels) {
+		capture_note(2, c->dev ? "an unusable format" : c->sdl.GetError());
+		if (c->dev)
+			c->sdl.CloseAudioDevice(c->dev);
+		c->sdl.QuitSubSystem(SDL_INIT_AUDIO);
+		goto fail;
+	}
+	c->channels = have.channels;
+	c->sdl.PauseAudioDevice(c->dev, 0);
+	*rate = (unsigned)have.freq;
+	*channels = c->channels;
+	capture_note(0, NULL);
+	return c;
+fail:
+	if (c->sdl.lib)
+		dlclose(c->sdl.lib);
+	free(c);
+	return NULL;
+}
+
+void audio_capture_close(struct audio_capture *c)
+{
+	if (!c)
+		return;
+	c->sdl.CloseAudioDevice(c->dev);
+	c->sdl.QuitSubSystem(SDL_INIT_AUDIO);
+	dlclose(c->sdl.lib);
+	free(c);
+}
+
+unsigned audio_capture_read(struct audio_capture *c, int16_t *samples, unsigned max_frames)
+{
+	uint32_t frame = 2 * c->channels;
+	return c->sdl.DequeueAudio(c->dev, samples, max_frames * frame) / frame;
 }

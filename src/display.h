@@ -207,6 +207,9 @@ void display_tools_state(struct display *d, bool shown, const char *why_not);
 /* ... and the game controllers (copied) */
 void display_pads_state(struct display *d, const struct ui_pads *pads);
 
+/* ... and of the microphone: what it's doing (NULL: not shown), and whether sound input is on */
+void display_mic_state(struct display *d, const char *status, bool on);
+
 /*
  * Game controllers: SDL's (2.0.14 and later) virtual ones, for scripted
  * runs in the window, which then come and go and send their buttons and

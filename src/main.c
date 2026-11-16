@@ -61,6 +61,11 @@ static int usage(void)
 	fprintf(stderr,
 		"      --no-sound               don't play the guest's sound (only played in the\n"
 		"                               window, in real time)\n"
+		"      --no-mic                 Mac OS records silence: your microphone is never\n"
+		"                               opened (in real time, it's opened only while Mac OS\n"
+		"                               records from it; F12's menu turns it off and on)\n"
+		"      --mic-file <file.wav>    the microphone hears this WAV file, over and over,\n"
+		"                               instead (in instruction time too)\n"
 		"      --scale auto|1|2|3|4     the window's: the display's pixels to a screen pixel,\n"
 		"                               a whole number (auto, the default: Mac OS at about 80\n"
 		"                               pixels per inch, as on a 1999 Mac; F12's menu changes\n"
@@ -85,7 +90,7 @@ static int usage(void)
 		"                               motion DX DY (the mouse moved, as games read it),\n"
 		"                               key HEX [down|up], resize W H, screenshot FILE,\n"
 		"                               floppy insert FILE, floppy eject, cdrom insert FILE,\n"
-		"                               cdrom eject,\n"
+		"                               cdrom eject, mic play FILE, mic stop,\n"
 		"                               tools install|later|never (the answer to that offer;\n"
 		"                               never: Don't Ask Again), tools offer (the offer, now)\n"
 		"      --max <n>                stop after n PowerPC instructions (with --headless,\n"
@@ -403,6 +408,10 @@ static int cmd_boot(int argc, char **argv)
 			opt.no_fast_start = true;
 		} else if (strcmp(argv[k], "--no-sound") == 0) {
 			opt.no_sound = true;
+		} else if (strcmp(argv[k], "--no-mic") == 0) {
+			opt.no_mic = true;
+		} else if (strcmp(argv[k], "--mic-file") == 0 && k + 1 < argc) {
+			opt.mic_file = argv[++k];
 		} else if (strcmp(argv[k], "--integer-scale") == 0) {
 			opt.integer_scale = true;
 		} else if (strcmp(argv[k], "--scale") == 0 && k + 1 < argc) {

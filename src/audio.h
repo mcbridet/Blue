@@ -4,7 +4,8 @@
  * dropped). Frames are queued to the device as they come; the queue is
  * kept near a small target so the guest's time and the device's clock
  * can't drift apart into growing delay: frames are resampled to play a
- * little faster or slower as it's fuller or emptier (see audio.c).
+ * little faster or slower as it's fuller or emptier (see audio.c). And the
+ * host's sound input, the same way, for the microphone.
  */
 #ifndef BLUE_AUDIO_H
 #define BLUE_AUDIO_H
@@ -34,6 +35,23 @@ struct audio_stats {
 	unsigned long drops, pads;      /* chunks dropped, and times silence was added */
 };
 void audio_take_stats(struct audio *a, struct audio_stats *s);
+
+/*
+ * The host's default sound input, for the sound chip's microphone (mic.h):
+ * 16-bit samples at the device's own rate, with its own number of channels.
+ * On macOS it opens only once the system lets Blue use the microphone
+ * (asking the user the first time); until then, or without a device, NULL
+ * (and a line on stderr saying why, once).
+ */
+struct audio_capture;
+struct audio_capture *audio_capture_open(unsigned *rate, unsigned *channels);
+void audio_capture_close(struct audio_capture *c);
+
+/* Takes up to `max_frames` frames it recorded since; returns how many */
+unsigned audio_capture_read(struct audio_capture *c, int16_t *samples, unsigned max_frames);
+
+/* Whether the host lets Blue use the microphone: 1 yes, 0 no, -1 not yet (it's asking the user) */
+int audio_mic_permission(void);
 
 /* The queue's pace (in audio.c; here for tests) */
 struct audio_pace {

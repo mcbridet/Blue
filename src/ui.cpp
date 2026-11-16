@@ -773,6 +773,15 @@ static enum ui_action menu(const struct ui_state *s, const struct keys *keys)
 		ImGui::TextDisabled("(%s)", s->pads->mapping);
 		ImGui::PopTextWrapPos();
 	}
+	if (s->mic) {
+		separator();
+		bool on = s->mic_on;
+		if (checkbox("Sound input from the microphone", &on))
+			action = UI_MIC;
+		tip("Mac OS records from your computer's microphone, which Blue opens only while Mac OS records (your "
+		    "computer may ask first). Off, Mac OS records silence");
+		ImGui::TextDisabled("(Microphone: %s)", s->mic);
+	}
 	if (s->news) {
 		separator();
 		text_wrapped(s->news, 480);     /* (the drives' news can be long) */
@@ -941,8 +950,8 @@ static void bar_light(ImDrawList *dl, const ImVec2 &centre, float k, ImU32 c, Im
 static float bar_contents(const struct ui_state *s, ImDrawList *dl, ImFont *font, float x, float mid, float k,
 			  bool brief)
 {
-	static const char *const names[UI_LEDS] = { "CPU", "Disk", "CD-ROM", "Floppy", "Network" };
-	static const char *const brief_names[UI_LEDS] = { "CPU", "Disk", "CD", "FD", "Net" };
+	static const char *const names[UI_LEDS] = { "CPU", "Disk", "CD-ROM", "Floppy", "Network", "Microphone" };
+	static const char *const brief_names[UI_LEDS] = { "CPU", "Disk", "CD", "FD", "Net", "Mic" };
 	static const char *const widest_speed[] = { "000 MHz", "00.00 GHz", nullptr };
 	const float x0 = x, size = bar_size(k);
 	for (int n = 0; n < UI_LEDS; n++) {
@@ -961,7 +970,7 @@ static float bar_contents(const struct ui_state *s, ImDrawList *dl, ImFont *font
 		x += 17 * k;
 		x += bar_text(dl, font, size, x, mid, l->absent ? bar_dim : bar_label, (brief ? brief_names : names)[n],
 			      nullptr);
-		if (l->absent)
+		if (l->absent || n == UI_LED_MIC)
 			continue;
 		x += 8 * k;
 		if (n == UI_LED_CPU) {
@@ -990,7 +999,8 @@ static float bar_contents(const struct ui_state *s, ImDrawList *dl, ImFont *font
  * to; dimmed if there's no such device, or no disk in the floppy drive,
  * whose light is there only with one), with what it reads and writes a
  * second, and the processor's lit as brightly as it's busy (Bondi Blue as
- * it naps), with its speed alongside. In narrow windows, the hint goes,
+ * it naps), with its speed alongside; the microphone's is there, amber,
+ * only while it's open. In narrow windows, the hint goes,
  * then the names are shortened, then it's all made smaller.
  */
 static void status_bar(const struct ui_state *s)

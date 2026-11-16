@@ -26,5 +26,7 @@
 	<string>@MACOS@</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Mac OS records from your microphone through Blue while one of its programs records sound.</string>
 </dict>
 </plist>

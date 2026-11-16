@@ -22,6 +22,7 @@
 #include "install.h"
 #include "jit.h"
 #include "macio.h"
+#include "mic.h"
 #include "mmio.h"
 #include "mp.h"
 #include "ndrv.h"
@@ -478,6 +479,8 @@ struct machine {
 	struct dbdma dbdma;
 	struct awacs awacs;
 	struct audio *audio;            /* host sound output, if open */
+	struct mic *mic;                /* what the sound chip's microphone and sound in hear (mic.h) */
+	struct mic_file *mic_file;      /* ... a WAV file standing in (--mic-file, scripts' mic play), or NULL */
 	FILE *wav;                      /* sound capture (BLUE_SOUND_WAV), if any */
 	uint32_t wav_frames, wav_rate;
 	struct via via;
@@ -856,6 +859,70 @@ static bool cd_input_active(const void *ctx)
 	return false;
 }
 
+/*
+ * The sound chip's microphone and sound in: the host's sound input (in
+ * real time, opened only while Mac OS records from them: see mic_sync()),
+ * or a WAV file standing in. Mac OS takes their frames at the pace of guest
+ * time, so what it records never depends on the host's timing.
+ */
+static bool mic_input_pull(void *ctx, int16_t *frames, unsigned count, unsigned rate)
+{
+	struct machine *m = ctx;
+	if (m->mic)
+		return mic_take(m->mic, frames, count, rate);
+	memset(frames, 0, (size_t)count * 2 * sizeof *frames);
+	return false;
+}
+
+static void *capture_open(void *ctx, unsigned *rate, unsigned *channels)
+{
+	(void)ctx;
+	return audio_capture_open(rate, channels);
+}
+
+static void capture_close(void *ctx, void *dev)
+{
+	(void)ctx;
+	audio_capture_close(dev);
+}
+
+static unsigned capture_read(void *ctx, void *dev, int16_t *samples, unsigned max_frames)
+{
+	(void)ctx;
+	return audio_capture_read(dev, samples, max_frames);
+}
+
+static const struct mic_host host_mic = { capture_open, capture_close, capture_read, NULL };
+
+/* A WAV file as the microphone, from its start (once, or over and over); 0, or -1 with a message */
+static int mic_play(struct machine *m, const char *path, bool loop)
+{
+	char why[200];
+	struct mic_wav w;
+	if (mic_wav_load(path, &w, why, sizeof why)) {
+		fprintf(stderr, "mic: %s: %s\n", path, why);
+		return -1;
+	}
+	if (!m->mic_file && !(m->mic_file = calloc(1, sizeof *m->mic_file))) {
+		mic_wav_free(&w);
+		return -1;
+	}
+	mic_wav_free(&m->mic_file->wav);
+	m->mic_file->wav = w;
+	mic_file_start(m->mic_file, loop);
+	m->mic->file = m->mic_file;
+	return 0;
+}
+
+/* ... no more (silence) */
+static void mic_stop(struct machine *m)
+{
+	if (!m->mic_file)
+		return;
+	mic_wav_free(&m->mic_file->wav);
+	mic_file_start(m->mic_file, false);
+}
+
 static void wav_header(uint8_t h[44], uint32_t frames, uint32_t rate)
 {
 	memcpy(h, "RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x02\0", 24);
@@ -1188,6 +1255,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->awacs.sink = play_sound;
 	m->awacs.sink_ctx = m;
 	m->awacs.input = (struct awacs_input){ cd_input_run, cd_input_pull, cd_input_active, m };
+	m->awacs.mic = (struct awacs_input){ NULL, mic_input_pull, NULL, m };
 	if (!m->wav && getenv("BLUE_SOUND_WAV") && (m->wav = fopen(getenv("BLUE_SOUND_WAV"), "wb"))) {
 		uint8_t h[44];
 		wav_header(h, 0, 44100);
@@ -2065,6 +2133,39 @@ static void pad_changed(struct machine *m, unsigned k, bool axis, unsigned which
 	pads_done(m);
 }
 
+/* What the menu shows of the microphone (in real time: then the host's may be used) */
+static void mic_state(struct machine *m)
+{
+	if (!m->display || !m->mic || !m->realtime)
+		return;
+	const char *what = m->mic->off ? "off: Mac OS records silence" :
+			   m->mic->file ? "a sound file stands in for it" :
+			   mic_open(m->mic) ? "in use (Mac OS is recording)" : "not in use";
+	display_mic_state(m->display, what, !m->mic->off);
+}
+
+/*
+ * The host's microphone is open only while Mac OS records from it: input
+ * DMA moving with the microphone or sound in selected, for a tenth of a
+ * second at least (not for the moment it runs at startup). It closes
+ * MIC_CLOSE_NS after (see mic_want()).
+ */
+static void mic_sync(struct machine *m, uint64_t now)
+{
+	if (!m->mic)
+		return;
+	bool was = mic_open(m->mic);
+	bool recording = (awacs_recording(&m->awacs) & (AWACS_IN_MIC | AWACS_IN_LINE)) &&
+			 m->awacs.run_recorded >= awacs_rate(&m->awacs) / 10;
+	mic_want(m->mic, recording, now);
+	if (mic_open(m->mic) != was) {
+		printf("mic: %s\n", was ? "the microphone is closed (Mac OS stopped recording)" :
+		       "the microphone is open: Mac OS records from it");
+		fflush(stdout);
+		mic_state(m);
+	}
+}
+
 /* What the menu shows: whether the mouse will be captured when the guest resumes, and news */
 static void menu_state(struct machine *m)
 {
@@ -2073,6 +2174,7 @@ static void menu_state(struct machine *m)
 	display_menu_state(m->display, mouse, m->menu_status);
 	drives_state(m);
 	pads_state(m);
+	mic_state(m);
 	display_tools_state(m->display, m->tools_offer, install_unofferable(&m->install));
 }
 
@@ -2232,6 +2334,13 @@ static void menu_action(struct machine *m, enum ui_action action, const char *pa
 		printf("pads: %s\n", m->pads_off ? "off (they do nothing in Mac OS)" : "on, as the keyboard and mouse");
 		fflush(stdout);
 		break;
+	case UI_MIC:
+		if (m->mic) {
+			m->mic->off = !m->mic->off;
+			printf("mic: sound input %s\n", m->mic->off ? "off (Mac OS records silence)" : "on");
+			fflush(stdout);
+		}
+		break;
 	case UI_PROMPT_YES:
 	case UI_PROMPT_NO:
 	case UI_PROMPT_ALT:
@@ -2318,6 +2427,8 @@ static void status_lights(struct machine *m, uint64_t now, bool paused)
 		s.light[k].absent = !present[k];
 	}
 	s.light[UI_LED_FLOPPY].hidden = !m->has_floppy;         /* (dimmed while it's empty) */
+	bool mic = m->mic && mic_open(m->mic);
+	s.light[UI_LED_MIC] = (struct ui_light){ .level = mic ? 255 : 0, .write = true, .hidden = !mic };
 
 	if (paused) {
 		m->cpu_busy = 0;
@@ -2752,6 +2863,11 @@ static int script_load(struct script *s, const char *path)
 			e.a = sscanf(rest, " insert %255[^\n]", e.arg) == 1 ? 1 : strstr(rest, "eject") ? 2 : 0;
 			for (size_t n = strlen(e.arg); n && (e.arg[n - 1] == ' ' || e.arg[n - 1] == '\r'); n--)
 				e.arg[n - 1] = '\0';
+		} else if (strcmp(e.cmd, "mic") == 0) {
+			/* mic play FILE (the rest of the line), mic stop */
+			e.a = sscanf(rest, " play %255[^\n]", e.arg) == 1 ? 1 : strstr(rest, "stop") ? 2 : 0;
+			for (size_t n = strlen(e.arg); n && (e.arg[n - 1] == ' ' || e.arg[n - 1] == '\r'); n--)
+				e.arg[n - 1] = '\0';
 		} else if (strcmp(e.cmd, "share") == 0) {
 			/* share eject, share refresh; share file NAME TEXT (the rest of the line, as for clipboard) */
 			char what[16] = "";
@@ -2954,6 +3070,14 @@ static void script_run(struct machine *m, struct script *s)
 				share_host_file(m, e->arg);
 			else
 				fprintf(stderr, "input script: share eject, share refresh, or share file NAME TEXT\n");
+		} else if (strcmp(e->cmd, "mic") == 0) {
+			if (e->a == 1 && !mic_play(m, e->arg, false))
+				printf("mic: %s plays as the microphone, at instruction %llu\n", e->arg,
+				       (unsigned long long)m->cpu.icount);
+			else if (e->a == 2)
+				mic_stop(m);
+			else if (e->a != 1)
+				fprintf(stderr, "input script: mic play FILE, or mic stop\n");
 		} else if (strcmp(e->cmd, "pad") == 0) {
 			pad_script(m, e->a, e->arg);
 		} else {
@@ -4856,6 +4980,8 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	m->rom = old.rom;
 	m->ram_size = old.ram_size;
 	m->audio = old.audio;
+	m->mic = old.mic;
+	m->mic_file = old.mic_file;
 	m->wav = old.wav;
 	m->wav_frames = old.wav_frames;
 	m->wav_rate = old.wav_rate;
@@ -4968,6 +5094,13 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		return 1;
 	m.scripted = opt->input_script != NULL;
 	pad_init(&m.pad, &(struct pad_output){ &m, pad_key, pad_click, pad_motion });
+	/* (the host's microphone only in real time: instruction-time runs record silence, or a file) */
+	if (!(m.mic = calloc(1, sizeof *m.mic)))
+		return 1;
+	mic_init(m.mic, opt->realtime ? &host_mic : NULL);
+	m.mic->off = opt->no_mic;
+	if (opt->mic_file && mic_play(&m, opt->mic_file, true))
+		return 1;
 	/*
 	 * CD-ROM drives' discs can be swapped (Mac OS ejects them) where someone
 	 * can swap them: in a window or real time, with an empty drive, or when
@@ -5057,6 +5190,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 			uint64_t tb = ns_to_tb(now - m.start_ns) + m.lead_tb;
 			if (opt->realtime && tb > cpu->tb)
 				cpu->tb = tb;
+			if (opt->realtime)
+				mic_sync(&m, now);
 			if (m.display && now >= m.next_frame_ns) {
 				display_frame(&m, now);
 				m.next_frame_ns = now + 1000000000u / 60;
@@ -5408,6 +5543,9 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		       m.awacs.codec_writes, awacs_rate(&m.awacs), m.awacs.frames_played, m.awacs.frames_recorded);
 	if (m.awacs.frames_through)
 		printf("\nsound: %lu frames with the CD's audio in them", m.awacs.frames_through);
+	if (m.mic_file || m.mic->opens)
+		printf("\nmic: %lu frames recorded with the microphone's sound in them (%s)", m.awacs.frames_heard,
+		       m.mic_file ? "a sound file standing in" : "the host's");
 	if (m.transfer_waits)
 		printf("\nsound: disk transfers waited out while it played: %lu (%.1f s)", m.transfer_waits,
 		       (double)m.transfer_wait_tb / TIMEBASE_HZ);
@@ -5463,6 +5601,11 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		fclose(m.wav);
 	}
 	audio_close(m.audio);
+	mic_close(m.mic);
+	free(m.mic);
+	if (m.mic_file)
+		mic_wav_free(&m.mic_file->wav);
+	free(m.mic_file);
 	display_close(m.display);
 	free(script.ev);
 	clip_free(&m.clip);

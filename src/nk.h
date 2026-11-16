@@ -118,6 +118,8 @@ struct nk_boot_options {
 	bool no_fast_start;     /* in real time, guest time doesn't run faster until the Finder is up */
 	bool interp;            /* interpret only (no JIT) */
 	bool no_sound;          /* don't play sound on the host (it plays to nowhere) */
+	bool no_mic;            /* sound input records silence (the host's microphone is never opened) */
+	const char *mic_file;   /* a WAV file standing in for the microphone (over and over), or NULL */
 	bool integer_scale;     /* the window scales a screen not its own by whole numbers only */
 	unsigned scale;         /* the window's scale: display pixels to a screen pixel (0: Auto, display.h) */
 	bool no_status_bar;     /* the window starts without its status bar */

@@ -33,6 +33,7 @@ void test_mmio(void);
 void test_dbdma(void);
 void test_awacs(void);
 void test_audio(void);
+void test_mic(void);
 void test_cdimage(void);
 void test_cdaudio(void);
 void test_cdformats(void);

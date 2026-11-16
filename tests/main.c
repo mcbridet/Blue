@@ -20,6 +20,7 @@ int main(int argc, char **argv)
 		{ "dbdma", test_dbdma },
 		{ "awacs", test_awacs },
 		{ "audio", test_audio },
+		{ "mic", test_mic },
 		{ "cdimage", test_cdimage },
 		{ "cdaudio", test_cdaudio },
 		{ "cdformats", test_cdformats },

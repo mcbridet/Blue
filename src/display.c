@@ -264,6 +264,8 @@ struct handed {
 	char tools_why_not[160];
 	bool has_pads;
 	struct ui_pads pads;
+	char mic[96];                   /* ("": not shown) */
+	bool mic_on;
 	struct display_pad_request {    /* virtual pads' changes (display_pad_virtual()), in order */
 		enum display_pad_op op;
 		unsigned n, which;
@@ -336,6 +338,8 @@ struct display {
 	char tools_why_not[160];        /* ... enabled unless this says why not */
 	bool has_pads;                  /* ... and the game controllers (display_pads_state()) */
 	struct ui_pads pads;
+	char mic[96];                   /* ... and the microphone (display_mic_state()) */
+	bool mic_on;
 	/* game controllers (with SDL's support for them: `pads_on`), by Blue's number for them */
 	bool pads_on;
 	struct {
@@ -1063,6 +1067,8 @@ static void draw(struct display *d)
 			.prompt_alt = d->prompt_alt[0] ? d->prompt_alt : NULL,
 			.drives = d->has_drives ? &d->drives : NULL,
 			.pads = d->has_pads ? &d->pads : NULL,
+			.mic = d->mic[0] ? d->mic : NULL,
+			.mic_on = d->mic_on,
 			.tools = d->tools,
 			.tools_why_not = d->tools_why_not[0] ? d->tools_why_not : NULL,
 			.scale = d->scale_chosen,
@@ -1658,6 +1664,8 @@ static void take(struct display *d, struct taken *t)
 		memcpy(d->tools_why_not, in->tools_why_not, sizeof d->tools_why_not);
 		d->has_pads = in->has_pads;
 		d->pads = in->pads;
+		memcpy(d->mic, in->mic, sizeof d->mic);
+		d->mic_on = in->mic_on;
 		d->stale |= d->menu;
 		in->info_changed = false;
 	}
@@ -2220,6 +2228,17 @@ void display_pads_state(struct display *d, const struct ui_pads *pads)
 	if (d->in.has_pads != d->pads_on || memcmp(&d->in.pads, pads, sizeof d->in.pads) != 0) {
 		d->in.has_pads = d->pads_on;
 		d->in.pads = *pads;
+		d->in.info_changed = true;
+	}
+	pthread_mutex_unlock(&host.lock);
+}
+
+void display_mic_state(struct display *d, const char *status, bool on)
+{
+	pthread_mutex_lock(&host.lock);
+	if (strcmp(d->in.mic, status ? status : "") != 0 || d->in.mic_on != on) {
+		snprintf(d->in.mic, sizeof d->in.mic, "%s", status ? status : "");
+		d->in.mic_on = on;
 		d->in.info_changed = true;
 	}
 	pthread_mutex_unlock(&host.lock);

@@ -18,13 +18,19 @@
  *
  * Output is 16-bit big-endian stereo frames from DBDMA channel 8, taken at
  * the sample rate of guest time (awacs_set_time()) and handed to a sink;
- * input on channel 9 records silence at the same pace.
+ * input on channel 9 records at the same pace, in the same format.
  *
  * The codec's analog input (`input`) is where the iMac's CD drive plays:
  * the codec plays it through to its outputs, mixed with the DMA's frames
  * (or alone), when its input selector has the CD and loop-through is on,
  * or when no input was ever selected (Mac OS 9 sets up the input side
  * only with an input component, which Blue's sound node doesn't load).
+ *
+ * What input DMA records is what the input selector (register 0) has: the
+ * microphone or sound-in (`mic`, the host's sound input), the CD (its
+ * frames as the codec takes them), both mixed, or with none, silence; at
+ * the input gain (register 0: left in bits 4-7, right in 0-3, 1.5 dB steps
+ * from 0 dB), samples clipped counting in the clip count.
  */
 #ifndef BLUE_AWACS_H
 #define BLUE_AWACS_H
@@ -39,6 +45,12 @@
 #define AWACS_DMA_OUT 8u
 #define AWACS_DMA_IN 9u
 #define AWACS_CODEC_REGS 8u
+#define AWACS_CD_REC 4096u              /* the CD's frames kept for recording (MAX_CREDIT's worth) */
+
+/* The input selector's inputs (codec register 0) */
+#define AWACS_IN_CD 0x200u
+#define AWACS_IN_MIC 0x400u
+#define AWACS_IN_LINE 0x800u            /* (sound in) */
 
 /* Where played frames go: `count` frames of big-endian left/right samples */
 typedef void awacs_sink(void *ctx, const uint8_t *frames, unsigned count, unsigned rate);
@@ -65,6 +77,15 @@ struct awacs {
 	void *sink_ctx;
 	struct awacs_input input;               /* (none if pull is NULL) */
 	uint64_t input_mixed;                   /* frames of it played with the DMA's in this awacs_set_time() */
+	struct awacs_input mic;                 /* the microphone and sound in (pull only; none if it's NULL) */
+
+	/* recording: the CD's frames the codec took while input DMA records it, waiting for it */
+	int16_t cd_rec[AWACS_CD_REC][2];
+	unsigned cd_rec_head, cd_rec_count;
+	bool cd_rec_taking;                     /* ... since a few were waiting */
+	uint8_t rec_frame[4];                   /* a frame recorded, ... */
+	unsigned rec_at;                        /* ... its bytes moved so far (4: none waiting) */
+	uint64_t run_recorded;                  /* frames input DMA moved since it last started */
 
 	/* frames since reset at the current rate: base + (time - since) * rate / time_hz */
 	uint64_t time, time_hz;
@@ -78,6 +99,7 @@ struct awacs {
 	bool log;
 	unsigned long frames_played, frames_recorded, codec_writes;
 	unsigned long frames_through;           /* ... with the analog input in them */
+	unsigned long frames_heard;             /* recorded with the microphone's sound in them */
 };
 
 void awacs_init(struct awacs *a, struct dbdma *dma, uint64_t time_hz);
@@ -99,6 +121,9 @@ bool awacs_moving(const struct awacs *a);
 
 /* Whether the analog input is played through to the outputs */
 bool awacs_through(const struct awacs *a);
+
+/* What input DMA records from now (AWACS_IN_ bits; 0 if it isn't moving, or nothing is selected) */
+unsigned awacs_recording(const struct awacs *a);
 
 extern const struct mmio_ops awacs_mmio_ops;
 

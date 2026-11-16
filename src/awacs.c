@@ -48,8 +48,15 @@ enum { CODEC_INPUT = 0, CODEC_MUTES = 1, CODEC_OUT_A = 2, CODEC_OUT_C = 4 };
 #define MUTE_A 0x200u
 #define MUTE_C 0x080u
 #define LOOP_THROUGH 0x040u             /* (register 1) */
-#define INPUT_CD 0x200u                 /* register 0's input selector: CD, microphone, line in */
-#define INPUT_SELECT 0xE00u
+#define INPUT_CD AWACS_IN_CD            /* register 0's input selector: CD, microphone, line in */
+#define INPUT_SELECT (AWACS_IN_CD | AWACS_IN_MIC | AWACS_IN_LINE)
+#define CD_REC_LEAD 64u                 /* the CD's frames waiting before recording takes them */
+
+/* Input gain: 1.5 dB steps up from 0 dB, 65536 * 10^(1.5 k / 20) */
+static const uint32_t input_gain[16] = {
+	65536, 77890, 92572, 110022, 130762, 155410, 184706, 219523,
+	260904, 310084, 368536, 438006, 520571, 618700, 735326, 873937,
+};
 
 void awacs_gain(const struct awacs *a, unsigned *left, unsigned *right)
 {
@@ -76,6 +83,50 @@ static uint64_t frames_at(const struct awacs *a, uint64_t time)
 	return a->base + (time - a->since) * awacs_rate(a) / a->time_hz;
 }
 
+static bool channel_moving(const struct awacs *a, unsigned n)
+{
+	const struct dbdma_channel *c = &a->dma->ch[n];
+	return (c->status & (DBDMA_RUN | DBDMA_ACTIVE)) == (DBDMA_RUN | DBDMA_ACTIVE) && !c->idle;
+}
+
+unsigned awacs_recording(const struct awacs *a)
+{
+	return channel_moving(a, AWACS_DMA_IN) ? a->codec[CODEC_INPUT] & INPUT_SELECT : 0;
+}
+
+/* The CD's frames as the codec takes them, kept for input DMA while it records the CD (the oldest go when full) */
+static void cd_rec_put(struct awacs *a, const int16_t *f, unsigned n)
+{
+	for (unsigned k = 0; k < n; k++) {
+		if (a->cd_rec_count == AWACS_CD_REC) {
+			a->cd_rec_head = (a->cd_rec_head + 1) % AWACS_CD_REC;
+			a->cd_rec_count--;
+		}
+		int16_t *to = a->cd_rec[(a->cd_rec_head + a->cd_rec_count++) % AWACS_CD_REC];
+		to[0] = f ? f[2 * k] : 0;
+		to[1] = f ? f[2 * k + 1] : 0;
+	}
+}
+
+/* ... taken (false: none; silence for any short, until a few are waiting again) */
+static bool cd_rec_take(struct awacs *a, int16_t *f, unsigned n)
+{
+	if (!a->cd_rec_taking && a->cd_rec_count < CD_REC_LEAD)
+		return false;
+	a->cd_rec_taking = true;
+	for (unsigned k = 0; k < n; k++) {
+		if (!a->cd_rec_count) {
+			a->cd_rec_taking = false;
+			memset(f + 2 * k, 0, (size_t)(n - k) * 2 * sizeof *f);
+			break;
+		}
+		memcpy(f + 2 * k, a->cd_rec[a->cd_rec_head], 2 * sizeof *f);
+		a->cd_rec_head = (a->cd_rec_head + 1) % AWACS_CD_REC;
+		a->cd_rec_count--;
+	}
+	return true;
+}
+
 /* Frames to the sink (NULL: the DMA's silent), with the analog input if it's played through */
 static void out(struct awacs *a, const uint8_t *frames, uint64_t count)
 {
@@ -87,11 +138,14 @@ static void out(struct awacs *a, const uint8_t *frames, uint64_t count)
 	}
 	if (frames)
 		a->input_mixed += count;
+	bool rec = awacs_recording(a) & INPUT_CD;
 	while (count) {
 		unsigned n = count < MIX_FRAMES ? (unsigned)count : MIX_FRAMES;
 		int16_t in[2 * MIX_FRAMES];
 		uint8_t mixed[MIX_FRAMES * FRAME_BYTES];
-		bool through = a->input.pull(a->input.ctx, in, n, rate) && awacs_through(a);
+		bool sounding = a->input.pull(a->input.ctx, in, n, rate), through = sounding && awacs_through(a);
+		if (rec)
+			cd_rec_put(a, sounding ? in : NULL, n);
 		if (through) {
 			for (unsigned k = 0; k < 2 * n; k++) {
 				int v = (frames ? (int16_t)be16(frames + 2 * k) : 0) + in[k];
@@ -140,6 +194,65 @@ static uint32_t dma_output(void *ctx, unsigned key, const uint8_t *data, uint32_
 	return n;
 }
 
+/* `count` frames (at most MIX_FRAMES) of what the codec records: the inputs selected, at the input gain */
+static void adc(struct awacs *a, int16_t *f, unsigned count)
+{
+	unsigned in = a->codec[CODEC_INPUT], rate = awacs_rate(a);
+	bool any = false;
+	memset(f, 0, (size_t)count * 2 * sizeof *f);
+	if ((in & (AWACS_IN_MIC | AWACS_IN_LINE)) && a->mic.pull && a->mic.pull(a->mic.ctx, f, count, rate)) {
+		a->frames_heard += count;
+		any = true;
+	}
+	int16_t cd[2 * MIX_FRAMES];
+	if ((in & INPUT_CD) && cd_rec_take(a, cd, count)) {
+		for (unsigned k = 0; k < 2 * count; k++) {
+			int v = f[k] + cd[k];
+			f[k] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+		}
+		any = true;
+	}
+	if (!any)
+		return;
+	const int64_t gain[2] = { input_gain[(in >> 4) & 15], input_gain[in & 15] };
+	if (gain[0] == 65536 && gain[1] == 65536)
+		return;
+	for (unsigned k = 0; k < 2 * count; k++) {
+		int64_t v = f[k] * gain[k & 1] / 65536;
+		if (v > 32767 || v < -32768) {
+			a->clip_count++;
+			v = v > 0 ? 32767 : -32768;
+		}
+		f[k] = (int16_t)v;
+	}
+}
+
+/* `n` bytes of recorded frames (left, right, big-endian), a frame cut short going on in the next call */
+static void record(struct awacs *a, uint8_t *data, uint32_t n)
+{
+	for (; n && a->rec_at < FRAME_BYTES; n--)
+		*data++ = a->rec_frame[a->rec_at++];
+	while (n) {
+		unsigned count = (n + FRAME_BYTES - 1) / FRAME_BYTES;
+		count = count < MIX_FRAMES ? count : MIX_FRAMES;
+		int16_t f[2 * MIX_FRAMES];
+		adc(a, f, count);
+		for (unsigned k = 0; k < count; k++) {
+			uint8_t b[FRAME_BYTES];
+			put_be16(b, (uint16_t)f[2 * k]);
+			put_be16(b + 2, (uint16_t)f[2 * k + 1]);
+			unsigned take = n < FRAME_BYTES ? n : FRAME_BYTES;
+			memcpy(data, b, take);
+			data += take;
+			n -= take;
+			if (take < FRAME_BYTES) {
+				memcpy(a->rec_frame, b, sizeof b);
+				a->rec_at = take;
+			}
+		}
+	}
+}
+
 static uint32_t dma_input(void *ctx, unsigned key, uint8_t *data, uint32_t len, bool *end)
 {
 	struct awacs *a = ctx;
@@ -147,8 +260,9 @@ static uint32_t dma_input(void *ctx, unsigned key, uint8_t *data, uint32_t len, 
 	(void)end;
 	uint32_t n = len < a->in_credit ? len : a->in_credit;
 	a->in_credit -= n;
-	memset(data, 0, n);
+	record(a, data, n);
 	a->frames_recorded += n / FRAME_BYTES;
+	a->run_recorded += n / FRAME_BYTES;
 	return n;
 }
 
@@ -157,16 +271,11 @@ void awacs_init(struct awacs *a, struct dbdma *dma, uint64_t time_hz)
 	memset(a, 0, sizeof *a);
 	a->dma = dma;
 	a->time_hz = time_hz;
+	a->rec_at = FRAME_BYTES;
 	const struct dbdma_device out = { .output = dma_output, .ctx = a };
 	const struct dbdma_device in = { .input = dma_input, .ctx = a };
 	dbdma_attach(dma, AWACS_DMA_OUT, &out);
 	dbdma_attach(dma, AWACS_DMA_IN, &in);
-}
-
-static bool channel_moving(const struct awacs *a, unsigned n)
-{
-	const struct dbdma_channel *c = &a->dma->ch[n];
-	return (c->status & (DBDMA_RUN | DBDMA_ACTIVE)) == (DBDMA_RUN | DBDMA_ACTIVE) && !c->idle;
 }
 
 static bool input_active(const struct awacs *a)
@@ -211,9 +320,15 @@ void awacs_set_time(struct awacs *a, uint64_t time)
 		a->input.run(a->input.ctx, time);
 	a->input_mixed = 0;
 	advance(a, AWACS_DMA_OUT, &a->out_credit, due);
-	advance(a, AWACS_DMA_IN, &a->in_credit, due);
+	/* (the analog input alone, before input DMA, which may record it) */
 	if (a->input.pull && !channel_moving(a, AWACS_DMA_OUT) && due > a->input_mixed)
-		out(a, NULL, due - a->input_mixed);     /* the analog input alone */
+		out(a, NULL, due - a->input_mixed);
+	advance(a, AWACS_DMA_IN, &a->in_credit, due);
+	if (!channel_moving(a, AWACS_DMA_IN)) {
+		a->run_recorded = 0;
+		a->cd_rec_count = 0;
+		a->cd_rec_taking = false;
+	}
 }
 
 static uint32_t reg_value(struct awacs *a, unsigned reg)
