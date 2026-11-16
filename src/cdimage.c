@@ -14,6 +14,7 @@
 #include "audiodec.h"
 #include "be.h"
 #include "dmg.h"
+#include "floppy.h"
 
 #define MAX_CUE (1u << 20)              /* a cue sheet's bytes */
 #define BUF_SECTORS 32u
@@ -607,6 +608,9 @@ static struct cdimage *open_plain(struct cdimage *c, char *why, size_t len)
 			return fail(c, why, len, "%s", strerror(errno));
 		if (fstat(f->fd, &st))
 			return fail(c, why, len, "%s", strerror(errno));
+		const char *other = floppy_other_image(f->fd);  /* (an archive, raw sectors without their cue sheet, ...) */
+		if (other)
+			return fail(c, why, len, "%s", other);
 		f->size = (uint64_t)st.st_size;
 		snprintf(c->kind, sizeof c->kind, "a plain image");
 	}
