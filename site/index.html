@@ -135,7 +135,6 @@
 
 <ul class="desk-icons" aria-label="Links">
   <li><a href="#top"><svg aria-hidden="true"><use href="#i-hd"/></svg><span>Macintosh HD</span></a></li>
-  <li><a href="https://github.com/__REPO__#readme"><svg aria-hidden="true"><use href="#i-doc"/></svg><span>Read Me</span></a></li>
   <li><a href="https://github.com/__REPO__"><svg aria-hidden="true"><use href="#i-folder"/></svg><span>Source</span></a></li>
   <li><a href="https://github.com/__REPO__/releases/latest"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Downloads</span></a></li>
 </ul>
@@ -334,6 +333,30 @@
     </div>
   </section>
 
+  <section class="window" id="thanks" aria-labelledby="thanks-title">
+    <div class="titlebar">
+      <span class="box close" aria-hidden="true"></span>
+      <h2 class="title" id="thanks-title">Thanks</h2>
+      <span class="box zoom" aria-hidden="true"></span>
+      <button class="box shade" type="button" aria-expanded="true" aria-label="Collapse window"></button>
+    </div>
+    <div class="window-content">
+      <div class="window-body">
+        <div class="doc">
+          <p>Blue stands on other people’s careful work:</p>
+          <ul class="thanks">
+            <li><strong>Elliot Nunn’s reverse engineering</strong> of the Power Mac ROM: <a href="https://github.com/elliotnunn/NanoKernel">NanoKernel</a>, <a href="https://github.com/elliotnunn/powermac-rom">powermac-rom</a> (NanoKernel 2, its tasks and Multiprocessing Services) and <a href="https://github.com/elliotnunn/tbxi">tbxi</a>. Blue’s kernel is its own code, written to what these document.</li>
+            <li><strong><a href="https://www.qemu.org">QEMU</a> and <a href="https://github.com/openbios/openbios">OpenBIOS</a>,</strong> which run Apple’s own NanoKernel 2, for Blue’s to be checked against; and QEMU’s libslirp for networking.</li>
+            <li><strong><a href="https://github.com/cebix/macemu">SheepShaver and Basilisk II</a>,</strong> which showed long ago that classic Mac OS can run on a host kernel.</li>
+            <li><strong><a href="https://mesa3d.org">Mesa</a></strong> and SGI’s OpenGL Utility library, for OpenGL.</li>
+            <li><strong><a href="https://www.libsdl.org">SDL</a>, <a href="https://github.com/ocornut/imgui">Dear ImGui</a></strong> and Robin Casady’s ChicagoFLF, after Susan Kare’s Chicago, for the window.</li>
+            <li><strong>Apple’s own documentation:</strong> Inside Macintosh, the technotes and developer notes, and Darwin’s headers.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
 </main>
 
 <footer class="footer">
@@ -341,7 +364,6 @@
     <ul class="footer-links">
       <li><a href="https://github.com/__REPO__">Source</a></li>
       <li><a href="https://github.com/__REPO__/releases">Releases</a></li>
-      <li><a href="https://github.com/__REPO__#readme">Read Me</a></li>
       <li><a href="https://github.com/__REPO__/issues">Issues</a></li>
     </ul>
     <p class="legal">Blue is free software under the <a href="https://github.com/__REPO__/blob/main/LICENSE">GNU GPL, version 2</a>. It is not affiliated with Apple. Mac OS, Macintosh, Power Mac, QuickDraw and Pippin are trademarks of Apple Inc.</p>
