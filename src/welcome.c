@@ -130,6 +130,7 @@ static int window(void *arg)
 		return -1;
 	unsigned width = WIDTH, height = HEIGHT, frames = 3;
 	display_follow(d, true);
+	display_shortcuts(d, true);     /* (there's no Mac OS for Command-Q to go to) */
 	desktop(d, width, height);
 	if (!prompt(d, w, "Copy Command")) {
 		display_close(d);
@@ -143,7 +144,8 @@ static int window(void *arg)
 		}
 		struct display_event ev;
 		while (display_poll(d, &ev)) {
-			if (ev.type == DISPLAY_EVENT_QUIT || (ev.type == DISPLAY_EVENT_MENU_ACTION && ev.action == UI_PROMPT_YES))
+			if (ev.type == DISPLAY_EVENT_QUIT || ev.type == DISPLAY_EVENT_CLOSE ||
+			    (ev.type == DISPLAY_EVENT_MENU_ACTION && ev.action == UI_PROMPT_YES))
 				done = true;
 			else if (ev.type == DISPLAY_EVENT_MENU_ACTION && ev.action == UI_PROMPT_ALT) {
 				display_set_clipboard(d, w->example);

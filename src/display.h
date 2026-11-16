@@ -33,7 +33,10 @@ int display_main(int (*body)(void *), void *arg);
 
 enum display_event_type {
 	DISPLAY_EVENT_NONE,
-	DISPLAY_EVENT_QUIT,
+	DISPLAY_EVENT_QUIT,             /* quit now: Blue was told to (SIGINT, SIGTERM) */
+	DISPLAY_EVENT_CLOSE,            /* the user asks to quit: the window's close button (or the window
+					 * manager's Close), Quit Blue in the menu bar or the Dock, logging out
+					 * of macOS (the machine may ask first) */
 	DISPLAY_EVENT_KEY,              /* adb_key, down */
 	DISPLAY_EVENT_MOUSE_MOVE,       /* x, y (guest screen pixels), dx, dy */
 	DISPLAY_EVENT_MOUSE_BUTTON,     /* button, down */
@@ -75,6 +78,13 @@ struct display_event {
 #define DISPLAY_SCALE_OWN (DISPLAY_SCALE_MAX + 1)       /* the display's own: a screen pixel to a unit, as the menu's */
 struct display *display_open(const char *title, unsigned width, unsigned height, bool integer, unsigned scale);
 void display_close(struct display *d);
+
+/*
+ * Command-key shortcuts: all Mac OS's (as a window opens; see menubar.h),
+ * or on macOS Command-Q and Command-H the menu bar's, quitting and hiding
+ * Blue (the window shown without Mac OS)
+ */
+void display_shortcuts(struct display *d, bool host_keys);
 
 /*
  * Whether the screen follows the window's size (the guest tools' Blue

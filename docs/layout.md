@@ -36,7 +36,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           drawing, in software and with OpenGL, and presenting), display.c (SDL2
           window, on the main thread, and what the Mac hands it), density.c (displays'
           pixels per inch, for its scale), ui.cpp (its menu and prompts, with Dear ImGui),
-          chooser.c, chooser_mac.m (the host's file chooser, for the menu's Insert...), audio.c (SDL2 sound), png.c,
+          chooser.c, chooser_mac.m (the host's file chooser, for the menu's Insert...),
+          menubar_mac.m (Blue's menu bar on macOS, without SDL's shortcuts), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), env.c (settings' old names),
           icon.c (the window's icon), font.c (its font), hostlib.c (where
           SDL2 and libslirp are loaded from), welcome.c (the window shown

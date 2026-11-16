@@ -252,8 +252,8 @@ NVRAM is the same 8 KB that RTAS serves 8.5–9.0.4, kept in the same
 file goes with an install whichever ROM starts it. 9.1 reads NVRAM at
 startup and keeps its changes in memory until it shuts down or restarts,
 when it writes them to the chip, as on an iMac: changes since startup are
-lost when Blue quits otherwise (closing the window, or Turn off in its
-menu). The end-of-run statistics count the chip's reads and writes.
+lost when Blue quits otherwise (Turn off, in its menu or when it asks on
+quitting). The end-of-run statistics count the chip's reads and writes.
 
 9.1 installs onto a disk image with its own installer, as 9.0 does
 (`build/blue disk create hd91.img 2G "Macintosh HD"`, then the CD and the

@@ -274,9 +274,24 @@ idle.
 
 To finish, shut down from Mac OS (Special > Shut Down): applications get
 to save their work, the shared folder's changes are written back, and
-Blue quits when the Mac turns itself off. Closing the window is like
-pulling the plug: Blue stops at once, keeping NVRAM, but anything unsaved
-in Mac OS is lost, and a shared folder's changes aren't written back.
+Blue quits when the Mac turns itself off.
+
+Closing the window, or quitting Blue (Quit Blue in the menu bar, Quit in
+the Dock, or logging out of macOS), asks first while Mac OS is running:
+
+- **Shut Down** (the default, Return) presses the Mac's power key, as
+  [Shut down…](#blues-menu-f12) in Blue's menu does: Mac OS asks whether to
+  shut down, applications may ask to save their work, and Blue quits when
+  the Mac turns itself off.
+- **Turn Off** quits at once, like pulling the plug: anything unsaved in
+  Mac OS is lost, and a shared folder's changes aren't written back. NVRAM
+  is kept.
+- **Cancel** (Esc) goes back to the Mac.
+
+Asking again while Blue is asking changes nothing: choose Turn Off to
+quit at once. Before Mac OS has started up (until the Finder is up),
+there's nothing to lose, and Blue quits straight away. Interrupting Blue
+in its terminal (Control-C) still stops it at once.
 
 ### Blue's menu (F12)
 
@@ -389,15 +404,13 @@ otherwise scale the screen by a fraction.
 | Option (⌥) | Option | Alt |
 | Control | Control | Ctrl |
 
-Command-key shortcuts go to Mac OS, as on a Mac. F12 is Blue's: it opens
-the menu, and Mac OS never sees it. (On a Mac laptop, you may need to hold
-fn as you press F12.)
-
-On macOS, Blue's own menu bar has a few Command-key shortcuts of its own,
-which act on Blue as well as reaching Mac OS: **Command-Q** quits Blue
-and **Command-W** closes its window (both at once, as if you pulled the
-plug), Command-H hides Blue and Command-M minimises its window. Choose
-Quit and Close from Mac OS's File menu instead.
+Command-key shortcuts go to Mac OS, as on a Mac: Command-Q quits the Mac
+OS application in front, Command-W closes its window, and so on. Blue
+takes none of them, on macOS too: its menu bar has just About Blue, Hide
+Blue and Quit Blue, without shortcuts. (macOS keeps a few for itself,
+such as Command-Tab, Command-Space and its screenshot keys.) F12 is
+Blue's: it opens the menu, and Mac OS never sees it. (On a Mac laptop,
+you may need to hold fn as you press F12.)
 
 The Mac has a one-button mouse: the left button is its button, and the
 others, and the scroll wheel, do nothing. For a contextual menu,
@@ -494,9 +507,9 @@ Changes cross over once per run, in each direction:
   time you start it.
 - What Mac OS changes on the disk is written back to the folder when Mac
   OS shuts down (or you put the disk away). If Blue stops without that,
-  because you closed the window or turned the Mac off, nothing is written
-  back, and anything that had changed is kept as a disk image in the
-  folder's `.blue-recovery` folder instead.
+  because you chose Turn Off (in Blue's menu, or when it asked as you
+  quit), nothing is written back, and anything that had changed is kept
+  as a disk image in the folder's `.blue-recovery` folder instead.
 
 Blue never destroys your files: a file that Mac OS deleted or replaced is
 moved to `.blue-recovery` inside the folder, under the date and time, and
@@ -785,9 +798,11 @@ only pauses the Mac.
 
 ### Blue quit when I pressed Command-Q (or Command-W)
 
-On macOS, Blue's own menu bar takes Command-Q, Command-W, Command-H and
-Command-M as well as Mac OS (see [Keyboard and mouse](#keyboard-and-mouse)):
-use Mac OS's File menu to quit applications and close windows.
+Not any more: Command-Q, Command-W and every other Command-key shortcut
+now go to Mac OS only (see [Keyboard and mouse](#keyboard-and-mouse)).
+Older versions of Blue had a menu bar on macOS that took them as well,
+and quit or closed the window at once. Closing the window or quitting
+Blue now asks first while Mac OS is running (see [The window](#the-window)).
 
 ### My mouse is stuck in the window
 
@@ -809,9 +824,9 @@ four drives are taken by disks and CDs, there's no spare CD-ROM drive.
 
 ### My changes in the shared folder didn't reach my computer
 
-Changes are written back when Mac OS shuts down, not when you close the
-window. If Blue stopped without a shutdown, look in the folder's
-`.blue-recovery` folder. See [The shared folder](#the-shared-folder).
+Changes are written back when Mac OS shuts down: choose Shut Down when
+Blue asks as you quit. If Blue stopped without a shutdown (Turn Off), look
+in the folder's `.blue-recovery` folder. See [The shared folder](#the-shared-folder).
 
 ### Mac OS forgot my settings, or my startup disk
 

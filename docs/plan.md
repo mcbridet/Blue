@@ -3527,3 +3527,33 @@ Facts later tasks need, added as they are found.
     `DISPLAY_SCALE_OWN` (the display's own scale: a screen pixel to a
     unit, the window 600 x 360 units on any display) rather than Auto, and
     follows the window's size with a desktop of that size.
+- **Quitting, and SDL's menu bar on macOS** (the window; macOS 27, SDL
+  2.32.10 as the app carries it, and Homebrew's sdl2-compat 2.32.74 on
+  SDL 3.4.18): SDL makes a menu bar whenever it makes the application
+  object (`Cocoa_RegisterApp()`, if `NSApp` is nil: then the menu bar is
+  always nil too, so one made before can't stop it; and making `NSApp`
+  first would leave out SDL's application class, which dispatches its
+  events, and its `finishLaunching`). Logged with a probe injected into
+  `blue` (`DYLD_INSERT_LIBRARIES`; it posts key events into the
+  application's queue, clicks the close button, sends a Quit Apple event
+  to the process): Settings… ⌘, Hide ⌘H, Hide Others ⌥⌘H, Quit ⌘Q;
+  Window: Close ⌘W, Close All ⌥⌘W (AppKit's), Minimize ⌘M, Toggle Full
+  Screen fn-F and ⌃⌘F. SDL sees a key event before `-[NSApp sendEvent:]`
+  offers it to the menu bar, so Mac OS got ⌘Q and Blue ended at once
+  ("stopped: window closed"); ⌘H hid Blue, ⌘M minimised it, and the close
+  button and a Quit Apple event (the Dock's Quit, logging out) ended the
+  run at once too. Blue now replaces the menu bar once SDL is up (About
+  Blue, Hide Blue, Quit Blue, no key equivalents, no Window menu), and
+  asks before quitting once the Finder has run (`quit_asked()` in nk.c):
+  ⌘Q in Mac OS Setup Assistant asked "Are you sure you want to quit?",
+  ⌘H, ⌘M and ⌘W left Blue as it was, the close button, a Quit Apple event
+  and Quit Blue asked (twice asked, once shown), Shut Down brought Mac OS
+  8.5's "Are you sure you want to shut down your computer now?" and then
+  "stopped: guest powered off", Turn Off "stopped: turned off on
+  quitting", Cancel brought back the guest tools' offer it had covered,
+  and closing before the Finder was up quit at once. Under sdl2-compat,
+  key events posted to a window that isn't key don't reach the program
+  (SDL 2.32.10's do): a test harness's artefact. SIGINT and SIGTERM: SDL
+  installs handlers (they become SDL_QUIT) only where it finds SIG_DFL,
+  so Blue's own, installed first, keep them quitting at once (a
+  background job's SIGINT is SIG_IGN, and stays so).

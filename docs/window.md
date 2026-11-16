@@ -93,6 +93,22 @@ Super key on a PC's) is Mac OS's Command key, Alt is Option, and Control
 is Control. Only the left mouse button reaches Mac OS; F12 is Blue's own
 (the menu), and isn't passed on.
 
+Every Command-key combination is Mac OS's, on macOS too. SDL makes a menu
+bar of its own when it starts (`CreateApplicationMenus()` in SDL 2.32.10's
+`SDL_cocoaevents.m`, and SDL3's under sdl2-compat; whenever it makes the
+application object, so not even an earlier menu bar stops it), whose key
+equivalents acted on Blue as well as reaching Mac OS (SDL sees a key
+before AppKit offers it to the menu bar): Command-Q (Quit, SDL_QUIT) and
+Command-W (Close) ended the run at once, Command-H hid Blue, Command-M
+minimised the window, Control-Command-F made it full screen, and AppKit
+added Option-Command-W and -H. Once SDL is up, Blue puts its own in place
+(`src/menubar_mac.m`): the application menu alone, About Blue, Hide Blue
+and Quit Blue, without key equivalents, and no Window menu. Nothing else in
+SDL acts on Command keys (its views' `keyDown:` do nothing, and no hint
+changes that). The window without a command, which runs no Mac OS, gives
+Hide Blue and Quit Blue their Command-H and Command-Q (`display_shortcuts()`).
+macOS keeps its own (Command-Tab, Command-Space, the screenshot keys).
+
 The Mac's cursor goes where the host pointer is (the low-memory mouse
 globals are set, as SheepShaver does), until Mac OS has had its cursor
 hidden for 0.3 s, as games hide it: then the pointer is captured and its
@@ -114,7 +130,7 @@ Mac OS asks "Are you sure you want to shut down your computer now?" and
 shuts down properly if told to (applications ask to save, NVRAM and a
 shared folder are written, and the run ends when the Mac turns itself
 off); Turn off, the power switch, for a Mac that doesn't answer (straight
-away; it keeps NVRAM, as closing the window does); Install Guest
+away; it keeps NVRAM); Install Guest
 Tools... (the offer, see [guest-tools.md](guest-tools.md)); a screenshot of the Mac's screen
 (a PNG on the Desktop, or in the current directory without one, named
 for when it was taken); fullscreen (at the desktop's resolution); the
@@ -125,9 +141,38 @@ cursor; and what's in the floppy and CD-ROM drives, each with Eject and
 Insert... (see [drives.md](drives.md#removable-drives)). In real time guest time doesn't count
 the pause, so the Mac's clock is that much behind afterwards.
 
+## Quitting
+
+SDL turns the window's close button (or the window manager's Close, on
+Linux), Quit in the menu bar and the Dock, and logging out of macOS (a
+Quit Apple event: SDL's application has `terminate:` send SDL_QUIT) into
+SDL_QUIT, which the window passes on as `DISPLAY_EVENT_CLOSE`. Once Mac
+OS has started up (the Finder has been the current application since the
+Mac last started), Blue asks over the Mac's screen, as the guest tools'
+offer does (in its place if that's showing, and with the menu closed): "Mac
+OS is still running. Shut it down before Blue quits?", with Shut Down
+(the default: the power key, as the menu's Shut down... presses, so Mac
+OS asks and Blue quits when it turns itself off), Cancel (Esc: back to
+the Mac, and to the offer if it was showing) and Turn Off (on the left:
+at once). Asked again while it's asking, it goes on asking: Turn Off is
+there, and a second click on the close button shouldn't lose anyone's
+work. Before the Finder is up there's nothing to lose but a startup, so
+Blue quits at once, as it does in scripted runs (whose input is the
+script's) and with an SDL too old for the menu. Logging out of macOS
+waits while Blue asks, and macOS gives up on the logout if Mac OS takes
+too long. The run's last line says why it ended: `window closed`, `turned
+off on quitting`, `turned off from the menu`, or `guest powered off`.
+
+SIGINT and SIGTERM still end a window's run at once: SDL would make them
+SDL_QUIT too, so while the window is open Blue has handlers of its own,
+put in place before SDL's would be (SDL leaves alone a handler it finds,
+as it does SIG_IGN, a background job's), and the window passes them on as
+`DISPLAY_EVENT_QUIT` (`told to quit (SIGINT or SIGTERM)`).
+
 ## The look
 
-The menu, the prompts (the guest tools' offer and news) and the status
+The menu, the prompts (the guest tools' offer and news, and whether to
+shut Mac OS down on quitting) and the status
 bar look like Mac OS 8's Platinum, in the colours of Blue's site
 (`site/style.css`), the same on macOS and Linux, in a window or
 fullscreen: Platinum grey boxes in a black frame, bevelled (light top
