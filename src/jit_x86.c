@@ -3421,7 +3421,7 @@ static void build_stubs(struct jit *j)
 
 	j->settle = t->x.p;
 	build_settle(t);
-	while ((uintptr_t)t->x.p & 4095)        /* (the blocks area at a 4 KB boundary: see the plan's findings) */
+	while ((uintptr_t)t->x.p & 4095)        /* (the blocks area at a 4 KB boundary: see docs/jit.md, Under Rosetta) */
 		x86_int3(B);
 
 	j->blocks_start = j->code_free = t->x.p;

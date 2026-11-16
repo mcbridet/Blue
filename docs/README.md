@@ -20,7 +20,8 @@ test and debug it.
   Enhancements, the clipboard, the 3D engine, OpenGL and the Pippin library.
 - [3d.md](3d.md): 3D: the RAVE engine and QuickDraw 3D, Blue's OpenGL, the
   software rasterizer and the GPU backend.
-- [jit.md](jit.md): the PowerPC JIT for AArch64 and x86-64.
+- [jit.md](jit.md): the PowerPC JIT for AArch64 and x86-64, and its
+  measurements.
 - [bring-up.md](bring-up.md): how Mac OS 8.5, 9.0, 9.1 and 9.2.2 were made to
   start up.
 - [software.md](software.md): notes on particular programs and games:
@@ -46,4 +47,3 @@ test and debug it.
 - [future.md](future.md): ideas further off: a modem, a serial port,
   infrared, 3D sound, sound input, AltiVec, 3dfx Glide, pictures on the
   clipboard, printing, game controllers and more CD formats.
-- [x86-jit-plan.md](x86-jit-plan.md): the x86-64 JIT.

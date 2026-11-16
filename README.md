@@ -929,8 +929,7 @@ The [docs](docs/README.md) folder goes further:
 - [The QEMU reference](docs/qemu-reference.md) and
   [NanoKernel 2 under QEMU](docs/nk2-reference.md).
 - [The roadmap](docs/roadmap.md), [the plan](docs/plan.md) with its
-  findings, [ideas for later](docs/future.md), and the plan for
-  [the x86-64 JIT](docs/x86-jit-plan.md).
+  findings, and [ideas for later](docs/future.md).
 
 ## License
 
