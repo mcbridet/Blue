@@ -86,7 +86,7 @@ static const uint8_t rtas_token_field[RTAS_TOKEN_COUNT] = {
 static void interrupt_set(struct dt_node *n, const uint32_t *sources, unsigned count, bool index)
 {
 	uint32_t masks[2][8], levels[3] = { 0 };
-	bootinfo_level_masks(masks);
+	bootinfo_level_masks(masks, true);
 	for (unsigned k = 0; k < count && k < 3; k++)
 		for (unsigned l = 1; l < 8; l++)
 			if (masks[sources[k] / 32][l] & 0x80000000u >> (sources[k] % 32))
@@ -96,6 +96,68 @@ static void interrupt_set(struct dt_node *n, const uint32_t *sources, unsigned c
 	dt_prop_cells(n, "AAPL,interrupt-vectors", sources, count);
 	if (index)
 		dt_prop_cells(n, "AAPL,interrupt-index", sources, count);
+}
+
+/*
+ * The SCC (Z85C30 in Mac I/O) as the iMac's firmware describes it, twice:
+ * an "escc" node whose channels each have their control, data and
+ * enhancement registers and two DMA channels (transmit, receive), and an
+ * interrupt for each of the three; and "escc-legacy", the same channels at
+ * the old Macs' register layout. Channel A is the internal modem, channel
+ * B the infrared port. Mac OS's serial driver (the ROM's SerialDMA) finds
+ * the channels by "compatible" (chrp,es2 and chrp,es3) and takes the
+ * addresses and interrupts from AAPL,address and the interrupt set. The
+ * modem's extension, which makes the port "Internal Modem", looks for it
+ * two ways: Mac OS 8.5's iMac Modem Extension wants chrp,es2's "slot-names"
+ * to be Modem; Mac OS 9's Internal V.90 Modem wants a channel A ("ch-a")
+ * whose compatible names "cobalt" too, which the legacy one does here (8.5's
+ * wants chrp,es2 alone; see findings.md).
+ */
+static void escc_channel(struct dt_node *escc, bool a, bool legacy, bool index)
+{
+	struct dt_node *ch = dt_add_node(escc, a ? "ch-a" : "ch-b");
+	const uint32_t control = legacy ? MACIO_SCC + (a ? 2u : 0) : MACIO_ESCC + (a ? 0x20u : 0);
+	const uint32_t data = legacy ? control + 4 : control + 0x10;
+	const uint32_t enhance = legacy ? MACIO_SCC + (a ? 0xAu : 8u) : MACIO_ESCC + (a ? 0x50u : 0x40u);
+	const uint32_t tx = a ? MACIO_DMA_SCC_A_TX : MACIO_DMA_SCC_B_TX, rx = a ? MACIO_DMA_SCC_A_RX : MACIO_DMA_SCC_B_RX;
+	const uint32_t reg[10] = { control - MACIO_BASE, 1, data - MACIO_BASE, 1, enhance - MACIO_BASE, 1,
+				   tx - MACIO_BASE, 0x100, rx - MACIO_BASE, 0x100 };
+	const uint32_t addr[5] = { control, data, enhance, tx, rx };
+	const uint32_t irq[3] = { a ? IRQ_SCC_A : IRQ_SCC_B, a ? IRQ_DMA_SCC_A_TX : IRQ_DMA_SCC_B_TX,
+				  a ? IRQ_DMA_SCC_A_RX : IRQ_DMA_SCC_B_RX };
+	static const char legacy_modem[] = "chrp,es4\0cobalt";
+	dt_prop_str(ch, "device_type", "serial");
+	if (legacy && a)
+		dt_prop(ch, "compatible", legacy_modem, sizeof legacy_modem);
+	else
+		dt_prop_str(ch, "compatible", legacy ? "chrp,es5" : a ? "chrp,es2" : "chrp,es3");
+	dt_prop_cells(ch, "reg", reg, 10);
+	dt_prop_cells(ch, "AAPL,address", addr, 5);
+	if (legacy)
+		return;
+	uint8_t slot[4 + 6] = { 0, 0, 0, 1 };
+	memcpy(slot + 4, a ? "Modem" : "IrDA", a ? 6 : 5);
+	dt_prop_cells(ch, "interrupts", irq, 3);
+	interrupt_set(ch, irq, 3, index);
+	dt_prop(ch, "slot-names", slot, a ? 10 : 9);
+}
+
+static void escc_node(struct dt_node *mio, bool legacy, bool index)
+{
+	static const char compatible[] = "escc\0CHRP,es0";
+	struct dt_node *escc = dt_add_node(mio, legacy ? "escc-legacy" : "escc");
+	const uint32_t reg[2] = { (legacy ? MACIO_SCC : MACIO_ESCC) - MACIO_BASE, 0x1000 };
+	dt_prop_str(escc, "device_type", legacy ? "escc-legacy" : "escc");
+	if (legacy)
+		dt_prop_str(escc, "compatible", "chrp,es1");
+	else
+		dt_prop(escc, "compatible", compatible, sizeof compatible);
+	dt_prop_cells(escc, "reg", reg, 2);
+	dt_prop_u32(escc, "#address-cells", 1);
+	dt_prop_u32(escc, "#size-cells", 1);
+	dt_prop_empty(escc, "ranges");
+	escc_channel(escc, true, legacy, index);
+	escc_channel(escc, false, legacy, index);
 }
 
 static void pci_ids(struct dt_node *n, uint32_t vendor, uint32_t device, uint32_t class_code, uint32_t rev)
@@ -286,6 +348,11 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	dt_prop_str(pm, "device_type", "power-mgt");
 	dt_prop_str(pm, "compatible", "cuda");
 	dt_prop_str(pm, "mgt-kind", "min-consumption-pwm-led");
+
+	if (hw->escc) {
+		escc_node(mio, true, hw->interrupt_index);
+		escc_node(mio, false, hw->interrupt_index);
+	}
 
 	/*
 	 * Sound: the codec's registers and its two DMA channels, found by Mac OS's
@@ -490,7 +557,7 @@ int bootinfo_build(struct mem *mem, struct bootinfo *bi, const struct bootinfo_m
 	/* Interrupt tables: per-level source masks (bank 0 words, then bank 1),
 	 * and 64 dispatch slots -> source numbers */
 	uint32_t masks[2][8];
-	bootinfo_level_masks(masks);
+	bootinfo_level_masks(masks, hw->escc);
 	for (uint32_t k = 0; k < 8; k++) {
 		mem_w32(mem, bi->vector_mask_table + 4 * k, masks[0][k]);
 		mem_w32(mem, bi->vector_mask_table + 0x20 + 4 * k, masks[1][k]);
@@ -510,7 +577,7 @@ int bootinfo_build(struct mem *mem, struct bootinfo *bi, const struct bootinfo_m
 	return 0;
 }
 
-void bootinfo_level_masks(uint32_t masks[2][8])
+void bootinfo_level_masks(uint32_t masks[2][8], bool escc)
 {
 	memset(masks, 0, sizeof(uint32_t[2][8]));
 	masks[0][1] |= 0x80000000u >> IRQ_VIA1;                 /* VIA1 (Cuda, timers): level 1 */
@@ -521,6 +588,9 @@ void bootinfo_level_masks(uint32_t masks[2][8])
 	masks[0][2] |= 0x80000000u >> IRQ_USB;                  /* USB: level 2 */
 	masks[0][2] |= 0x80000000u >> IRQ_DISPLAY;              /* the display (VBL): level 2 */
 	masks[0][4] |= 0x80000000u >> IRQ_SCC_A | 0x80000000u >> IRQ_SCC_B;    /* SCC: level 4 */
+	if (escc)                                               /* ... and its DMA channels */
+		masks[0][4] |= 0x80000000u >> IRQ_DMA_SCC_A_TX | 0x80000000u >> IRQ_DMA_SCC_A_RX |
+			       0x80000000u >> IRQ_DMA_SCC_B_TX | 0x80000000u >> IRQ_DMA_SCC_B_RX;
 }
 
 void bootinfo_hwinfo(const struct bootinfo *bi, uint8_t *hw)

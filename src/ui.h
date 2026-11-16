@@ -47,6 +47,7 @@ enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI
 		 UI_INSTALL_TOOLS,              /* (the offer to install the guest tools, asked for) */
 		 UI_SHARE_REFRESH,              /* (the shared folder's volume put away, written back, offered again) */
 		 UI_PADS,                       /* (game controllers as the keyboard and mouse, or not) */
+		 UI_MODEM_HANG_UP,              /* (the modem's call ended) */
 		 UI_EJECT,                      /* (+ the drive's number in the menu's list) */
 		 UI_EJECT_LAST = UI_EJECT + UI_DRIVES - 1,
 		 UI_INSERT,                     /* (likewise: an image chosen with the host's file chooser) */
@@ -124,6 +125,9 @@ struct ui_state {
 	const char *tools_why_not;
 	/* the window's scale chosen (0: Auto), and Auto's (display pixels to a screen pixel) */
 	unsigned scale, scale_auto;
+	/* the modem: what it's doing ("Modem: connected to host:port"; NULL: there's none), with a call to hang up */
+	const char *modem;
+	bool modem_call;
 };
 
 #define UI_STATUS_BAR_HEIGHT 24         /* in the window's units */

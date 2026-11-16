@@ -18,6 +18,8 @@ int main(int argc, char **argv)
 		{ "cuda", test_cuda },
 		{ "mmio", test_mmio },
 		{ "dbdma", test_dbdma },
+		{ "scc", test_scc },
+		{ "modem", test_modem },
 		{ "awacs", test_awacs },
 		{ "audio", test_audio },
 		{ "cdimage", test_cdimage },

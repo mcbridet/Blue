@@ -264,6 +264,8 @@ struct handed {
 	char tools_why_not[160];
 	bool has_pads;
 	struct ui_pads pads;
+	char modem[160];                /* ("": no modem) */
+	bool modem_call;
 	struct display_pad_request {    /* virtual pads' changes (display_pad_virtual()), in order */
 		enum display_pad_op op;
 		unsigned n, which;
@@ -336,6 +338,8 @@ struct display {
 	char tools_why_not[160];        /* ... enabled unless this says why not */
 	bool has_pads;                  /* ... and the game controllers (display_pads_state()) */
 	struct ui_pads pads;
+	char modem[160];                /* ... and the modem (display_modem_state(); "": none) */
+	bool modem_call;
 	/* game controllers (with SDL's support for them: `pads_on`), by Blue's number for them */
 	bool pads_on;
 	struct {
@@ -1067,6 +1071,8 @@ static void draw(struct display *d)
 			.tools_why_not = d->tools_why_not[0] ? d->tools_why_not : NULL,
 			.scale = d->scale_chosen,
 			.scale_auto = d->scale_auto,
+			.modem = d->modem[0] ? d->modem : NULL,
+			.modem_call = d->modem_call,
 		};
 		enum ui_action action = ui_draw(d->ui, &s, ww, wh, ww > 0 ? (float)pw / (float)ww : 1, now - d->menu_time);
 		d->menu_time = now;
@@ -1658,6 +1664,8 @@ static void take(struct display *d, struct taken *t)
 		memcpy(d->tools_why_not, in->tools_why_not, sizeof d->tools_why_not);
 		d->has_pads = in->has_pads;
 		d->pads = in->pads;
+		memcpy(d->modem, in->modem, sizeof d->modem);
+		d->modem_call = in->modem_call;
 		d->stale |= d->menu;
 		in->info_changed = false;
 	}
@@ -2220,6 +2228,19 @@ void display_pads_state(struct display *d, const struct ui_pads *pads)
 	if (d->in.has_pads != d->pads_on || memcmp(&d->in.pads, pads, sizeof d->in.pads) != 0) {
 		d->in.has_pads = d->pads_on;
 		d->in.pads = *pads;
+		d->in.info_changed = true;
+	}
+	pthread_mutex_unlock(&host.lock);
+}
+
+void display_modem_state(struct display *d, const char *text, bool call)
+{
+	pthread_mutex_lock(&host.lock);
+	char t[sizeof d->in.modem];
+	snprintf(t, sizeof t, "%s", text ? text : "");
+	if (strcmp(t, d->in.modem) != 0 || call != d->in.modem_call) {
+		memcpy(d->in.modem, t, sizeof t);
+		d->in.modem_call = call;
 		d->in.info_changed = true;
 	}
 	pthread_mutex_unlock(&host.lock);

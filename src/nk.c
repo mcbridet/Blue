@@ -1,5 +1,6 @@
 #include "nk.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -23,6 +24,8 @@
 #include "jit.h"
 #include "macio.h"
 #include "mmio.h"
+#include "modem.h"
+#include "modemnet.h"
 #include "mp.h"
 #include "ndrv.h"
 #include "net.h"
@@ -622,6 +625,17 @@ struct machine {
 	struct net net;                 /* Ethernet */
 	uint8_t lanlib[4096];
 	uint64_t net_poll_ns;           /* host time the host network was last serviced */
+	/* the internal modem, on the SCC's channel A (see modem_setup()) */
+	bool modem_on;                  /* it's there */
+	struct modem modem;
+	struct modemnet modemnet;       /* ... its calls over TCP (real time) */
+	struct modem_phonebook phonebook;
+	int modem_far;                  /* the input script's far end (MODEM_FAR_*) */
+	bool modem_pickup;              /* ... picks up the next call dialled */
+	char modem_far_got[512];        /* ... and what it got since it last said */
+	size_t modem_far_len;
+	uint64_t modem_poll_ns;         /* host time the calls were last serviced */
+	uint8_t modem_gpio;             /* its reset line, as Mac OS 9 sets it (see modem_gpio_read()) */
 	uint32_t level_mask[2][8];      /* 68k interrupt level of each source */
 	uint32_t pending[2];            /* last pending sources reported in HWInfo */
 	unsigned ipl;                   /* last 68k interrupt level posted to the emulator */
@@ -921,6 +935,280 @@ static void fill_page_holes(struct machine *m)
 	}
 }
 
+/* ---- the internal modem ----------------------------------------------------------- */
+
+/*
+ * The iMac's internal modem (modem.h) on the SCC's channel A, its serial
+ * port. It's there in a window or real time (unless --no-modem), and in
+ * instruction-time runs that ask for it (--modem-listen, --modem-phonebook,
+ * or an input script's "modem" commands): the device tree has the SCC's
+ * channels only then (Mac OS's serial driver and the iMac Modem Extension
+ * find the modem by them), so other runs stay as they were. Its calls go
+ * over TCP in real time only, as Ethernet does; in instruction time
+ * dialling gives NO CARRIER, but for the input script's own far end
+ * (modem pickup, modem ring), so runs stay reproducible.
+ */
+enum { MODEM_FAR_NONE, MODEM_FAR_RINGING, MODEM_FAR_CALL };    /* the input script's far end */
+
+static void update_device_time(struct machine *m);
+
+static void scc_to_modem(void *ctx, uint8_t byte, uint64_t tb)
+{
+	struct machine *m = ctx;
+	modem_from_dte(&m->modem, byte, tb);
+}
+
+static int modem_to_scc(void *ctx, uint64_t tb)
+{
+	struct machine *m = ctx;
+	modem_set_time(&m->modem, tb);
+	return modem_to_dte(&m->modem);
+}
+
+static void scc_lines_to_modem(void *ctx, bool dtr, bool rts, uint64_t tb)
+{
+	struct machine *m = ctx;
+	modem_dte_lines(&m->modem, dtr, rts, tb);
+}
+
+static void modem_ready(void *ctx)
+{
+	struct machine *m = ctx;
+	scc_rx_ready(&m->scc, SCC_A);
+}
+
+static void modem_lines_to_scc(void *ctx, bool dcd, bool cts)
+{
+	struct machine *m = ctx;
+	scc_set_inputs(&m->scc, SCC_A, dcd, cts);
+}
+
+/* What the script's far end got since it last said, printed (\r, \n, \\, \" and \xHH for the rest) */
+static void far_end_got(struct machine *m)
+{
+	if (!m->modem_far_len)
+		return;
+	printf("modem: the far end got \"");
+	for (size_t k = 0; k < m->modem_far_len; k++) {
+		uint8_t b = (uint8_t)m->modem_far_got[k];
+		if (b == '\r' || b == '\n')
+			printf("\\%c", b == '\r' ? 'r' : 'n');
+		else if (b == '"' || b == '\\')
+			printf("\\%c", b);
+		else if (b >= 32 && b < 127)
+			putchar(b);
+		else
+			printf("\\x%02X", b);
+	}
+	printf("\"\n");
+	m->modem_far_len = 0;
+}
+
+static bool far_dial(void *ctx, const char *host, unsigned port)
+{
+	struct machine *m = ctx;
+	if (m->modem_pickup) {
+		m->modem_pickup = false;
+		m->modem_far = MODEM_FAR_CALL;
+		printf("modem: the script's far end answers the call to %s:%u\n", host, port);
+		modem_connected(&m->modem);
+		return true;
+	}
+	return m->realtime && modemnet_dial(&m->modemnet, host, port);
+}
+
+static bool far_answer(void *ctx)
+{
+	struct machine *m = ctx;
+	if (m->modem_far == MODEM_FAR_RINGING) {
+		m->modem_far = MODEM_FAR_CALL;
+		return true;
+	}
+	return modemnet_answer(&m->modemnet);
+}
+
+static void far_send(void *ctx, const uint8_t *data, size_t len)
+{
+	struct machine *m = ctx;
+	if (m->modem_far != MODEM_FAR_CALL) {
+		modemnet_send(&m->modemnet, data, len);
+		return;
+	}
+	for (size_t k = 0; k < len; k++) {
+		if (m->modem_far_len == sizeof m->modem_far_got)
+			far_end_got(m);
+		m->modem_far_got[m->modem_far_len++] = (char)data[k];
+	}
+}
+
+static void far_hangup(void *ctx)
+{
+	struct machine *m = ctx;
+	if (m->modem_far == MODEM_FAR_NONE) {
+		modemnet_hangup(&m->modemnet);
+		return;
+	}
+	far_end_got(m);
+	m->modem_far = MODEM_FAR_NONE;
+	printf("modem: the call with the script's far end ended\n");
+}
+
+/*
+ * Mac OS 9's Internal V.90 Modem resets the modem through the Heathrow GPIO
+ * for it (+0x6D) at the iMac's Mac I/O address, 0x80000000, which it has
+ * written in; Blue's Mac I/O is elsewhere (bootinfo.h), so while the modem is
+ * attached that byte is answered there too. The modem needs no resetting:
+ * what's written is only kept.
+ */
+#define MODEM_GPIO_BASE 0x80000000u
+#define MODEM_GPIO_RESET 0x6Du
+
+static uint32_t modem_gpio_read(void *ctx, uint32_t offset, unsigned size)
+{
+	const struct machine *m = ctx;
+	uint32_t v = 0;
+	for (unsigned k = 0; k < size; k++)
+		v = v << 8 | (offset + k == MODEM_GPIO_RESET ? m->modem_gpio : 0);
+	return v;
+}
+
+static void modem_gpio_write(void *ctx, uint32_t offset, unsigned size, uint32_t value)
+{
+	struct machine *m = ctx;
+	for (unsigned k = 0; k < size; k++)
+		if (offset + k == MODEM_GPIO_RESET)
+			m->modem_gpio = (uint8_t)(value >> (8 * (size - 1 - k)));
+}
+
+static const struct mmio_ops modem_gpio_ops = { modem_gpio_read, modem_gpio_write };
+
+static void modem_setup(struct machine *m, const struct nk_boot_options *opt)
+{
+	m->modem.log = getenv("BLUE_LOG_MODEM") != NULL;
+	m->modem.book = &m->phonebook;
+	m->modem.line = (struct modem_line){ far_dial, far_answer, far_send, far_hangup, m };
+	m->modem.dte = (struct modem_dte){ modem_ready, modem_lines_to_scc, m };
+	scc_attach(&m->scc, SCC_A, &(struct scc_port){ scc_to_modem, modem_to_scc, scc_lines_to_modem, m });
+	modem_init(&m->modem, TIMEBASE_HZ);
+	modemnet_init(&m->modemnet, &m->modem);
+	m->modemnet.log = m->modem.log;
+	mmio_add(&m->bus, MODEM_GPIO_BASE, MEM_PAGE_SIZE, &modem_gpio_ops, m, "modem gpio");
+	if (opt->modem_listen && m->realtime) {
+		char err[300];
+		if (modemnet_listen(&m->modemnet, opt->modem_listen, err, sizeof err))
+			printf("modem: listening for calls on %s\n", m->modemnet.listening);
+		else
+			fprintf(stderr, "modem: can't listen for calls: %s\n", err);
+	}
+}
+
+/* --modem-phonebook's file: nonzero (and why, said) if it can't be read */
+static int modem_load_phonebook(struct modem_phonebook *pb, const char *path)
+{
+	FILE *f = fopen(path, "r");
+	char *text = NULL, err[200];
+	size_t len = 0;
+	if (f) {
+		fseek(f, 0, SEEK_END);
+		long size = ftell(f);
+		fseek(f, 0, SEEK_SET);
+		text = size >= 0 && size < (1 << 20) ? malloc((size_t)size + 1) : NULL;
+		if (text) {
+			len = fread(text, 1, (size_t)size, f);
+			text[len] = '\0';
+		}
+		fclose(f);
+	}
+	if (!text) {
+		fprintf(stderr, "%s: can't be read\n", path);
+		return -1;
+	}
+	int n = modem_phonebook_parse(pb, text, err, sizeof err);
+	free(text);
+	if (n < 0) {
+		fprintf(stderr, "%s: %s\n", path, err);
+		return -1;
+	}
+	printf("modem: %d number%s in the phonebook\n", n, n == 1 ? "" : "s");
+	return 0;
+}
+
+/* The input script's modem commands: its own far end, for reproducible runs */
+static int modem_text(const char *in, uint8_t *out, size_t size)
+{
+	size_t n = 0;
+	for (; *in && n < size; in++) {
+		unsigned v;
+		if (*in == '\\' && (in[1] == 'r' || in[1] == 'n' || in[1] == '\\')) {
+			in++;
+			out[n++] = *in == 'r' ? '\r' : *in == 'n' ? '\n' : '\\';
+		} else if (*in == '\\' && in[1] == 'x' && sscanf(in + 2, "%2x", &v) == 1) {
+			out[n++] = (uint8_t)v;
+			in += isxdigit((unsigned char)in[3]) ? 3 : 2;
+		} else {
+			out[n++] = (uint8_t)*in;
+		}
+	}
+	return (int)n;
+}
+
+static void modem_script(struct machine *m, int what, const char *arg)
+{
+	struct modem *mo = &m->modem;
+	update_device_time(m);
+	switch (what) {
+	case 1:                                 /* ring: the script's far end calls */
+		if (mo->call != MODEM_IDLE) {
+			printf("modem: the script's call finds the line busy\n");
+			break;
+		}
+		m->modem_far = MODEM_FAR_RINGING;
+		modem_incoming(mo, "the input script");
+		break;
+	case 2:                                 /* pickup: it answers the next call dialled */
+		m->modem_pickup = true;
+		break;
+	case 3: {                               /* recv TEXT: it sends that */
+		uint8_t data[256];
+		int n = modem_text(arg, data, sizeof data);
+		if (mo->call != MODEM_CONNECTED || (size_t)n > modem_room(mo))
+			printf("modem: the far end's text goes nowhere (no call, or the modem's in command mode)\n");
+		else
+			modem_received(mo, data, (size_t)n);
+		break;
+	}
+	case 4:                                 /* hangup: the far end hangs up */
+		if (m->modem_far != MODEM_FAR_NONE) {
+			far_end_got(m);
+			m->modem_far = MODEM_FAR_NONE;
+		} else {
+			modemnet_hangup(&m->modemnet);
+		}
+		modem_far_hangup(mo);
+		break;
+	default:
+		fprintf(stderr, "input script: modem ring, modem pickup, modem recv TEXT or modem hangup\n");
+		break;
+	}
+	m->dev_dirty = true;
+}
+
+/* What the menu shows of the modem */
+static void modem_state(struct machine *m)
+{
+	char text[400] = "", state[300];
+	if (!m->display)
+		return;
+	if (m->modem_on) {
+		modem_state_text(&m->modem, state, sizeof state);
+		if (m->modem.call != MODEM_IDLE || !m->modemnet.listening[0])
+			snprintf(text, sizeof text, "Modem: %s", state);
+		else
+			snprintf(text, sizeof text, "Modem: idle, listening for calls on %s", m->modemnet.listening);
+	}
+	display_modem_state(m->display, m->modem_on ? text : NULL, m->modem_on && m->modem.call != MODEM_IDLE);
+}
+
 /* What went in the floppy drive */
 static void floppy_said(const struct disk *d)
 {
@@ -1139,6 +1427,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		.boot_device = have_boot_device ? boot_device : NULL,
 		/* (a ROM file before 9.1's has its Start Manager take the first drive that works: the chosen one) */
 		.first_disk = !parcels && opt->rom_from_disk && opt->rom_chosen ? opt->rom_disk : 0,
+		.escc = m->modem_on,
 	};
 	memcpy(hw.mac, mac, 6);
 	for (unsigned k = 0; k < m->disks; k++) {
@@ -1152,7 +1441,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	if (hw.parcels)
 		printf("rom: %u parcels, %u device-tree properties from them (tree %u KB)\n", hw.parcels->count,
 		       m->bootinfo.parcel_props, m->bootinfo.device_tree_size >> 10);
-	bootinfo_level_masks(m->level_mask);
+	bootinfo_level_masks(m->level_mask, hw.escc);
 	m->clock = (struct guest_clock){ opt->fixed_time, &m->cpu.tb, TIMEBASE_HZ };
 	m->rtas.clock = &m->clock;
 
@@ -1164,13 +1453,17 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	mmio_add(&m->bus, MACIO_BASE, MACIO_PAGE_SIZE, &macio_mmio_ops, &m->macio, "mac-io");
 	mmio_add(&m->bus, MACIO_VIA1, VIA_SIZE, &via_mmio_ops, &m->via, "via1");
 	mmio_pure_reads(&m->bus, via_pure_read);
-	scc_init(&m->scc);
+	scc_init(&m->scc, TIMEBASE_HZ);
+	m->scc.log = getenv("BLUE_LOG_SERIAL") != NULL;
 	mmio_add(&m->bus, MACIO_SCC, SCC_SIZE, &scc_mmio_ops, &m->scc, "scc");
 	dbdma_init(&m->dbdma, &m->mem, m->ram_size);
 	m->dbdma.bus = &m->bus;
 	m->dbdma.interrupt = dma_interrupt;
 	m->dbdma.interrupt_ctx = &m->macio;
 	mmio_add(&m->bus, MACIO_DBDMA, DBDMA_SIZE, &dbdma_mmio_ops, &m->dbdma, "dbdma");
+	scc_dma(&m->scc, &m->dbdma);
+	if (m->modem_on)
+		modem_setup(m, opt);
 	awacs_init(&m->awacs, &m->dbdma, TIMEBASE_HZ);
 	m->awacs.log = getenv("BLUE_LOG_SOUND") != NULL;
 	m->audio_log = getenv("BLUE_LOG_AUDIO") != NULL;
@@ -1536,6 +1829,11 @@ static void nap(struct machine *m, uint64_t deadline, bool idle)
 	ev = video_next_vbl(&m->video);
 	if (ev != UINT64_MAX && host_ns_at(m, ev, TIMEBASE_HZ) < until)
 		until = host_ns_at(m, ev, TIMEBASE_HZ);
+	ev = scc_next_event(&m->scc);
+	if (m->modem_on && modem_next_event(&m->modem) < ev)
+		ev = modem_next_event(&m->modem);
+	if (ev != UINT64_MAX && host_ns_at(m, ev, TIMEBASE_HZ) < until)
+		until = host_ns_at(m, ev, TIMEBASE_HZ);
 	if (deadline != UINT64_MAX && host_ns_at(m, deadline, TIMEBASE_HZ) < until)
 		until = host_ns_at(m, deadline, TIMEBASE_HZ);
 	bool sound = awacs_playing(&m->awacs), fast = m->fast_start && !sound && now >= m->fast_pause_ns;
@@ -1545,8 +1843,8 @@ static void nap(struct machine *m, uint64_t deadline, bool idle)
 		until = m->next_frame_ns;
 	if (sound && now + SOUND_WAKE_NS < until)
 		until = now + SOUND_WAKE_NS;   /* (the sound DMA moves only as time is seen to pass) */
-	if (m->net.backend && now + NET_WAKE_NS < until)
-		until = now + NET_WAKE_NS;     /* (to see the host network's traffic) */
+	if ((m->net.backend || (m->modem_on && modemnet_active(&m->modemnet))) && now + NET_WAKE_NS < until)
+		until = now + NET_WAKE_NS;     /* (to see the host network's traffic, and the modem's calls) */
 	if (until <= now + 20000)       /* not worth a system call */
 		return;
 	if (m->display) {
@@ -2073,6 +2371,7 @@ static void menu_state(struct machine *m)
 	display_menu_state(m->display, mouse, m->menu_status);
 	drives_state(m);
 	pads_state(m);
+	modem_state(m);
 	display_tools_state(m->display, m->tools_offer, install_unofferable(&m->install));
 }
 
@@ -2226,6 +2525,14 @@ static void menu_action(struct machine *m, enum ui_action action, const char *pa
 	case UI_CAPTURE_MOUSE:
 	case UI_RELEASE_MOUSE:
 		m->mouse_released = action == UI_RELEASE_MOUSE;
+		break;
+	case UI_MODEM_HANG_UP:
+		if (m->modem_on) {
+			update_device_time(m);
+			modem_hangup(&m->modem);
+			m->dev_dirty = true;
+			modem_state(m);
+		}
 		break;
 	case UI_PADS:
 		m->pads_off = !m->pads_off;
@@ -2760,6 +3067,18 @@ static int script_load(struct script *s, const char *path)
 			e.a = !strcmp(what, "eject") ? 1 : !strcmp(what, "refresh") ? 2 : !strcmp(what, "file") ? 3 : 0;
 			if (e.a == 3)
 				script_text(rest + n, e.arg, sizeof e.arg);
+		} else if (strcmp(e.cmd, "modem") == 0) {
+			/* modem ring, modem pickup, modem hangup; modem recv TEXT (the rest of the line, with \xHH too) */
+			char what[16] = "";
+			int n = 0;
+			sscanf(rest, " %15s%n", what, &n);
+			e.a = !strcmp(what, "ring") ? 1 : !strcmp(what, "pickup") ? 2 : !strcmp(what, "recv") ? 3 :
+			      !strcmp(what, "hangup") ? 4 : 0;
+			if (e.a == 3) {
+				const char *t = rest + n;
+				size_t len = strcspn(t, "\r\n");
+				snprintf(e.arg, sizeof e.arg, "%.*s", (int)len, *t == ' ' ? t + 1 : t);
+			}
 		} else if (strcmp(e.cmd, "pad") == 0) {
 			/* pad N plug [NAME], pad N unplug, pad N button NAME down|up, pad N axis NAME VALUE */
 			e.a = -1;
@@ -2954,6 +3273,9 @@ static void script_run(struct machine *m, struct script *s)
 				share_host_file(m, e->arg);
 			else
 				fprintf(stderr, "input script: share eject, share refresh, or share file NAME TEXT\n");
+		} else if (strcmp(e->cmd, "modem") == 0) {
+			if (m->modem_on)
+				modem_script(m, e->a, e->arg);
 		} else if (strcmp(e->cmd, "pad") == 0) {
 			pad_script(m, e->a, e->arg);
 		} else {
@@ -2984,12 +3306,15 @@ static void follow_window(struct machine *m)
 	m->want_w = m->want_h = 0;
 }
 
-/* Device time: VIA ticks from the timebase; DMA channels that had more to do continue. */
+/* Device time: VIA ticks from the timebase, the serial port's characters; DMA channels that had more to do continue. */
 static void update_device_time(struct machine *m)
 {
 	via_set_time(&m->via, m->cpu.tb * VIA_HZ / TIMEBASE_HZ);
 	ohci_set_time(&m->ohci, m->cpu.tb / TIMEBASE_HZ * OHCI_BIT_HZ + m->cpu.tb % TIMEBASE_HZ * OHCI_BIT_HZ / TIMEBASE_HZ);
 	video_set_time(&m->video, m->cpu.tb);
+	scc_set_time(&m->scc, m->cpu.tb);
+	if (m->modem_on)
+		modem_set_time(&m->modem, m->cpu.tb);
 	if (m->dbdma.poll)
 		dbdma_poll(&m->dbdma);
 	awacs_set_time(&m->awacs, m->cpu.tb);
@@ -2997,9 +3322,11 @@ static void update_device_time(struct machine *m)
 
 /*
  * The first timebase at which devices change by themselves: an enabled VIA
- * timer runs out, a USB frame with an enabled interrupt starts or the
- * display's vertical blank interrupts, or now if sound DMA moves or a DMA
- * channel is to continue.
+ * timer runs out, a USB frame with an enabled interrupt starts, the
+ * display's vertical blank interrupts, a character goes out or comes in on
+ * the serial port, or the modem's timers (an escape's guard time, a ring,
+ * dialling's timeout) run out, or now if sound DMA moves or a DMA channel
+ * is to continue.
  * Until then, and unless something touched them, updating the devices and
  * interrupts would change nothing, so exits skip it.
  */
@@ -3018,7 +3345,10 @@ static uint64_t device_next_tb(const struct machine *m)
 		if (usb < next)
 			next = usb;
 	}
-	return next;
+	uint64_t serial = scc_next_event(&m->scc);
+	if (m->modem_on && modem_next_event(&m->modem) < serial)
+		serial = modem_next_event(&m->modem);
+	return serial < next ? serial : next;
 }
 
 /*
@@ -3125,6 +3455,8 @@ static bool update_interrupts(struct machine *m, bool force)
 	macio_set_line(&m->macio, IRQ_VIA1, via_irq(&m->via));
 	macio_set_line(&m->macio, IRQ_USB, ohci_irq(&m->ohci));
 	macio_set_line(&m->macio, IRQ_DISPLAY, video_irq(&m->video));
+	macio_set_line(&m->macio, IRQ_SCC_A, scc_irq(&m->scc, SCC_A));
+	macio_set_line(&m->macio, IRQ_SCC_B, scc_irq(&m->scc, SCC_B));
 	if (force)
 		macio_release(&m->macio);
 
@@ -4792,6 +5124,8 @@ static void stop_machine(struct machine *m)
 	rave_free(&m->rave);
 	opengl_free(&m->opengl);
 	net_free(&m->net);
+	if (m->modem_on)
+		modemnet_free(&m->modemnet);
 	jit_free(m->cpu.jit);
 	mem_free(&m->mem);
 }
@@ -4902,6 +5236,8 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	m->dev_accesses = old.dev_accesses;
 	m->dev_inline = old.dev_inline;
 	m->net_poll_ns = old.net_poll_ns;
+	m->modem_on = old.modem_on;
+	m->phonebook = old.phonebook;
 	/* (discs stay in their drives) */
 	snprintf(m->floppy_path, sizeof m->floppy_path, "%s", old.floppy.media ? old.floppy.media_path : "");
 	memcpy(m->floppy_queue, old.floppy_queue, sizeof m->floppy_queue);
@@ -4990,6 +5326,15 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 	m.share_swap = opt->share && (opt->window || opt->realtime);
 	for (size_t k = 0; k < script.count; k++)
 		m.share_swap |= opt->share && strcmp(script.ev[k].cmd, "share") == 0;
+	/* The internal modem, where someone can use it, or where asked for (see modem_setup()) */
+	m.modem_on = opt->window || opt->realtime || opt->modem_listen || opt->modem_phonebook;
+	for (size_t k = 0; k < script.count; k++)
+		m.modem_on |= strcmp(script.ev[k].cmd, "modem") == 0;
+	m.modem_on &= !opt->no_modem;
+	if (m.modem_on && opt->modem_phonebook && modem_load_phonebook(&m.phonebook, opt->modem_phonebook))
+		return 1;
+	if (opt->modem_listen && !opt->realtime && !opt->no_modem)
+		printf("modem: --modem-listen is for real time (the window, or --headless --realtime): no calls come in\n");
 	m.gpu = open_gpu(opt);          /* (getting ready in the background) */
 	if (start_machine(&m, opt))
 		return 1;
@@ -5100,6 +5445,16 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 				m.net.kick = false;
 				macio_pulse(&m.macio, IRQ_DMA_ENET_RX);
 			}
+			if (m.modem_on && modemnet_active(&m.modemnet)) {
+				uint64_t now = host_ns();
+				if (now - m.modem_poll_ns >= NET_POLL_NS) {
+					m.modem_poll_ns = now;
+					update_device_time(&m);
+					modemnet_poll(&m.modemnet);
+				}
+			}
+			if (m.modem_far_len)
+				far_end_got(&m);
 			if (m.perf_on)
 				perf_report(&m);
 			if (m.audio_log)
@@ -5423,6 +5778,9 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		jit_print_stats(m.cpu.jit, stdout);
 	if (m.net.sent || m.net.received)
 		printf("net: %lu frames sent, %lu received, %lu dropped\n", m.net.sent, m.net.received, m.net.dropped);
+	if (m.modem_on && (m.modem.calls || m.scc.ch[SCC_A].tx_bytes || m.scc.ch[SCC_A].rx_bytes))
+		printf("modem: %lu calls; the serial port sent %lu characters and received %lu\n", m.modem.calls,
+		       m.scc.ch[SCC_A].tx_bytes, m.scc.ch[SCC_A].rx_bytes);
 	uint64_t cycles, insns;
 	if (m.perf_on && perf_read(&m.perf, &cycles, &insns) && m.cpu.icount)
 		printf("perf total: %.3f billion host cycles; %.2f instructions and %.3f cycles per guest instruction\n",

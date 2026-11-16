@@ -122,6 +122,9 @@ struct nk_boot_options {
 	unsigned scale;         /* the window's scale: display pixels to a screen pixel (0: Auto, display.h) */
 	bool no_status_bar;     /* the window starts without its status bar */
 	bool no_net;            /* no host network behind the guest's Ethernet (real time has one) */
+	bool no_modem;          /* no internal modem (a window or real time has one) */
+	const char *modem_listen;       /* calls come in on this "[ADDRESS:]PORT" (real time), or NULL */
+	const char *modem_phonebook;    /* numbers the modem dials: lines of "NUMBER HOST:PORT", or NULL */
 	bool no_gpu;            /* the 3D engine never draws with the host's GPU (real time does, if it can) */
 	double max_seconds;     /* stop after this much host time (0: no limit) */
 	int64_t fixed_time;     /* real-time clock starts here (Unix time) instead of the host's */

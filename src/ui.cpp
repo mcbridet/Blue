@@ -736,6 +736,16 @@ static enum ui_action menu(const struct ui_state *s, const struct keys *keys)
 		if (chosen != UI_NONE)
 			action = chosen;
 	}
+	if (s->modem) {
+		separator();
+		ImGui::BeginDisabled(!s->modem_call);
+		if (button("Hang Up", 0))
+			action = UI_MODEM_HANG_UP;
+		ImGui::EndDisabled();
+		tip("Ends the modem's call, as if the far end had hung up");
+		beside_buttons();
+		ImGui::TextUnformatted(s->modem);
+	}
 
 	separator();
 	if (button("Screenshot", MENU_BUTTON))

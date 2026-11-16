@@ -207,6 +207,9 @@ void display_tools_state(struct display *d, bool shown, const char *why_not);
 /* ... and the game controllers (copied) */
 void display_pads_state(struct display *d, const struct ui_pads *pads);
 
+/* ... and the modem: what it's doing (copied; NULL: there's none), and whether it has a call to hang up */
+void display_modem_state(struct display *d, const char *text, bool call);
+
 /*
  * Game controllers: SDL's (2.0.14 and later) virtual ones, for scripted
  * runs in the window, which then come and go and send their buttons and
