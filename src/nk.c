@@ -513,6 +513,15 @@ struct machine {
 	unsigned shown_w, shown_h, shown_bpp;
 	uint64_t shown_ns;
 	struct video_palette palette;   /* (for the depth and CLUT shown) */
+	/* BLUE_WINDOW_PROFILE (see window_profile()) */
+	bool window_profile;
+	uint64_t wp_ns, wp_start_ns;    /* host time of the last report, and the first frame */
+	uint64_t wp_idle_ns;            /* idle_ns then */
+	struct display_times wp_display;        /* the window's times then */
+	uint64_t wp_frames, wp_changed, wp_rows, wp_bytes;      /* since then: frames, those that changed, ... */
+	uint64_t wp_ns_in, wp_cpu_in;   /* ... the time display_frame() took on this thread */
+	uint64_t wp_changes_ns, wp_changes_cpu; /* ... finding the changes and copying them */
+	uint64_t wp_convert_ns, wp_convert_cpu; /* ... converting them (into the window's texture) */
 	bool quit;                      /* the window was closed */
 	bool redraw;                    /* the window needs drawing even if the screen is the same */
 	bool mouse_captured;            /* host motion goes to the ADB mouse (see follow_cursor()) */
@@ -723,6 +732,14 @@ static uint64_t host_ns(void)
 {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+
+/* The processor time this thread has taken */
+static uint64_t thread_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
 	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 
@@ -1094,6 +1111,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	awacs_init(&m->awacs, &m->dbdma, TIMEBASE_HZ);
 	m->awacs.log = getenv("BLUE_LOG_SOUND") != NULL;
 	m->audio_log = getenv("BLUE_LOG_AUDIO") != NULL;
+	m->window_profile = getenv("BLUE_WINDOW_PROFILE") != NULL;
 	/*
 	 * The codec's status says it's valid, as a running codec's does. Mac
 	 * OS's sound plug-in polls for it after setting the codec up, and
@@ -1837,8 +1855,54 @@ static void status_lights(struct machine *m, uint64_t now, bool paused)
  */
 #define DISPLAY_BANDS 8                 /* bands of changed rows, at most (see video_changed_rows()) */
 
+/*
+ * BLUE_WINDOW_PROFILE: every second of host time, how many frames the
+ * window showed and how much of the screen changed in them, and where
+ * showing them took the host's time: on this thread (which stops the Mac
+ * meanwhile) and on the window's, if it has one of its own; in
+ * milliseconds a frame, of the host clock and, in brackets, of the thread's
+ * processor time.
+ */
+static void window_profile(struct machine *m, uint64_t now)
+{
+	if (!m->wp_ns) {
+		m->wp_ns = m->wp_start_ns = now;
+		m->wp_idle_ns = m->idle_ns;
+		display_times(m->display, &m->wp_display);
+		return;
+	}
+	if (now - m->wp_ns < 1000000000u)
+		return;
+	struct display_times t;
+	display_times(m->display, &t);
+	double s = (double)(now - m->wp_ns) * 1e-9, f = m->wp_frames ? (double)m->wp_frames : 1;
+	double idle = (double)(m->idle_ns - m->wp_idle_ns) * 1e-9, busy = s - idle > 1e-3 ? s - idle : 1e-3;
+	static const char *const names[DISPLAY_TIMES] = { "convert", "upload", "draw", "present", "events" };
+	printf("window @%.1f s: %.1f frames/s, %.1f changed (%.0f rows, %.2f MB a frame); "
+	       "the Mac stopped %.3f ms a frame [%.3f], %.2f%% of the time, %.2f%% of its busy time: "
+	       "changes %.3f [%.3f], convert %.3f [%.3f]",
+	       (double)(now - m->wp_start_ns) * 1e-9, (double)m->wp_frames / s, (double)m->wp_changed / s,
+	       m->wp_changed ? (double)m->wp_rows / (double)m->wp_changed : 0.0,
+	       m->wp_changed ? (double)m->wp_bytes / (double)m->wp_changed * 1e-6 : 0.0,
+	       (double)m->wp_ns_in * 1e-6 / f, (double)m->wp_cpu_in * 1e-6 / f, (double)m->wp_ns_in * 1e-7 / s,
+	       (double)m->wp_ns_in * 1e-7 / busy, (double)m->wp_changes_ns * 1e-6 / f,
+	       (double)m->wp_changes_cpu * 1e-6 / f, (double)m->wp_convert_ns * 1e-6 / f,
+	       (double)m->wp_convert_cpu * 1e-6 / f);
+	for (unsigned k = 0; k < DISPLAY_TIMES; k++)
+		if (k != DISPLAY_TIME_CONVERT)
+			printf(", %s %.3f [%.3f]", names[k], (double)(t.ns[k] - m->wp_display.ns[k]) * 1e-6 / f,
+			       (double)(t.cpu_ns[k] - m->wp_display.cpu_ns[k]) * 1e-6 / f);
+	printf("; %.1f draws/s\n", (double)(t.draws - m->wp_display.draws) / s);
+	m->wp_ns = now;
+	m->wp_idle_ns = m->idle_ns;
+	m->wp_display = t;
+	m->wp_frames = m->wp_changed = m->wp_rows = m->wp_bytes = 0;
+	m->wp_ns_in = m->wp_cpu_in = m->wp_changes_ns = m->wp_changes_cpu = m->wp_convert_ns = m->wp_convert_cpu = 0;
+}
+
 static void display_frame(struct machine *m, uint64_t now)
 {
+	uint64_t cpu0 = m->window_profile ? thread_ns() : 0;
 	unsigned w = video_width(&m->video), h = video_height(&m->video), bpp = video_bpp(&m->video);
 	size_t rb = video_row_bytes(&m->video);
 	unsigned rows = rb * h > m->video.fb_size ? (unsigned)(m->video.fb_size / rb) : h;
@@ -1861,18 +1925,45 @@ static void display_frame(struct machine *m, uint64_t now)
 	} else {
 		n = video_changed_rows(m->shown, fb, rb, rows, bands, DISPLAY_BANDS);
 	}
+	uint64_t changes_ns = 0, changes_cpu = 0, convert_ns = 0, convert_cpu = 0, t0, c0;
+	if (m->window_profile) {
+		changes_ns = host_ns() - now;
+		changes_cpu = thread_ns() - cpu0;
+	}
 	for (unsigned k = 0; k < n; k++) {
 		size_t at = bands[k].from * rb, pitch;
 		unsigned count = bands[k].to - bands[k].from;
+		t0 = m->window_profile ? host_ns() : 0;
+		c0 = m->window_profile ? thread_ns() : 0;
 		memcpy(m->shown + at, fb + at, count * rb);
+		if (m->window_profile) {
+			uint64_t t1 = host_ns(), c1 = thread_ns();
+			changes_ns += t1 - t0;
+			changes_cpu += c1 - c0;
+			t0 = t1;
+			c0 = c1;
+			m->wp_rows += count;
+			m->wp_bytes += count * rb;
+		}
 		uint32_t *px = display_rows(m->display, w, h, bands[k].from, bands[k].to, &pitch);
 		if (px) {
 			video_convert(&m->palette, fb + at, rb, w, count, px, pitch);
+			if (m->window_profile) {
+				convert_ns += host_ns() - t0;
+				convert_cpu += thread_ns() - c0;
+			}
 			display_rows_done(m->display);
 		}
 	}
-	if (n)
+	if (n) {
 		m->shown_ns = now;
+		m->wp_changed++;
+	}
+	m->wp_frames++;
+	m->wp_changes_ns += changes_ns;
+	m->wp_changes_cpu += changes_cpu;
+	m->wp_convert_ns += convert_ns;
+	m->wp_convert_cpu += convert_cpu;
 	const struct video_cursor *c = &m->video.cursor;
 	struct display_cursor pointer = {
 		.visible = m->video.hw_cursor && c->set && c->visible,
@@ -1896,6 +1987,11 @@ static void display_frame(struct machine *m, uint64_t now)
 			adb_key(&m->cuda.adb, key, down);
 			fast_start_input(m, key & 0x7F, down);
 		}
+	}
+	if (m->window_profile) {
+		m->wp_ns_in += host_ns() - now;
+		m->wp_cpu_in += thread_ns() - cpu0;
+		window_profile(m, now);
 	}
 	if (m->paused)
 		stay_paused(m);

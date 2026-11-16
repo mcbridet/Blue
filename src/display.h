@@ -152,6 +152,20 @@ void display_set_clipboard(struct display *d, const char *text);
 /* Returns false when there are no more events. */
 bool display_poll(struct display *d, struct display_event *ev);
 
+/*
+ * BLUE_WINDOW_PROFILE: the host time drawing and presenting have taken so
+ * far, in nanoseconds of the host clock and of the processor time of the
+ * thread they ran on, by part, and how many times the window was drawn
+ */
+enum { DISPLAY_TIME_CONVERT, DISPLAY_TIME_UPLOAD, DISPLAY_TIME_DRAW, DISPLAY_TIME_PRESENT, DISPLAY_TIME_EVENTS,
+       DISPLAY_TIMES };
+struct display_times {
+	unsigned long frames;           /* frames of the screen taken to show */
+	unsigned long draws;
+	uint64_t ns[DISPLAY_TIMES], cpu_ns[DISPLAY_TIMES];
+};
+void display_times(struct display *d, struct display_times *t);
+
 /* Maps a USB HID usage (SDL scancode) to an ADB key code; 0xFF if none. */
 uint8_t display_hid_to_adb(unsigned usage);
 

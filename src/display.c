@@ -200,7 +200,30 @@ struct display {
 	bool has_drives;                /* the menu shows drives with removable media: */
 	struct ui_drives drives;
 	char drop[1024];                /* the file last dropped on the window */
+	struct display_times times;     /* (BLUE_WINDOW_PROFILE) */
 };
+
+static uint64_t clock_ns(clockid_t clock)
+{
+	struct timespec ts;
+	clock_gettime(clock, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+
+/* A part's time, from `from` and `cpu_from` (clock_ns()'s), to now; returns the clock now */
+static uint64_t timed(struct display *d, unsigned part, uint64_t from, uint64_t *cpu_from)
+{
+	uint64_t now = clock_ns(CLOCK_MONOTONIC), cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID);
+	d->times.ns[part] += now - from;
+	d->times.cpu_ns[part] += cpu - *cpu_from;
+	*cpu_from = cpu;
+	return now;
+}
+
+void display_times(struct display *d, struct display_times *t)
+{
+	*t = d->times;
+}
 
 /* The status bar's height in the window's units (0: hidden) */
 static int bar_units(const struct display *d)
@@ -549,6 +572,7 @@ static void draw_cursor(struct display *d, const struct display_view *v, unsigne
 
 static void draw(struct display *d)
 {
+	uint64_t cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID), t = clock_ns(CLOCK_MONOTONIC);
 	int ww, wh, pw, ph;
 	struct display_view v = screen_view(d, &ww, &wh, &pw, &ph);
 	unsigned k = v.prescale, max = (unsigned)d->max_texture;
@@ -582,7 +606,10 @@ static void draw(struct display *d)
 		d->menu_time = now;
 	}
 	d->bar_stale = d->screen_stale = d->cursor_stale = false;
+	t = timed(d, DISPLAY_TIME_DRAW, t, &cpu);
 	d->sdl.RenderPresent(d->renderer);
+	timed(d, DISPLAY_TIME_PRESENT, t, &cpu);
+	d->times.draws++;
 }
 
 struct display *display_open(const char *title, unsigned width, unsigned height, bool integer)
@@ -692,9 +719,11 @@ uint32_t *display_rows(struct display *d, unsigned width, unsigned height, unsig
 
 void display_rows_done(struct display *d)
 {
+	uint64_t cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID), t = clock_ns(CLOCK_MONOTONIC);
 	if (d->locked)
 		d->sdl.UnlockTexture(d->texture);
 	d->locked = false;
+	timed(d, DISPLAY_TIME_UPLOAD, t, &cpu);
 }
 
 void display_cursor(struct display *d, const struct display_cursor *c)
@@ -763,7 +792,17 @@ static void show_status_bar(struct display *d, bool on)
 
 static void menu_key(struct display *d, unsigned scancode, bool down);
 
+static bool poll(struct display *d, struct display_event *ev);
+
 bool display_poll(struct display *d, struct display_event *ev)
+{
+	uint64_t cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID), t = clock_ns(CLOCK_MONOTONIC);
+	bool got = poll(d, ev);
+	timed(d, DISPLAY_TIME_EVENTS, t, &cpu);
+	return got;
+}
+
+static bool poll(struct display *d, struct display_event *ev)
 {
 	SDL_Event e;
 	memset(ev, 0, sizeof *ev);
