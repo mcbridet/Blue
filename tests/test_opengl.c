@@ -2669,7 +2669,11 @@ static void test_glu(void)
 	CHECK(!memcmp(mem_ptr(&mem, OUT), px, 4));
 }
 
-/* Each scene made into a display list, then called: exactly the same pixels */
+/*
+ * Each scene made into a display list, then called: exactly the same pixels from Blue's rasterizer; a
+ * GPU's driver needn't round alike from one drawing to the next (Apple's software renderer, on CI's
+ * Macs, differs by a step now and then), so there within one step
+ */
 static void test_scenes_listed(unsigned backend)
 {
 	static struct op listed[1024];
@@ -2693,7 +2697,10 @@ static void test_scenes_listed(unsigned backend)
 		unsigned most, d = differing(img, images[backend][k], 0, &most);
 		if (d)
 			printf("opengl: %s made into a list: %u pixels differ, by up to %u\n", scenes[k].name, d, most);
-		CHECK_EQ(d, 0);
+		if (backend)
+			CHECK(most <= 1);
+		else
+			CHECK_EQ(d, 0);
 	}
 }
 
