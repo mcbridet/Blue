@@ -1654,6 +1654,108 @@ Facts later tasks need, added as they are found.
   device exits 1.64 million → 36,000, host time 1.00 → 0.96 s; 8.5
   installed 0.87 → 0.86 s, 8.6 1.24 → 1.21 s, 9.1 CD 1.04 → 1.03 s
   (medians of 9 alternating runs on a shared machine, ±1-2%).
+- **The profiler on macOS** (JIT speed): macOS delivers SIGPROF at the
+  thread's next system call or fault, not where the time went: a loop
+  spending 1.25% of its time in `getppid()` got 99.3% of its samples there.
+  So `BLUE_JIT_PROFILE` had put the 8.5 CD boot's time in `pread`,
+  translation (which faults on fresh code pages) and signal handling, with
+  36-54% in translated blocks; timing each part directly says 68%, and so
+  does the profiler now that a thread of its own samples the emulation
+  thread (`thread_suspend()`, `thread_get_state()`; Linux keeps SIGPROF,
+  which is fair there). Earlier estimates from it (translation 4%, the
+  instruction-cache upkeep after it 4%) were mostly that bias.
+- **Where a boot's host time goes** (JIT speed; M5, a measuring build
+  timing each part with the counter register, ms, before this work):
+
+  | | 8.5 CD | 9.1 CD | 9.2.2 CD | 8.5 disk | 9.2.2 disk |
+  |---|---|---|---|---|---|
+  | all | 1,179 | 1,496 | 1,209 | 1,384 | 2,318 |
+  | translated code | 802 (68%) | 922 (62%) | 948 (78%) | 919 (66%) | 1,547 (67%) |
+  | kernel calls in place | 41 | 191 (13%) | 44 | 27 | 192 (8%) |
+  | device registers in place | 41 (3.5%) | 0.6 | 0.6 | 12 | 0.6 |
+  | the interpreter from inside blocks | 11 | 13 | 7 | 15 | 15 |
+  | interpreting code not yet hot | 66 (5.6%) | 43 | 43 | 99 (7.1%) | 82 |
+  | translating | 34 (2.8%) | 19 | 27 | 61 (4.4%) | 28 |
+  | links; instruction-cache barriers | 11; 3.7 | 6; 2.1 | 7; 2.2 | 20; 7.7 | 9; 3.5 |
+  | the kernel's loop, between runs | 151 (13%) | 277 (19%) | 115 (10%) | 208 (15%) | 411 (18%) |
+
+  The kernel's share is mostly host calls (the disk and display drivers:
+  75, 75, 114, 147 and 191 ms, 1-2.7 µs each), Multiprocessing Services'
+  calls (9.1: 95 ms) and kernel calls that exit (below). A kernel call in
+  place costs 23 ns, nearly all of it the context switch's copies of 32
+  GPRs and 32 FPRs each way (`switch_context()`): the next step there is
+  the kernel's, not the JIT's (switching FPRs only when they're used, as
+  the NanoKernel does). The 8.5 CD's 872,000 idle-hook exits each mark the
+  devices dirty, so the 68k emulator's next RunAlternateContext can't be
+  made in place (963,000 kernel exits, about 5% of the boot); not changed,
+  as when devices are brought up to date is guest-visible (the USB
+  controller writes the frame number into guest memory).
+- **Code that isn't hot yet** (JIT speed): the interpreter runs it at 6-8
+  ns an instruction (46 ns for a block of 6.5), against 3-4 ns for warm
+  code: guest code it hasn't seen, and the interpreter's dispatch
+  mispredicted. `BLUE_JIT_HOT` from 4 to 16 changed the three CD boots'
+  cycles by under 2% (1, 2 and 32 were worse, by up to 7%): translating
+  sooner costs what it saves. Going on from block to block inside the
+  interpreter while the next one is cold (no return to `jit_run()` and
+  `find()` between them) halved the calls but saved nothing (8.5 CD and
+  disk), so it was dropped.
+  16-41% of these instructions are hot code, run by the interpreter at the
+  device sync points (every 20,000 instructions), where the next block is
+  longer than what's left (1.1-3.6 million instructions a boot, about 1% of
+  it): a block runs only when the budget covers it.
+- **Instruction-cache upkeep** (JIT speed, AArch64): `ic ivau` over new
+  code and the barriers before generated code runs cost 0.3-0.6% of a boot
+  (timed directly), so there's nothing worth batching; macOS's write
+  protection switches around each translation, link and invalidation
+  (`pthread_jit_write_protect_np()`, about 20 ns) cost 0.5-0.9%, and
+  merging those that come together would save under half of that.
+- **Device registers in place, read only** (JIT speed): an access cost 25
+  ns: devices brought up to date 9.5, the access 4, interrupts 5.5, the
+  next device event 6.5. A read that changes nothing (the VIA's registers
+  but for T1CL, T2CL and SR; all of the USB controller's), with the
+  devices not due to change by themselves, now skips the last two and
+  `in_place()`: they would find everything as it was (checked at every
+  such access of the 8.5 CD boot, a million). Devices are still brought up
+  to date, as that is guest-visible (above). 8.5 CD: host instructions
+  -1.4%.
+- **`lwarx`/`stwcx.`** (JIT speed): 1.8 of the 2.4 million calls into the
+  interpreter from inside blocks in the 8.5 CD boot, 1.7 of 2.3 million in
+  9.1's (the rest: `lswx`/`stswx`, `lswi`/`stswi`), each writing back and
+  reloading every register. Now native on both hosts; a `stwcx.` whose
+  reservation isn't there still goes to the interpreter. Host instructions
+  -1.2% (8.5 and 9.1 CDs).
+- **`lmw`/`stmw` running into the next page** (JIT speed) left the block
+  for the interpreter: in the installed 9.2.2's start, 178,000 of each (a
+  stack frame's register saves across a page boundary), 357,000 of its
+  416,000 exits to the interpreter. Both hosts now check the next page's
+  flags too, as `mem_ok()` does (and not across 4 GB): 44,000 exits left;
+  the CD boots' fell by 22-34%. Most of what's left (8.5 CD: 24,700 of
+  the first 30,000) are the 68k emulator's `stb` into the NanoKernel's info
+  records at `0x5FFFEC0E`, which the kernel keeps read-only to see them
+  (`kdp_pull()`): the kernel's to make in place, if anyone.
+- **JIT speed, before and after** (medians of 5 alternating runs; M5 user
+  time, the Zen 5's wall time; cycles and host instructions alongside):
+
+  | | before | after |
+  |---|---|---|
+  | M5, 8.5 CD | 1.02 s, 4.38 G cycles, 24.70 G instructions | 0.98 s, 4.28 G, 24.10 G |
+  | M5, 9.1 CD | 1.34 s, 5.89 G, 30.68 G | 1.33 s, 5.84 G, 30.34 G |
+  | M5, 9.2.2 CD | 1.10 s, 4.88 G, 15.85 G | 1.09 s, 4.83 G, 15.82 G |
+  | M5, 8.5 disk (4 billion) | 1.26 s, 5.54 G, 23.87 G | 1.25 s, 5.46 G, 23.54 G |
+  | M5, 9.2.2 disk (6 billion) | 2.18 s, 9.45 G, 40.60 G | 2.17 s, 9.30 G, 40.30 G |
+  | Zen 5, 9.2.2 CD, gcc | 1.217 s, 6.36 G, 15.63 G | 1.210 s, 6.33 G, 15.59 G |
+  | Zen 5, 9.2.2 CD, clang | 1.259 s, 6.60 G, 15.96 G | 1.233 s, 6.45 G, 15.92 G |
+
+  Exits to the interpreter fell (8.5 CD 49,076 → 38,549; 9.1 33,535 →
+  22,386; 9.2.2 28,944 → 22,713; 8.5 disk 57,209 → 41,546; 9.2.2 disk
+  415,068 → 44,271); the other kinds are as they were. The profiler's
+  split (blocks, stubs, Blue, elsewhere) on the M5: 8.5 66.9/1.4/28.5/3.2%
+  → 69.0/1.3/26.6/3.1%, 9.1 62.4/0.9/34.6/2.1% → 63.1/1.0/34.3/1.6%, 9.2.2
+  77.5/0.7/19.2/2.6% → 76.2/0.8/20.0/3.0% (the old macOS profiler had said
+  53.8% blocks for 8.5). The synthetic benchmark is as it was on both (its
+  loops use none of what changed). The Zen 5 had only the 9.2.2 CD (one CD
+  copied over the link), which gains least: it runs few `lwarx`, device
+  registers or `lmw` across pages.
 - **Mac OS and a shared volume's MDB:** 8.5, 8.6 and 9.1 write the MDB
   with the unmounted attribute (`drAtrb` bit 8) clear as their first write
   after mounting a volume, before anything else, and with it set when they

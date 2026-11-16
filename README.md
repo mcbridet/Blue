@@ -928,7 +928,9 @@ software (on 8.6, an M5 Mac).
   natively once they have run 16 times (`BLUE_JIT_HOT`). A block ends at
   an unconditional or computed branch; past a conditional one it goes on
   along the not-taken path, and the taken path leaves through out-of-line
-  code. Rarer instructions call the interpreter from inside the block;
+  code. Rarer instructions call the interpreter from inside the block
+  (`lwarx` and `stwcx.`, which the CD boots run nearly 2 million times
+  a boot, are translated);
   traps, system calls and host calls go straight to the kernel (but for
   those made in place, below); anything
   that faults leaves the block so the interpreter executes it (but for
@@ -977,6 +979,11 @@ software (on 8.6, an M5 Mac).
     0.87 to 0.86 s; 8.6: 1.24 to 1.21 s; 9.1's CD, with 17,000, as before)
     on an M5, where an access cost about 50 ns with its exit and costs
     about 25 now, nearly all of it the devices' own bookkeeping.
+    A read that changes nothing (the VIA's registers but for T1CL, T2CL
+    and SR, which clear interrupt flags; the USB controller's), with the
+    devices not due to change by themselves, skips the bookkeeping after
+    the access (interrupts, the next device event), which would find
+    everything as it was: about 12 ns less, for most of 8.5's accesses.
     `BLUE_DEVICE_EXITS=1` has every access exit as before, for
     comparisons.
   - Registers: CR, LR, r1, r3, r4, r24, r27 and r29 (the hottest across the
@@ -1049,12 +1056,17 @@ software (on 8.6, an M5 Mac).
     AArch64. It needs x86-64-v3 (AVX2, FMA3,
     BMI1/2, LZCNT, MOVBE; other processors interpret, and Blue says
     what's missing). Five guest registers live in host registers (CR, LR,
-    r3, r4, r24) and four more are cached within a block. Its code takes
+    r3, r4, r24) and four more are cached within a block. Blocks' main
+    lines are packed together and their out-of-line code (but for the
+    taken paths of conditional branches) kept apart, which the Zen 5's
+    small instruction caches gain from (its front end, starved about half
+    the time, is what limits these boots there). Its code takes
     about as many host instructions per guest instruction as AArch64's:
     in the CD boots, everything included, 1.04-1.10 times AArch64's
     (counted by QEMU; docs/x86-jit-plan.md). On an AMD Zen 5 (Linux) the
-    8.5, 9.1 and 9.2.2 CD boots take 1.46, 1.54 and 1.51 s (interpreted:
-    14.7, 14.5 and 10.2 s). Under Rosetta 2,
+    8.5, 9.1 and 9.2.2 CD boots took 1.46, 1.54 and 1.51 s when it was
+    finished (interpreted: 14.7, 14.5 and 10.2 s); 9.2.2's takes 1.21 s
+    now. Under Rosetta 2,
     `ROSETTA_ADVERTISE_AVX=1` in the environment has it offer x86-64-v3.
     The 8.5, 9.1 and 9.2.2 CD boots in instruction time end exactly as on
     AArch64, and so do an installed 9.2.2's start and Unreal Tournament's
@@ -1065,6 +1077,9 @@ software (on 8.6, an M5 Mac).
   - `BLUE_JIT_PROFILE=1` samples where host time goes (translated blocks
     by guest address, stubs, C functions) and prints it at the end;
     `BLUE_JIT_PROFILE=FROM:TO` samples only from instruction FROM to TO.
+    On Linux it's SIGPROF; on macOS, which delivers SIGPROF at the next
+    system call rather than where the time went, a thread of its own
+    stops the emulation thread every 250 µs to read its pc.
     `BLUE_PERF=1` reads the host processor's counters for the emulation
     thread (Linux): every second, guest instructions per second and host
     instructions and cycles per guest instruction; a total at the end.
@@ -1477,15 +1492,17 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 
 ## Next steps
 
-1. More JIT speed for disk boots: the interpreter, which runs code
-   until it's hot at about 10 ns an instruction, mostly in overheads per
-   block (about 8%); translating (4%), with the instruction-cache upkeep
-   that follows (4%); device register accesses, though made in place, still
-   cost about 25 ns each in the devices' bookkeeping (about 4% of the 8.5
-   CD boot). On x86-64, the front end: about a third of a 9.2.2 boot's
-   cycles on a Zen 5 are stalls from branch misses in the 68k emulator's
-   dispatch and returns, and instruction-cache misses
-   (docs/x86-jit-plan.md).
+1. More JIT speed: what's left of a boot's host time outside generated
+   code is mostly the kernel's (plan.md, Findings, "Where a boot's host
+   time goes"): kernel calls made in place cost 23 ns each, nearly all of
+   it the context switch's register copies (13% of the 9.1 CD boot);
+   host calls, the disk and display drivers (5-10%); and the 8.5 CD's
+   idle-hook exits, which keep the 68k emulator's next mode switch from
+   being made in place (about 5%). In the JIT: code runs in the
+   interpreter until it's hot (3-7%; translating sooner costs as much as
+   it saves) and translating takes 1-4%. On x86-64 the front end still
+   limits a Zen 5 (about half its dispatch slots get nothing), now mostly
+   for the size of the code (docs/x86-jit-plan.md).
 2. Known problems: on a 9.2.2 that Apple Software Restore has just
    restored, quitting the Setup Assistant at the first startup leaves the
    desktop without a menu bar (plan.md, task 17); a "don't ask again" for

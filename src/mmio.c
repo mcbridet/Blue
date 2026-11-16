@@ -9,7 +9,13 @@ void mmio_add(struct mmio_bus *bus, uint32_t base, uint32_t size, const struct m
 		fprintf(stderr, "mmio: too many regions (%s)\n", name);
 		return;
 	}
-	bus->region[bus->count++] = (struct mmio_region){ base, size, ops, ctx, name };
+	bus->region[bus->count++] = (struct mmio_region){ .base = base, .size = size, .ops = ops, .ctx = ctx, .name = name };
+}
+
+void mmio_pure_reads(struct mmio_bus *bus, bool (*pure_read)(const void *ctx, uint32_t offset))
+{
+	if (bus->count)
+		bus->region[bus->count - 1].pure_read = pure_read;
 }
 
 const struct mmio_region *mmio_find(const struct mmio_bus *bus, uint32_t addr)

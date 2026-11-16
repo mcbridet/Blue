@@ -298,6 +298,13 @@ static void ohci_write(void *ctx, uint32_t offset, unsigned size, uint32_t value
 
 const struct mmio_ops ohci_mmio_ops = { ohci_read, ohci_write };
 
+bool ohci_pure_read(const void *ctx, uint32_t offset)
+{
+	(void)ctx;
+	(void)offset;
+	return true;
+}
+
 void ohci_set_time(struct ohci *o, uint64_t bit_times)
 {
 	if (bit_times <= o->now)

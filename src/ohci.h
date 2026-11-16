@@ -57,6 +57,7 @@ struct ohci {
 
 void ohci_init(struct ohci *o, struct mem *mem);
 extern const struct mmio_ops ohci_mmio_ops;
+bool ohci_pure_read(const void *ctx, uint32_t offset);      /* (see struct mmio_region) */
 
 /* Advances time (in bit times); may count frames. */
 void ohci_set_time(struct ohci *o, uint64_t bit_times);

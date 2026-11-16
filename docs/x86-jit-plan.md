@@ -84,6 +84,32 @@ The x86-64 JIT is complete: milestone 5 (performance) done.
   (the profiler's samples on those stores); linking at translation time
   cut the links' share from 14% to 5%. Real processors don't pay it.
 
+After milestone 5, the front end (the JIT speed work; Findings have the
+measurements):
+
+- **Where the Zen 5's cycles go** in the 9.2.2 CD boot: 54% of dispatch
+  slots get nothing from the front end; 35% of operations come from the
+  decoders rather than the op cache (1.4 billion op cache misses), with
+  149 million L1 instruction-cache misses; 43.5 million branch misses, 31.8
+  million of them indirect (of 232 million indirect branches). Guest
+  returns are few of those: most of the boot's `bclr`s are the 68k
+  emulator dispatching through LR.
+- **Changed**: blocks' main lines pack together, their out-of-line code
+  in an area of its own (the taken paths of conditional branches stay
+  beside them): instruction-cache misses -3%, cycles -1.3% (gcc) and -2%
+  (clang). On both hosts: `lwarx`/`stwcx.` natively, and `lmw`/`stmw`
+  running into the next page without the interpreter. The 9.2.2 CD boot
+  (medians of 11 alternating runs, wall time): gcc 1.217 → 1.210 s, clang
+  1.259 → 1.233 s; front-end stalls (cycles with the op queue empty) -4%
+  and -7%. It ends exactly as before (screenshot and log, with and
+  without fastmem, gcc and clang); the fuzzer passes 200,000 programs with
+  each compiler (and 50,000 each with `BLUE_JIT_FASTMEM=0` and
+  `BLUE_JIT_FAR`).
+- **Tried and dropped**: guest calls and returns as the host's, for its
+  return stack (no fewer branch misses: the indirect predictor already had
+  the returns). **Measured, not needed**: spreading the 68k emulator's
+  dispatch, which each handler's block already has a copy of.
+
 Milestone 4 done (the rest):
 
 - **Kernel calls and `sc`** as on AArch64: `twi 31,r31,n` made in place
@@ -791,6 +817,63 @@ candidate if profiles ask for it.
   71% (8.5) and 81% (9.2.2) of the profiler's samples. What would help
   next is in the front end: returns predicted (a shadow return stack for
   `bl`/`blr`), fewer bytes of code per guest instruction.
+- **The Zen 5's front end, by its counters** (the 9.2.2 CD boot, gcc;
+  counted for the whole process with `perf_event_open()` from a small
+  wrapper, user space only, which `perf_event_paranoid` 2 allows; AMD's
+  raw events): 6.5 billion cycles; of the dispatch slots (8 a cycle), 54%
+  got nothing from the front end and 11% waited on the back end; 6.2 of
+  17.8 billion operations came from the decoders, after 1.4 billion op
+  cache misses; 149 million L1 instruction-cache misses (fills from L2:
+  0.9 billion); 2.28 billion branches, 43.5 million mispredicted, 31.8
+  million of them indirect (of 232 million indirect branches); 27.7
+  million returns, all C's (generated code had none), 11,000 of them
+  mispredicted.
+- **Most `bclr`s aren't returns** (the interpreter counting, with a
+  32-entry return stack and a last-target predictor as models): 9.2.2's
+  boot ran 193 million `bclr`, with only 20.8 million calls; 17.6 million
+  went where the last call would return. The rest is the 68k emulator's
+  dispatch, which goes through LR: `lhau r27,2(r24)`, `rlwimi
+  r29,r27,3,13,28`, `mtlr r29`, `lhau`, `bflr cr2_lt` (`0x68066080`; that
+  `bflr` alone runs 30.6 million times). 8.5's: 145 million `bclr` (38.7
+  million returns) and 78.5 million `bcctr` (its emulator dispatches
+  through CTR); 9.1's: 209 million (44.3 million).
+- **Returns through the host's return stack: no gain, dropped.** A `bl`
+  pushed its return address and CALLed the block at its target (linked as
+  a jump would be), the host's return address pointing at a link to the
+  block at pc + 4; an unconditional `blr` compared the guest address on
+  top with LR and RETurned (`ret 8`) if they matched, else looked up the
+  block table as before; the stack, generated code's own from a sentinel
+  at the bottom, was dropped at exits and when a call would take it past
+  64 KB. In 9.2.2's boot 10 million returns took the RET: indirect
+  mispredictions fell by 1.5 million, but return mispredictions rose by
+  0.94 million (stacks dropped at exits, unwinding past frames), and host
+  instructions by 0.45%: cycles +0.6%. The indirect predictor had been
+  predicting those returns' jumps already.
+- **The 68k emulator's dispatch is spread already**: each handler's block
+  follows its `b` into the emulator's dispatch code (the ROM-like rule),
+  so it ends with its own indirect jump. 9.2.2's busiest dispatch `bflr`
+  is reached from 665 handler entries, none with more than 8% of its runs;
+  with a site per handler a last-target predictor misses 14.7 million
+  times instead of 28.3. Spreading further would take blocks specialized
+  by more history (the handler before), which the block table (one block
+  per guest address) doesn't have.
+- **Hot and cold code apart**: a block's main line was 56% of its bytes,
+  the out-of-line code (side exits, slow paths, branch exits, link stubs,
+  the budget and redispatch code) 44%, right after it. Moving it all to an
+  area of its own changed nothing (cycles +1%): the taken paths of
+  conditional branches are out of line too and run as often as taken
+  guest branches. With those kept beside the main line (about 40% of the
+  code apart), L1 instruction-cache misses fell 3% and cycles 1.3% (gcc;
+  clang 2%); the slow path of stores to code pages (the 68k emulator's,
+  next to its own code) made no difference either way. AArch64 can't
+  easily do the same: its branches to out-of-line code (TBZ ±32 KB, B.cond
+  ±1 MB) would need veneers, and the M5 runs these boots at 3.2
+  instructions a cycle, against the Zen 5's 2.4.
+- **What's left in the front end** is code size: the hot main line is
+  about 210 bytes a block. Candidates: the SO test in every compare (`cmp
+  dword [rbx+xer], 0` and `js`, 13 bytes: XER is beyond a byte
+  displacement from rbx), rel32 jumps where rel8 would reach, the block
+  entry's `cmp r14, imm32`.
 - **Counting host instructions without the host**: QEMU's user mode
   with a TCG plugin that counts each translated block's executions (and
   so every instruction's) gives the instructions an x86 processor would

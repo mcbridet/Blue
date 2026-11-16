@@ -969,20 +969,50 @@ static void slow_loads(struct tx *t)
 	}
 }
 
-/* The host address of the EA in w1 into x10, if the n bytes there are accessible within one page */
+/* A branch within the instruction, to point at the code to come with land() */
+static uint32_t *fwd(struct tx *t, uint32_t branch)
+{
+	uint32_t *at = t->p;
+	emit(t, branch);
+	return at;
+}
+
+static void land(struct tx *t, uint32_t *at)
+{
+	if (at && !t->overflow)
+		patch(t, at, FIX_IMM19, t->p);
+}
+
+/* The page flags in `reg` allow the access (stores: and it's no code page, the interpreter's job) */
+static void block_flags(struct tx *t, bool load, unsigned reg)
+{
+	exit_if_bit(t, false, reg, load ? 0 : 1);               /* MEM_R / MEM_W */
+	if (!load) {
+		exit_if_bit(t, true, reg, 3);                   /* MEM_CODE */
+		exit_if_bit(t, true, reg, WATCH_BIT);           /* (and MEM_WATCH: the interpreter's too) */
+	}
+}
+
+/*
+ * The host address of the EA in w1 into x10, if the n bytes there are
+ * accessible (as mem_ok() has it: running into the next page, that one too;
+ * not wrapping at 4 GB)
+ */
 static void block_access(struct tx *t, bool load, unsigned n)
 {
 	emit(t, a64_bitfield(0, A64_UBFM, 9, 1, MEM_PAGE_SHIFT, 31));
 	emit(t, a64_ldst_uxtw(0, true, 9, R_FLAGS, 9));
-	exit_if_bit(t, false, 9, load ? 0 : 1);                 /* MEM_R / MEM_W */
-	if (!load) {
-		exit_if_bit(t, true, 9, 3);                     /* MEM_CODE: the interpreter's job */
-		exit_if_bit(t, true, 9, WATCH_BIT);             /* (and MEM_WATCH) */
-	}
+	block_flags(t, load, 9);
 	if (n > 1) {
 		ubfx(t, 10, 1, 0, MEM_PAGE_SHIFT);
 		emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 10, MEM_PAGE_SIZE - n));
-		exit_if(t, A64_HI);
+		uint32_t *within = fwd(t, a64_bcond(A64_LS, 0));
+		emit(t, a64_addsub_imm(0, 0, 1, 11, 1, n - 1));
+		exit_if(t, A64_HS);
+		emit(t, a64_bitfield(0, A64_UBFM, 11, 11, MEM_PAGE_SHIFT, 31));
+		emit(t, a64_ldst_uxtw(0, true, 11, R_FLAGS, 11));
+		block_flags(t, load, 11);
+		land(t, within);
 	}
 	emit(t, a64_add_uxtw(10, R_CBASE, 1));
 }
@@ -1175,20 +1205,6 @@ static void slow_ios(struct tx *t)
 
 #define FPSCR_XX_BIT 25
 #define FPSCR_FI_BIT 17
-
-/* A branch within the instruction, to point at the code to come with land() */
-static uint32_t *fwd(struct tx *t, uint32_t branch)
-{
-	uint32_t *at = t->p;
-	emit(t, branch);
-	return at;
-}
-
-static void land(struct tx *t, uint32_t *at)
-{
-	if (at && !t->overflow)
-		patch(t, at, FIX_IMM19, t->p);
-}
 
 static void logic_imm64(struct tx *t, enum a64_logic op, unsigned d, unsigned n, uint64_t imm)
 {
@@ -2512,6 +2528,39 @@ static int insn31(struct tx *t, uint32_t i)
 		return EMITTED;
 	}
 
+	case 20: {                                                      /* lwarx */
+		if (rd_ == rb || (ra && rd_ == ra)) {
+			call_step(t, i);
+			return EMITTED;
+		}
+		load_store(t, 2, true, false, false, true, LS_GPR, rd_, ra, rb, 0);
+		unsigned base = rd0(t, ra), b = rd(t, rb);
+		emit(t, a64_addsub(0, 0, 0, 9, base, b, A64_LSL, 0));
+		st32(t, 9, OFF(resv_addr));
+		emit(t, a64_movw(0, A64_MOVZ, 9, 1, 0));
+		emit(t, a64_ldst_imm(0, false, 9, R_CPU, OFF(resv_valid)));
+		return EMITTED;
+	}
+	case 150: {                                                     /* stwcx. (the interpreter if the reservation fails) */
+		if (!(i & 1)) {
+			call_step(t, i);
+			return EMITTED;
+		}
+		unsigned base = rd0(t, ra), b = rd(t, rb);
+		emit(t, a64_addsub(0, 0, 0, 10, base, b, A64_LSL, 0));
+		ld32(t, 11, OFF(resv_addr));
+		emit(t, a64_ldst_imm(0, true, 9, R_CPU, OFF(resv_valid)));
+		emit(t, a64_addsub(0, 1, 1, A64_ZR, 10, 11, A64_LSL, 0));
+		exit_if(t, A64_NE);
+		exit_if_zero(t, false, 9);
+		load_store(t, 2, false, false, false, true, LS_GPR, rd_, ra, rb, 0);
+		emit(t, a64_ldst_imm(0, false, A64_ZR, R_CPU, OFF(resv_valid)));
+		unsigned xer = rd(t, G_XER), cr = rw(t, G_CR);
+		emit(t, a64_movw(0, A64_MOVZ, 9, CR_EQ, 0));            /* CR0: EQ, SO */
+		emit(t, a64_logic(0, A64_ORR, 0, 9, 9, xer, A64_LSR, 31));
+		bfi(t, cr, 9, 28, 4);
+		return EMITTED;
+	}
 	case 23: case 55:   load_store(t, 2, true, false, xo == 55, true, LS_GPR, rd_, ra, rb, 0); return EMITTED;
 	case 87: case 119:  load_store(t, 0, true, false, xo == 119, true, LS_GPR, rd_, ra, rb, 0); return EMITTED;
 	case 279: case 311: load_store(t, 1, true, false, xo == 311, true, LS_GPR, rd_, ra, rb, 0); return EMITTED;

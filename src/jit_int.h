@@ -119,6 +119,13 @@ struct jit {
 	struct jit_state st;            /* (first: code_store() finds the jit from it) */
 	struct mem *mem;
 	uint8_t *code, *code_end, *code_free, *blocks_start;
+	/*
+	 * Out-of-line code apart from the blocks' main lines, so that those
+	 * pack together (x86-64): cold_share sixteenths of the blocks area, at
+	 * its end; else 0, and blocks hold their own
+	 */
+	unsigned cold_share;
+	uint8_t *cold_start, *cold_free;
 	uint32_t (*enter)(struct ppc_cpu *, const void *, uint64_t, struct jit_state *);
 	const void *hook_exit, *miss_exit;      /* (see l1) */
 	uint32_t linked_hook;           /* blocks are never linked to this pc */
