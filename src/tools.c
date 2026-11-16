@@ -525,9 +525,12 @@ static void scroll_log(const struct helper *h, struct mem *m, const char *fmt, .
 	fflush(stdout);
 }
 
-static const char *way(unsigned axis, int32_t lines)
+/* "3 lines down" */
+static const char *lines_text(char *buf, size_t size, unsigned axis, int32_t lines)
 {
-	return axis ? (lines > 0 ? "up" : "down") : (lines > 0 ? "right" : "left");
+	snprintf(buf, size, "%d %s %s", lines < 0 ? -lines : lines, lines == 1 || lines == -1 ? "line" : "lines",
+		 axis ? (lines > 0 ? "up" : "down") : (lines > 0 ? "right" : "left"));
+	return buf;
 }
 
 /*
@@ -643,12 +646,13 @@ static void scroll_test(struct helper *h, struct ndrv_call *c, struct wheel *w)
 {
 	if (h->bar_at >= h->bars) {
 		int32_t lines = h->lines[h->axis];
+		char text[32];
 		/* (a scroll bar with nowhere to go: nothing; no scroll bar: the arrow keys) */
 		if (h->shaped) {
-			scroll_log(h, c->mem, "%d lines %s: nowhere to scroll", lines < 0 ? -lines : lines, way(h->axis, lines));
+			scroll_log(h, c->mem, "%s: nowhere to scroll", lines_text(text, sizeof text, h->axis, lines));
 		} else {
-			scroll_log(h, c->mem, "%d lines %s: no scroll bar under the pointer (the arrow keys)",
-				   lines < 0 ? -lines : lines, way(h->axis, lines));
+			scroll_log(h, c->mem, "%s: no scroll bar under the pointer (the arrow keys)",
+				   lines_text(text, sizeof text, h->axis, lines));
 			wheel_unscrolled(w, h->axis ? 0 : lines, h->axis ? lines : 0);
 		}
 		h->lines[h->axis] = 0;
@@ -718,8 +722,9 @@ static void scroll_click(struct helper *h, struct ndrv_call *c, struct wheel *w)
 	mem_w16(m, h->event + EV_WHERE, (uint16_t)((int16_t)(at >> 16) - dv));
 	mem_w16(m, h->event + EV_WHERE + 2, (uint16_t)((int16_t)at - dh));
 	mem_w16(m, h->event + EV_MODIFIERS, 0);         /* (the button down, no keys) */
-	scroll_log(h, m, "%d lines %s: a click on the scroll bar (%d,%d,%d,%d)'s %s arrow", lines < 0 ? -lines : lines,
-		   way(h->axis, lines), r16s(m, ctl + C_RECT), r16s(m, ctl + C_RECT + 2), r16s(m, ctl + C_RECT + 4),
+	char text[32];
+	scroll_log(h, m, "%s: a click on the scroll bar (%d,%d,%d,%d)'s %s arrow", lines_text(text, sizeof text, h->axis,
+		   lines), r16s(m, ctl + C_RECT), r16s(m, ctl + C_RECT + 2), r16s(m, ctl + C_RECT + 4),
 		   r16s(m, ctl + C_RECT + 6), h->click.part == UP_BUTTON ? (h->axis ? "up" : "left") :
 		   (h->axis ? "down" : "right"));
 	h->lines[h->axis] = 0;

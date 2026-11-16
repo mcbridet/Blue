@@ -2717,10 +2717,11 @@ made to start up.
   them at 15 and 14), it wrote its game mapping into the second (found
   first) and then the first, and the second pad's D-pad (the second
   AppleJack's, O) moved the player forward. Its two-player modes are
-  network games ("Gather Network Game", "Join Network Game": a Pippin or
-  Mac each, over AppleTalk), so both pads steer the one player; neither
-  disc at hand (Super Marathon, and the Hanshin disc) reads a
-  second AppleJack's switches for a second player. The ADB patches' 68k
+  network games in both `marathon.ppc` and `marathon2.ppc` ("Gather
+  Network Game", "Join Network Game": a machine each, over AppleTalk; no
+  split screen), so both pads steer the one player there. The Hanshin
+  disc's projector doesn't link PippinPPC at all. No title at hand, then,
+  shows a second player on a second AppleJack. The ADB patches' 68k
   code is checked in `tests/test_pippin.c` by a small 68000 of the test's
   own, as Apple's sample code walks the devices.
 - **Scrolling as the tools of the time did** (the scroll wheel): Blue

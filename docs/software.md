@@ -164,8 +164,8 @@ its driver. With two pads plugged in, the title finds two AppleJacks, the
 second pad the second: Super Marathon gives each its mapping (the same),
 and the second pad's D-pad moved the player too in the same kind of run
 (`0 pad 1 plug Second Pad`, then `pad 1 button dpup down`). Its
-two-player modes are network games, a Pippin each, so both pads play the
-one player here ([findings.md](findings.md), "A second AppleJack").
+two-player modes are network games, a machine each, so both pads play
+the one player here ([findings.md](findings.md), "A second AppleJack").
 
 "1995.1.17 Hanshin Daishinsai" (a Macromedia Director projector, `JISIN`,
 68k, without PippinPPC) runs on 8.5 and 9.2.2: open its disc (its name is
