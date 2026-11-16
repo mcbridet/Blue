@@ -96,16 +96,3 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   needs AppleTalk to get past the NAT (only IP does today), or a printer
   driver of Blue's own in the Chooser (far more work).
 - **Size:** moderate: an LPD listener in the NAT, the job handling, the PPD.
-
-## Game controllers
-
-- **Where Blue is:** the host's pads are the Mac's keyboard and mouse, a
-  Pippin title's AppleJack, and game controllers of their own in games
-  that use InputSprocket ([input.md](input.md)).
-- **What's left:**
-  - Mappings of one's own for the keyboard and mouse, kept between runs
-    (with the launcher).
-  - Two AppleJacks, for two-player Pippin titles.
-  - The scroll wheel as scrolling (the guest tools could scroll the window
-    under the pointer) rather than arrow keys.
-- **Size:** small.

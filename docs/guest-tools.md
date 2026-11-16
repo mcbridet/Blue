@@ -2,7 +2,7 @@
 
 Some things only code inside Mac OS can do. Blue's guest tools are that
 code: Blue Enhancements (the screen following the window, the
-clipboard), Blue 3D Engine, Blue's OpenGL libraries, Blue Pippin Library
+clipboard, the scroll wheel), Blue 3D Engine, Blue's OpenGL libraries, Blue Pippin Library
 and Blue Game Controllers. This document describes how Blue offers and installs them, and
 how each works. How to use them is in the
 [README](../README.md#the-guest-tools).
@@ -99,11 +99,13 @@ Finder lays out the desktop again. A
 resolution chosen in Mac OS (Monitors & Sound, or the Control Strip)
 resizes the window instead. Without it, the window scales the
 screen. It
-also shares the clipboard ([below](#the-clipboard)). One installed by a version of Blue
-from before the clipboard isn't this version's (so in a window Blue
-offers to update it), and it still switches modes until then: its data carries its
-version, as the 3D engine's does, so that Blue finds the older copy's
-data where it is, and says so. An `appe` only starts from Extensions, so
+also shares the clipboard ([below](#the-clipboard)), and makes the
+scroll wheel scroll ([below](#the-scroll-wheel)). One installed by a
+version of Blue from before the clipboard or the wheel isn't this
+version's (so in a window Blue offers to update it), and it still
+switches modes until then: its data carries its version, as the 3D
+engine's does, so that Blue finds the older copy's data where it is
+(each version's place, from its imports and entries), and says so. An `appe` only starts from Extensions, so
 a CD's system can't run it; to try it there, `BLUE_TOOLS_APPL=1 blue
 tools create FILE` makes the volume's copy an application the Finder
 opens with a double-click.
@@ -140,6 +142,85 @@ another Mac application comes to the front. Scripted runs have a
 stand-in for the host's clipboard (`clipboard` and `print-clipboard`,
 see [debugging.md](debugging.md#input-scripts)); other runs without a window (`--headless`), or in
 instruction time, leave the clipboard alone.
+
+## The scroll wheel
+
+Mac OS 8 and 9 know no scroll wheel: Apple's mouse had none, and the
+tools of the time (USB Overdrive, Kensington's MouseWorks) scrolled by
+the scroll bars, as clicks on their arrows. Blue Enhancements does the
+same, for the window under the pointer in the application in front.
+
+The host's turns of the wheel, and a trackpad's two-finger scrolling,
+come to the Mac's thread in parts of a line (`src/wheel.c`: SDL's precise
+amounts, a notch of a mouse's wheel a line): the parts gather into whole
+lines, a turn the other way starts afresh, and at most 16 lines wait each
+way, so that a trackpad's swipe, its momentum and all, can't flood Mac OS.
+Lines wait for the application in front, which has to look for an event
+to take them; one asleep in WaitNextEvent would sleep on, so a key no
+keyboard of the time had (F16) wakes it, and the GetNextEvent filter
+takes that key away again. As the application gets the key's event (or a
+null event), the filter, in its context, looks:
+
+1. Is this the front process (GetCurrentProcess, GetFrontProcess,
+   SameProcess)? If not, the lines wait.
+2. The window under the pointer (FindWindow at the low-memory `Mouse`): it
+   has to be in the contents of one of the application's windows,
+   visible and highlighted (the one in front).
+3. Its scroll bars that way, up and down (or across, for a wheel turned
+   sideways): controls in its list as long and as wide as scroll bars
+   are (Mac OS's 16, Appearance's small ones 11), with somewhere to go
+   (active, the maximum past the minimum): the one under the pointer
+   first, then those beside it, to its right (or below) first.
+4. The arrow wanted, found with TestControl: up (or left) at the start,
+   or else second from the end, where Mac OS 9's Smart Scrolling puts
+   both; down at the end, or else second from the start.
+5. The event becomes a click there: a mouse-down at the arrow, in the
+   screen's coordinates, the button down. The application handles it as
+   it would a click: FindWindow, FindControl, TrackControl with its own
+   action procedure.
+6. TrackControl's patch, seeing that click (the control and the process
+   it was made for), calls the action procedure the application gives it
+   (or the control's own, given -1) once for each line, as holding the
+   button down on the arrow would, instead of tracking the mouse, and
+   returns the arrow's part. An application without an action procedure
+   (that scrolls by TrackControl's answer) gets a line a click, the rest
+   another click each.
+
+The application's procedure runs in its own click handling, with
+whatever that sets up: calling SimpleText's from the filter itself, as
+an action procedure seen earlier, crashed it ([findings.md](findings.md),
+"Scrolling as the tools of the time did"). A click the application
+didn't take to TrackControl by the next event (it looked with EventAvail,
+say) is tried once more, then let go. Without a scroll bar under the
+pointer (the desktop, a game's window), the lines are the arrow
+keys, a press each, as they were before Blue Enhancements scrolled; a
+scroll bar with nowhere to go (all of the document showing) takes them,
+and so does a window in back. Lines not taken within a quarter of a
+second of guest time (an application that doesn't look for events, a
+game) are the arrow keys too. Without Blue Enhancements (or with a copy
+from before), the wheel is the arrow keys at once.
+
+Tried on Mac OS 8.5 and 9.2.2 in instruction time, with scripted turns
+(`wheel DX DY` in an input script: lines, or parts of one, right and up;
+see [debugging.md](debugging.md#input-scripts)) and screenshots:
+SimpleText's long document and the Finder's windows (icons and lists, up
+and down and sideways) scroll by their own action procedures, with the
+pointer where it was; the desktop gets the arrow keys. `BLUE_LOG_WHEEL=1`
+says where each turn went:
+
+```
+wheel: SimpleText: 3 lines down: a click on the scroll bar (-1,600,527,616)'s down arrow
+wheel: SimpleText: TrackControl: 3 lines, by the program's action procedure
+wheel: Finder: 2 lines right: nowhere to scroll
+wheel: Finder: the pointer isn't in a window's contents (FindWindow: 0): the arrow keys
+```
+
+Carbon applications under CarbonLib get the same clicks (their scroll
+bars are the Control Manager's too) rather than CarbonLib's own wheel
+event (`kEventMouseWheelMoved`): telling them apart, and sending that to
+the window's event target, would take CarbonLib's calls from inside each
+application. Applications with scroll bars of their own drawing, that
+aren't controls (some browsers' pages, some editors), get the arrow keys.
 
 ## Blue 3D Engine
 
@@ -300,8 +381,8 @@ on a Pippin", has what each does on a Pippin):
   only for the Pippin."), and ShutDwnStart and ShutDwnPower return at once:
   a Pippin turns off when its title quits, which here would shut Mac OS
   down.
-- And the title has an AppleJack, the Pippin's controller, for the host's
-  game controllers ([input.md](input.md#a-pippin-titles-applejack)). The AppleJack
+- And the title has AppleJacks, the Pippin's controllers, for the host's
+  game controllers ([input.md](input.md#a-pippin-titles-applejacks)). The AppleJack
   was an ADB device whose driver (in the Pippin's ROM; on a Mac, the
   Applejack extension) turned its 18 switches into keys and mouse clicks
   by a mapping a title can change: its data, AJGlobalData (Apple's
@@ -320,22 +401,28 @@ on a Pippin", has what each does on a Pippin):
   buttons Command-Q, a locked mouse button and a double-click) and 1001 as
   a game starts (the D-pad O, K, ; and L, the fire buttons Z and X, the
   coloured buttons Shift, Tab, Space and Option, the system buttons
-  Command-Q, Control and P), and only if Gestalt says `pipn`. The library
-  has that data (the driver's own mapping in it, from Apple's note, or the
-  title's first `pipp` resource's, as a Pippin loads one when a title
-  starts), and, as the title's own patches, CountADBs counting one more
-  device and GetIndADB giving that one as the AppleJack (68k code: the
-  routines patched over are called for the others); its initialization
-  tells Blue where the data is, and the title's process (a host call,
-  undone at its termination). Blue reads the switches' mapping there as a
-  pad's buttons go down, and keeps switchStates as the pads have them, for
-  titles that read the AppleJack themselves. It says each mapping a title
-  gives it:
+  Command-Q, Control and P), and only if Gestalt says `pipn`, into every
+  AppleJack it finds. The library has that data for two AppleJacks (the
+  driver's own mapping in each, from Apple's note, or the title's first
+  `pipp` resource's, as a Pippin loads one when a title starts), and, as
+  the title's own patches, CountADBs counting as many more devices as
+  there are AppleJacks now (one, or two while two pads are plugged in: a
+  count in the library's data, after the two AJGlobalData, which Blue
+  sets) and GetIndADB giving those as AppleJacks, at addresses 15 and 14,
+  each with a cursor device record of its own (68k code: the routines
+  patched over are called for the others); its initialization tells Blue
+  where the data is, and the title's process (a host call, undone at its
+  termination). Blue reads each one's switches' mapping there as a pad's
+  buttons go down (the second pad is the second AppleJack), and keeps
+  each one's switchStates as the pads have them, for titles that read the
+  AppleJacks themselves. It says each mapping a title gives them:
 
   ```
-  pippin: marathon.ppc runs, with an AppleJack for game controllers (its data at 0x06F4306C)
+  pippin: marathon.ppc runs, with AppleJacks for game controllers (their data at 0x06F437FC and 0x06F43858)
+  pippin: marathon.ppc has two AppleJacks: the second pad is the second
   pippin: marathon.ppc is in front: the pads are its AppleJack
   pippin: marathon.ppc's AppleJack mapping: D-pad up O, left K, right ;, down L, A (red) Shift, B (green) Tab, X (yellow) Space, Y (blue) Option, left shoulder (left fire) Z, right shoulder (right fire) X, Back Command-Q, Guide Control, Start P
+  pippin: marathon.ppc's second AppleJack mapping: the same
   ```
 
   The mapping is the title's only while it's the front application:
