@@ -39,7 +39,9 @@ arch=${ARCH:-$(uname -m)}
 # (a function newer than MACOSX_DEPLOYMENT_TARGET would be missing on the older macOS, where calling it crashes)
 flags="-Werror=unguarded-availability-new"
 [ "$arch" = "$(uname -m)" ] || flags="$flags -arch $arch"
-export CFLAGS="$flags ${CFLAGS:-}" CXXFLAGS="$flags ${CXXFLAGS:-}" OBJCFLAGS="$flags ${OBJCFLAGS:-}"
+# Only these flags: the libraries aren't Blue's, and an inherited -Werror (CI builds Blue with it) would stop
+# them on any warning another compiler raises
+export CFLAGS="$flags" CXXFLAGS="$flags" OBJCFLAGS="$flags"
 [ "$arch" = "$(uname -m)" ] || export LDFLAGS="-arch $arch ${LDFLAGS:-}"
 work=$(mktemp -d "${TMPDIR:-/tmp}/blue-deps.XXXXXX")
 trap 'rm -rf "$work"' EXIT
