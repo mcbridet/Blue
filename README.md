@@ -788,6 +788,52 @@ time, the next at a click. A scripted click doesn't select a desktop icon
 (see plan.md, Findings), which is why opening the disc that way seemed to
 do nothing.
 
+### The window's scale
+
+In a window, each of the Mac's pixels is a whole number of the display's
+pixels, 1 to 4: the window's scale. Auto, the default, picks the number
+that brings Mac OS nearest, in proportion, to 80 pixels per inch, as on a
+1999 Mac's screen, from the display's own density: its physical size from
+CoreGraphics on macOS; on Linux SDL 2's figure (the X server's or the
+compositor's) or, under sdl2-compat, whose displays have no physical size,
+the kernel's EDID of the display (`/sys/class/drm`). So 1x up to 113 pixels
+per inch (a 27-inch 1440p display: 109), 2x up to 196 (a 27-inch 4K one:
+163), 3x up to 277 (a 5K iMac: 218; a 14-inch MacBook Pro: 254), and 4x
+above (a 13-inch MacBook Air made to look like 1710 x 1112: 299). Where the
+density isn't known, or isn't plausible (a television giving its shape for
+its size), it's the display's own scale: 1x, or 2x on a Retina display. It's
+worked out again when the window goes to another display, and Blue says
+what it found:
+
+```
+display: 218 pixels per inch: Auto's scale is 3
+```
+
+`--scale auto|1|2|3|4` sets it at startup, and F12's menu has it (Scale:
+Auto (3x), 1x, 2x, 3x, 4x; Auto says what it chose). The menu, prompts and
+status bar are in the window's own units (points), whatever the scale.
+
+- With Blue Enhancements (see Guest tools) the screen follows the window:
+  resized, the window asks Mac OS for its size in the display's pixels over
+  the scale, rounded to what the display driver takes (the width down to a
+  multiple of 8, at least 512 x 384, and smaller, keeping its shape, if 16
+  MB wouldn't hold it at 32 bits a pixel), and that screen is drawn at
+  exactly the scale, crisp, with a border of what the rounding left. A
+  full-screen window on a 5K iMac is 1704 x 944 at 3x, with the status bar.
+  A new scale changes the screen, the window staying as it is (as Mac OS
+  resumes, chosen in the menu).
+- Without it, the window shows the screen at the scale: it opens at the
+  screen's size times the scale, within the display (smaller, keeping its
+  shape, if that doesn't fit), and a new scale resizes it. Resized by hand,
+  it scales the screen to fill it (see Host side, under Guest tools).
+- `--integer-scale` keeps to whole numbers wherever the window scales a
+  screen that isn't its own size (without Enhancements; while the window is
+  being resized; a resolution chosen in Mac OS that doesn't fit the
+  display), leaving a border rather than filtering; a window that doesn't
+  fit the display at the scale is the largest whole multiple that does.
+  With the screen following the window it changes nothing: that screen is
+  drawn at the scale anyway.
+
 ### Guest tools
 
 Some things only code inside Mac OS can do: Blue Enhancements, Blue
@@ -868,14 +914,13 @@ file, with the Finder flag that says so), and the volume too (an
 invisible file at its top, `Icon\r`):
 
 - **Blue Enhancements**: from then on, resizing the window changes the
-  screen's resolution to match once the window has stopped changing (while
-  it's being dragged, the window scales the screen), and the Finder lays out
-  the desktop again. A
+  screen's resolution to match once the window has stopped changing (its
+  size in the display's pixels over the window's scale, see The window's
+  scale; while it's being dragged, the window scales the screen), and the
+  Finder lays out the desktop again. A
   resolution chosen in Mac OS (Monitors & Sound, or the Control Strip)
   resizes the window instead. Without it, the window scales the
-  screen. On high-density displays a screen pixel is a point, so Mac OS
-  appears at the size of other programs; with `--integer-scale` it is a
-  whole number of pixels instead (2 at 1.7x), for the crispest pixels. It
+  screen. It
   also shares the clipboard (below). One installed by a version of Blue
   from before the clipboard isn't this version's (so in a window Blue
   offers to update it), and it still switches modes until then: its data carries its
@@ -1520,11 +1565,12 @@ software (on 8.6, an M5 Mac).
   (ARGB8888: a byte swap at 32 bits per pixel, the 5-bit channels widened
   at 16, the CLUT expanded to 32-bit colours at 8 and fewer), uploaded,
   and drawn again in the scaled copy below (all of it when the mode or
-  colours change, and once a second if nothing has). The screen is scaled
-  to fill the window above the status bar, keeping its shape:
-  whole multiples exactly, other sizes by drawing it at the multiple above
-  on the GPU and filtering that down, so every screen pixel comes out the
-  same size with edges blended over at most one window pixel.
+  colours change, and once a second if nothing has). A screen the window's
+  own size at its scale is drawn at exactly that (see The window's scale);
+  others are scaled to fill the window above the status bar, keeping their
+  shape: whole multiples exactly, other sizes by drawing at the multiple
+  above on the GPU and filtering that down, so every screen pixel comes
+  out the same size with edges blended over at most one window pixel.
   `--integer-scale` uses whole multiples only (with a border if need be)).
   The Mac's cursor goes where the host pointer is (the low-memory mouse
   globals are set, as SheepShaver does), until Mac OS has had its cursor
@@ -1548,6 +1594,8 @@ software (on 8.6, an M5 Mac).
   Tools... (the offer, see Guest tools); a screenshot of the Mac's screen
   (a PNG on the Desktop, or in the current directory without one, named
   for when it was taken); fullscreen (at the desktop's resolution); the
+  window's scale (radio buttons: Auto, saying what it chose, and 1x to 4x;
+  see The window's scale); the
   status bar; whether the pointer is captured while the Mac hides its
   cursor; and what's in the floppy and CD-ROM drives, each with Eject and
   Insert... (see Floppies and CDs). In real time guest time doesn't count
@@ -1558,9 +1606,10 @@ software (on 8.6, an M5 Mac).
   fullscreen: Platinum grey boxes in a black frame, bevelled (light top
   and left edges, dark bottom and right), with a shadow and their title in
   a striped title bar; bevelled, rounded push buttons, dark while pressed;
-  checkboxes whose check overhangs the box; etched lines between parts; and
-  Bondi Blue for the checks, the keyboard's focus ring and the processor's
-  light as it naps. A prompt has Blue's icon beside its text, as a Mac OS
+  checkboxes whose check overhangs the box; radio buttons, round, with a
+  dot; etched lines between parts; and Bondi Blue for the checks, the
+  radio buttons' dots, the keyboard's focus ring and the processor's light
+  as it naps. A prompt has Blue's icon beside its text, as a Mac OS
   alert has its icon, and its buttons below in Mac OS's order: the default
   on the right, with Mac OS's thick ring around it, the other beside it,
   and a third (Don't Ask Again) on the left. Return presses the default
@@ -1970,7 +2019,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           vertex's work, client arrays, the attribute stacks), gltest.c (their test application),
           surface.c + raster.c + gpu.c + gl.c (the 3D backend:
           drawing, in software and with OpenGL, and presenting), display.c (SDL2
-          window, on the main thread, and what the Mac hands it), ui.cpp (its menu and prompts, with Dear ImGui),
+          window, on the main thread, and what the Mac hands it), density.c (displays'
+          pixels per inch, for its scale), ui.cpp (its menu and prompts, with Dear ImGui),
           chooser.c, chooser_mac.m (the host's file chooser, for the menu's Insert...), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), env.c (settings' old names),
           icon.c (the window's icon), font.c (its font), main.c

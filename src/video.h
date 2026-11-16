@@ -141,6 +141,13 @@ unsigned video_height(const struct video *v);
 bool video_request_size(struct video *v, unsigned width, unsigned height);
 
 /*
+ * ... the size it takes for `width` x `height`: the width a multiple of 8,
+ * at least 512 x 384, and smaller (keeping its shape) until a framebuffer of
+ * `fb_size` bytes holds it at 32 bits per pixel
+ */
+void video_fit_size(uint32_t fb_size, unsigned *width, unsigned *height);
+
+/*
  * The helper's side: the display mode ID and depth mode to switch to, if a
  * request is pending; then video_request_done() when the switch is over.
  */

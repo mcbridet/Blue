@@ -116,7 +116,8 @@ struct nk_boot_options {
 	bool no_fast_start;     /* in real time, guest time doesn't run faster until the Finder is up */
 	bool interp;            /* interpret only (no JIT) */
 	bool no_sound;          /* don't play sound on the host (it plays to nowhere) */
-	bool integer_scale;     /* the window scales the screen by whole numbers only */
+	bool integer_scale;     /* the window scales a screen not its own by whole numbers only */
+	unsigned scale;         /* the window's scale: display pixels to a screen pixel (0: Auto, display.h) */
 	bool no_status_bar;     /* the window starts without its status bar */
 	bool no_net;            /* no host network behind the guest's Ethernet (real time has one) */
 	bool no_gpu;            /* the 3D engine never draws with the host's GPU (real time does, if it can) */

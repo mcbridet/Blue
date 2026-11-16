@@ -554,6 +554,34 @@ static bool checkbox(const char *label, bool *on)
 	return pressed;
 }
 
+/* A radio button, as Mac OS 8's (round, shaded, a dot when it's the one on), its dot in Bondi Blue */
+static bool radio(const char *id, const char *label, bool on)
+{
+	const float font = ImGui::GetFontSize(), height = font + 6;
+	const ImVec2 t = ImGui::CalcTextSize(label), at = ImGui::GetCursorScreenPos();
+	bool pressed = ImGui::InvisibleButton(id, ImVec2(BOX + 6 + t.x, height), ImGuiButtonFlags_EnableNav);
+	bool down = ImGui::IsItemActive() && ImGui::IsItemHovered(), hovered = ImGui::IsItemHovered();
+	ImDrawList *dl = box_draw_list();
+	const float h = hair(), r = BOX / 2;
+	const ImVec2 c = snap(ImVec2(at.x + r, at.y + height / 2));
+	dl->AddCircleFilled(c, r, col(BLACK));
+	int from = dl->VtxBuffer.Size;
+	dl->AddCircleFilled(c, r - h, col(WHITE));
+	if (down)
+		shade(dl, from, c.y - r, c.y + r, PLATINUM_DARKER, PLATINUM_MID);
+	else
+		shade(dl, from, c.y - r, c.y + r, hovered ? WHITE : PLATINUM_LIGHT, hovered ? PLATINUM : PLATINUM_MID);
+	if (on) {
+		dl->AddCircleFilled(c, r / 2, col(HIGHLIGHT));
+		dl->AddCircleFilled(c, r / 2 - h, col(ACCENT));
+	}
+	dl->AddText(snap(ImVec2(at.x + BOX + 6, at.y + (height - font) / 2)), col(INK), label);
+	if (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible)
+		dl->AddCircle(c, r + 2, col(ACCENT), 0, 2);
+	dl->PopClipRect();
+	return pressed;
+}
+
 /* What an item does, in a tooltip while the pointer rests on it (Mac OS 8's Balloon Help, plainer) */
 static void tip(const char *text)
 {
@@ -621,6 +649,40 @@ static enum ui_action drives_menu(const struct ui_drives *dr)
 }
 
 #define MENU_BUTTON 240.0f
+#define TIMES "\xC3\x97"
+
+/*
+ * The window's scale: Auto (saying what it chose) or a number of the
+ * display's pixels to a Mac pixel, as radio buttons on a line
+ */
+static enum ui_action scale_menu(const struct ui_state *s)
+{
+	enum ui_action action = UI_NONE;
+	const float y = ImGui::GetCursorPosY();
+	ImGui::SetCursorPosY(y + 3);
+	ImGui::TextUnformatted("Scale:");
+	for (unsigned k = 0; k < UI_SCALES; k++) {
+		char id[16], label[32], why[400];
+		snprintf(id, sizeof id, "##scale%u", k);
+		if (k) {
+			snprintf(label, sizeof label, "%u" TIMES, k);
+			snprintf(why, sizeof why, "Each Mac pixel %u " TIMES " %u of the display's pixels", k, k);
+		} else {
+			snprintf(label, sizeof label, "Auto (%u" TIMES ")", s->scale_auto);
+			snprintf(why, sizeof why,
+				 "The whole number of the display's pixels to a Mac pixel that makes Mac OS about 80 pixels "
+				 "to the inch, as a 1999 Mac's screen was: %u on this display. With Blue Enhancements, Mac "
+				 "OS's resolution changes to fill the window (as Mac OS resumes); without, the window's size "
+				 "changes", s->scale_auto);
+		}
+		ImGui::SameLine(0, k ? 12 : 10);
+		ImGui::SetCursorPosY(y);
+		if (radio(id, label, s->scale == k))
+			action = (enum ui_action)(UI_SCALE + k);
+		tip(why);
+	}
+	return action;
+}
 
 /* The menu: the guest is paused while it's open */
 static enum ui_action menu(const struct ui_state *s, const struct keys *keys)
@@ -664,6 +726,9 @@ static enum ui_action menu(const struct ui_state *s, const struct keys *keys)
 	bool fullscreen = s->fullscreen;
 	if (checkbox("Fullscreen", &fullscreen))
 		action = UI_FULLSCREEN;
+	enum ui_action scale = scale_menu(s);
+	if (scale != UI_NONE)
+		action = scale;
 	bool bar = s->status_bar > 0;
 	if (checkbox("Status bar", &bar))
 		action = UI_STATUS_BAR;

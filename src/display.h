@@ -37,8 +37,9 @@ enum display_event_type {
 	DISPLAY_EVENT_KEY,              /* adb_key, down */
 	DISPLAY_EVENT_MOUSE_MOVE,       /* x, y (guest screen pixels), dx, dy */
 	DISPLAY_EVENT_MOUSE_BUTTON,     /* button, down */
-	DISPLAY_EVENT_RESIZE,           /* x, y: the screen size that fills the window (resized by the user,
-					 * or the status bar came or went in a window that kept its size) */
+	DISPLAY_EVENT_RESIZE,           /* x, y: the screen size that fills the window at its scale (resized by
+					 * the user, the scale or the display's density changed, or the status bar
+					 * came or went in a window that kept its size) */
 	DISPLAY_EVENT_RELEASE_MOUSE,    /* the user pressed Control and Option (Ctrl and Alt) together */
 	DISPLAY_EVENT_MENU,             /* the menu's to open or close (F12; or Esc or Resume, open) */
 	DISPLAY_EVENT_MENU_ACTION,      /* something chosen in the menu: action (but Resume, Fullscreen, Status bar);
@@ -60,14 +61,42 @@ struct display_event {
 
 /*
  * Returns NULL (with a message on stderr) if no window can be opened (or
- * display_main() isn't running the main thread). The window has one unit of
- * its size (a point, on high-density displays) per screen pixel and scales
- * the screen to fill it. With `integer`, the screen is only ever drawn at a
- * whole multiple of its size, and the window's natural size for a screen is
- * the multiple nearest the display's scale.
+ * display_main() isn't running the main thread). The screen is shown at a
+ * scale, `scale` whole pixels of the display to each of its pixels
+ * (DISPLAY_SCALE_AUTO: Auto, display_auto_scale() for the display the
+ * window is on; the menu changes it): the window takes the screen's size
+ * at it (within the display), and a window resized asks for the screen its
+ * own size in pixels over the scale (DISPLAY_EVENT_RESIZE). A screen of
+ * that size is drawn at that scale; others are scaled to fill the window,
+ * keeping their shape, and with `integer` by whole numbers only.
  */
-struct display *display_open(const char *title, unsigned width, unsigned height, bool integer);
+#define DISPLAY_SCALE_AUTO 0
+#define DISPLAY_SCALE_MAX 4
+struct display *display_open(const char *title, unsigned width, unsigned height, bool integer, unsigned scale);
 void display_close(struct display *d);
+
+/*
+ * Whether the screen follows the window's size (the guest tools' Blue
+ * Enhancements runs, which switches to the size asked for): then a new
+ * scale changes the screen; otherwise the window
+ */
+void display_follow(struct display *d, bool on);
+
+/*
+ * Auto: the whole number of a display's pixels to a screen pixel (1 to
+ * DISPLAY_SCALE_MAX) that brings the screen nearest, in proportion, to 80
+ * pixels per inch, as a 1999 Mac's: from the display's pixels per inch, or
+ * if that isn't known (0, or out of reason) its own scale, `backing`
+ * pixels to the window's unit, rounded.
+ */
+unsigned display_auto_scale(double ppi, double backing);
+
+/*
+ * The screen a window w x h pixels (above the status bar) shows at a
+ * scale: its pixels over the scale, rounded down (video_fit_size() rounds
+ * that to what the driver takes)
+ */
+void display_screen_for(int w, int h, unsigned scale, int *sw, int *sh);
 
 /*
  * The screen, as the window has it: a copy of the framebuffer in its own
@@ -111,14 +140,17 @@ void display_cursor(struct display *d, const struct display_cursor *c);
  * as fits keeping its shape (with `integer`, a whole multiple of its size),
  * centred. Whole multiples are drawn exactly (nearest neighbour); other
  * sizes are drawn at the whole multiple above, then filtered down, so that
- * each screen pixel stays a sharp, evenly sized square.
+ * each screen pixel stays a sharp, evenly sized square. A screen the
+ * window's own at `scale` (display_screen_for(), the width to 8 pixels) is
+ * drawn at exactly that, with a border if need be.
  */
 struct display_view {
 	unsigned screen_w, screen_h;
 	int x, y, w, h;                 /* where it's drawn, in the window's pixels */
 	unsigned prescale;              /* 0: drawn directly; else drawn at this multiple first */
 };
-struct display_view display_view(unsigned screen_w, unsigned screen_h, int out_w, int out_h, bool integer);
+struct display_view display_view(unsigned screen_w, unsigned screen_h, int out_w, int out_h, bool integer,
+				 unsigned scale);
 
 /* The screen pixel at (px, py) in the window's pixels (off the screen in its borders). */
 void display_view_point(const struct display_view *v, double px, double py, int *x, int *y);
@@ -137,8 +169,8 @@ void display_capture_mouse(struct display *d, bool on);
  * Opens or closes the menu over the screen (Dear ImGui's; with SDL older
  * than 2.0.18, there's none and the title says the guest's paused). While
  * it's open, input goes to it, and the window draws it as it changes. It
- * toggles fullscreen and the status bar itself; the rest of what's chosen
- * comes back as DISPLAY_EVENT_MENU_ACTION.
+ * toggles fullscreen and the status bar and sets the scale itself; the rest
+ * of what's chosen comes back as DISPLAY_EVENT_MENU_ACTION.
  */
 void display_menu(struct display *d, bool open);
 

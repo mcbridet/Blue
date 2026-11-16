@@ -15,13 +15,16 @@
 #endif
 
 #include "chooser.h"
+#include "density.h"
 #include "icon.h"
 #include "ui.h"
 
 /* The parts of the SDL2 ABI we use (stable across SDL 2.x). */
 #define SDL_INIT_VIDEO 0x00000020u
 #define SDL_WINDOWPOS_CENTERED 0x2FFF0000
+#define SDL_WINDOWPOS_CENTERED_DISPLAY(k) (0x2FFF0000 | (k))
 #define SDL_WINDOW_FULLSCREEN 0x00000001u
+#define SDL_WINDOW_HIDDEN 0x00000008u
 #define SDL_WINDOW_RESIZABLE 0x00000020u
 #define SDL_WINDOW_MAXIMIZED 0x00000080u
 #define SDL_WINDOW_ALLOW_HIGHDPI 0x00002000u
@@ -45,11 +48,14 @@
 #define SDL_HINT_WAYLAND_SCALE_TO_DISPLAY "SDL_VIDEO_WAYLAND_SCALE_TO_DISPLAY"
 #define SDL_QUIT 0x100u
 #define SDL_WINDOWEVENT 0x200u
+#define SDL_WINDOWEVENT_SHOWN 1u
 #define SDL_WINDOWEVENT_EXPOSED 3u
+#define SDL_WINDOWEVENT_MOVED 4u
 #define SDL_WINDOWEVENT_RESIZED 5u      /* by the user or the window manager, not by us */
 #define SDL_WINDOWEVENT_SIZE_CHANGED 6u /* by anyone */
 #define SDL_WINDOWEVENT_FOCUS_GAINED 12u
 #define SDL_WINDOWEVENT_FOCUS_LOST 13u
+#define SDL_WINDOWEVENT_DISPLAY_CHANGED 18u     /* (2.0.18) */
 #define SDL_KEYDOWN 0x300u
 #define SDL_KEYUP 0x301u
 #define SDL_MOUSEMOTION 0x400u
@@ -124,6 +130,10 @@ typedef struct {
 	int x, y, w, h;
 } SDL_Rect;
 
+typedef struct {
+	uint8_t major, minor, patch;
+} SDL_version;
+
 struct sdl {
 	void *lib;
 	int (*Init)(uint32_t);
@@ -154,7 +164,17 @@ struct sdl {
 	int (*SetWindowFullscreen)(void *, uint32_t);
 	void (*SetWindowSize)(void *, int, int);
 	void (*GetWindowSize)(void *, int *, int *);
+	void (*SetWindowPosition)(void *, int, int);
+	void (*GetWindowPosition)(void *, int *, int *);
+	void (*ShowWindow)(void *);
 	uint32_t (*GetWindowFlags)(void *);
+	int (*GetWindowDisplayIndex)(void *);
+	int (*GetDisplayBounds)(int, SDL_Rect *);
+	void (*GetVersion)(SDL_version *);
+	const char *(*GetCurrentVideoDriver)(void);
+	int (*GetDisplayUsableBounds)(int, SDL_Rect *);         /* (these may be missing: before 2.0.5) */
+	int (*GetWindowBordersSize)(void *, int *, int *, int *, int *);
+	int (*GetDisplayDPI)(int, float *, float *, float *);
 	char *(*GetClipboardText)(void);        /* (these may be missing) */
 	int (*SetClipboardText)(const char *);
 	void (*free)(void *);
@@ -200,6 +220,7 @@ struct handed {
 	char prompt_text[1024], prompt_yes[32], prompt_no[32], prompt_alt[32];
 	int capture;                    /* capture the pointer (1) or let it go (0); -1: as it is */
 	int status_bar;                 /* show the status bar (1) or hide it (0); -1: as it is */
+	int follows;                    /* the screen follows the window's size (1) or not (0); -1: as it was */
 	char *clipboard;                /* text for the host's clipboard (to free), or NULL */
 	bool clipboard_asked;           /* the host's clipboard wanted (display_clipboard()) ... */
 	bool clipboard_answered;        /* ... and here it is: */
@@ -232,7 +253,17 @@ struct display {
 	int invert_mode;                /* the blend mode that inverts (-1: none) */
 	int max_texture;                /* longest texture side the renderer takes (0: any) */
 	bool prescale;                  /* render targets, on a renderer fast enough for them */
-	double density;                 /* window pixels per unit when it was last fitted */
+	double density;                 /* window pixels per unit, as last looked at (check_display()) */
+	unsigned scale_chosen;          /* the scale chosen: display pixels to a screen pixel (0: Auto) */
+	unsigned scale;                 /* ... the one in use */
+	unsigned scale_auto;            /* ... Auto's, on the display the window is on: */
+	int display;                    /* ... which (-1: not known yet) */
+	SDL_Rect display_bounds;        /* ... where it is, in units */
+	double ppi;                     /* ... its pixels per inch (0: not known) */
+	bool recheck;                   /* the window may have gone to another display, or its density changed */
+	uint64_t checked_ns;            /* ... last looked at */
+	bool compat;                    /* SDL 2 is sdl2-compat (on SDL 3), whose displays have no physical size */
+	bool follows;                   /* the screen follows the window's size (display_follow()) */
 	bool caps_lock;
 	bool ctrl[2], alt[2];           /* (left and right) held, for the release key */
 	bool menu;                      /* the menu's open: input goes to it */
@@ -290,6 +321,7 @@ static struct {
 	const char *title;
 	unsigned width, height;
 	bool integer;
+	unsigned scale;
 	bool opened;                    /* ... answered: */
 	struct display *d;              /* the window, or NULL */
 	bool closed;                    /* display_close() was answered */
@@ -391,6 +423,8 @@ static int bar_pixels(const struct display *d, int wh, int ph)
 	return wh > 0 ? (int)lround((double)bar_units(d) * ph / wh) : 0;
 }
 
+static void emit(struct display *d, const struct display_event *ev, char *path, unsigned prompt);
+
 /* The menu's renderer: SDL 2.0.18's functions (if there are none, there's no menu) */
 static struct ui *open_menu(struct display *d)
 {
@@ -452,9 +486,19 @@ static bool load_sdl(struct sdl *s)
 	SYM(SetWindowFullscreen, "SDL_SetWindowFullscreen");
 	SYM(SetWindowSize, "SDL_SetWindowSize");
 	SYM(GetWindowSize, "SDL_GetWindowSize");
+	SYM(SetWindowPosition, "SDL_SetWindowPosition");
+	SYM(GetWindowPosition, "SDL_GetWindowPosition");
+	SYM(ShowWindow, "SDL_ShowWindow");
 	SYM(GetWindowFlags, "SDL_GetWindowFlags");
+	SYM(GetWindowDisplayIndex, "SDL_GetWindowDisplayIndex");
+	SYM(GetDisplayBounds, "SDL_GetDisplayBounds");
+	SYM(GetVersion, "SDL_GetVersion");
+	SYM(GetCurrentVideoDriver, "SDL_GetCurrentVideoDriver");
 	SYM(free, "SDL_free");
 #undef SYM
+	*(void **)&s->GetDisplayUsableBounds = dlsym(s->lib, "SDL_GetDisplayUsableBounds");
+	*(void **)&s->GetWindowBordersSize = dlsym(s->lib, "SDL_GetWindowBordersSize");
+	*(void **)&s->GetDisplayDPI = dlsym(s->lib, "SDL_GetDisplayDPI");
 	*(void **)&s->ComposeCustomBlendMode = dlsym(s->lib, "SDL_ComposeCustomBlendMode");
 	*(void **)&s->GetClipboardText = dlsym(s->lib, "SDL_GetClipboardText");
 	*(void **)&s->SetClipboardText = dlsym(s->lib, "SDL_SetClipboardText");
@@ -481,7 +525,8 @@ static void set_icon(struct display *d)
 	free(pixels);
 }
 
-struct display_view display_view(unsigned screen_w, unsigned screen_h, int out_w, int out_h, bool integer)
+struct display_view display_view(unsigned screen_w, unsigned screen_h, int out_w, int out_h, bool integer,
+				 unsigned scale)
 {
 	struct display_view v = { .screen_w = screen_w, .screen_h = screen_h };
 	if (!screen_w || !screen_h || out_w <= 0 || out_h <= 0)
@@ -489,8 +534,10 @@ struct display_view display_view(unsigned screen_w, unsigned screen_h, int out_w
 	unsigned n = (unsigned)out_w / screen_w < (unsigned)out_h / screen_h ? (unsigned)out_w / screen_w
 									    : (unsigned)out_h / screen_h;
 	int spare_w = out_w - (int)(n * screen_w), spare_h = out_h - (int)(n * screen_h);
-	/* (a whole multiple is exact: worth leaving a pixel or two unfilled for) */
-	if (n >= 1 && (integer || (spare_w < spare_h ? spare_w : spare_h) <= 2)) {
+	/* (a whole multiple is exact: worth leaving a pixel or two unfilled for, and what rounding left a screen the
+	 * window's own at its scale) */
+	bool own = n == scale && spare_w < 8 * (int)n && spare_h < (int)n;
+	if (n >= 1 && (integer || own || (spare_w < spare_h ? spare_w : spare_h) <= 2)) {
 		v.w = (int)(n * screen_w);
 		v.h = (int)(n * screen_h);
 	} else {
@@ -512,6 +559,29 @@ void display_view_point(const struct display_view *v, double px, double py, int 
 	*y = v->h > 0 ? (int)floor((py - v->y) * v->screen_h / v->h) : 0;
 }
 
+#define DENSITY_TARGET 80.0             /* pixels per inch: a 1999 Mac's screen (Auto's aim) */
+#define DENSITY_MIN 20.0                /* ... and densities out of reason */
+#define DENSITY_MAX 1000.0
+
+unsigned display_auto_scale(double ppi, double backing)
+{
+	unsigned s = 1;
+	if (ppi >= DENSITY_MIN && ppi <= DENSITY_MAX) {
+		/* (s rather than s + 1 up to 80 sqrt(s (s + 1)), where they're as far off in proportion) */
+		while (s < DISPLAY_SCALE_MAX && ppi > DENSITY_TARGET * sqrt((double)s * (s + 1)))
+			s++;
+		return s;
+	}
+	return backing < 1.5 ? 1 : backing >= DISPLAY_SCALE_MAX ? DISPLAY_SCALE_MAX : (unsigned)(backing + 0.5);
+}
+
+void display_screen_for(int w, int h, unsigned scale, int *sw, int *sh)
+{
+	int s = scale ? (int)scale : 1;
+	*sw = w > 0 ? w / s : 0;
+	*sh = h > 0 ? h / s : 0;
+}
+
 /* The window's size in its own units (those of mouse positions) and in pixels; returns pixels per unit. */
 static double window_size(struct display *d, int *ww, int *wh, int *pw, int *ph)
 {
@@ -523,53 +593,167 @@ static double window_size(struct display *d, int *ww, int *wh, int *pw, int *ph)
 	return *ww > 0 && *pw > 0 ? (double)*pw / *ww : 1.0;
 }
 
-/* With integer scaling, the multiple a screen sized to the window is shown at: the display's scale, rounded */
-static unsigned natural_multiple(double density)
+/* The screen a window wh units high, pw x ph pixels, shows at the scale (above the status bar) */
+static void screen_for_window(const struct display *d, int wh, int pw, int ph, int *sw, int *sh)
 {
-	return density < 1.5 ? 1 : (unsigned)(density + 0.5);
-}
-
-/* The screen size a window of ww x wh units shows at its natural scale (above the status bar) */
-static void screen_for_window(const struct display *d, int ww, int wh, double density, int *sw, int *sh)
-{
-	wh = wh > bar_units(d) ? wh - bar_units(d) : 0;
-	if (!d->integer) {
-		*sw = ww;
-		*sh = wh;
-		return;
-	}
-	int n = (int)natural_multiple(density);
-	*sw = (int)lround(ww * density) / n;
-	*sh = (int)lround(wh * density) / n;
-}
-
-/* ... and the window size that shows a screen at it */
-static void window_for_screen(const struct display *d, unsigned sw, unsigned sh, double density, int *ww, int *wh)
-{
-	if (!d->integer) {
-		*ww = (int)sw;
-		*wh = (int)sh + bar_units(d);
-		return;
-	}
-	unsigned n = natural_multiple(density);
-	*ww = (int)ceil(sw * n / density - 0.01);
-	*wh = (int)ceil(sh * n / density - 0.01) + bar_units(d);
+	display_screen_for(pw, ph - bar_pixels(d, wh, ph), d->scale, sw, sh);
 }
 
 /*
- * The window takes the screen's size, unless it is that size already (to
- * the 8 pixels screens sized to the window are rounded to): it may be being
- * resized.
+ * The room for the window on its display (in units: the display's usable
+ * part, but the window's frame; where the window system doesn't say what
+ * that is, a title bar is left room for)
+ */
+#define TITLE_BAR_GUESS 32              /* (macOS 27's) */
+
+static bool window_room(struct display *d, SDL_Rect *r, int *top, int *left, int *bottom, int *right)
+{
+	*top = *left = *bottom = *right = 0;
+	if (d->display < 0 || !d->sdl.GetDisplayUsableBounds || d->sdl.GetDisplayUsableBounds(d->display, r) != 0 ||
+	    r->w <= 0 || r->h <= 0)
+		return false;
+	if (!d->sdl.GetWindowBordersSize || d->sdl.GetWindowBordersSize(d->window, top, left, bottom, right) != 0) {
+		*left = *bottom = *right = 0;
+		*top = TITLE_BAR_GUESS;
+	}
+	return r->w - *left - *right > 0 && r->h - *top - *bottom > bar_units(d);
+}
+
+/*
+ * ... and the window that shows a screen at the scale: within the display,
+ * keeping the screen's shape (with integer scaling, at the largest whole
+ * multiple that fits, if one does)
+ */
+static void window_for_screen(struct display *d, unsigned sw, unsigned sh, int *ww, int *wh)
+{
+	double k = d->density > 0 ? d->density : 1, w = sw * d->scale / k, h = sh * d->scale / k;
+	SDL_Rect r;
+	int top, left, bottom, right;
+	if (window_room(d, &r, &top, &left, &bottom, &right)) {
+		double room_w = r.w - left - right, room_h = r.h - top - bottom - bar_units(d);
+		if (w > room_w || h > room_h) {
+			double f = fmin(room_w / w, room_h / h);
+			for (unsigned n = d->scale - 1; d->integer && n >= 1; n--) {
+				if (sw * n / k <= room_w && sh * n / k <= room_h) {
+					f = (double)n / d->scale;
+					break;
+				}
+			}
+			w *= f;
+			h *= f;
+		}
+	}
+	*ww = (int)ceil(w - 0.01);
+	*wh = (int)ceil(h - 0.01) + bar_units(d);
+}
+
+/* A window we've resized, ww x wh units, stays on its display (in its usable part, as far as it goes) */
+static void keep_on_display(struct display *d, int ww, int wh)
+{
+	SDL_Rect r;
+	int top, left, bottom, right, x, y;
+	if ((d->sdl.GetWindowFlags(d->window) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED)) ||
+	    !window_room(d, &r, &top, &left, &bottom, &right))
+		return;
+	d->sdl.GetWindowPosition(d->window, &x, &y);
+	int nx = x + ww + right > r.x + r.w ? r.x + r.w - right - ww : x;
+	int ny = y + wh + bottom > r.y + r.h ? r.y + r.h - bottom - wh : y;
+	nx = nx - left < r.x ? r.x + left : nx;
+	ny = ny - top < r.y ? r.y + top : ny;
+	if (nx != x || ny != y)
+		d->sdl.SetWindowPosition(d->window, nx, ny);
+}
+
+/*
+ * The window takes the screen's size at the scale, unless it is that size
+ * already (to the 8 pixels screens sized to the window are rounded to): it
+ * may be being resized.
  */
 static void fit_window(struct display *d)
 {
 	int ww, wh, pw, ph, sw, sh;
-	d->density = window_size(d, &ww, &wh, &pw, &ph);
-	screen_for_window(d, ww, wh, d->density, &sw, &sh);
+	window_size(d, &ww, &wh, &pw, &ph);
+	screen_for_window(d, wh, pw, ph, &sw, &sh);
 	if (sw >= (int)d->width && sw < (int)d->width + 8 && sh == (int)d->height)
 		return;
-	window_for_screen(d, d->width, d->height, d->density, &ww, &wh);
+	window_for_screen(d, d->width, d->height, &ww, &wh);
 	d->sdl.SetWindowSize(d->window, ww, wh);
+	keep_on_display(d, ww, wh);
+}
+
+/* The display's pixels per inch (display k, at b in units, `density` pixels each): 0 if not known */
+static double display_ppi(struct display *d, int k, const SDL_Rect *b, double density)
+{
+	unsigned px_w = (unsigned)lround(b->w * density), px_h = (unsigned)lround(b->h * density);
+#ifndef __APPLE__
+	/* SDL 2's own, from the X server's or the compositor's physical size (sdl2-compat's is made up: 96 a unit) */
+	float h = 0, v = 0;
+	if (!d->compat && d->sdl.GetDisplayDPI && d->sdl.GetDisplayDPI(k, NULL, &h, &v) == 0 && h >= DENSITY_MIN &&
+	    h <= DENSITY_MAX && fabs(h / v - 1) < 0.1)
+		return h;
+	/* (the kernel's EDID is this computer's displays': not an X server's elsewhere) */
+	const char *driver = d->sdl.GetCurrentVideoDriver(), *x = getenv("DISPLAY");
+	if (!driver || !(strcmp(driver, "wayland") == 0 || (strcmp(driver, "x11") == 0 && x && x[0] == ':')))
+		return 0;
+#else
+	(void)d;
+	(void)k;
+#endif
+	return density_display(b->x + b->w / 2, b->y + b->h / 2, px_w, px_h);
+}
+
+/*
+ * The window's density, and the display it's on: Auto's scale there, and
+ * the scale in use. True if the density or the scale changed.
+ */
+static bool check_display(struct display *d)
+{
+	int ww, wh, pw, ph;
+	double density = window_size(d, &ww, &wh, &pw, &ph);
+	int k = d->sdl.GetWindowDisplayIndex(d->window);
+	SDL_Rect b = { 0, 0, 0, 0 };
+	if (k < 0 || d->sdl.GetDisplayBounds(k, &b) != 0)
+		k = -1;
+	d->recheck = false;
+	d->checked_ns = clock_ns(CLOCK_MONOTONIC);
+	bool moved = k != d->display || memcmp(&b, &d->display_bounds, sizeof b) != 0;
+	bool denser = fabs(density - d->density) > 0.02;
+	if (!moved && !denser)
+		return false;
+	unsigned was_auto = d->scale_auto, was = d->scale;
+	double was_ppi = d->ppi;
+	d->display = k;
+	d->display_bounds = b;
+	d->density = density;
+	d->ppi = k >= 0 ? display_ppi(d, k, &b, density) : 0;
+	d->scale_auto = display_auto_scale(d->ppi, density);
+	d->scale = d->scale_chosen ? d->scale_chosen : d->scale_auto;
+	if (d->scale_auto != was_auto || fabs(d->ppi - was_ppi) >= 0.5) {
+		if (d->ppi > 0)
+			printf("display: %.0f pixels per inch: Auto's scale is %u\n", d->ppi, d->scale_auto);
+		else
+			printf("display: its pixels per inch aren't known: Auto's scale is %u, its own\n", d->scale_auto);
+	}
+	return denser || d->scale != was;
+}
+
+/*
+ * The scale or the window's density changed: the screen follows the
+ * window if it does (the size it shows at the scale is asked for);
+ * otherwise the window takes the screen's size at it.
+ */
+static void rescale(struct display *d)
+{
+	if (d->follows) {
+		int ww, wh, pw, ph;
+		struct display_event ev = { .type = DISPLAY_EVENT_RESIZE };
+		window_size(d, &ww, &wh, &pw, &ph);
+		screen_for_window(d, wh, pw, ph, &ev.x, &ev.y);
+		emit(d, &ev, NULL, 0);
+	} else {
+		fit_window(d);
+	}
+	d->stale = true;
 }
 
 static void *make_texture(struct display *d, uint32_t format, int access, unsigned width, unsigned height,
@@ -642,7 +826,7 @@ static void scaled_stale(struct display *d, unsigned from, unsigned to)
 static struct display_view screen_view(struct display *d, int *ww, int *wh, int *pw, int *ph)
 {
 	window_size(d, ww, wh, pw, ph);
-	return display_view(d->width, d->height, *pw, *ph - bar_pixels(d, *wh, *ph), d->integer);
+	return display_view(d->width, d->height, *pw, *ph - bar_pixels(d, *wh, *ph), d->integer, d->scale);
 }
 
 /*
@@ -757,6 +941,8 @@ static void draw(struct display *d)
 			.drives = d->has_drives ? &d->drives : NULL,
 			.tools = d->tools,
 			.tools_why_not = d->tools_why_not[0] ? d->tools_why_not : NULL,
+			.scale = d->scale_chosen,
+			.scale_auto = d->scale_auto,
 		};
 		enum ui_action action = ui_draw(d->ui, &s, ww, wh, ww > 0 ? (float)pw / (float)ww : 1, now - d->menu_time);
 		d->menu_time = now;
@@ -839,8 +1025,9 @@ static void show_pointer(struct display *d)
 
 /*
  * Shows or hides the status bar. The window grows or shrinks to keep the
- * screen's size, unless it keeps its size (fullscreen, maximized): then
- * it's the screen that fits it that changes, as if the user had resized it.
+ * screen's size (as far as the display has room), unless it keeps its size
+ * (fullscreen, maximized): then it's the screen that fits it that changes,
+ * as if the user had resized it.
  */
 static void show_status_bar(struct display *d, bool on)
 {
@@ -851,11 +1038,19 @@ static void show_status_bar(struct display *d, bool on)
 	d->status_bar = on;
 	if (d->sdl.GetWindowFlags(d->window) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED)) {
 		struct display_event ev = { .type = DISPLAY_EVENT_RESIZE };
-		double density = window_size(d, &ww, &wh, &pw, &ph);
-		screen_for_window(d, ww, wh, density, &ev.x, &ev.y);
+		window_size(d, &ww, &wh, &pw, &ph);
+		screen_for_window(d, wh, pw, ph, &ev.x, &ev.y);
 		emit(d, &ev, NULL, 0);
 	} else {
-		d->sdl.SetWindowSize(d->window, ww, wh + (on ? UI_STATUS_BAR_HEIGHT : -UI_STATUS_BAR_HEIGHT));
+		int nw = ww, nh = wh + (on ? UI_STATUS_BAR_HEIGHT : -UI_STATUS_BAR_HEIGHT), top, left, bottom, right;
+		SDL_Rect r;
+		if (on && window_room(d, &r, &top, &left, &bottom, &right) && nh > r.h - top - bottom && wh > 0) {
+			/* (it would go off the display: the screen's part smaller instead, keeping its shape) */
+			int room = r.h - top - bottom - UI_STATUS_BAR_HEIGHT;
+			nw = (int)lround((double)ww * room / wh);
+			nh = room + UI_STATUS_BAR_HEIGHT;
+		}
+		d->sdl.SetWindowSize(d->window, nw, nh);
 	}
 	d->stale = true;
 }
@@ -902,13 +1097,26 @@ static void insert_chosen(struct display *d)
 	}
 }
 
-/* What was chosen in the menu or a prompt: fullscreen and the status bar are the window's, Insert... its chooser */
+/*
+ * What was chosen in the menu or a prompt: fullscreen, the status bar and
+ * the scale are the window's, Insert... its chooser
+ */
 static void chosen(struct display *d, enum ui_action action)
 {
 	struct display_event ev = { .type = DISPLAY_EVENT_MENU_ACTION, .action = action };
 	unsigned prompt = 0;
 	if (action >= UI_INSERT && action <= UI_INSERT_LAST) {
 		insert(d, (unsigned)(action - UI_INSERT));
+		return;
+	}
+	if (action >= UI_SCALE && action <= UI_SCALE_LAST) {
+		d->scale_chosen = (unsigned)(action - UI_SCALE);
+		unsigned scale = d->scale_chosen ? d->scale_chosen : d->scale_auto;
+		if (scale != d->scale) {
+			d->scale = scale;
+			rescale(d);
+		}
+		d->stale = true;
 		return;
 	}
 	switch (action) {
@@ -975,6 +1183,10 @@ static void handle(struct display *d, SDL_Event *e)
 			d->ctrl[0] = d->ctrl[1] = d->alt[0] = d->alt[1] = false;
 			return;
 		}
+		/* (perhaps to another display, or of another density) */
+		if (e->window.event == SDL_WINDOWEVENT_SHOWN || e->window.event == SDL_WINDOWEVENT_MOVED ||
+		    e->window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED || e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
+			d->recheck = true;
 		/* (some compositors, Wayland's, resize the window only as fast as it's drawn) */
 		if (e->window.event == SDL_WINDOWEVENT_EXPOSED || e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
 			d->stale = true;
@@ -984,7 +1196,8 @@ static void handle(struct display *d, SDL_Event *e)
 			int ww, wh, pw, ph;
 			double density = window_size(d, &ww, &wh, &pw, &ph);
 			ev.type = DISPLAY_EVENT_RESIZE;
-			screen_for_window(d, e->window.data1, e->window.data2, density, &ev.x, &ev.y);
+			screen_for_window(d, e->window.data2, (int)lround(e->window.data1 * density),
+					  (int)lround(e->window.data2 * density), &ev.x, &ev.y);
 		}
 		break;
 	case SDL_KEYDOWN:
@@ -1214,6 +1427,9 @@ static void take(struct display *d, struct taken *t)
 	t->capture = in->capture;
 	t->status_bar = in->status_bar;
 	in->capture = in->status_bar = -1;
+	if (in->follows >= 0)
+		d->follows = in->follows;
+	in->follows = -1;
 	t->clipboard = in->clipboard;
 	in->clipboard = NULL;
 	t->clipboard_asked = in->clipboard_asked;
@@ -1228,16 +1444,8 @@ static void take(struct display *d, struct taken *t)
 /* ... and done */
 static void act(struct display *d, struct taken *t)
 {
-	if (t->resized) {
-		if (set_screen_size(d, t->width, t->height))
-			fit_window(d);
-	} else if (d->integer) {
-		/* the window's natural size depends on the display's scale: known once the window
-		 * is shown, and changed by moving it to another display */
-		int ww, wh, pw, ph;
-		if (fabs(window_size(d, &ww, &wh, &pw, &ph) - d->density) > 0.02)
-			fit_window(d);
-	}
+	if (t->resized && set_screen_size(d, t->width, t->height))
+		fit_window(d);
 	uint64_t cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID), t0 = clock_ns(CLOCK_MONOTONIC);
 	for (unsigned k = 0; k < t->nbands && d->texture; k++) {
 		const struct video_rows *b = &t->bands[k];
@@ -1289,6 +1497,7 @@ static void destroy_window(struct display *d);
  */
 #define REDRAW_NS 16000000u
 #define IDLE_MS 250                     /* (the window looks round at least this often) */
+#define CHECK_NS 1000000000u            /* (and at its display this often) */
 
 /* The window's thread: until the machine closes the window, or is over */
 static void run(struct display *d)
@@ -1323,6 +1532,9 @@ static void run(struct display *d)
 			handle(d, &e);
 		if (d->chooser)
 			insert_chosen(d);
+		/* (the display the window is on and its density: when they may have changed, and every second) */
+		if ((d->recheck || t0 - d->checked_ns >= CHECK_NS) && check_display(d))
+			rescale(d);
 		flush(d);
 		d->times.cpu_ns[DISPLAY_TIME_EVENTS] += cpu;
 		timed(d, DISPLAY_TIME_EVENTS, t0, &c0);
@@ -1355,7 +1567,7 @@ static void run(struct display *d)
 
 /* ---- the window's thread: opening and closing ---------------------------------------- */
 
-static struct display *open_window(const char *title, unsigned width, unsigned height, bool integer)
+static struct display *open_window(const char *title, unsigned width, unsigned height, bool integer, unsigned scale)
 {
 	struct display *d = calloc(1, sizeof *d);
 	if (!d)
@@ -1380,9 +1592,15 @@ static struct display *open_window(const char *title, unsigned width, unsigned h
 		goto fail;
 	}
 	d->integer = integer;
-	/* (on high-density displays, drawn at their full resolution rather than scaled up by the system) */
-	d->window = d->sdl.CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-					(int)width, (int)height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+	d->scale_chosen = scale <= DISPLAY_SCALE_MAX ? scale : DISPLAY_SCALE_AUTO;
+	d->display = -1;
+	SDL_version v = { 0, 0, 0 };
+	d->sdl.GetVersion(&v);
+	d->compat = v.major == 2 && v.patch >= 50;      /* (sdl2-compat's versions: 2.x.50 and on) */
+	/* (on high-density displays, drawn at their full resolution rather than scaled up by the system;
+	 * shown once it's the screen's size at the scale) */
+	d->window = d->sdl.CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, (int)width, (int)height,
+					SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_HIDDEN);
 	if (d->window) {
 		set_icon(d);
 		d->renderer = d->sdl.CreateRenderer(d->window, -1, 0);
@@ -1404,10 +1622,15 @@ static struct display *open_window(const char *title, unsigned width, unsigned h
 		d->invert_mode = d->sdl.ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE_MINUS_DST_COLOR,
 			SDL_BLENDFACTOR_ONE_MINUS_SRC_COLOR, SDL_BLENDOPERATION_ADD, SDL_BLENDFACTOR_ZERO,
 			SDL_BLENDFACTOR_ONE, SDL_BLENDOPERATION_ADD);
+	check_display(d);
 	fit_window(d);
+	if (d->display >= 0)
+		d->sdl.SetWindowPosition(d->window, SDL_WINDOWPOS_CENTERED_DISPLAY(d->display),
+					 SDL_WINDOWPOS_CENTERED_DISPLAY(d->display));
+	d->sdl.ShowWindow(d->window);
 	d->sdl.ShowCursor(0);           /* Mac OS draws its own */
 	d->ui = open_menu(d);
-	d->in.capture = d->in.status_bar = -1;
+	d->in.capture = d->in.status_bar = d->in.follows = -1;
 	d->stale = true;
 #ifdef __APPLE__
 	struct kevent e;
@@ -1522,8 +1745,9 @@ int display_main(int (*fn)(void *), void *arg)
 		const char *title = host.title;
 		unsigned width = host.width, height = host.height;
 		bool integer = host.integer;
+		unsigned scale = host.scale;
 		pthread_mutex_unlock(&host.lock);
-		struct display *d = open_window(title, width, height, integer);
+		struct display *d = open_window(title, width, height, integer, scale);
 		pthread_mutex_lock(&host.lock);
 		host.d = d;
 		host.closed = false;
@@ -1540,7 +1764,7 @@ int display_main(int (*fn)(void *), void *arg)
 	return b.ret;
 }
 
-struct display *display_open(const char *title, unsigned width, unsigned height, bool integer)
+struct display *display_open(const char *title, unsigned width, unsigned height, bool integer, unsigned scale)
 {
 	pthread_mutex_lock(&host.lock);
 	if (!host.running) {
@@ -1552,6 +1776,7 @@ struct display *display_open(const char *title, unsigned width, unsigned height,
 	host.width = width;
 	host.height = height;
 	host.integer = integer;
+	host.scale = scale;
 	host.opened = false;
 	host.opening = true;
 	pthread_cond_broadcast(&host.cond);
@@ -1722,6 +1947,13 @@ void display_prompt_alt(struct display *d, const char *label)
 	pthread_mutex_unlock(&host.lock);
 	if (shown)
 		wake(d);
+}
+
+void display_follow(struct display *d, bool on)
+{
+	pthread_mutex_lock(&host.lock);
+	d->in.follows = on;
+	pthread_mutex_unlock(&host.lock);
 }
 
 void display_status_bar(struct display *d, bool on)

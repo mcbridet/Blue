@@ -241,17 +241,22 @@ static bool custom_in_use(const struct video *v, unsigned mode)
 	       (v->switching >= 0 && mode == video_mode_count + (unsigned)v->switching);
 }
 
+void video_fit_size(uint32_t fb_size, unsigned *width, unsigned *height)
+{
+	unsigned w = *width & ~7u, h = *height;         /* whole bytes at 1 bit per pixel, and then some */
+	w = w < MIN_WIDTH ? MIN_WIDTH : w;
+	h = h < MIN_HEIGHT ? MIN_HEIGHT : h;
+	while ((uint64_t)w * h * 4 > fb_size) {         /* fits at 32 bits per pixel */
+		w = (w * 15 / 16) & ~7u;
+		h = h * 15 / 16;
+	}
+	*width = w;
+	*height = h;
+}
+
 bool video_request_size(struct video *v, unsigned width, unsigned height)
 {
-	width &= ~7u;                           /* whole bytes at 1 bit per pixel, and then some */
-	if (width < MIN_WIDTH)
-		width = MIN_WIDTH;
-	if (height < MIN_HEIGHT)
-		height = MIN_HEIGHT;
-	while ((uint64_t)width * height * 4 > v->fb_size) {     /* fits at 32 bits per pixel */
-		width = (width * 15 / 16) & ~7u;
-		height = height * 15 / 16;
-	}
+	video_fit_size(v->fb_size, &width, &height);
 	if (width == video_width(v) && height == video_height(v)) {
 		v->request = -1;
 		return false;
