@@ -214,13 +214,13 @@ Blue starts up from the first drive that has a System Folder with a "Mac
 OS ROM" file in it, in the order you gave them. The new disk is empty, so
 the Mac starts up from the CD.
 
-**Mac OS 8.5 to 9.1:** open "Mac OS Install" on the CD and follow it.
+**Most Mac OS CDs:** open "Mac OS Install" on the CD and follow it.
 Choose Macintosh HD as the destination, and when you reach the Install
 screen, click **Options** and turn off **"Update Apple Hard Disk
 Drivers"**: the driver updater only knows Apple's own drives, and fails
 on Blue's. The installation takes a few minutes at most.
 
-**Mac OS 9.2.2 restore CDs,** which install with Apple Software Restore:
+**Restore CDs,** which install with Apple Software Restore instead:
 open Apple Software Restore from the CD's window. Click Switch Disk until
 the destination is Macintosh HD, then Restore, and OK. This erases the
 disk and copies Mac OS onto it (the disk then takes the restored
@@ -641,15 +641,16 @@ which also lists the `BLUE_*` environment variables.
 
 | Mac OS | Works | Notes |
 |---|---|---|
-| 8.5 | Yes | Starts from its CD and installs. TCP/IP starts out inactive. |
-| 8.6 | Yes | Includes URL Access, which some games need. |
-| 9.0 to 9.0.4 | Yes | The 9.0.4 CD installs 9.0, and its 9.0.4 update installs too. |
-| 9.1 | Yes | Starts from its CD and installs. Startup Disk chooses the startup disk. |
-| 9.2.x | Yes | Tested with a 9.2.2 CD that installs with Apple Software Restore. |
+| 8.5 | Yes | TCP/IP starts out inactive. |
+| 8.6 | Yes | Includes URL Access, which some programs need. |
+| 9.0 to 9.0.4 | Yes | |
+| 9.1 | Yes | |
+| 9.2 to 9.2.2 | Yes | |
 
-Blue's machine is an original iMac, which covers Mac OS from 8.5 to
-9.2.2. Earlier versions aren't supported, and Mac OS X, which has no
-NanoKernel, can't run on Blue.
+Each starts up from its CD and installs onto a disk image. Blue's machine
+is an original iMac, which covers Mac OS from 8.5 to 9.2.2. Earlier
+versions aren't supported, and Mac OS X, which has no NanoKernel, can't
+run on Blue.
 
 ### Your computer
 
