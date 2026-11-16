@@ -335,8 +335,9 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 		const uint32_t enet_irq[3] = { IRQ_ENET, IRQ_DMA_ENET_TX, IRQ_DMA_ENET_RX };
 		/*
 		 * An interrupt set with just the receive DMA channel's (lanLib's;
-		 * see net.h). One for all three made Open Transport stall for half
-		 * a minute or more in some startups of Mac OS 9; why isn't known.
+		 * see net.h), the only one Blue raises. lanLib takes the set's last
+		 * member, so the iMac's set of all three works as well; Open
+		 * Transport doesn't stall with it.
 		 */
 		const uint32_t enet_rx_irq = IRQ_DMA_ENET_RX;
 		dt_prop_str(enet, "device_type", "network");

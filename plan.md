@@ -2341,6 +2341,26 @@ Facts later tasks need, added as they are found.
   run of the restored system, the TCP/IP control panel shows 10.0.2.15,
   router 10.0.2.2, name server 10.0.2.3 from DHCP (28 frames sent, 2
   received).
+- **Open Transport's stall with a full interrupt set for the Ethernet
+  node, gone:** with all three of the node's interrupts in its set (MAC,
+  transmit DMA, receive DMA, as on the iMac; a scratch build), lanLib put
+  its handler in the set's first member, the MAC's, which Blue never
+  raises: the receive channel's pulses reached no handler, so no frame
+  arrived (DHCP unanswered), though startup didn't stall: an unhandled
+  pulse is now released after one more re-evaluation ("Pulses lost at
+  PrioritizeInterrupts"), and one taken again and again may have been the
+  old stall (not reproduced). lanLib now takes the last member
+  (`interrupt_step()` in `src/net.c`): RegistryPropertyGet leaves the size
+  as given (24, for a set of one too: logged on the 8.5 and 9.1 CDs), so
+  the last entry that isn't empty, the buffer cleared first. Real-time
+  startups with networking, fast start's guest time to the Finder, 3 runs
+  each, receive channel only against all three: 9.1 CD 15.9-17.1 s against
+  16.0-16.7, 9.2.2 CD 13.9-16.2 (and 25.1, the host busy) against
+  14.1-15.4, installed 9.1 24.7-24.8 against 25.3-28.2, the restored 9.2.2
+  13.3-13.5 against 13.4-14.2; every run received by interrupt, DHCP's 2
+  frames each, nothing dropped. No stall either way; the tree keeps the
+  receive channel's alone (the only one Blue raises), so the CD checks end
+  exactly as before. Tests: `tests/test_net.c` (sets of three and of one).
 - **Startup times with the sets, and what fast start's guest time
   measures:** the 9.2.2 CD's fast start ended at 13.4-13.7 s of guest time
   with a quiet host (main 12.9-13.1), and at 13.6-15.2 s for both when the

@@ -1365,9 +1365,10 @@ software (on 8.6, an M5 Mac).
   interrupt's slot in HWInfo's VectorLookupTable, whose slot n is source n
   here: the source again). The display, the USB controller, the
   sound chip and the Ethernet node have them (the Ethernet node only for
-  its receive DMA channel, lanLib's: with all three of its interrupts, Open
-  Transport stalled for half a minute or more in some startups of Mac OS 9,
-  busy in its deferred tasks, for reasons not yet known), with
+  its receive DMA channel, the one Blue raises; lanLib takes its set's
+  last member, which is that channel's in the iMac's set of all three as
+  well, and Open Transport doesn't stall with that one either: plan.md,
+  Findings), with
   `AAPL,interrupt-index` when the ROM file's Trampoline makes it (the
   display's always: earlier ROMs ignore it). Their handlers mask and
   unmask the source but never clear a latched pulse in the controller, so
@@ -1556,9 +1557,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    written (by protecting them) rather than comparing it with a copy each
    frame, which is most of what showing a 32-bit screen still costs (plan.md,
    Findings, "Showing the screen").
-3. Known problems: whether Open Transport's stall with a full interrupt
-   set for the Ethernet node is still there.
-4. Later: host ports forwarded to the guest (so it can serve); the shared
+3. Later: host ports forwarded to the guest (so it can serve); the shared
    folder written back when Mac OS ejects the volume and offered again as
    new media, so that changes cross during a run; Glide
    (docs/glide-plan.md); and, when a program needs them, what OpenGL
