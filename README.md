@@ -199,14 +199,14 @@ there.
 ### 2. Install Mac OS
 
 ```sh
-blue boot --disk hd.img --cdrom macos.iso --window --nvram blue.nvram
+blue boot --disk hd.img --cdrom macos.iso --nvram blue.nvram
 ```
 
-This starts the Mac in a window, with the new disk and the CD attached:
+This starts the Mac in a window, running in real time, with the new disk
+and the CD attached:
 
 - `--disk hd.img` attaches the disk image, which Mac OS can write to.
 - `--cdrom macos.iso` puts the CD image in a CD-ROM drive.
-- `--window` shows the Mac in a window, running in real time.
 - `--nvram blue.nvram` keeps the Mac's settings in a file (see
   [below](#keeping-your-settings)).
 
@@ -235,7 +235,7 @@ menu. Blue quits when the Mac turns itself off.
 ### 3. Start up from the disk
 
 ```sh
-blue boot --disk hd.img --window --nvram blue.nvram
+blue boot --disk hd.img --nvram blue.nvram
 ```
 
 The disk now has a System Folder, so the Mac starts up from it. The first
@@ -274,9 +274,24 @@ idle.
 
 To finish, shut down from Mac OS (Special > Shut Down): applications get
 to save their work, the shared folder's changes are written back, and
-Blue quits when the Mac turns itself off. Closing the window is like
-pulling the plug: Blue stops at once, keeping NVRAM, but anything unsaved
-in Mac OS is lost, and a shared folder's changes aren't written back.
+Blue quits when the Mac turns itself off.
+
+Closing the window, or quitting Blue (Quit Blue in the menu bar, Quit in
+the Dock, or logging out of macOS), asks first while Mac OS is running:
+
+- **Shut Down** (the default, Return) presses the Mac's power key, as
+  [Shut down…](#blues-menu-f12) in Blue's menu does: Mac OS asks whether to
+  shut down, applications may ask to save their work, and Blue quits when
+  the Mac turns itself off.
+- **Turn Off** quits at once, like pulling the plug: anything unsaved in
+  Mac OS is lost, and a shared folder's changes aren't written back. NVRAM
+  is kept.
+- **Cancel** (Esc) goes back to the Mac.
+
+Asking again while Blue is asking changes nothing: choose Turn Off to
+quit at once. Before Mac OS has started up (until the Finder is up),
+there's nothing to lose, and Blue quits straight away. Interrupting Blue
+in its terminal (Control-C) still stops it at once.
 
 ### Blue's menu (F12)
 
@@ -389,15 +404,13 @@ otherwise scale the screen by a fraction.
 | Option (⌥) | Option | Alt |
 | Control | Control | Ctrl |
 
-Command-key shortcuts go to Mac OS, as on a Mac. F12 is Blue's: it opens
-the menu, and Mac OS never sees it. (On a Mac laptop, you may need to hold
-fn as you press F12.)
-
-On macOS, Blue's own menu bar has a few Command-key shortcuts of its own,
-which act on Blue as well as reaching Mac OS: **Command-Q** quits Blue
-and **Command-W** closes its window (both at once, as if you pulled the
-plug), Command-H hides Blue and Command-M minimises its window. Choose
-Quit and Close from Mac OS's File menu instead.
+Command-key shortcuts go to Mac OS, as on a Mac: Command-Q quits the Mac
+OS application in front, Command-W closes its window, and so on. Blue
+takes none of them, on macOS too: its menu bar has just About Blue, Hide
+Blue and Quit Blue, without shortcuts. (macOS keeps a few for itself,
+such as Command-Tab, Command-Space and its screenshot keys.) F12 is
+Blue's: it opens the menu, and Mac OS never sees it. (On a Mac laptop,
+you may need to hold fn as you press F12.)
 
 The Mac has a one-button mouse: the left button is its button, and the
 others, and the scroll wheel, do nothing. For a contextual menu,
@@ -480,7 +493,7 @@ then shows the disk as locked.
 ### The shared folder
 
 ```sh
-blue boot --disk hd.img --share ~/Mac --window --nvram blue.nvram
+blue boot --disk hd.img --share ~/Mac --nvram blue.nvram
 ```
 
 `--share FOLDER` shows a folder on your computer to Mac OS as a disk of
@@ -494,9 +507,9 @@ Changes cross over once per run, in each direction:
   time you start it.
 - What Mac OS changes on the disk is written back to the folder when Mac
   OS shuts down (or you put the disk away). If Blue stops without that,
-  because you closed the window or turned the Mac off, nothing is written
-  back, and anything that had changed is kept as a disk image in the
-  folder's `.blue-recovery` folder instead.
+  because you chose Turn Off (in Blue's menu, or when it asked as you
+  quit), nothing is written back, and anything that had changed is kept
+  as a disk image in the folder's `.blue-recovery` folder instead.
 
 Blue never destroys your files: a file that Mac OS deleted or replaced is
 moved to `.blue-recovery` inside the folder, under the date and time, and
@@ -556,13 +569,29 @@ Library, one of the guest tools. Their saved games and preferences go in
 AppleJack controller isn't emulated: titles map its buttons to keys. More
 in [docs/software.md](docs/software.md#pippin-titles).
 
+A Pippin disc doesn't start the Mac by itself: a Pippin's system is in
+its console, and its titles run inside Mac OS. Start Blue with the Mac OS
+disk you installed as well, and the disc in a CD-ROM drive:
+
+```sh
+blue boot --disk hd.img --cdrom "Super Marathon (USA).cue" --nvram blue.nvram
+```
+
+Then open the title from the disc in the Finder. Given only a Pippin
+disc, Blue says so over a black screen (and in the terminal), with the
+command for your Mac OS disk and the disc, ready to copy:
+
+<p align="center">
+  <img src="docs/images/pippin-disc.png" width="480" alt="Blue's window, black, with a box: &quot;Super Marathon&quot; is a Pippin disc. Pippin titles run inside Mac OS: start Blue with your Mac OS 8.5 to 9.2.2 disk as well, and the disc will be in its CD drive, then the command; Copy Command and Quit buttons">
+</p>
+
 ## Command-line reference
 
 Blue's commands:
 
 | Command | What it does |
 |---|---|
-| `blue boot [OPTIONS]` | Starts the Mac (see the options below). |
+| `blue boot [OPTIONS]` | Starts the Mac in a window (see the options below). |
 | `blue disk create FILE SIZE [NAME]` | Makes a disk image holding an empty HFS volume. `SIZE` is in bytes, or with `K`, `M` or `G`: 1M or more, or a floppy's size (400K, 720K, 800K or 1440K). The name is Macintosh HD, or Untitled for a floppy, unless you give one. |
 | `blue disk toc FILE` | Lists a CD image's tracks, as its CD-ROM drive gives them to Mac OS. |
 | `blue tools create FILE` | Makes a disk of the guest tools, to install them by hand (attach it with `--cdrom`). |
@@ -583,9 +612,9 @@ The options of `blue boot`:
 |---|---|
 | `--disk FILE` | Attaches a disk image, writable if the file is. |
 | `--cdrom FILE` | Attaches a CD image, read-only, in a CD-ROM drive. |
-| `--cdrom-drive` | Adds an empty CD-ROM drive. (A window, or `--realtime`, has one anyway, unless four drives are taken.) |
+| `--cdrom-drive` | Adds an empty CD-ROM drive. (A window, or real time, has one anyway, unless four drives are taken.) |
 | `--floppy FILE` | Puts a floppy image in the floppy drive; give it again for each disk of a set, up to 16. |
-| `--floppy-drive` | Adds an empty floppy drive. (A window, or `--realtime`, has one anyway.) |
+| `--floppy-drive` | Adds an empty floppy drive. (A window, or real time, has one anyway.) |
 | `--share FOLDER` | Shows a folder on your computer as a disk (one folder). |
 | `--nvram FILE` | Keeps the Mac's NVRAM (settings, the startup disk) in this file. |
 | `--ram MB` | The Mac's memory, from 8 to 1024 MB (128 unless you say). |
@@ -595,9 +624,13 @@ Up to four drives in all can be disks, CD-ROM drives or the shared folder.
 
 **The window**
 
+The Mac runs in a window, in real time, until Mac OS shuts down or you
+quit Blue. With no display to open a window on (over SSH, in a container
+or CI), `blue boot` says so and stops: run it with `--headless`.
+
 | Option | What it does |
 |---|---|
-| `--window` | Shows the Mac in a window, in real time, until you close it or the Mac turns off. |
+| `--headless` | Runs without a window, counting time in instructions (see below), until `--max`. |
 | `--scale auto\|1\|2\|3\|4` | How many of the display's pixels make one of the Mac's (Auto unless you say). |
 | `--integer-scale` | Scales the screen by whole numbers only: crisp, with a border if need be. |
 | `--no-status-bar` | Starts without the status bar. |
@@ -609,13 +642,13 @@ Up to four drives in all can be disks, CD-ROM drives or the shared folder.
 
 | Option | What it does |
 |---|---|
-| `--realtime` | Runs in real time without a window. |
-| `--instruction-time` | With `--window`, counts time in instructions, as without a window. |
+| `--realtime` | With `--headless`, runs in real time. |
+| `--instruction-time` | Counts time in instructions in the window too. |
 | `--no-idle` | Keeps running flat out while Mac OS is idle, rather than resting. |
 | `--no-fast-start` | Doesn't hurry through the timeouts of startup. |
 | `--interp` | Interprets the PowerPC code, without the JIT. |
 | `--seconds S` | Stops after `S` seconds of your computer's time. |
-| `--max N` | Stops after `N` instructions (without a window, 500 million unless you say). |
+| `--max N` | Stops after `N` instructions (with `--headless`, 500 million unless you say). |
 | `--fixed-time T` | Starts the Mac's clock at Unix time `T` rather than now. |
 
 **Testing and debugging**
@@ -631,9 +664,11 @@ Up to four drives in all can be disks, CD-ROM drives or the shared folder.
 | `--log-hostcalls` | Logs the requests Blue's drivers handle. |
 | `--io-ram` | Treats unknown device addresses as plain memory. |
 
-Without `--window` or `--realtime`, a run counts time in instructions, so
-it's the same every time: see [docs/debugging.md](docs/debugging.md),
-which also lists the `BLUE_*` environment variables.
+With `--headless` (and without `--realtime`), a run counts time in
+instructions, so it's the same every time (`blue boot --headless --cdrom
+macos.iso --max 4000000000 --screenshot finder.png` boots a CD to its Finder
+and saves the screen): see [docs/debugging.md](docs/debugging.md), which also
+lists the `BLUE_*` environment variables.
 
 ## Compatibility and limits
 
@@ -713,9 +748,12 @@ window shows the command to use. See
 
 ### Mac OS won't start from my CD
 
-- Blue says "no drive has a System Folder with a Mac OS ROM file in it":
-  the image isn't a startup CD of Mac OS 8.5 to 9.2.2. Update CDs and
-  other programs' CDs can't start the Mac.
+- Blue says "No Mac OS startup disk: none of the disks or CDs has a
+  System Folder with a Mac OS ROM file" (over a black screen, and in the
+  terminal): the image isn't a startup CD of Mac OS 8.5 to 9.2.2. Update
+  CDs and other programs' CDs can't start the Mac.
+- Blue says it's a Pippin disc: Pippin titles run inside Mac OS, so start
+  Blue with your Mac OS disk as well (see [Pippin titles](#pippin-titles)).
 - Blue refuses the image: it's compressed, a `.dmg`, or a `.bin` without
   its `.cue`. See [Images Blue takes](#disks-cds-and-floppies).
 - Attach CDs with `--cdrom`, not `--disk`: the Mac OS 8.5 CD won't start
@@ -743,15 +781,16 @@ Choose another Scale in Blue's menu (F12), or start with `--scale`. See
 
 ### There's no sound
 
-Sound plays only with `--window` (and not with `--no-sound`). Check Mac
+Sound plays only in the window, in real time (not with `--headless` or
+`--no-sound`). Check Mac
 OS's own volume and mute, in the Monitors & Sound or Sound control panel.
 For a CD's music, attach the `.cue` file of a cue sheet image: a plain
 `.iso` has no audio tracks.
 
 ### The network doesn't work
 
-- The network runs only with `--window` or `--realtime`, and not with
-  `--no-net`.
+- The network runs only in real time (not with `--headless` unless
+  `--realtime` is given too), and not with `--no-net`.
 - In your own build, Blue needs libslirp: `blue --version` says whether
   it found it.
 - On Mac OS 8.5, make TCP/IP active (see [Networking](#networking)).
@@ -776,6 +815,13 @@ On your Desktop, as `blue` followed by the date and time (in the folder
 Blue was started from, if there's no Desktop). `--screenshot FILE.png`
 saves one when a run ends.
 
+### Blue says no window can be opened
+
+`blue boot` shows the Mac in a window, which needs a display: over SSH,
+in a container or in CI there's none. Run it with `--headless` to start
+the Mac without a window (counting time in instructions, until `--max`;
+add `--realtime` for real time).
+
 ### F12 doesn't open the menu
 
 On a Mac laptop, hold fn as you press F12, or set the function keys to
@@ -785,9 +831,11 @@ only pauses the Mac.
 
 ### Blue quit when I pressed Command-Q (or Command-W)
 
-On macOS, Blue's own menu bar takes Command-Q, Command-W, Command-H and
-Command-M as well as Mac OS (see [Keyboard and mouse](#keyboard-and-mouse)):
-use Mac OS's File menu to quit applications and close windows.
+Not any more: Command-Q, Command-W and every other Command-key shortcut
+now go to Mac OS only (see [Keyboard and mouse](#keyboard-and-mouse)).
+Older versions of Blue had a menu bar on macOS that took them as well,
+and quit or closed the window at once. Closing the window or quitting
+Blue now asks first while Mac OS is running (see [The window](#the-window)).
 
 ### My mouse is stuck in the window
 
@@ -809,9 +857,9 @@ four drives are taken by disks and CDs, there's no spare CD-ROM drive.
 
 ### My changes in the shared folder didn't reach my computer
 
-Changes are written back when Mac OS shuts down, not when you close the
-window. If Blue stopped without a shutdown, look in the folder's
-`.blue-recovery` folder. See [The shared folder](#the-shared-folder).
+Changes are written back when Mac OS shuts down: choose Shut Down when
+Blue asks as you quit. If Blue stopped without a shutdown (Turn Off), look
+in the folder's `.blue-recovery` folder. See [The shared folder](#the-shared-folder).
 
 ### Mac OS forgot my settings, or my startup disk
 

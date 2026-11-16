@@ -21,15 +21,15 @@ VERSION := $(shell sed -n 's/^\#define BLUE_VERSION "\(.*\)"/\1/p' src/version.h
 all: $(BUILD)/blue
 
 # On macOS, an Info.plist in the executable names the program Blue (in the menu bar and the Dock), the file
-# chooser is AppKit's (src/chooser_mac.m), displays' physical sizes are CoreGraphics' (src/density.c), and
-# Blue.app's libraries are found in its Frameworks (src/hostlib.c, and @rpath for theirs). The oldest macOS it runs
-# on is MACOSX_DEPLOYMENT_TARGET's.
+# chooser is AppKit's (src/chooser_mac.m), the menu bar Blue's own (src/menubar_mac.m), displays' physical
+# sizes are CoreGraphics' (src/density.c), and Blue.app's libraries are found in its Frameworks
+# (src/hostlib.c, and @rpath for theirs). The oldest macOS it runs on is MACOSX_DEPLOYMENT_TARGET's.
 ifeq ($(shell uname -s),Darwin)
 export MACOSX_DEPLOYMENT_TARGET ?= 11.0
 INFO_PLIST := $(BUILD)/Info.plist
 INFO_PLIST_FLAGS := -Wl,-sectcreate,__TEXT,__info_plist,$(INFO_PLIST) -Wl,-rpath,@executable_path/../Frameworks
 OBJCFLAGS ?= -O2 -g
-LIB_OBJ += $(BUILD)/chooser_mac.o
+LIB_OBJ += $(BUILD)/chooser_mac.o $(BUILD)/menubar_mac.o
 HOST_LIBS := -framework AppKit -framework CoreGraphics
 endif
 

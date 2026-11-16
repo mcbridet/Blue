@@ -75,6 +75,9 @@ int hfsread_walk(const struct hfsread_volume *v, int (*fn)(void *ctx, const stru
 /* The first file (in catalog order) of `type` in a folder: 1 found, 0 none, -1 the catalog is damaged. */
 int hfsread_find(const struct hfsread_volume *v, uint32_t folder, uint32_t type, struct hfsread_file *f);
 
+/* The file or folder called `name` (UTF-8; ASCII letters in either case) in a folder: as above */
+int hfsread_lookup(const struct hfsread_volume *v, uint32_t folder, const char *name, struct hfsread_file *f);
+
 /* A folder's path from the volume's name, "Volume:Folder:...". Returns 0, or -1. */
 int hfsread_path(const struct hfsread_volume *v, uint32_t folder, char *buf, size_t len);
 
@@ -110,5 +113,13 @@ int hfsread_system_file(const char *const *paths, unsigned count, uint32_t type,
  */
 int hfsread_system_file_in(const char *path, unsigned map_entry, uint32_t type, struct hfsread_found *found,
 			   char *err, size_t errlen);
+
+/*
+ * Calls `fn` for each HFS volume in the image at `path` (opened read-only;
+ * an image with a partition map has one a partition, in map order) until
+ * it returns other than 0. Returns what it returned, 0, or -1 if the image
+ * can't be opened (disk_open() says why).
+ */
+int hfsread_volumes(const char *path, int (*fn)(void *ctx, const struct hfsread_volume *v), void *ctx);
 
 #endif

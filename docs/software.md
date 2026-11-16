@@ -83,6 +83,21 @@ Pippin titles that link to the Pippin's own library need Blue Pippin
 Library, one of the guest tools: see
 [guest-tools.md](guest-tools.md#blue-pippin-library).
 
+Pippin discs run inside Mac OS, from a CD-ROM drive (`blue boot --disk
+hd.img --cdrom "Super Marathon (USA).cue"`): a Pippin's system is the
+console's (its ROM, and the System Folder on the disc, with the `Pippin`
+enabler, type `gbly`), and Blue starts Mac OS from a Mac OS ROM file,
+which a Pippin disc hasn't. When `boot` finds no Mac OS startup disk and
+one of the images is a Pippin disc (a `PippinAuthenticationFile` at its
+root, or that enabler in its blessed System Folder: `startup_pippin()` in
+`src/startup.c`), it says so by the disc's name, in the terminal and over
+a black screen in the window (with `--headless`, only in the terminal),
+with the command to copy: the arguments given with `--disk <your Mac OS
+disk>` before the drives, the disc in a CD-ROM drive. It exits with
+status 1 after Quit. With no startup disk and no Pippin disc, the same
+window says why (no disks or CDs, or none with a System Folder holding a
+Mac OS ROM file) and points to the README's Quick start.
+
 Super Marathon (Bungie, 1996: Marathon and Marathon 2 for the Pippin)
 plays from its disc on Mac OS 8.5 and 9.2.2 installed on disks, with the
 library installed. Open `M1:marathon.ppc` or `M2:marathon2.ppc`; the

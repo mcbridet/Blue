@@ -10,20 +10,30 @@ them) in [software.md](software.md).
 
 ## Instruction time and real time
 
-Without `--window` or `--realtime`, guest time is counted in instructions
-(one timebase tick each). `--seconds S` stops after S seconds of host time, and `--max N` after N
-instructions (500 million by default without a window; no limit with one). With `--fixed-time <unix time>` the clock doesn't depend on the host
-either, so a run is exactly reproducible, including faults at a given
-instruction count. The boot reaches the Finder within about 3 billion
-instructions (three minutes of guest time; a second or so on the host with
-the JIT: see [Speed](jit.md#speed)). With `--window` or
-`--realtime`, guest time follows the host clock instead, as on a real
-Mac; `--instruction-time` keeps instruction time in a window too.
+`blue boot` runs the Mac in a window, in real time: guest time follows
+the host clock, as on a real Mac. With `--headless` there's no window, and
+guest time is counted in instructions (one timebase tick each), unless
+`--realtime` is given too; `--instruction-time` keeps instruction time in
+the window. `--seconds S` stops after S seconds of host time, and `--max N`
+after N instructions (500 million by default with `--headless`; no limit
+in a window). With `--fixed-time <unix time>` the clock doesn't depend on
+the host either, so a run is exactly reproducible, including faults at a
+given instruction count:
+
+```
+build/blue boot --headless --rom MOS.rom --cdrom 85.iso --max 4000000000 --fixed-time 1000000000 --screenshot finder.png
+```
+
+The boot reaches the Finder within about 3 billion instructions (three
+minutes of guest time; a second or so on the host with the JIT: see
+[Speed](jit.md#speed)). Without a display to open a window on (SSH, a
+container, CI), `blue boot` stops and says to use `--headless`.
 
 ## Input scripts
 
 `--input FILE` replays input at given instruction
-counts, for example:
+counts (`build/blue boot --headless --cdrom 85.iso --rom MOS.rom --input
+script.txt --max 5000000000`), for example:
 
 ```
 3350000000 key 24                # Return (ADB key code, hex)
@@ -63,7 +73,8 @@ with `#` are comments):
 | `clock N` | from here, guest time as for an N MIPS processor |
 
 Times can be seconds of host time since the start instead, written with
-an `s` (`12.5s click 100 200`), for scripts in real time (`--realtime`);
+an `s` (`12.5s click 100 200`), for scripts in real time (in the window,
+or `--headless --realtime`);
 a script's times are either all instruction counts or all seconds.
 
 `clipboard` and `print-clipboard` stand in for the host's clipboard (a
@@ -144,12 +155,12 @@ build/blue rom config MOS.rom                   # ConfigInfo and user address sp
 build/blue rom parcels MOS91.rom                # a Mac OS 9.1 ROM file's parcels
 build/blue rom extract MOS.rom build/toolbox.rom
 build/blue rom trampoline MOS.rom build/trampoline.elf
-build/blue boot --rom MOS.rom --cdrom 85.iso --window   # interactive
-build/blue boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
-build/blue boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
-build/blue boot --rom MOS.rom --cdrom 85.iso --floppy disk1.img --floppy disk2.img --window   # a floppy drive
-build/blue boot --disk hd.img --window                     # with empty CD-ROM and floppy drives: drop images on the window
-build/blue boot --disk hd.img --cdrom "Game.cue" --window  # a CD with audio tracks
+build/blue boot --rom MOS.rom --cdrom 85.iso            # interactive, in a window
+build/blue boot --headless --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
+build/blue boot --rom MOS.rom --cdrom 85.iso --share ~/Mac    # with a shared folder
+build/blue boot --rom MOS.rom --cdrom 85.iso --floppy disk1.img --floppy disk2.img   # a floppy drive
+build/blue boot --disk hd.img                              # with empty CD-ROM and floppy drives: drop images on the window
+build/blue boot --disk hd.img --cdrom "Game.cue"           # a CD with audio tracks
 build/blue disk toc "Game.cue"                             # its tracks, as its CD-ROM drive gives them
 build/blue disk create blank.img 1440K "Untitled"          # a blank floppy
 build/blue run-raw code.bin 1000                # BLUE_TRACE=1 logs every instruction

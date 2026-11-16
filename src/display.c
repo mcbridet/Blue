@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 #include <math.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,7 @@
 #include "density.h"
 #include "hostlib.h"
 #include "icon.h"
+#include "menubar.h"
 #include "ui.h"
 
 /* The parts of the SDL2 ABI we use (stable across SDL 2.x). */
@@ -218,10 +220,11 @@ struct handed {
 	bool prompt_changed;
 	bool prompt;
 	unsigned prompt_id;             /* (counts the prompts shown) */
-	char prompt_text[1024], prompt_yes[32], prompt_no[32], prompt_alt[32];
+	char prompt_text[2048], prompt_yes[32], prompt_no[32], prompt_alt[32];
 	int capture;                    /* capture the pointer (1) or let it go (0); -1: as it is */
 	int status_bar;                 /* show the status bar (1) or hide it (0); -1: as it is */
 	int follows;                    /* the screen follows the window's size (1) or not (0); -1: as it was */
+	int shortcuts;                  /* Command-Q and -H the menu bar's (1) or Mac OS's (0); -1: as they are */
 	char *clipboard;                /* text for the host's clipboard (to free), or NULL */
 	bool clipboard_asked;           /* the host's clipboard wanted (display_clipboard()) ... */
 	bool clipboard_answered;        /* ... and here it is: */
@@ -275,7 +278,7 @@ struct display {
 	struct ui_drives drives;
 	bool prompt;                    /* a question or news is shown (display_prompt()): input goes to it */
 	unsigned prompt_id;
-	char prompt_text[1024], prompt_yes[32], prompt_no[32], prompt_alt[32];
+	char prompt_text[2048], prompt_yes[32], prompt_no[32], prompt_alt[32];
 	bool tools;                     /* the menu has Install Guest Tools... (display_tools_state()), */
 	char tools_why_not[160];        /* ... enabled unless this says why not */
 	bool fullscreen;
@@ -327,6 +330,49 @@ static struct {
 	struct display *d;              /* the window, or NULL */
 	bool closed;                    /* display_close() was answered */
 } host = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+static char failure[256] = "not known";         /* why display_open() opened no window */
+
+const char *display_failure(void)
+{
+	return failure;
+}
+
+/*
+ * SIGINT and SIGTERM end a window's run at once, as they always have: SDL
+ * would make them SDL_QUIT, which now asks the user first, so the window
+ * has handlers of its own while it's open (put in place before SDL's would
+ * be: SDL leaves those it finds alone, as it does SIG_IGN, a background
+ * job's), and passes them on as DISPLAY_EVENT_QUIT.
+ */
+static volatile sig_atomic_t signalled;
+static const int caught_signals[2] = { SIGINT, SIGTERM };
+static bool caught[2];
+
+static void on_signal(int sig)
+{
+	(void)sig;
+	signalled = 1;
+}
+
+static void catch_signals(bool on)
+{
+	for (int k = 0; k < 2; k++) {
+		struct sigaction old, sa;
+		memset(&sa, 0, sizeof sa);
+		sigemptyset(&sa.sa_mask);
+		sa.sa_flags = SA_RESTART;
+		if (on && sigaction(caught_signals[k], NULL, &old) == 0 && !(old.sa_flags & SA_SIGINFO) &&
+		    old.sa_handler == SIG_DFL) {
+			sa.sa_handler = on_signal;
+			caught[k] = sigaction(caught_signals[k], &sa, NULL) == 0;
+		} else if (!on && caught[k]) {
+			sa.sa_handler = SIG_DFL;
+			sigaction(caught_signals[k], &sa, NULL);
+			caught[k] = false;
+		}
+	}
+}
 
 static uint64_t clock_ns(clockid_t clock)
 {
@@ -1160,8 +1206,8 @@ static void handle(struct display *d, SDL_Event *e)
 {
 	struct display_event ev = { .type = DISPLAY_EVENT_NONE };
 	switch (e->type) {
-	case SDL_QUIT:
-		ev.type = DISPLAY_EVENT_QUIT;
+	case SDL_QUIT:                  /* (the close button, Quit in the menu bar or the Dock: see catch_signals()) */
+		ev.type = DISPLAY_EVENT_CLOSE;
 		break;
 	case SDL_RENDER_TARGETS_RESET:
 		scaled_stale(d, 0, d->height);
@@ -1313,7 +1359,7 @@ struct taken {
 	struct video_rows bands[BANDS]; /* the rows converted, to upload */
 	unsigned nbands;
 	bool menu, prompt;              /* opened or closed */
-	int capture, status_bar;
+	int capture, status_bar, shortcuts;
 	char *clipboard;
 	bool clipboard_asked;
 	bool close;
@@ -1423,7 +1469,8 @@ static void take(struct display *d, struct taken *t)
 	}
 	t->capture = in->capture;
 	t->status_bar = in->status_bar;
-	in->capture = in->status_bar = -1;
+	t->shortcuts = in->shortcuts;
+	in->capture = in->status_bar = in->shortcuts = -1;
 	if (in->follows >= 0)
 		d->follows = in->follows;
 	in->follows = -1;
@@ -1469,6 +1516,10 @@ static void act(struct display *d, struct taken *t)
 	}
 	if (t->status_bar >= 0)
 		show_status_bar(d, t->status_bar);
+#ifdef __APPLE__
+	if (t->shortcuts >= 0)
+		menubar_shortcuts(t->shortcuts);
+#endif
 	if (t->clipboard && d->sdl.SetClipboardText)
 		d->sdl.SetClipboardText(t->clipboard);
 	free(t->clipboard);
@@ -1523,6 +1574,11 @@ static void run(struct display *d)
 		act(d, &t);
 
 		uint64_t t0 = clock_ns(CLOCK_MONOTONIC), c0 = clock_ns(CLOCK_THREAD_CPUTIME_ID);
+		if (signalled) {
+			struct display_event quit = { .type = DISPLAY_EVENT_QUIT };
+			signalled = 0;
+			emit(d, &quit, NULL, 0);
+		}
 		if (got)
 			handle(d, &e);
 		while (d->sdl.PollEvent(&e))
@@ -1571,7 +1627,7 @@ static struct display *open_window(const char *title, unsigned width, unsigned h
 		return NULL;
 	d->kq = -1;
 	if (!load_sdl(&d->sdl)) {
-		fprintf(stderr, "display: SDL2 is not available; running without a window\n");
+		snprintf(failure, sizeof failure, "SDL2 isn't there");
 		goto fail;
 	}
 	/* sdl2-compat (SDL2 on SDL3) makes a window's units pixels on Wayland, unless told
@@ -1584,10 +1640,15 @@ static struct display *open_window(const char *title, unsigned width, unsigned h
 	setenv("SDL_VIDEO_WAYLAND_WMCLASS", "blue", 0);
 	d->sdl.SetHintWithPriority("SDL_APP_ID", "blue", SDL_HINT_NORMAL);
 	d->sdl.SetHintWithPriority("SDL_APP_NAME", "Blue", SDL_HINT_NORMAL);
+	catch_signals(true);
 	if (d->sdl.Init(SDL_INIT_VIDEO) != 0) {
-		fprintf(stderr, "display: %s\n", d->sdl.GetError());
+		snprintf(failure, sizeof failure, "%s", d->sdl.GetError());
+		catch_signals(false);
 		goto fail;
 	}
+#ifdef __APPLE__
+	menubar_install();
+#endif
 	d->integer = integer;
 	d->scale_chosen = scale <= DISPLAY_SCALE_OWN ? scale : DISPLAY_SCALE_AUTO;
 	d->display = -1;
@@ -1603,7 +1664,7 @@ static struct display *open_window(const char *title, unsigned width, unsigned h
 		d->renderer = d->sdl.CreateRenderer(d->window, -1, 0);
 	}
 	if (!d->renderer || !set_screen_size(d, width, height)) {
-		fprintf(stderr, "display: %s\n", d->sdl.GetError());
+		snprintf(failure, sizeof failure, "%s", d->sdl.GetError());
 		destroy_window(d);
 		return NULL;
 	}
@@ -1627,7 +1688,7 @@ static struct display *open_window(const char *title, unsigned width, unsigned h
 	d->sdl.ShowWindow(d->window);
 	d->sdl.ShowCursor(0);           /* Mac OS draws its own */
 	d->ui = open_menu(d);
-	d->in.capture = d->in.status_bar = d->in.follows = -1;
+	d->in.capture = d->in.status_bar = d->in.follows = d->in.shortcuts = -1;
 	d->stale = true;
 #ifdef __APPLE__
 	struct kevent e;
@@ -1673,6 +1734,7 @@ static void destroy_window(struct display *d)
 	if (d->window)
 		d->sdl.DestroyWindow(d->window);
 	d->sdl.Quit();
+	catch_signals(false);
 	dlclose(d->sdl.lib);
 	free(d->argb);
 	free(d->frame.pixels);
@@ -1766,7 +1828,7 @@ struct display *display_open(const char *title, unsigned width, unsigned height,
 	pthread_mutex_lock(&host.lock);
 	if (!host.running) {
 		pthread_mutex_unlock(&host.lock);
-		fprintf(stderr, "display: no thread runs the window; running without one\n");
+		snprintf(failure, sizeof failure, "no thread runs the window");
 		return NULL;
 	}
 	host.title = title;
@@ -1951,6 +2013,14 @@ void display_follow(struct display *d, bool on)
 	pthread_mutex_lock(&host.lock);
 	d->in.follows = on;
 	pthread_mutex_unlock(&host.lock);
+}
+
+void display_shortcuts(struct display *d, bool host_keys)
+{
+	pthread_mutex_lock(&host.lock);
+	d->in.shortcuts = host_keys;
+	pthread_mutex_unlock(&host.lock);
+	wake(d);
 }
 
 void display_status_bar(struct display *d, bool on)

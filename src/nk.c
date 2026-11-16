@@ -525,13 +525,17 @@ struct machine {
 	uint64_t wp_ns_in, wp_cpu_in;   /* ... the time display_frame() took on this thread */
 	uint64_t wp_changes_ns, wp_changes_cpu; /* ... finding the changes and copying them */
 	uint64_t wp_input_ns, wp_input_cpu;     /* ... taking the window's input */
-	bool quit;                      /* the window was closed */
+	bool quit;                      /* the run ends at the next frame (the window was closed, or Turn off) */
+	const char *quit_why;           /* ... saying why */
+	bool os_up;                     /* Mac OS has started up since the Mac last did (the Finder has run) */
 	bool mouse_captured;            /* host motion goes to the ADB mouse (see follow_cursor()) */
 	bool mouse_released;            /* ... but the user let the pointer go (Control-Option) */
 	bool paused;                    /* the menu is open (F12): the guest doesn't run */
-	bool restart, shut_down;        /* ... and this was chosen in it */
+	bool restart;                   /* ... and Restart was chosen in it */
 	bool prompting;                 /* a question or news is shown over the screen (the guest runs) */
 	bool prompt_news;               /* ... news, only to be read (it stays through a restart) */
+	bool prompt_quit;               /* ... whether to shut Mac OS down before quitting (see quit_asked()) */
+	int quit_over;                  /* ... over the installer's question or news (QUIT_OVER_*), or not */
 	char menu_status[480];          /* news it shows (where a screenshot went) */
 	/* the status bar (see status_lights()) */
 	uint64_t led_count[UI_LEDS], led_written[UI_LEDS];      /* devices' counts at the last frame */
@@ -1760,16 +1764,86 @@ static void window_image(struct machine *m, const char *path, struct disk *want,
 	menu_state(m);
 }
 
+/*
+ * The user asks to quit (DISPLAY_EVENT_CLOSE: the window's close button,
+ * Quit Blue in the menu bar or the Dock, logging out of macOS). Once Mac OS
+ * has started up (the Finder has run), quitting would be pulling the plug,
+ * so Blue asks first, over the screen (the menu closed, for it to be
+ * answered): Shut Down presses the power key, as the menu's Shut Down...
+ * does (Mac OS asks, applications may ask to save, and Blue quits when the
+ * Mac turns itself off); Turn Off quits at once; Cancel (Esc) goes back, to
+ * the installer's question or news if this was shown over it. Asked again
+ * meanwhile, it just goes on asking: Turn Off is there, and a second click
+ * on the close button shouldn't lose anyone's work. Before Mac OS has
+ * started up there's nothing to lose but the startup, so Blue quits at
+ * once; so it does in scripted runs (the script's input is all there is),
+ * and without the menu's SDL (nothing to ask with).
+ */
+enum { QUIT_OVER_NOTHING, QUIT_OVER_QUESTION, QUIT_OVER_NEWS };
+
+static void quit_asked(struct machine *m, uint64_t now)
+{
+	static const char question[] =
+		"Mac OS is still running. Shut it down before Blue quits?\n\n"
+		"Shut Down has Mac OS shut down properly (it asks first, and applications may ask to save "
+		"their work), then Blue quits. Turn Off quits now, as if the power went: anything unsaved in "
+		"Mac OS is lost.";
+	if (m->prompting && m->prompt_quit)
+		return;
+	int over = !m->prompting ? QUIT_OVER_NOTHING : m->prompt_news ? QUIT_OVER_NEWS : QUIT_OVER_QUESTION;
+	if (!m->os_up || m->scripted || !display_prompt(m->display, question, "Shut Down", "Cancel")) {
+		m->quit = true;
+		m->quit_why = "window closed";
+		return;
+	}
+	display_prompt_alt(m->display, "Turn Off");
+	m->prompting = m->prompt_quit = true;
+	m->prompt_news = false;
+	m->quit_over = over;
+	printf("quit: Mac OS is running: asking whether to shut it down first\n");
+	if (m->paused) {
+		m->paused = false;
+		display_menu(m->display, false);
+		printf("resumed\n");
+	}
+	follow_cursor(m, now);          /* (the pointer is the prompt's) */
+	fflush(stdout);
+}
+
+/* ... and the answer */
+static void quit_answered(struct machine *m, enum ui_action action)
+{
+	int over = m->quit_over;
+	m->prompt_quit = false;
+	m->quit_over = QUIT_OVER_NOTHING;
+	if (action == UI_PROMPT_ALT) {
+		m->quit = true;
+		m->quit_why = "turned off on quitting";
+	} else if (action == UI_PROMPT_YES) {
+		adb_power_key(&m->cuda.adb, true);
+		adb_power_key(&m->cuda.adb, false);
+		printf("quit: the power key pressed: Blue quits when Mac OS has shut down\n");
+	} else {
+		printf("quit: cancelled\n");
+		m->install.ask |= over == QUIT_OVER_QUESTION && m->install.phase == INSTALL_ASKING;
+		m->install.news_ready |= over == QUIT_OVER_NEWS;
+		tools_show(m);
+	}
+	fflush(stdout);
+}
+
 /* What's chosen in the menu (the rest of it: Resume closes it, and fullscreen is the window's; Insert... has a path) */
 static void menu_action(struct machine *m, enum ui_action action, const char *path, uint64_t now)
 {
 	switch (action) {
 	case UI_RESTART:
 	case UI_TURN_OFF:
-		if (action == UI_RESTART)
+		if (action == UI_RESTART) {
 			m->restart = true;
-		else
-			m->shut_down = m->quit = true;
+		} else {
+			m->quit = true;
+			m->quit_why = "turned off from the menu";
+		}
 		m->paused = false;
 		display_menu(m->display, false);
 		follow_cursor(m, now);
@@ -1792,7 +1866,9 @@ static void menu_action(struct machine *m, enum ui_action action, const char *pa
 	case UI_PROMPT_NO:
 	case UI_PROMPT_ALT:
 		m->prompting = false;
-		if (!m->prompt_news)
+		if (m->prompt_quit)
+			quit_answered(m, action);
+		else if (!m->prompt_news)
 			install_answer(&m->install, action == UI_PROMPT_YES ? INSTALL_YES :
 				       action == UI_PROMPT_ALT ? INSTALL_NEVER : INSTALL_NOT_NOW, &m->helper);
 		follow_cursor(m, now);
@@ -2065,10 +2141,16 @@ static void display_input(struct machine *m, uint64_t now)
 {
 	struct display_event ev;
 	follow_cursor(m, now);
+	if (!m->os_up && finder_current(m))     /* (quitting asks first from now on: see quit_asked()) */
+		m->os_up = true;
 	while (display_poll(m->display, &ev)) {
 		switch (ev.type) {
 		case DISPLAY_EVENT_QUIT:
 			m->quit = true;
+			m->quit_why = "told to quit (SIGINT or SIGTERM)";
+			break;
+		case DISPLAY_EVENT_CLOSE:
+			quit_asked(m, now);
 			break;
 		case DISPLAY_EVENT_MENU:
 			m->paused = !m->paused;
@@ -3269,11 +3351,13 @@ static void tools_startup(struct machine *m, const struct nk_boot_options *opt)
 	}
 }
 
-/* The installer's question or news, in the window (and the news printed, by install.c) */
+/* The installer's question or news, in the window (and the news printed, by install.c); not over the quit prompt */
 static void tools_show(struct machine *m)
 {
 	struct install *in = &m->install;
 	bool shown = false, news = false;
+	if (m->prompting && m->prompt_quit)
+		return;                 /* (shown when it's cancelled: see quit_answered()) */
 	if (in->ask) {
 		in->ask = false;
 		shown = m->display && display_prompt(m->display, in->question, in->yes, "Not Now");
@@ -4247,6 +4331,7 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	m->hw_cursor = old.hw_cursor;
 	m->gpu = old.gpu;
 	m->quit = old.quit;
+	m->quit_why = old.quit_why;
 	m->mouse_captured = old.mouse_captured;
 	m->mouse_released = old.mouse_released;
 	m->clip = old.clip;             /* (the host's side: start_machine() starts Mac OS's again) */
@@ -4364,13 +4449,16 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 	if (opt->window) {
 		m.display = display_open("Blue", video_width(&m.video), video_height(&m.video), opt->integer_scale,
 					 opt->scale);
-		if (!m.display)         /* (the driver has the hardware cursor, but says it hasn't) */
-			m.hw_cursor = m.video.hw_cursor = false;
-		if (m.display && !opt->no_status_bar)
+		if (!m.display) {       /* (not on without it: that would be real time with nothing to see) */
+			fprintf(stderr, "boot: no window can be opened (%s): run with --headless to start Mac OS "
+				"without one\n", display_failure());
+			return 1;
+		}
+		if (!opt->no_status_bar)
 			display_status_bar(m.display, true);
-		if (m.display && opt->realtime && !opt->no_sound)
+		if (opt->realtime && !opt->no_sound)
 			m.audio = audio_open();         /* (in instruction time, sound would be too fast or slow) */
-		if (m.display && opt->realtime && !m.scripted) {
+		if (opt->realtime && !m.scripted) {
 			char *text = display_clipboard(m.display);
 			m.clip.enabled = true;
 			clip_host_text(&m.clip, text);
@@ -4413,7 +4501,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 				display_frame(&m, now);
 				m.next_frame_ns = now + 1000000000u / 60;
 				if (m.quit) {
-					why = m.shut_down ? "turned off from the menu" : "window closed";
+					why = m.quit_why;
 					break;
 				}
 				if (m.restart) {

@@ -12,7 +12,7 @@ Finder, installers, programs run from it), and what Mac OS changes on it
 goes back to the folder when Mac OS shuts down.
 
 ```
-build/blue boot --disk hd.img --share ~/Mac --window --nvram blue.nvram
+build/blue boot --disk hd.img --share ~/Mac --nvram blue.nvram
 ```
 
 The volume (`src/share.c`) is made when Blue starts: its catalog and the
@@ -70,8 +70,8 @@ share:   new untitled folder
 share: 1 new, 1 changed, 0 moved or renamed, 0 deleted; the host's old ones are in /Users/me/Shared/.blue-recovery/2026-11-15 00.13.05
 ```
 
-If the run ends without Mac OS having put the volume away (the window
-closed, or Turn off in Blue's menu, rather than Mac OS shutting down),
+If the run ends without Mac OS having put the volume away (Turn off, in
+Blue's menu or when it asks on quitting, rather than Mac OS shutting down),
 nothing is written back, as the volume may be half-written; if anything
 of the user's had changed on it, it is saved as a disk image in the
 recovery folder instead (attach it with `--disk` to get at what's on it;

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 #include "be.h"
@@ -468,7 +469,9 @@ static bool name_fits(const struct hfsread_volume *v, const uint8_t *key, const 
 	return v->plus ? key + 8 + 2u * be16(key + 6) <= data : key + 7 + key[6] <= data;
 }
 
-int hfsread_find(const struct hfsread_volume *v, uint32_t folder, uint32_t type, struct hfsread_file *f)
+/* The folder's first file (in catalog order) of `type` (0: any), or named `name` (NULL: any; folders too): 1, 0, -1 */
+static int scan(const struct hfsread_volume *v, uint32_t folder, uint32_t type, const char *name,
+		struct hfsread_file *f)
 {
 	const struct hfsread_tree *t = &v->catalog;
 	const struct target target = { true, folder, 0, 0 };
@@ -501,11 +504,23 @@ int hfsread_find(const struct hfsread_volume *v, uint32_t folder, uint32_t type,
 			rc = 0;
 			break;
 		}
-		if (parent < folder || record_type(v, data) != CAT_FILE)
+		int kind = record_type(v, data);
+		if (parent < folder || (kind != CAT_FILE && (kind != CAT_FOLDER || !name)))
 			continue;
-		if ((size_t)(end - data) < (v->plus ? PLUS_FILE_SIZE : HFS_FILE_SIZE) || !name_fits(v, key, data))
+		size_t need = kind == CAT_FILE ? (v->plus ? PLUS_FILE_SIZE : HFS_FILE_SIZE) :
+						 (v->plus ? PLUS_FOLDER_SIZE : HFS_FOLDER_SIZE);
+		if ((size_t)(end - data) < need || !name_fits(v, key, data))
 			break;
-		if (be32(data + (v->plus ? 48 : 4)) == type) {
+		if (name) {
+			if (kind == CAT_FILE)
+				file_from(v, key, data, f);
+			else
+				folder_from(v, key, data, f);
+			if (strcasecmp(f->name, name) == 0 && (!type || f->type == type)) {
+				rc = 1;
+				break;
+			}
+		} else if (be32(data + (v->plus ? 48 : 4)) == type) {
 			file_from(v, key, data, f);
 			rc = 1;
 			break;
@@ -514,6 +529,16 @@ int hfsread_find(const struct hfsread_volume *v, uint32_t folder, uint32_t type,
 out:
 	free(node);
 	return rc;
+}
+
+int hfsread_find(const struct hfsread_volume *v, uint32_t folder, uint32_t type, struct hfsread_file *f)
+{
+	return scan(v, folder, type, NULL, f);
+}
+
+int hfsread_lookup(const struct hfsread_volume *v, uint32_t folder, const char *name, struct hfsread_file *f)
+{
+	return scan(v, folder, 0, name, f);
 }
 
 int hfsread_walk(const struct hfsread_volume *v, int (*fn)(void *ctx, const struct hfsread_file *f), void *ctx)
@@ -673,6 +698,22 @@ int hfsread_system_file_in(const char *path, unsigned map_entry, uint32_t type, 
 	for (unsigned p = 0; p < d.partitions && !rc; p++)
 		if (d.part[p].map_entry == map_entry)
 			rc = system_file(&d, p, path, type, found, err, errlen);
+	disk_close(&d);
+	return rc;
+}
+
+int hfsread_volumes(const char *path, int (*fn)(void *ctx, const struct hfsread_volume *v), void *ctx)
+{
+	struct disk d;
+	if (disk_open(&d, NULL, path, true, cdimage_is_cue(path)))
+		return -1;
+	int rc = 0;
+	for (unsigned p = 0; p < d.partitions && !rc; p++) {
+		struct hfsread_volume v;
+		struct disk_reader r = { &d, p };
+		if (!hfsread_open_with(&v, disk_read, &r, d.part[p].size))
+			rc = fn(ctx, &v);
+	}
 	disk_close(&d);
 	return rc;
 }

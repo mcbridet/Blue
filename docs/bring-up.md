@@ -26,7 +26,7 @@ drive did.
 
 ```
 build/blue disk create hd.img 2G "Macintosh HD"      # an empty HFS volume
-build/blue boot --disk hd.img --cdrom 85.iso --window --nvram blue.nvram
+build/blue boot --disk hd.img --cdrom 85.iso --nvram blue.nvram
 ```
 
 Run "Mac OS Install" from the CD (about 30 billion instructions, about a
@@ -66,7 +66,7 @@ restart, or the next launch with the same `--nvram` file, starts the ROM
 file in that disk's System Folder, whichever system it is:
 
 ```
-build/blue boot --disk hd91.img --disk hd922.img --cdrom 922.iso --cdrom 85.iso --window --nvram blue.nvram
+build/blue boot --disk hd91.img --disk hd922.img --cdrom 922.iso --cdrom 85.iso --nvram blue.nvram
 rom: "MacOS9Lives:System Folder:Mac OS ROM" from hd922.img (Mac OS ROM 10.2f1, 2796822 bytes), which boot-device names
 ```
 
@@ -215,7 +215,7 @@ extensions' icons, then the CD's window), within about a billion
 instructions (under a second):
 
 ```
-build/blue boot --cdrom 91.iso --max 3000000000 --screenshot finder.png
+build/blue boot --headless --cdrom 91.iso --max 3000000000 --screenshot finder.png
 ```
 
 Startup used to wait 25 s first. 9.1's Start Manager, unlike earlier ones,
@@ -252,8 +252,8 @@ NVRAM is the same 8 KB that RTAS serves 8.5–9.0.4, kept in the same
 file goes with an install whichever ROM starts it. 9.1 reads NVRAM at
 startup and keeps its changes in memory until it shuts down or restarts,
 when it writes them to the chip, as on an iMac: changes since startup are
-lost when Blue quits otherwise (closing the window, or Turn off in its
-menu). The end-of-run statistics count the chip's reads and writes.
+lost when Blue quits otherwise (Turn off, in its menu or when it asks on
+quitting). The end-of-run statistics count the chip's reads and writes.
 
 9.1 installs onto a disk image with its own installer, as 9.0 does
 (`build/blue disk create hd91.img 2G "Macintosh HD"`, then the CD and the
@@ -276,7 +276,7 @@ Finder on the same kernel, and opens its Read Me in SimpleText, as under
 QEMU:
 
 ```
-build/blue boot --cdrom 922.iso --max 3000000000 --screenshot finder.png
+build/blue boot --headless --cdrom 922.iso --max 3000000000 --screenshot finder.png
 ```
 
 The Finder is up by instruction 1.5 billion; in real time with fast start
@@ -336,7 +336,7 @@ and isn't needed:
 
 ```
 build/blue disk create hd922.img 2G "Macintosh HD"
-build/blue boot --disk hd922.img --cdrom 922.iso --window --nvram blue.nvram
+build/blue boot --disk hd922.img --cdrom 922.iso --nvram blue.nvram
 ```
 
 In Apple Software Restore (open it from the CD's window), click Switch Disk
@@ -345,7 +345,7 @@ scripted run restored 671 MB in under 20 billion instructions; the volume is
 then called MacOS9Lives. Click Quit when it says so: Apple Software Restore
 quits the Finder while it works, and the Finder, started again then, makes
 the new volume's Desktop Folder and Trash. Then `build/blue boot --disk
-hd922.img --window --nvram blue.nvram` starts it, to the Finder (the first
+hd922.img --nvram blue.nvram` starts it, to the Finder (the first
 time, with the Setup Assistant over it), in real time and in instruction
 time. In
 instruction time its startup used to stop short of the Finder until a key

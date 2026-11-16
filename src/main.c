@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,38 +37,41 @@ static int usage(void)
 		"  rom trampoline <file> <out>  write the NewWorld Trampoline (ELF)\n"
 		"                               (the file may be a disk or CD image: then the Mac OS\n"
 		"                               ROM file in its System Folder, as boot would use it)\n"
-		"  boot [options]               start Mac OS under the native kernel, from the Mac OS\n"
-		"                               ROM file in the startup disk's System Folder (the one\n"
-		"                               NVRAM's boot-device names, else the first drive with\n"
-		"                               one, as a New World Mac's firmware does)\n"
+		"  boot [options]               start Mac OS under the native kernel, in a window\n"
+		"                               (keyboard and mouse go to the guest), in real time\n"
+		"                               until Mac OS shuts down or Blue quits, from the Mac\n"
+		"                               OS ROM file in the startup disk's System Folder (the\n"
+		"                               one NVRAM's boot-device names, else the first drive\n"
+		"                               with one, as a New World Mac's firmware does). Once\n"
+		"                               the Finder is up, offers to install the guest tools\n"
+		"                               on the startup disk if they're missing or from\n"
+		"                               another version of Blue (then Mac OS restarts, as\n"
+		"                               Special > Restart does)\n"
 		"      --rom <file>             use this Mac OS ROM file or 4 MB ROM image instead\n"
 		"      --ram <MB>               RAM size (default 128)\n"
-		"      --window                 show the screen in a window (keyboard and mouse go to\n"
-		"                               the guest); runs in real time until closed. Once the\n"
-		"                               Finder is up, offers to install the guest tools on the\n"
-		"                               startup disk if they're missing or from another\n"
-		"                               version of Blue\n"
-		"                               (then Mac OS restarts, as Special > Restart does)\n"
-		"      --realtime               guest time follows the host clock\n"
-		"      --instruction-time       with --window: guest time counts instructions, as\n"
-		"                               without a window (scripted runs are reproducible)\n"
+		"      --headless               no window: guest time counts instructions (runs are\n"
+		"                               reproducible) unless --realtime, until --max\n"
+		"      --realtime               with --headless: guest time follows the host clock\n"
+		"      --instruction-time       in the window too, guest time counts instructions\n"
+		"                               (scripted runs are reproducible)\n"
+		"      --window                 (the default; still accepted)\n"
 		"      --no-idle                in real time, don't sleep while the guest is idle\n"
 		"      --no-fast-start          in real time, don't run guest time faster until the\n"
 		"                               Finder is up\n");
 	fprintf(stderr,
-		"      --no-sound               with --window: don't play the guest's sound (only\n"
-		"                               played in real time)\n"
-		"      --scale auto|1|2|3|4     with --window: the display's pixels to a screen pixel,\n"
+		"      --no-sound               don't play the guest's sound (only played in the\n"
+		"                               window, in real time)\n"
+		"      --scale auto|1|2|3|4     the window's: the display's pixels to a screen pixel,\n"
 		"                               a whole number (auto, the default: Mac OS at about 80\n"
 		"                               pixels per inch, as on a 1999 Mac; F12's menu changes\n"
 		"                               it); with the guest tools, a resized window asks Mac\n"
 		"                               OS for its size in pixels over this\n"
-		"      --integer-scale          with --window: scale a screen that isn't the window's\n"
-		"                               own size (without the guest tools, or a resolution\n"
-		"                               chosen in Mac OS) by whole numbers only (crisp\n"
-		"                               pixels; may leave a border)\n"
-		"      --no-status-bar          with --window: start without the status bar (its\n"
-		"                               lights and the processor's speed; F12's menu shows it)\n"
+		"      --integer-scale          the window scales a screen that isn't its own size\n"
+		"                               (without the guest tools, or a resolution chosen in\n"
+		"                               Mac OS) by whole numbers only (crisp pixels; may\n"
+		"                               leave a border)\n"
+		"      --no-status-bar          start without the window's status bar (its lights\n"
+		"                               and the processor's speed; F12's menu shows it)\n"
 		"      --no-net                 in real time, no network behind the guest's Ethernet\n"
 		"                               (with: NAT to the host's, DHCP on 10.0.2.0/24)\n"
 		"      --no-gpu                 the guest tools' 3D engine draws in software (in real\n"
@@ -84,7 +88,8 @@ static int usage(void)
 		"                               cdrom eject,\n"
 		"                               tools install|later|never (the answer to that offer;\n"
 		"                               never: Don't Ask Again), tools offer (the offer, now)\n"
-		"      --max <n>                stop after n PowerPC instructions (default 500000000)\n");
+		"      --max <n>                stop after n PowerPC instructions (with --headless,\n"
+		"                               500000000 unless given)\n");
 	fprintf(stderr,
 		"      --io-ram                 back touched I/O pages with plain RAM and keep going\n"
 		"      --trace                  log every instruction to stderr\n"
@@ -104,9 +109,10 @@ static int usage(void)
 		"                               or Insert... in the menu, F12)\n"
 		"      --cdrom-drive            an empty CD-ROM drive (a window or real time has one\n"
 		"                               without a CD-ROM drive given)\n"
-		"      --floppy <image>         a floppy image for the floppy drive (raw 400K-1440K, or\n"
-		"                               Disk Copy 4.2); the first is in it at startup, the\n"
-		"                               others go in, in turn, as Mac OS ejects the one in\n"
+		"      --floppy <image>         a floppy image for the floppy drive (raw 400K, 720K,\n"
+		"                               800K, 1440K or 2880K, or Disk Copy 4.2); the first is\n"
+		"                               in it at startup, the others go in, in turn, as Mac OS\n"
+		"                               ejects the one in\n"
 		"      --floppy-drive           a floppy drive, empty at startup (a window or real time\n"
 		"                               always has one)\n"
 		"      --share <folder>         show a host folder to Mac OS as a volume; what Mac OS\n"
@@ -321,6 +327,32 @@ static int boot_machine(void *arg)
 	return nk_boot(b->rom, b->opt);
 }
 
+/*
+ * No drive has a System Folder with a Mac OS ROM file: why, in the terminal
+ * and (but with --headless) over a black screen in the window, until Quit.
+ * A Pippin disc gets its own words, with the command that adds a Mac OS
+ * disk to these arguments. The exit status is 1 either way.
+ */
+static int no_startup_disk(const struct nk_boot_options *opt, bool images, bool headless, int argc, char **argv)
+{
+	static char text[2048], command[2 * PATH_MAX + 1024];
+	char blue[PATH_MAX + 8], name[HFSREAD_NAME_MAX];
+	bool moved;
+	unsigned drive;
+	struct welcome_boot b = { blue, argc, argv, images, NULL, NULL };
+	if (!welcome_command(blue, sizeof blue, &moved))
+		snprintf(blue, sizeof blue, "blue");
+	if (startup_pippin(opt->disk, opt->disks, &drive, name, sizeof name)) {
+		b.pippin = name;
+		b.pippin_image = opt->disk[drive];
+	}
+	welcome_no_startup(&b, text, sizeof text, command, sizeof command);
+	fprintf(stderr, "%s\n", text);
+	if (!headless)
+		welcome_notice(text, command[0] ? command : NULL);
+	return 1;
+}
+
 static int cmd_boot(int argc, char **argv)
 {
 	if (argc < 1)
@@ -331,7 +363,7 @@ static int cmd_boot(int argc, char **argv)
 		.max_insns = 500000000ull,
 		.trace_reg = -1,
 	};
-	bool max_given = false, instruction_time = false;
+	bool max_given = false, instruction_time = false, headless = false;
 	const char *rom_path = NULL, *share_dir = NULL;
 	for (int k = 0; k < argc; k++) {
 		if (strcmp(argv[k], "--rom") == 0 && k + 1 < argc) {
@@ -354,7 +386,9 @@ static int cmd_boot(int argc, char **argv)
 			opt.trace = true;
 			opt.trace_from = strtoull(argv[++k], NULL, 0);
 		} else if (strcmp(argv[k], "--window") == 0) {
-			opt.window = opt.realtime = true;
+			/* (the default) */
+		} else if (strcmp(argv[k], "--headless") == 0) {
+			headless = true;
 		} else if (strcmp(argv[k], "--input") == 0 && k + 1 < argc) {
 			opt.input_script = argv[++k];
 		} else if (strcmp(argv[k], "--fixed-time") == 0 && k + 1 < argc) {
@@ -452,6 +486,9 @@ static int cmd_boot(int argc, char **argv)
 		}
 	}
 
+	/* a window, in real time, unless --headless (instruction time there, unless --realtime) */
+	if (!headless)
+		opt.window = opt.realtime = true;
 	if (instruction_time)
 		opt.realtime = false;
 	if (opt.window && !max_given)
@@ -503,12 +540,8 @@ static int cmd_boot(int argc, char **argv)
 		bool images = false;
 		for (unsigned k = 0; k < opt.disks; k++)
 			images |= opt.disk[k] != NULL;
-		if (found > 0 && images)
-			fprintf(stderr, "no drive has a System Folder with a Mac OS ROM file in it: give one with "
-				"--rom FILE\n");
-		else if (found > 0)
-			fprintf(stderr, "no drives to start up from (the ROM file comes from the startup disk's "
-				"System Folder): attach one with --disk or --cdrom, or give a ROM file with --rom FILE\n");
+		if (found > 0)
+			return no_startup_disk(&opt, images, headless, argc, argv);
 		if (!found && rom_file_version(&rom, version, sizeof version))
 			printf("rom: %s (Mac OS ROM %s, %zu bytes)%s\n", start.from, version, rom.file_size,
 			       start.chosen ? ", which boot-device names" : "");

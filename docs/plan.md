@@ -218,7 +218,7 @@ Done:
 Where it stops:
 
 ```
-build/blue boot --cdrom 91.iso --max 20000000000
+build/blue boot --headless --cdrom 91.iso --max 20000000000
 stopped: instruction limit reached (system context)
 ```
 
@@ -239,7 +239,7 @@ after 16 s of guest time (1.3 s on the host; it was 41 s before the
 startup disk was found at once), against 13.8 s for the 8.5 CD: what's
 left is mostly AppleTalk on Ethernet (5 s) and the CD's transfers.
 
-The 9.2.2 CD (`build/blue boot --cdrom 922.iso --max 4000000000`) has the
+The 9.2.2 CD (`build/blue boot --headless --cdrom 922.iso --max 4000000000`) has the
 Finder up by instruction 1.5 billion, with the CD's Read Me open in
 SimpleText (as under QEMU), and idles there; two runs are identical. In
 real time with fast start the Finder is up after 13.4-13.7 s of guest time
@@ -265,13 +265,13 @@ scheduling around a sleep that doesn't happen; the system carries on.
 - **Don't change 8.5–9.0.4.** Everything new is for NanoKernel 2 ROMs only,
   behind `m->mp_kernel` (true for ROM files with parcels). Before handing
   back, check that the 8.5 CD still reaches the Finder:
-  `build/blue boot --rom MOS.rom --cdrom 85.iso --max 4000000000 --screenshot
-  /tmp/85.png` (only the menu-bar clock may differ between runs).
-- **Stay reproducible.** Runs in instruction time (no `--window` or
+  `build/blue boot --headless --rom MOS.rom --cdrom 85.iso --max 4000000000
+  --screenshot /tmp/85.png` (only the menu-bar clock may differ between runs).
+- **Stay reproducible.** Runs in instruction time (`--headless`, without
   `--realtime`) must stay exactly reproducible: guest tasks run on the one
   host thread, scheduled at instruction counts and guest timebase values,
   never by host time.
-- **The 9.1 check:** `build/blue boot --cdrom 91.iso --max
+- **The 9.1 check:** `build/blue boot --headless --cdrom 91.iso --max
   20000000000` (a few seconds). Add `BLUE_LOG_MP=1` for the calls, and
   `--screenshot f.png` once something may be on screen. Report the new
   stopping point (the last lines of output).
@@ -2374,7 +2374,7 @@ Facts later tasks need, added as they are found.
   compared the framebuffer with a copy of what was last shown, row by row,
   converted the changed rows into a locked SDL texture, drew and presented,
   and polled SDL's events, the Mac stopped meanwhile. Now:
-  - **Threads.** `display_main()` (from `main.c`, with `--window`) runs
+  - **Threads.** `display_main()` (from `main.c`, for a window) runs
     `nk_boot()` on a thread of its own, with the main thread's stack size,
     and the main thread runs the window, as SDL wants on macOS: it opens
     and closes it when the machine asks (`display_open()`,
@@ -3527,3 +3527,64 @@ Facts later tasks need, added as they are found.
     `DISPLAY_SCALE_OWN` (the display's own scale: a screen pixel to a
     unit, the window 600 x 360 units on any display) rather than Auto, and
     follows the window's size with a desktop of that size.
+- **Quitting, and SDL's menu bar on macOS** (the window; macOS 27, SDL
+  2.32.10 as the app carries it, and Homebrew's sdl2-compat 2.32.74 on
+  SDL 3.4.18): SDL makes a menu bar whenever it makes the application
+  object (`Cocoa_RegisterApp()`, if `NSApp` is nil: then the menu bar is
+  always nil too, so one made before can't stop it; and making `NSApp`
+  first would leave out SDL's application class, which dispatches its
+  events, and its `finishLaunching`). Logged with a probe injected into
+  `blue` (`DYLD_INSERT_LIBRARIES`; it posts key events into the
+  application's queue, clicks the close button, sends a Quit Apple event
+  to the process): Settings… ⌘, Hide ⌘H, Hide Others ⌥⌘H, Quit ⌘Q;
+  Window: Close ⌘W, Close All ⌥⌘W (AppKit's), Minimize ⌘M, Toggle Full
+  Screen fn-F and ⌃⌘F. SDL sees a key event before `-[NSApp sendEvent:]`
+  offers it to the menu bar, so Mac OS got ⌘Q and Blue ended at once
+  ("stopped: window closed"); ⌘H hid Blue, ⌘M minimised it, and the close
+  button and a Quit Apple event (the Dock's Quit, logging out) ended the
+  run at once too. Blue now replaces the menu bar once SDL is up (About
+  Blue, Hide Blue, Quit Blue, no key equivalents, no Window menu), and
+  asks before quitting once the Finder has run (`quit_asked()` in nk.c):
+  ⌘Q in Mac OS Setup Assistant asked "Are you sure you want to quit?",
+  ⌘H, ⌘M and ⌘W left Blue as it was, the close button, a Quit Apple event
+  and Quit Blue asked (twice asked, once shown), Shut Down brought Mac OS
+  8.5's "Are you sure you want to shut down your computer now?" and then
+  "stopped: guest powered off", Turn Off "stopped: turned off on
+  quitting", Cancel brought back the guest tools' offer it had covered,
+  and closing before the Finder was up quit at once. Under sdl2-compat,
+  key events posted to a window that isn't key don't reach the program
+  (SDL 2.32.10's do): a test harness's artefact. SIGINT and SIGTERM: SDL
+  installs handlers (they become SDL_QUIT) only where it finds SIG_DFL,
+  so Blue's own, installed first, keep them quitting at once (a
+  background job's SIGINT is SIG_IGN, and stays so).
+- **A window by default** (`blue boot`): the window is what people run,
+  so `boot` opens one, in real time, and `--headless` runs without
+  (instruction time unless `--realtime`, 500 million instructions unless
+  `--max`); `--window` is still taken, and does nothing. With no display
+  (SSH, a container, CI: `SDL_VIDEODRIVER=none` stands in for one here)
+  the run stops with "boot: no window can be opened (SDL's reason): run
+  with --headless to start Mac OS without one" and exit status 1, rather
+  than going on without the window, which would be real time with
+  nothing to see (`display_failure()` says why `display_open()` failed;
+  display.c no longer prints it). Reproducible runs, the reference boots
+  among them, are `build/blue boot --headless ...`: the same logs and
+  screenshots as before.
+- **A Pippin disc on its own** (Task 19): Super Marathon's disc (one HFS
+  volume, "Super Marathon") has a `PippinAuthenticationFile` ('PpnV',
+  'PpnA') at its root and a blessed System Folder with Finder, System
+  ('zsys'), the `Pippin` enabler ('gbly' 'MACS'), Pippin Launch and a
+  StartupScreen, but no Mac OS ROM file: a Pippin's ROM is the console's.
+  Given only it, `boot` used to say "no drive has a System Folder with a
+  Mac OS ROM file in it: give one with --rom FILE" in the terminal (and
+  nothing in a window). Now when there's no startup disk it looks for a
+  Pippin disc among the images (`startup_pippin()`: the authentication
+  file at the root, or the enabler in the blessed System Folder;
+  `hfsread_lookup()` finds a name in a folder, ASCII letters in either
+  case, and `hfsread_volumes()` goes through an image's volumes) and says
+  by the volume's name that Pippin titles run inside Mac OS, with the
+  command: `boot`'s arguments, quoted for the shell, with `--disk <your
+  Mac OS disk>` before the drives and the disc as a CD. Otherwise it says
+  why there's no startup disk, with the README's Quick start. In the
+  terminal, and (but with `--headless`) over a black screen in a 640 x
+  480 window at the display's own scale, with Copy Command (the Pippin's)
+  and Quit; exit status 1.

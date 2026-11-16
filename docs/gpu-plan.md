@@ -53,8 +53,8 @@ they change.
 - **Pixels go back to the guest:** at the end of each frame the GPU's
   image is read back into the context's host buffer, and `present()` copies
   it into guest memory exactly as it does now.
-- **When it's used:** automatically in real-time runs (`--window`,
-  `--realtime`) when the host has hardware-accelerated OpenGL 3.3.
+- **When it's used:** automatically in real-time runs (the window,
+  `--headless --realtime`) when the host has hardware-accelerated OpenGL 3.3.
   Instruction-time runs keep the software rasterizer, so they stay exactly
   reproducible on every host. `--no-gpu` turns it off; `BLUE_GPU=1`
   forces it on in any run, accepting software OpenGL too (for tests and
