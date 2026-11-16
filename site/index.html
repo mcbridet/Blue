@@ -180,7 +180,7 @@
         <div class="doc how">
           <p>On a real Power Mac only the NanoKernel runs in supervisor mode. The 68k emulator, the Toolbox, applications and drivers all run in PowerPC user mode and reach the kernel through a small interface.</p>
           <p>Blue runs all of that Apple code unmodified, as the guest, and supplies everything below the interface as an ordinary program on the host.</p>
-          <p>Where Mac OS looks to the machine for drivers, Blue puts its own in the device tree, as a Mac’s firmware would. They’re thin: the work is done on the host. The system helpers work the same way. Once the Finder is up, Blue offers to install them, then restarts Mac OS: guest enhancements that make the screen follow the window and share the clipboard, a 3D engine, OpenGL, and a library for Pippin titles.</p>
+          <p>Where Mac OS looks to the machine for drivers, Blue puts its own in the device tree, as a Mac’s firmware would. They’re thin: the work is done on the host. The system helpers work the same way. Once the Finder is up, Blue offers to install them, then restarts Mac OS: guest enhancements that make the screen follow the window and share the clipboard, a 3D engine, OpenGL, game controllers for games that use InputSprocket, and a library for Pippin titles.</p>
           <figure class="arch">
             <div class="zone guest">
               <p class="zone-label">Guest</p>
@@ -200,7 +200,7 @@
               </div>
               <div class="abox blue guest-blue">
                 <p class="abox-title">System helpers</p>
-                <span class="part">Guest enhancements, 3D engine, OpenGL, Pippin library</span>
+                <span class="part">Guest enhancements, 3D engine, OpenGL, game controllers, Pippin library</span>
                 <p class="abox-foot">Offered once the Finder is up, installed in Extensions</p>
               </div>
             </div>

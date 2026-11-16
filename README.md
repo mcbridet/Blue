@@ -56,9 +56,13 @@ from that disk, in a window on your desktop.
   connection, a folder of yours as a disk, the clipboard shared both ways,
   and disk, CD (`.iso`, `.toast`, `.cue`/`.bin`, `.nrg`, `.mds`, `.ccd`,
   `.chd`, `.dmg`) and floppy images you drop on the window.
+- **Game controllers:** Xbox, PlayStation, Switch and other pads play as
+  the keyboard and mouse, as a Pippin's AppleJack, and as game controllers
+  of their own in games that use InputSprocket.
 - **Guest tools,** offered once the Finder is up: the screen follows the
-  window's size, the clipboard is shared, and the 3D engine, OpenGL and a
-  library for Bandai Pippin titles are installed.
+  window's size, the clipboard is shared, and the 3D engine, OpenGL, game
+  controllers for InputSprocket and a library for Bandai Pippin titles are
+  installed.
 - **Reproducible runs** for testing and debugging: in instruction time, a run
   is the same every time, down to the instruction.
 
@@ -1034,8 +1038,9 @@ The [docs](docs/README.md) folder goes further:
 - [How Blue works](docs/architecture.md), and how Mac OS 8.5 to 9.2.2
   [were brought up](docs/bring-up.md) on it.
 - [The iMac's devices](docs/devices.md), [the drives](docs/drives.md),
-  [the shared folder](docs/shared-folder.md), [the window](docs/window.md)
-  and [the guest tools](docs/guest-tools.md), in depth.
+  [the shared folder](docs/shared-folder.md), [the window](docs/window.md),
+  [game controllers](docs/input.md) and [the guest tools](docs/guest-tools.md),
+  in depth.
 - [3D](docs/3d.md): the RAVE engine, OpenGL and the GPU backend.
 - [The JIT](docs/jit.md).
 - [Notes on programs and games](docs/software.md).
