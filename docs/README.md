@@ -9,7 +9,8 @@ test and debug it.
 - [architecture.md](architecture.md): the design: the NanoKernel interface,
   the loader, the kernel, time, and the machine Mac OS sees.
 - [devices.md](devices.md): the iMac's devices and Blue's drivers: interrupts,
-  DMA, the display, sound, networking and USB.
+  DMA, the serial controller and the modem, the display, sound, networking
+  and USB.
 - [drives.md](drives.md): disks, CD-ROM and floppy drives, cue sheets and CD
   audio.
 - [shared-folder.md](shared-folder.md): a host folder shown to Mac OS as a
@@ -17,10 +18,11 @@ test and debug it.
 - [window.md](window.md): the window, its scale, the menu, the prompts and the
   status bar.
 - [guest-tools.md](guest-tools.md): the guest tools and their installer: Blue
-  Enhancements, the clipboard, the 3D engine, OpenGL, the Pippin library
-  and the InputSprocket driver.
-- [input.md](input.md): game controllers: as the keyboard and mouse, as a
-  Pippin title's AppleJack, and through InputSprocket.
+  Enhancements, the clipboard, the scroll wheel, the 3D engine, OpenGL, the
+  Pippin library and the InputSprocket driver.
+- [input.md](input.md): game controllers: as the keyboard and mouse (by
+  mappings of one's own, kept in Blue's settings file), as a Pippin
+  title's AppleJacks, and through InputSprocket.
 - [3d.md](3d.md): 3D: the RAVE engine and QuickDraw 3D, Blue's OpenGL, the
   software rasterizer and the GPU backend.
 - [jit.md](jit.md): the PowerPC JIT for AArch64 and x86-64, and its
@@ -48,6 +50,4 @@ test and debug it.
 **What's next**
 
 - [roadmap.md](roadmap.md): the next steps.
-- [future.md](future.md): ideas further off: a modem, a serial port,
-  infrared, 3D sound, sound input, AltiVec, 3dfx Glide, pictures on the
-  clipboard, printing, a USB gamepad and the CD formats still missing.
+- [future.md](future.md): ideas further off: sound input and printing.

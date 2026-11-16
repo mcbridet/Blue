@@ -12,6 +12,7 @@
 extern "C" {
 #include "font.h"
 #include "icon.h"
+#include "pad.h"
 }
 
 /* (SDL2's values) */
@@ -54,6 +55,14 @@ struct ui {
 	bool icon_made;
 	bool enter, enter_held;         /* Return was pressed (and is held): the default button's */
 	bool broken;                    /* a texture couldn't be made: nothing is drawn */
+	/* the game controllers' mappings, shown in the menu's place */
+	bool mappings;
+	char map_id[UI_PAD_ID];         /* ... the type's shown ("": all of them) */
+	unsigned map_page;
+	int capture;                    /* ... the control waiting for a key (-1: none) */
+	uint8_t capture_mods;           /* ... the modifiers held meanwhile */
+	bool edited;                    /* ... a change made, to be said (UI_PAD_EDIT) */
+	struct ui_pad_edit edit;
 };
 
 /* Return, for the default button of the box in front */
@@ -139,6 +148,7 @@ struct ui *ui_open(const struct ui_renderer *r)
 	if (!u)
 		return nullptr;
 	u->r = *r;
+	u->capture = -1;
 	IMGUI_CHECKVERSION();
 	u->imgui = ImGui::CreateContext();
 	ImGui::GetPlatformIO().DrawCallback_ResetRenderState = reset_render_state;
@@ -736,6 +746,16 @@ static enum ui_action menu(const struct ui_state *s, const struct keys *keys)
 		if (chosen != UI_NONE)
 			action = chosen;
 	}
+	if (s->modem) {
+		separator();
+		ImGui::BeginDisabled(!s->modem_call);
+		if (button("Hang Up", 0))
+			action = UI_MODEM_HANG_UP;
+		ImGui::EndDisabled();
+		tip("Ends the modem's call, as if the far end had hung up");
+		beside_buttons();
+		ImGui::TextUnformatted(s->modem);
+	}
 
 	separator();
 	if (button("Screenshot", MENU_BUTTON))
@@ -758,7 +778,12 @@ static enum ui_action menu(const struct ui_state *s, const struct keys *keys)
 			    "(while the Mac hides its cursor; Control-Option releases it)");
 	if (s->pads) {
 		separator();
-		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 480);
+		if (button("Mappings" ELLIPSIS, 0))
+			action = UI_PAD_MAPPINGS;
+		tip("What each button, stick and trigger is, as the keyboard and mouse: for all controllers, or for "
+		    "a kind of controller plugged in");
+		beside_buttons();
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 380);
 		ImGui::Text("Controllers: %s", s->pads->count ? s->pads->names : "none connected");
 		ImGui::PopTextWrapPos();
 		bool on = s->pads->on;
@@ -789,6 +814,296 @@ static enum ui_action menu(const struct ui_state *s, const struct keys *keys)
 	separator();
 	ImGui::TextDisabled("F12 or Esc resumes");
 	end_box();
+	return action;
+}
+
+/* ---- the game controllers' mappings ---------------------------------------------------- */
+
+bool ui_capturing(const struct ui *u)
+{
+	return u->mappings && u->capture >= 0;
+}
+
+static uint8_t modifier_bit(uint8_t vk)
+{
+	switch (vk) {
+	case 0x37: return PAD_MOD_COMMAND;
+	case 0x38: return PAD_MOD_SHIFT;
+	case 0x3A: return PAD_MOD_OPTION;
+	case 0x3B: return PAD_MOD_CONTROL;
+	default: return 0;
+	}
+}
+
+/* The key chosen: the first that isn't a modifier, with those held; or a modifier let go of alone */
+void ui_capture_key(struct ui *u, uint8_t adb, bool down)
+{
+	uint8_t vk = pad_virtual_key(adb), bit = modifier_bit(vk);
+	if (u->capture < 0 || vk == 0xFF)
+		return;
+	if (bit && down) {
+		u->capture_mods |= bit;
+		return;
+	}
+	if ((bit && !(u->capture_mods & bit)) || (!bit && !down))
+		return;
+	u->edit.change = UI_PAD_SET;
+	u->edit.control = (unsigned)u->capture;
+	u->edit.action = pad_key_action(vk, bit ? 0 : u->capture_mods);
+	u->edited = true;
+	u->capture = -1;
+}
+
+void ui_pad_edit(const struct ui *u, struct ui_pad_edit *out)
+{
+	*out = u->edit;
+}
+
+static void pad_change(struct ui *u, const struct ui_pad_type *t, enum ui_pad_change change, unsigned control,
+		       unsigned mode, struct pad_switch action)
+{
+	snprintf(u->edit.id, sizeof u->edit.id, "%s", t->id);
+	u->edit.change = change;
+	u->edit.control = control;
+	u->edit.mode = mode;
+	u->edit.action = action;
+	u->edited = true;
+}
+
+#define MAP_LABEL 104.0f                /* a row's label, then its box */
+#define MAP_BOX 150.0f
+#define MAP_COLUMN (MAP_LABEL + MAP_BOX + 24)
+
+/*
+ * What a control does, in a box as Mac OS 8's pop-up menus (a triangle on
+ * its right): clicked, a menu of what it can be, a key pressed among them
+ */
+static void action_box(struct ui *u, const struct ui_pad_type *t, unsigned control)
+{
+	char text[64], id[32];
+	const bool waiting = u->capture == (int)control;
+	if (waiting)
+		snprintf(text, sizeof text, "Press a key" ELLIPSIS);
+	else
+		pad_action_name(&t->map.control[control], text, sizeof text);
+	snprintf(id, sizeof id, "##control%u", control);
+	const ImVec2 a = snap(ImGui::GetCursorScreenPos()), size(MAP_BOX, BUTTON_HEIGHT), b(a.x + size.x, a.y + size.y);
+	if (ImGui::InvisibleButton(id, size, ImGuiButtonFlags_EnableNav)) {
+		u->capture = -1;
+		ImGui::OpenPopup(id);
+	}
+	bool down = ImGui::IsItemActive() && ImGui::IsItemHovered();
+	ImDrawList *dl = box_draw_list();
+	const float h = hair();
+	dl->AddRectFilled(ImVec2(a.x + 1, a.y + 1), ImVec2(b.x + 1, b.y + 1), col(PLATINUM_DARK));
+	dl->AddRectFilled(a, b, col(BLACK));
+	dl->AddRectFilled(ImVec2(a.x + h, a.y + h), ImVec2(b.x - h, b.y - h), col(down || waiting ? ACCENT_LIGHT : WHITE));
+	const float tri = 4, cx = b.x - 10, cy = a.y + size.y / 2;
+	dl->AddTriangleFilled(ImVec2(cx - tri, cy - tri / 2), ImVec2(cx + tri, cy - tri / 2), ImVec2(cx, cy + tri / 2),
+			      col(INK));
+	dl->PushClipRect(a, ImVec2(b.x - 20, b.y), true);
+	dl->AddText(snap(ImVec2(a.x + 6, a.y + (size.y - ImGui::GetFontSize()) / 2)), col(waiting ? MUTED : INK), text);
+	dl->PopClipRect();
+	focus_ring(dl, a, b, 2, 0);
+	dl->PopClipRect();
+
+	ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImGui::ColorConvertU32ToFloat4(ACCENT_LIGHT));
+	ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImGui::ColorConvertU32ToFloat4(ACCENT_LIGHT));
+	ImGui::PushStyleColor(ImGuiCol_Header, ImGui::ColorConvertU32ToFloat4(PLATINUM_LIGHT));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
+	if (ImGui::BeginPopup(id)) {
+		static const struct pad_switch mouse[] = {
+			{ PAD_DO_MOUSE, 0, 0, 0 }, { PAD_DO_MOUSE, PAD_MOD_SHIFT, 0, 0 }, { PAD_DO_MOUSE, PAD_MOD_COMMAND, 0, 0 },
+			{ PAD_DO_MOUSE, PAD_MOD_OPTION, 0, 0 }, { PAD_DO_MOUSE, PAD_MOD_CONTROL, 0, 0 },
+			{ PAD_DO_DOUBLE_CLICK, 0, 0, 0 }, { PAD_DO_MOUSE_LOCK, 0, 0, 0 }, { PAD_DO_NOTHING, 0, 0, 0 },
+		};
+		const struct pad_switch *now = &t->map.control[control];
+		bool key = now->function == PAD_DO_KEY || now->function == PAD_DO_MODIFIER;
+		snprintf(text, sizeof text, "%s", "Press a Key" ELLIPSIS);
+		if (ImGui::Selectable(text, key)) {
+			u->capture = (int)control;
+			u->capture_mods = 0;
+			snprintf(u->edit.id, sizeof u->edit.id, "%s", t->id);
+		}
+		separator();
+		for (const struct pad_switch &m : mouse) {
+			pad_action_name(&m, text, sizeof text);
+			if (m.function == PAD_DO_NOTHING)
+				separator();
+			bool same = !key && now->function == m.function && now->modifiers == m.modifiers;
+			if (ImGui::Selectable(text, same))
+				pad_change(u, t, UI_PAD_SET, control, 0, m);
+		}
+		ImGui::EndPopup();
+	}
+	ImGui::PopStyleVar();
+	ImGui::PopStyleColor(3);
+	if (control == PAD_LT || control == PAD_RT)
+		tip("Pressed past half way");
+}
+
+/* A row: the control's name, and what it does */
+static void map_row(struct ui *u, const struct ui_pad_type *t, const char *label, unsigned control)
+{
+	ImGui::PushID((int)control);
+	const float x = ImGui::GetCursorPosX(), y = ImGui::GetCursorPosY();
+	ImGui::SetCursorPosY(y + (BUTTON_HEIGHT - ImGui::GetFontSize()) / 2);
+	ImGui::TextUnformatted(label);
+	ImGui::SameLine();
+	ImGui::SetCursorPos(ImVec2(x + MAP_LABEL, y));
+	action_box(u, t, control);
+	ImGui::PopID();
+}
+
+/* A stick: the mouse, or keys (its four ways, each a control) */
+static void map_stick(struct ui *u, const struct ui_pad_type *t, unsigned stick)
+{
+	static const char *const ways[4] = { "Up", "Down", "Left", "Right" };
+	const unsigned first = stick ? PAD_RSTICK_UP : PAD_STICK_UP;
+	const bool mouse = t->map.stick[stick] == PAD_STICK_MOUSE;
+	ImGui::PushID(stick ? "right" : "left");
+	const float x = ImGui::GetCursorPosX(), y = ImGui::GetCursorPosY();
+	ImGui::SetCursorPosY(y + 3);
+	ImGui::TextUnformatted(stick ? "Right stick:" : "Left stick:");
+	ImGui::SameLine();
+	ImGui::SetCursorPos(ImVec2(x + MAP_LABEL, y));
+	if (radio("##keys", "Keys", !mouse) && mouse)
+		pad_change(u, t, UI_PAD_STICK, stick, PAD_STICK_KEYS, pad_switch{});
+	ImGui::SameLine(0, 12);
+	ImGui::SetCursorPosY(y);
+	if (radio("##mouse", "The mouse", mouse) && !mouse)
+		pad_change(u, t, UI_PAD_STICK, stick, PAD_STICK_MOUSE, pad_switch{});
+	ImGui::BeginDisabled(mouse);
+	for (unsigned k = 0; k < 4; k++) {
+		ImGui::SetCursorPosX(x + 12);
+		map_row(u, t, ways[k], first + k);
+	}
+	ImGui::EndDisabled();
+	ImGui::SetCursorPosX(x + 12);
+	map_row(u, t, "Pressed", stick ? PAD_RIGHT_STICK : PAD_LEFT_STICK);
+	ImGui::PopID();
+}
+
+/* Rows in two columns */
+static void map_rows(struct ui *u, const struct ui_pad_type *t, const char *const *labels, const unsigned *controls,
+		     unsigned n)
+{
+	const float x = ImGui::GetCursorPosX(), y = ImGui::GetCursorPosY();
+	const unsigned half = (n + 1) / 2;
+	float bottom = y;
+	for (unsigned k = 0; k < n; k++) {
+		if (k == half)
+			ImGui::SetCursorPos(ImVec2(x + MAP_COLUMN, y));
+		else if (k)
+			ImGui::SetCursorPosX(k < half ? x : x + MAP_COLUMN);
+		map_row(u, t, labels[k], controls[k]);
+		bottom = ImGui::GetCursorPosY() > bottom ? ImGui::GetCursorPosY() : bottom;
+	}
+	ImGui::SetCursorPos(ImVec2(x, bottom));
+}
+
+/*
+ * The mappings: the type shown (all controllers, or a kind plugged in,
+ * which may have its own or take the one for all), and what each control
+ * does, a page of them at a time
+ */
+static enum ui_action mappings(struct ui *u, const struct ui_state *s, const struct keys *keys)
+{
+	static const char *const pages[] = { "Buttons", "D-pad and more", "Sticks" };
+	static const char *const buttons[] = { "A", "B", "X", "Y", "Back", "Guide", "Start", "Left shoulder",
+					       "Right shoulder", "Left trigger", "Right trigger" };
+	static const unsigned button_controls[] = { PAD_A, PAD_B, PAD_X, PAD_Y, PAD_BACK, PAD_GUIDE, PAD_START,
+						    PAD_LEFT_SHOULDER, PAD_RIGHT_SHOULDER, PAD_LT, PAD_RT };
+	static const char *const more[] = { "D-pad up", "D-pad down", "D-pad left", "D-pad right", "Touchpad", "Misc",
+					    "Paddle 1", "Paddle 2", "Paddle 3", "Paddle 4" };
+	static const unsigned more_controls[] = { PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_TOUCHPAD, PAD_MISC,
+						  PAD_PADDLE1, PAD_PADDLE2, PAD_PADDLE3, PAD_PADDLE4 };
+	enum ui_action action = UI_NONE;
+	const struct ui_pads *p = s->pads;
+	unsigned shown = 0;
+	for (unsigned k = 0; k < p->types; k++)
+		if (!strcmp(p->type[k].id, u->map_id))
+			shown = k;
+	const struct ui_pad_type *t = &p->type[shown];
+	snprintf(u->map_id, sizeof u->map_id, "%s", t->id);
+
+	const ImGuiViewport *vp = ImGui::GetMainViewport();
+	ImGui::GetBackgroundDrawList()->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y),
+						      IM_COL32(0, 0, 0, 110));
+	begin_box("Blue: controllers", "Controllers");
+	const float top = ImGui::GetCursorPosY();
+	ImGui::SetCursorPosY(top + 3);
+	ImGui::TextUnformatted("Mapping for:");
+	for (unsigned k = 0; k < p->types; k++) {
+		char id[24];
+		snprintf(id, sizeof id, "##type%u", k);
+		ImGui::SameLine(0, k ? 12 : 10);
+		ImGui::SetCursorPosY(top);
+		if (radio(id, p->type[k].name, k == shown)) {
+			snprintf(u->map_id, sizeof u->map_id, "%s", p->type[k].id);
+			u->capture = -1;
+		}
+	}
+	if (shown) {
+		bool own = t->own;
+		if (checkbox("A mapping of its own", &own))
+			pad_change(u, t, UI_PAD_OWN, 0, own, pad_switch{});
+		tip("Off: this kind of controller has the mapping for all controllers. On: one of its own, starting as "
+		    "a copy of that");
+	} else {
+		ImGui::TextDisabled("(for each controller without a mapping of its own)");
+	}
+	separator();
+	for (unsigned k = 0; k < 3; k++) {
+		char id[24];
+		snprintf(id, sizeof id, "##page%u", k);
+		if (k)
+			ImGui::SameLine(0, 16);
+		if (radio(id, pages[k], u->map_page == k)) {
+			u->map_page = k;
+			u->capture = -1;
+		}
+	}
+	ImGui::Dummy(ImVec2(0, 2));
+	ImGui::BeginDisabled(shown && !t->own);
+	const float y = ImGui::GetCursorPosY();
+	if (u->map_page == 0) {
+		map_rows(u, t, buttons, button_controls, sizeof buttons / sizeof buttons[0]);
+	} else if (u->map_page == 1) {
+		map_rows(u, t, more, more_controls, sizeof more / sizeof more[0]);
+	} else {
+		const float x = ImGui::GetCursorPosX();
+		map_stick(u, t, 0);
+		const float bottom = ImGui::GetCursorPosY();
+		ImGui::SetCursorPos(ImVec2(x + MAP_COLUMN, y));
+		map_stick(u, t, 1);
+		ImGui::SetCursorPos(ImVec2(x, bottom > ImGui::GetCursorPosY() ? bottom : ImGui::GetCursorPosY()));
+	}
+	/* (as tall as the tallest page, so that the box keeps its size) */
+	const float tallest = 6 * (BUTTON_HEIGHT + ImGui::GetStyle().ItemSpacing.y) + ImGui::GetFontSize() +
+			      ImGui::GetStyle().ItemSpacing.y;
+	if (ImGui::GetCursorPosY() < y + tallest)
+		ImGui::Dummy(ImVec2(2 * MAP_COLUMN - 24, y + tallest - ImGui::GetCursorPosY()));
+	separator();
+	if (button("Restore Defaults", 0))
+		pad_change(u, t, UI_PAD_RESTORE, 0, 0, pad_switch{});
+	tip("Blue's own mapping: the D-pad and left stick the arrow keys, A Return, B Command-period, X Space, Y "
+	    "Tab, Start Esc, Back Command, the shoulders Shift and Option, the right stick the mouse, and the "
+	    "triggers clicks (the left one a Control-click)");
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 2 * MAP_COLUMN - 24 - ImGui::CalcTextSize("Restore Defaults").x -
+			     2 * BUTTON_PAD - 72 - 8);
+	if (button("Done", 72, keys) && u->capture < 0)
+		u->mappings = false;
+	ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 2 * MAP_COLUMN - 24);
+	ImGui::TextDisabled("%s", p->kept);
+	ImGui::PopTextWrapPos();
+	end_box();
+	if (u->edited) {
+		u->edited = false;
+		action = UI_PAD_EDIT;
+	}
 	return action;
 }
 
@@ -1046,8 +1361,20 @@ enum ui_action ui_draw(struct ui *u, const struct ui_state *s, int w, int h, flo
 	if (s->status_bar > 0)
 		status_bar(s);
 	enum ui_action action = s->prompt ? prompt(u, s, s->menu ? &none : &enter) : UI_NONE;
-	if (s->menu)
+	if (!s->menu || !s->pads) {
+		u->mappings = false;
+		u->capture = -1;
+	}
+	if (s->menu && u->mappings) {
+		action = mappings(u, s, u->capture >= 0 ? &none : &enter);
+	} else if (s->menu) {
 		action = menu(s, &enter);
+		if (action == UI_PAD_MAPPINGS) {
+			u->mappings = true;
+			u->edited = false;
+			action = UI_NONE;
+		}
+	}
 	ImGui::Render();
 	render(u, ImGui::GetDrawData());
 	return action;

@@ -53,7 +53,8 @@ from that disk, in a window on your desktop.
   128, and Mac OS 9's OpenGL through Blue's own libraries, drawn on the GPU
   (over Metal on Apple silicon) or in software.
 - **The rest of a Mac:** sound and CD audio, networking through your
-  connection, a folder of yours as a disk, the clipboard shared both ways,
+  connection, the internal modem (its calls go over the internet), a
+  folder of yours as a disk, the clipboard shared both ways,
   and disk, CD (`.iso`, `.toast`, `.cue`/`.bin`, `.nrg`, `.mds`, `.ccd`,
   `.chd`, `.dmg`) and floppy images you drop on the window.
 - **Game controllers:** Xbox, PlayStation, Switch and other pads play as
@@ -97,7 +98,6 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **Runs on** | macOS 11 and later, and Linux: Apple silicon, ARM64 and x86-64 | macOS, Linux and Windows | macOS, Linux and Windows | PowerPC Macs, with Mac OS X 10.0 to 10.4 |
 | **How** | Apple's code, unmodified, on a native kernel in place of the NanoKernel | Apple's code on a patched ROM, with a kernel of its own | A whole Power Mac emulated, firmware and all | Mac OS 9 as a program in Mac OS X, on a real PowerPC |
 | **Speed** | A JIT on every host: about 18 times a Power Mac G3/300 in MacBench 5's processor test, on an Apple M5 | A JIT on Intel and AMD; none on Apple silicon | A JIT, with every device and the memory management unit emulated | The PowerPC's own, up to a Power Mac G5 |
-| **AltiVec** | Not yet | Yes, as a G4 (7400) | Yes, as a G4 | On G4 and G5 Macs |
 | **What you need** | A Mac OS CD or disk image | A Mac OS CD or disk image, and a ROM file found elsewhere | A Mac OS CD or disk image | Mac OS 9 installed beside Mac OS X |
 | **3D** | QuickDraw 3D, RAVE (as an ATI Rage 128) and OpenGL, drawn on your GPU | Software only | Software only | Programs that draw straight to the screen or the hardware often fail |
 | **Restart and Startup Disk** | Both work | Restarting can freeze or crash it; Startup Disk doesn't work | Neither works | Mac OS X's own |
@@ -107,12 +107,12 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **Disk images** | Dropped on the window or inserted from the menu: CD images in most formats, compressed `.dmg` and Disk Copy images, floppies | Uncompressed images, and one at a time dropped in as a CD | Raw and QEMU's own formats, changed from a menu | Mac OS X's |
 | **Shared folders** | A folder of yours as a disk, its changes written back when Mac OS shuts down or puts it away, and offered again with yours | A folder as a live disk, though programs can't run from it | Separate experimental drivers | Mac OS X's disks, directly |
 | **Networking** | TCP/IP through its NAT; no port forwarding yet | TCP/IP through its NAT, with port forwarding; AppleTalk with extra setup, on some hosts | TCP/IP through its NAT, with port forwarding; AppleTalk through bridged networking, run as root | Mac OS X's, AppleTalk included |
-| **USB devices** | Not yet | No | Passed through from the host | Through Mac OS X |
+| **Modem** | The iMac's internal modem, its calls going over the internet | The modem and printer ports passed to the host's serial ports; no modem of its own | A host serial port, through an emulated USB serial adapter and FTDI's driver; no modem of its own | Mac OS X's dial-up connection, for internet programs; terminal and fax programs can't use the modem |
 | **Game controllers** | Gamepads, as keys or through InputSprocket | No | A USB gamepad, passed through | Unreliable |
 | **Pippin titles** | Yes | No | No | No |
 
 SheepShaver also runs System 7.5 to Mac OS 8.1, given an Old World ROM.
-Blue's other gaps, such as serial ports and modems, are listed under
+Blue's other gaps, such as USB devices, are listed under
 [What isn't there](#what-isnt-there).
 
 ## Download and install
@@ -247,11 +247,9 @@ Blue starts up from the first drive that has a System Folder with a "Mac
 OS ROM" file in it, in the order you gave them. The new disk is empty, so
 the Mac starts up from the CD.
 
-**Most Mac OS CDs:** open "Mac OS Install" on the CD and follow it.
-Choose Macintosh HD as the destination, and when you reach the Install
-screen, click **Options** and turn off **"Update Apple Hard Disk
-Drivers"**: the driver updater only knows Apple's own drives, and fails
-on Blue's. The installation takes a few minutes at most.
+**Most Mac OS CDs:** open "Mac OS Install" on the CD and follow it,
+with Macintosh HD as the destination. The installation takes a few
+minutes at most.
 
 **Restore CDs,** which install with Apple Software Restore instead:
 open Apple Software Restore from the CD's window. Click Switch Disk until
@@ -285,8 +283,8 @@ command line, so it stays the startup disk.
 Once the Finder is up, Blue offers to install its guest tools on the
 startup disk. Click **Install and Restart**: Mac OS writes the tools into
 its Extensions folder and restarts, and from then on the screen follows
-the window's size, the clipboard is shared, and 3D games are accelerated.
-See [The guest tools](#the-guest-tools).
+the window's size, the clipboard is shared, the scroll wheel scrolls, and
+3D games are accelerated. See [The guest tools](#the-guest-tools).
 
 ### Keeping your settings
 
@@ -296,6 +294,20 @@ panel. Without it, the Mac starts each time with blank settings. Use the
 same file every time you start a particular Mac, and give each
 installation its own. Mac OS 9.1 and later write their settings when they
 shut down or restart, so shut down from Mac OS to keep changes.
+
+Blue keeps its own settings, those you choose in its menu, in a settings
+file: for now, your [game controllers' mappings](#game-controllers). It's
+in `~/Library/Application Support/Blue/settings.ini` on macOS, and
+`~/.config/blue/settings.ini` on Linux (or in `$XDG_CONFIG_HOME/blue/`).
+It's plain text, `name = value` lines under a `[section]`, which you can
+read and edit (with Blue closed): `[controller]` has the mapping for all
+controllers, a line for each button, stick and trigger (`a = Return`,
+`lefttrigger = Control-Click`, `rightstickmode = Mouse`), and
+`[controller ID]` sections a kind of controller's own, by its SDL GUID.
+Blue writes it whole each time something changes, to a new file it then
+puts in the old one's place. Runs without a window, in instruction time
+or with an input script leave it alone; `--settings FILE` uses another
+file (in any run), and `--settings none` none.
 
 ## Using Blue
 
@@ -360,8 +372,11 @@ F12 or Esc closes it again.
 - **Capture the mouse** sets whether the mouse is captured while Mac OS
   hides its pointer, as games do (see [Keyboard and mouse](#keyboard-and-mouse)).
 - **Controllers** lists the game controllers connected, and which mapping
-  they follow; its checkbox turns them off (see
+  they follow; its checkbox turns them off, and **Mappings…** sets what
+  their buttons, sticks and triggers do (see
   [Game controllers](#game-controllers)).
+- **Modem** says what the [modem](#the-modem) is doing, and **Hang Up**
+  ends its call.
 
 While the menu is open, the Mac's clock stops, so it's behind by that
 much afterwards.
@@ -388,7 +403,7 @@ that it installs there for you:
 
 | Guest tool | What it does |
 |---|---|
-| Blue Enhancements | The screen follows the window's size, and the clipboard is shared with your computer. |
+| Blue Enhancements | The screen follows the window's size, the clipboard is shared with your computer, and the scroll wheel scrolls the window under the pointer. |
 | Blue 3D Engine | Accelerates QuickDraw 3D and RAVE games, which see an ATI Rage 128. |
 | Blue OpenGL Library, Memory and Utility | OpenGL for Mac OS 9 games, drawn on your GPU. |
 | Blue Pippin Library | Lets Bandai Pippin titles run, and game controllers play them as the Pippin's AppleJack (see [Pippin titles](#pippin-titles)). |
@@ -455,10 +470,16 @@ Blue's: it opens the menu, and Mac OS never sees it. (On a Mac laptop,
 you may need to hold fn as you press F12.)
 
 The Mac has a one-button mouse: the left button is its button, and the
-right button Control-clicks, for contextual menus. The scroll wheel presses
-the arrow keys (a press for each step of the wheel), which scroll most
-windows of the time: Mac OS 8 and 9 didn't know scroll wheels. In a game
-that has the mouse (below), the right button and the wheel do nothing.
+right button Control-clicks, for contextual menus. Mac OS 8 and 9 didn't
+know scroll wheels, so with Blue Enhancements (one of the
+[guest tools](#the-guest-tools)) the wheel, and a trackpad's two-finger
+scrolling, scroll as the tools of the time made them: the window under
+the pointer, in the application in front, scrolls by its scroll bar, as
+clicks on the scroll bar's arrows would scroll it, a line for each step
+of the wheel (sideways too). Where there's no scroll bar under the
+pointer (the desktop, a game), and without Blue Enhancements, the wheel
+presses the arrow keys instead, a press for each line. In a game that has
+the mouse (below), the right button and the wheel do nothing.
 
 The Mac's pointer follows yours. When Mac OS hides its pointer for a
 moment, as games do, Blue captures the mouse, so that its movements go to
@@ -488,12 +509,28 @@ whatever the pad's labels say.
 | Right trigger | Clicks |
 | Left trigger | Control-clicks (a contextual menu) |
 
+That's Blue's mapping, and you can change it: **Mappings…** under
+Controllers in Blue's menu (F12) shows what each button, stick and
+trigger does, for all controllers, or for a kind of controller plugged
+in, which can have a mapping of its own. Click one to choose a key
+(**Press a Key…**, then the key, with Command, Shift, Option or Control
+held for a key with modifiers; a modifier alone is held as long as the
+button is), a click (with modifiers too), a double-click, **Click Lock**
+(the mouse button stays down until pressed again) or nothing; each stick
+is either the mouse or four keys of its own. **Restore Defaults** puts
+Blue's mapping back. Blue keeps your mappings between runs, in its
+[settings file](#keeping-your-settings).
+
 While a [Pippin title](#pippin-titles) runs in front, the pad is the
 Pippin's AppleJack controller instead, and the title's own mapping of its
 buttons applies, as on a Pippin: the D-pad and left stick are its D-pad;
 A, B, X and Y its red, green, yellow and blue buttons; the shoulders and
 triggers its left and right fire buttons; Back, Guide (Home, PS) and
-Start its three buttons below; and the right stick its trackball.
+Start its three buttons below; and the right stick its trackball. With
+two pads plugged in, the title has two AppleJacks, as a Pippin with two
+controllers had: the second pad is the second, for titles that play two
+on one Pippin. Your own mappings are for Mac OS, not for Pippin titles,
+which have theirs.
 
 Games that use InputSprocket (Apple Game Sprockets' input library, which
 most Mac action games of the late 1990s do)
@@ -510,7 +547,9 @@ InputSprocket itself is Apple's, not Blue's: games that use it come with
 it, to install with them.
 
 **Controllers** in Blue's menu (F12) lists the pads connected and which
-mapping they follow, and turns them off. A pad's input reaches Blue only
+mapping they follow, and turns them off; Mappings… changes Blue's mapping
+(not a Pippin title's, nor a game's own InputSprocket controls). A pad's
+input reaches Blue only
 while its window is in front. How it all works is in
 [docs/input.md](docs/input.md).
 
@@ -657,6 +696,41 @@ Blue's network uses libslirp, which Blue.app and the AppImages carry. A
 build of your own needs it installed (see
 [Building from source](#building-from-source)).
 
+### The modem
+
+The iMac's built-in 56K modem is there too, as Mac OS's Internal Modem,
+with its modem script already chosen in the Modem control panel. Rather
+than a phone line, its calls go over the internet: dial a host and port
+and it connects there, answering `CONNECT 56000`, as the modems of DOSBox
+and 86Box do. Programs that use a modem (terminal programs, Remote Access,
+games with a modem link) use it as they would on the iMac.
+
+- **BBSes:** many still run, reached by telnet. In a terminal program such
+  as ZTerm, type `ATDT bbs.example.com` (port 23, telnet's) or `ATDT
+  bbs.example.com:2323`. The modem speaks telnet to port 23 and to any far
+  end that opens with telnet's negotiation, as BBSes do, so the BBS sees a
+  telnet client. `+++` with a second's pause either side returns to the
+  modem's commands; `ATH` hangs up.
+- **Calling another Blue:** start one with `--modem-listen 2323`. A call to
+  it (`ATDT 127.0.0.1:2323` from another Blue on the same computer, or
+  `ATDT` the first computer's address from another) rings there (`RING`):
+  answer with `ATA`, or type `ATS0=1` beforehand to answer at the first
+  ring. Over the internet, the computer listening needs that port open in
+  its router; `--modem-listen 127.0.0.1:2323` takes calls from your own
+  computer only.
+- **The phonebook,** for programs that only dial digits: `--modem-phonebook
+  FILE` names a text file of numbers, one a line, such as `5551234
+  bbs.example.com:2323` (add `telnet` or `raw` after it if Blue shouldn't
+  guess). Dialling 555-1234 then calls that host.
+- **Remote Access** dials the same way, to a PPP server of your own: type
+  the host and port as its number.
+
+The modem works in real time only (the window, or `--headless --realtime`),
+as the Ethernet does. Characters go at the speed Mac OS sets the serial
+port to, rather than a 56K line's. Blue's menu shows the call and can hang
+it up; `--no-modem` leaves the modem out. The commands are the usual Hayes
+ones: see [docs/devices.md](docs/devices.md#the-modem).
+
 ### Sound
 
 Sound plays while the Mac runs in a window, through Mac OS's own sound
@@ -684,8 +758,9 @@ in Blue. Titles that need the Pippin's own library get Blue Pippin
 Library, one of the guest tools. Their saved games and preferences go in
 `System Folder:Preferences:Pippin:`, under the title's name. A game
 controller plays them as the Pippin's AppleJack controller, by the
-title's own mapping of its buttons (see
-[Game controllers](#game-controllers)); the keyboard and mouse work too.
+title's own mapping of its buttons, and a second one as its second
+AppleJack (see [Game controllers](#game-controllers)); the keyboard and
+mouse work too.
 More in [docs/software.md](docs/software.md#pippin-titles).
 
 A Pippin disc doesn't start the Mac by itself: a Pippin's system is in
@@ -736,6 +811,7 @@ The options of `blue boot`:
 | `--floppy-drive` | Adds an empty floppy drive. (A window, or real time, has one anyway.) |
 | `--share FOLDER` | Shows a folder on your computer as a disk (one folder). |
 | `--nvram FILE` | Keeps the Mac's NVRAM (settings, the startup disk) in this file. |
+| `--settings FILE` | Keeps Blue's own settings (the game controllers' mappings) in this file, in any run; `--settings none` keeps none (see [Keeping your settings](#keeping-your-settings)). |
 | `--ram MB` | The Mac's memory, from 8 to 1024 MB (128 unless you say). |
 | `--rom FILE` | Starts this ROM file, or 4 MB ROM image, instead of the startup disk's. |
 
@@ -756,6 +832,14 @@ or CI), `blue boot` says so and stops: run it with `--headless`.
 | `--no-sound` | Doesn't play the Mac's sound. |
 | `--no-net` | Leaves the Mac's Ethernet unplugged. |
 | `--no-gpu` | Draws 3D in software rather than on the GPU. |
+
+**The modem**
+
+| Option | What it does |
+|---|---|
+| `--no-modem` | Leaves the internal modem out. |
+| `--modem-listen [ADDRESS:]PORT` | A connection to this port is a call to the modem: it rings. |
+| `--modem-phonebook FILE` | Numbers the modem dials: lines of `NUMBER HOST:PORT`. |
 
 **Time and speed**
 
@@ -825,21 +909,17 @@ version runs in Rosetta 2 without the JIT.
 
 ### What isn't there
 
-Blue doesn't have everything a real iMac had, yet:
+Blue doesn't do everything a Mac of the time could:
 
-- **AltiVec,** the G4's vector instructions: programs that need a G4
-  don't run.
-- **Modems, serial ports, infrared and printing.**
 - **USB and FireWire devices** of any kind (game controllers reach Mac OS
   as the keyboard and mouse, and through InputSprocket: see
   [Game controllers](#game-controllers)).
-- **Sound input** (a microphone), and 3D sound.
+- **Sound input** (a microphone).
 - **AppleTalk** networking, and connections into the Mac.
-- **3dfx Glide,** for games that draw with a Voodoo card.
 - **Old World Macs:** Blue is an original iMac, and can't start the ROMs
   of earlier Power Macs or 68k Macs.
 
-[docs/future.md](docs/future.md) has ideas for most of these, and
+[docs/future.md](docs/future.md) has ideas for some of these, and
 [docs/roadmap.md](docs/roadmap.md) what's next.
 
 ## Troubleshooting and FAQ
@@ -879,12 +959,6 @@ window shows the command to use. See
 - If you used `--rom`, leave it out: Blue then uses the CD's own ROM file,
   which is the one that version of Mac OS needs.
 
-### The installer stops, or complains about drivers
-
-Turn off "Update Apple Hard Disk Drivers" in the installer's Options (see
-[Install Mac OS](#2-install-mac-os)). Drive Setup lists no drives: that's
-expected, and you don't need it.
-
 ### There's no menu bar after restoring Mac OS 9.2.2
 
 If Blue closed before Apple Software Restore finished (you didn't click
@@ -915,6 +989,17 @@ For a CD's music, attach an image with tracks (a `.cue`, `.nrg`, `.mds`,
 - Most of today's websites need HTTPS, which browsers of the time can't
   manage: plain HTTP sites work. AppleTalk doesn't work, and nothing can
   connect in to the Mac.
+
+### The modem says NO CARRIER
+
+- The modem's calls go out only in real time (not with `--headless`
+  unless `--realtime` is given too).
+- Dial a host and port (`ATDT bbs.example.com:2323`); a number of digits
+  only reaches somewhere listed in the phonebook (`--modem-phonebook`).
+- `BUSY` means nothing listens on that port (the connection was
+  refused); `NO CARRIER`, that the host didn't answer or its name didn't
+  resolve (either, after `ATX0` to `ATX2`). A Blue already in a call
+  answers another and hangs it up at once.
 
 ### Blue says "no JIT"
 
@@ -972,7 +1057,8 @@ once Blue Game Controllers is installed (Install Guest Tools… in Blue's
 menu), and if InputSprocket is (it comes with the game); look for the pad
 in the game's controls dialog. Other games get the pad as keys, which
 their own key settings may not use: set the game's keys to the arrows,
-Return, Space and Tab, or use the keyboard.
+Return, Space and Tab, change the pad's mapping to the game's keys
+(Mappings… under Controllers), or use the keyboard.
 
 ### The CD came out when Mac OS restarted
 

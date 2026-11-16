@@ -236,7 +236,7 @@ static void test_applejack(void)
 	uint8_t res[PAD_AJ_SIZE];
 	start(&p);
 	make_pipp(res, marathon_game);
-	pad_pipp(res, sizeof res, p.pippin);
+	pad_pipp(res, sizeof res, p.pippin[0]);
 	p.mapping = PAD_MAP_PIPPIN;
 	static const struct { unsigned button; const char *saw; } game[] = {
 		{ PAD_UP, "+1F -1F" }, { PAD_LEFT, "+28 -28" }, { PAD_RIGHT, "+29 -29" }, { PAD_DOWN, "+25 -25" },
@@ -253,15 +253,15 @@ static void test_applejack(void)
 	};
 	for (size_t k = 0; k < sizeof game / sizeof game[0]; k++) {
 		pad_button(&p, 0, game[k].button, true);
-		CHECK_EQ(pad_applejack(&p), pad_applejack_switch(game[k].button) >= 0 ?
+		CHECK_EQ(pad_applejack(&p, 0), pad_applejack_switch(game[k].button) >= 0 ?
 			 1u << pad_applejack_switch(game[k].button) : 0);
 		pad_button(&p, 0, game[k].button, false);
 		CHECK(saw(game[k].saw));
-		CHECK_EQ(pad_applejack(&p), 0);
+		CHECK_EQ(pad_applejack(&p, 0), 0);
 	}
 	pad_axis(&p, 0, PAD_LEFT_X, -32768);
 	pad_axis(&p, 0, PAD_RIGHT_TRIGGER, 32767);
-	CHECK_EQ(pad_applejack(&p), 1u << 11 | 1u << 16);
+	CHECK_EQ(pad_applejack(&p, 0), 1u << 11 | 1u << 16);
 	CHECK(saw("+28 +07"));
 	pad_axis(&p, 0, PAD_LEFT_X, 0);
 	pad_axis(&p, 0, PAD_RIGHT_TRIGGER, 0);
@@ -269,7 +269,7 @@ static void test_applejack(void)
 
 	/* the menus': the mouse button, locked and unlocked; a double-click; a key with caps lock among its modifiers */
 	make_pipp(res, marathon_menus);
-	pad_pipp(res, sizeof res, p.pippin);
+	pad_pipp(res, sizeof res, p.pippin[0]);
 	pad_button(&p, 0, PAD_RIGHT_SHOULDER, true);
 	pad_button(&p, 0, PAD_RIGHT_SHOULDER, false);
 	CHECK(saw("M+ M-"));
@@ -288,11 +288,11 @@ static void test_applejack(void)
 
 	/* the game's mapping comes in while a button's down: it goes up as it went down */
 	make_pipp(res, marathon_game);
-	pad_pipp(res, sizeof res, p.pippin);
+	pad_pipp(res, sizeof res, p.pippin[0]);
 	pad_button(&p, 0, PAD_B, false);
 	CHECK(saw("-0D"));
 	/* the driver's own */
-	memcpy(p.pippin, pad_applejack_defaults, sizeof p.pippin);
+	memcpy(p.pippin[0], pad_applejack_defaults, sizeof p.pippin[0]);
 	pad_button(&p, 0, PAD_Y, true);
 	pad_button(&p, 0, PAD_X, true);
 	CHECK(saw("+6B +26"));                                  /* F14, J */
@@ -377,11 +377,181 @@ static void test_forget(void)
 	CHECK(saw("+24"));
 }
 
+/* Two AppleJacks: the second pad plugged in is the second, by its own mapping and with its own switches */
+static void test_two_applejacks(void)
+{
+	struct pad p;
+	uint8_t res[PAD_AJ_SIZE];
+	start(&p);
+	CHECK_EQ(pad_plug(&p, -1, "Second"), 1);
+	make_pipp(res, marathon_game);
+	pad_pipp(res, sizeof res, p.pippin[0]);
+	make_pipp(res, marathon_menus);
+	pad_pipp(res, sizeof res, p.pippin[1]);
+	p.mapping = PAD_MAP_PIPPIN;
+	/* (one AppleJack: both pads are it) */
+	CHECK(pad_applejack_of(&p, 0) == 0 && pad_applejack_of(&p, 1) == 0);
+	pad_button(&p, 1, PAD_UP, true);
+	CHECK_EQ(pad_applejack(&p, 0), 1u << 10);
+	CHECK_EQ(pad_applejack(&p, 1), 0);
+	pad_button(&p, 1, PAD_UP, false);
+	CHECK(saw("+1F -1F"));                                  /* (the first's mapping: O) */
+	p.applejacks = 2;
+	CHECK(pad_applejack_of(&p, 0) == 0 && pad_applejack_of(&p, 1) == 1);
+	pad_button(&p, 1, PAD_UP, true);
+	pad_button(&p, 0, PAD_A, true);
+	CHECK_EQ(pad_applejack(&p, 0), 1u << 14);
+	CHECK_EQ(pad_applejack(&p, 1), 1u << 10);
+	CHECK(saw("+3E +38"));                                  /* the second's up arrow, the first's Shift */
+	pad_button(&p, 1, PAD_UP, false);
+	pad_button(&p, 0, PAD_A, false);
+	CHECK(saw("-3E -38"));
+	/* the first unplugged: the one left is the first; plugged in again, it takes the first slot */
+	pad_unplug(&p, 0);
+	CHECK_EQ(pad_applejack_of(&p, 1), 0);
+	CHECK_EQ(pad_plug(&p, -1, "Again"), 0);
+	CHECK(pad_applejack_of(&p, 0) == 0 && pad_applejack_of(&p, 1) == 1);
+	/* a third: the first AppleJack too */
+	CHECK_EQ(pad_plug(&p, -1, "Third"), 2);
+	CHECK_EQ(pad_applejack_of(&p, 2), 0);
+	pad_axis(&p, 2, PAD_LEFT_X, -32768);
+	CHECK_EQ(pad_applejack(&p, 0), 1u << 11);
+	CHECK_EQ(pad_applejack(&p, 1), 0);
+	CHECK(saw("+28"));
+}
+
+/* Blue's mapping, the user's: keys with modifiers, clicks, sticks as the mouse or as keys */
+static void test_own_map(void)
+{
+	struct pad p;
+	start(&p);
+	CHECK_EQ(pad_plug(&p, -1, "Second"), 1);
+	struct pad_map map = pad_default_map;
+	CHECK(pad_action_parse("Command-Shift-Z", &map.control[PAD_A]));
+	CHECK(pad_action_parse("control-click", &map.control[PAD_B]));
+	CHECK(pad_action_parse("Double-Click", &map.control[PAD_X]));
+	CHECK(pad_action_parse("Option", &map.control[PAD_Y]));
+	CHECK(pad_action_parse("Nothing", &map.control[PAD_START]));
+	CHECK(pad_action_parse("W", &map.control[PAD_RSTICK_UP]));
+	CHECK(pad_action_parse("Page Down", &map.control[PAD_RSTICK_DOWN]));
+	map.stick[0] = PAD_STICK_MOUSE;
+	map.stick[1] = PAD_STICK_KEYS;
+	pad_set_map(&p, 0, &map);
+	pad_button(&p, 0, PAD_A, true);
+	pad_button(&p, 0, PAD_A, false);
+	CHECK(saw("+37 +38 +06 -06 -38 -37"));
+	pad_button(&p, 0, PAD_B, true);
+	pad_button(&p, 0, PAD_B, false);
+	CHECK(saw("+36 M+ M- -36"));
+	pad_button(&p, 0, PAD_X, true);
+	pad_button(&p, 0, PAD_X, false);
+	CHECK(saw("M+ M- M+ M-"));
+	pad_button(&p, 0, PAD_Y, true);
+	pad_button(&p, 0, PAD_START, true);
+	CHECK(saw("+3A"));
+	/* (the other pad keeps Blue's default) */
+	pad_button(&p, 1, PAD_START, true);
+	CHECK(saw("+35"));
+	/* the right stick as keys, the left the mouse */
+	pad_axis(&p, 0, PAD_RIGHT_Y, -32768);
+	pad_axis(&p, 0, PAD_RIGHT_Y, 32767);
+	pad_axis(&p, 0, PAD_RIGHT_Y, 0);
+	CHECK(saw("+0D -0D +79 -79"));
+	pad_tick(&p, 1000, 1000);
+	pad_axis(&p, 0, PAD_LEFT_X, 32767);
+	pad_axis(&p, 0, PAD_RIGHT_X, 32767);
+	pad_tick(&p, 1100, 1000);
+	CHECK(saw("+3C"));                                      /* (the left stick's way: nothing; the right's, its arrow) */
+	CHECK(out.dx == PAD_MOUSE_SPEED / 10 && out.dy == 0);
+	/* a mapping changed while a control's down: it goes up as it went down */
+	pad_set_map(&p, 0, NULL);
+	pad_button(&p, 0, PAD_Y, false);
+	CHECK(saw("-3A"));
+	pad_button(&p, 0, PAD_Y, true);
+	CHECK(saw("+30"));
+	/* both sticks the mouse, on a Pippin title's AppleJack: the right one only, its trackball */
+	out.dx = 0;
+	map.stick[1] = PAD_STICK_MOUSE;
+	pad_set_map(&p, 0, &map);
+	p.mapping = PAD_MAP_PIPPIN;
+	pad_tick(&p, 1200, 1000);
+	CHECK_EQ(out.dx, PAD_MOUSE_SPEED / 10);
+	out.dx = 0;
+	p.mapping = PAD_MAP_DEFAULT;
+	pad_tick(&p, 1300, 1000);
+	CHECK_EQ(out.dx, 2 * PAD_MOUSE_SPEED / 10);
+	/* ... and the left one taken by a game (through InputSprocket) */
+	out.dx = 0;
+	p.slot[0].taken = 1u << PAD_STICK_LEFT;
+	pad_tick(&p, 1400, 1000);
+	CHECK_EQ(out.dx, PAD_MOUSE_SPEED / 10);
+}
+
+/* What a control does, by name: as the settings file has it */
+static void test_action_names(void)
+{
+	static const struct { const char *text, *name; } names[] = {
+		{ "Return", "Return" }, { "command-q", "Command-Q" }, { "Shift-Command-Z", "Command-Shift-Z" },
+		{ "Command-.", "Command-Period" }, { "Command--", "Command-Minus" }, { "Up Arrow", "Up Arrow" },
+		{ "F12", "F12" }, { "Keypad 5", "Keypad 5" }, { "Control", "Control" }, { "click", "Click" },
+		{ "Control-Option-Click", "Option-Control-Click" }, { "Double-Click", "Double-Click" },
+		{ "Click Lock", "Click Lock" }, { "Nothing", "Nothing" }, { " Esc ", "Esc" }, { ";", "Semicolon" },
+		{ "Forward Delete", "Forward Delete" },
+	};
+	for (size_t k = 0; k < sizeof names / sizeof names[0]; k++) {
+		struct pad_switch a;
+		char text[64];
+		CHECK(pad_action_parse(names[k].text, &a));
+		pad_action_name(&a, text, sizeof text);
+		if (strcmp(text, names[k].name))
+			fprintf(stderr, "pad: \"%s\" is \"%s\", expected \"%s\"\n", names[k].text, text, names[k].name);
+		CHECK(!strcmp(text, names[k].name));
+	}
+	static const char *const bad[] = { "", "Shift-Shift", "Command-Nothing", "Hyper-Q", "Q Q", "Control-Double-Click",
+					   "Caps Lock" };
+	for (size_t k = 0; k < sizeof bad / sizeof bad[0]; k++) {
+		struct pad_switch a;
+		CHECK(!pad_action_parse(bad[k], &a));
+	}
+	/* Blue's default, each control by name and back */
+	for (unsigned c = 0; c < PAD_CONTROLS; c++) {
+		struct pad_switch a;
+		char text[64];
+		CHECK_EQ(pad_control_named(pad_control_name(c)), c);
+		pad_action_name(&pad_default_map.control[c], text, sizeof text);
+		CHECK(pad_action_parse(text, &a));
+		CHECK(a.function == pad_default_map.control[c].function && a.key == pad_default_map.control[c].key &&
+		      a.modifiers == pad_default_map.control[c].modifiers);
+	}
+	CHECK_EQ(pad_control_named("rightstickleft"), PAD_RSTICK_LEFT);
+	CHECK_EQ(pad_control_named("lefttrigger"), PAD_LT);
+	CHECK_EQ(pad_control_named("leftx"), -1);
+	/* keys from the keyboard, as the menu takes them */
+	CHECK_EQ(pad_virtual_key(0x3E), 0x7E);
+	CHECK_EQ(pad_virtual_key(0x36), 0x3B);
+	CHECK_EQ(pad_virtual_key(0x0C), 0x0C);
+	CHECK_EQ(pad_virtual_key(0x39), 0xFF);
+	struct pad_switch a = pad_key_action(0x0C, PAD_MOD_COMMAND | PAD_MOD_CAPS_LOCK);
+	CHECK(a.function == PAD_DO_KEY && a.modifiers == PAD_MOD_COMMAND && a.chr == 'q');
+	a = pad_key_action(0x38, PAD_MOD_COMMAND);
+	CHECK(a.function == PAD_DO_MODIFIER && a.key == 0x38 && !a.modifiers);
+	CHECK(!strcmp(pad_key_name(0x24), "Return") && !pad_key_name(0x7F));
+	struct pad_map x = pad_default_map, y = pad_default_map;
+	CHECK(pad_maps_equal(&x, &y));
+	y.control[PAD_A].chr = 'x';                             /* (a key's character isn't what it does) */
+	CHECK(pad_maps_equal(&x, &y));
+	y.stick[1] = PAD_STICK_KEYS;
+	CHECK(!pad_maps_equal(&x, &y));
+}
+
 void test_pad(void)
 {
 	test_pipp();
 	test_default();
 	test_applejack();
+	test_two_applejacks();
+	test_own_map();
+	test_action_names();
 	test_mouse();
 	test_taken();
 	test_forget();

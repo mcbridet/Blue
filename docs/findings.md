@@ -1337,8 +1337,7 @@ made to start up.
   WaitNextEvent and GetNextEvent instead, calling the Process Manager's
   (which switches processes inside them) through CallUniversalProc, left
   applications without their windows.
-- **Pictures** on the clipboard aren't passed: how they could be is in
-  [future.md](future.md#pictures-on-the-clipboard).
+- **Pictures** on the clipboard aren't passed: only text is.
 - **Showing the screen** (M5, window runs, the pointer moved in
   circles by a timed script, 50 moves a second; per presented frame, and
   the share of the emulation thread's time in `display_frame()`; medians
@@ -2141,12 +2140,12 @@ made to start up.
   Continue (594 443), Select (594 443; Macintosh HD is already the
   destination, "None Installed", 2046 MB available, 368 MB needed),
   Continue on Important Information and on the license (594 443), Agree
-  (530 366), Options... (314 443), the "Update Apple Hard Disk Drivers"
-  checkbox (217 226), OK (551 389), Start (594 443) at 11.2 billion. Mac
-  OS 9.1 then Internet Access, and "The installation process has
-  finished" by 40 billion (268 MB written, 52 MB read). Its Quit (532 348)
-  took no click, nor Return, at 40-45 billion, but took the second of two
-  clicks 0.3 billion apart, and Return at 50 billion: Energy Saver had put
+  (530 366), Start (594 443) at 10.6 billion, the options as they are
+  (see "The installers' hard disk driver updater"). Mac OS 9.1 then
+  Internet Access, and "The installation process has finished" by 36
+  billion (268 MB written, 52 MB read). Its Quit (532 348) took no click,
+  nor Return, at 40-45 billion, but took the second of two clicks 0.3
+  billion apart, and Return at 50 billion: Energy Saver had put
   the screen to sleep (no doze: 9.1 makes no PowerDispatch calls), and the
   first input only wakes it, as on a Mac. `power`, then Shut Down (541
   188), and the volume is unmounted cleanly (HFS, attributes 0x0100). The
@@ -2705,6 +2704,50 @@ made to start up.
   _GetIndADB $A078 and _GetADBInfo $A079 (Blue Pippin Library's patch
   first went on $A079 by mistake: Marathon then found no AppleJack, and
   GetADBInfo for the mouse's address 3 gave the AppleJack's record).
+- **A second AppleJack** (game controllers): Apple's note on the driver
+  (PPBD-JHACEF003) has each AppleJack an ADB device of its own, first at
+  address 3, with a cursor device record each and an AJGlobalData each
+  (the record's refCon), and says to keep a pointer to each one found,
+  four at most, "even if you only support a single player play"; the
+  Applejack Control application shows the ADB addresses of all those
+  found. Super Marathon's routine (`marathon.ppc`'s at code offset
+  0x38174) goes through every device, from CountADBs down to 1, and
+  copies its `pipp` resource into each AppleJack it finds: given two (Blue
+  Pippin Library's CountADBs counting two more devices, GetIndADB giving
+  them at 15 and 14), it wrote its game mapping into the second (found
+  first) and then the first, and the second pad's D-pad (the second
+  AppleJack's, O) moved the player forward. Its two-player modes are
+  network games in both `marathon.ppc` and `marathon2.ppc` ("Gather
+  Network Game", "Join Network Game": a machine each, over AppleTalk; no
+  split screen), so both pads steer the one player there. The Hanshin
+  disc's projector doesn't link PippinPPC at all. No title at hand, then,
+  shows a second player on a second AppleJack. The ADB patches' 68k
+  code is checked in `tests/test_pippin.c` by a small 68000 of the test's
+  own, as Apple's sample code walks the devices.
+- **Scrolling as the tools of the time did** (the scroll wheel): Blue
+  Enhancements' GetNextEvent filter found SimpleText's scroll bar (a
+  control in its window's list, 16 wide, TestControl giving the arrows'
+  parts at its ends) on Mac OS 8.5, but its contrlAction is nil:
+  SimpleText gives its action procedure to TrackControl. A TrackControl
+  patch saw it (SimpleText's TrackControl goes through the trap table,
+  as do the Finder's), but calling it later from the filter, with the
+  window's port set, crashed SimpleText ("an error of type 1"): the
+  procedure needs what SimpleText's click handling sets up. A click made
+  for it works instead: the filter makes the event a mouse-down on the
+  arrow, SimpleText's own handling calls TrackControl with its procedure,
+  and the patch calls that once for each line (the Finder's windows,
+  icons and lists, the same, on 8.5 and 9.2.2). Other findings on the
+  way: SimpleText sleeps in WaitNextEvent, so lines waited out their time
+  until a key (F16, which no keyboard of the time had, taken away by the
+  filter) woke it; Mac OS 9.2.2's Appearance puts both arrows together
+  at the bottom (Smart Scrolling), so TestControl at a bar's top gave the
+  page-up part (22), and the up arrow is second from the bottom; and a
+  click made in a null event's place now and then reached the filter
+  again before TrackControl (EventAvail looking), so it's tried once
+  more. The filter's patches keep their entry and parameters in the
+  stub's state words 1 to 4: the scrolling's own state first went in word
+  1, and the filter then called the routine ZeroScrap's patch had
+  replaced (and Blue crashed on 9.2.2, its entry out of range).
 - **InputSprocket's drivers** (game controllers): InputSprocketLib 1.4.1
   (Mac OS 8.6's) loads every shared library of creator `insp` (or Apple's
   own, `insi`) in the Extensions folder, for each game that starts it (its
@@ -2760,3 +2803,121 @@ made to start up.
   drive; from the intro, `open DM-Tempest` typed after Tab (its console)
   starts a practice match, and in instruction time `clock 300` makes it
   playable.
+- **The installers' hard disk driver updater** (Mac OS Install's "Update
+  Apple Hard Disk Drivers" option, on by default: "The Installer looks for
+  hard drives formatted with Apple disk utility software. If any are
+  found, it updates the drivers to the latest version. Drives formatted
+  with a disk utility other than Apple's are not updated or altered.";
+  instruction time, `--fixed-time 1000000000`, `--log-hostcalls`): with it
+  on, Mac OS 8.5 (its CD), 8.6 (the International 8.6 Update CD, over an
+  installed 8.5) and 9.1 (its CD) each install onto a blank `disk create`
+  disk, and the installed system starts up from the disk alone, with its
+  own ROM file (8.6's Toolbox release 0x44B5), to the Finder. On Blue's
+  drives the updater finds nothing to update and says nothing: no dialog,
+  Drive Setup doesn't open, and the installation report (Installer Logs,
+  in Documents on 9.1) has a "Driver Updating" heading with nothing under
+  it, after "Disk Verification" (The disk "Macintosh HD" appears OK.);
+  with the option off the heading isn't there. On and off, Blue's disk
+  driver gets the same requests (but for when 'flus' comes), and writes go
+  to the same places in the disk's first 16 KB (the boot blocks once, the
+  MDB, the volume bitmap). The installer's own look at the destination
+  asks, either way, DriveStatus (Status 8), DriveInfo (Control 23:
+  controlErr), DriverGestalt 'devt' ('disk') and 'intf' (statusErr with
+  8.5's and 8.6's ROM files, 'scsi' with 9.1's), WhoIsThere (Status 97:
+  statusErr) and the icons (Control 20-22, DriverGestalt 'mics': none).
+  The updater's own requests, none of them made with the option off, go
+  elsewhere: 8.5's and 8.6's (68k code) make two _ATAManager calls and
+  four SCSIAction calls (`_SCSIAtomic`), and Blue has no ATA or SCSI bus
+  for them to find a drive on; 9.1's asks the drivers for DriverGestalt
+  'util' in turn (Blue's disk and CD-ROM drivers among them: statusErr),
+  and makes no 68k ATA or SCSI Manager calls. The scripts, at 800x600:
+  8.5's as "Installing 9.1" says, but Mac OS Install double-clicked (194
+  150) in the CD's window at 4 billion, and Start at 11.4 billion (after a
+  look at the options: Options... (314 443), OK (551 389)); finished by 30
+  billion (166 MB written), its Quit taking the first click. 8.6 from the
+  installed 8.5 with the CD: Command-Q and Quit (541 197) for the Setup
+  Assistant, then typing in the Finder (see "Desktop icons from scripts"):
+  `in` and Command-O (the CD), `us` and Command-O (US-USEnglish), the same
+  again ("US-Mac OS 8.6 Update.smi", a self-mounting image: "Mac OS 8.6
+  Update" is up by 14 billion), `up` and Command-O (its Update Install
+  Pieces), `m` and Command-O (Mac OS Install); Continue, Select (8.5
+  installed, 52 MB needed), Continue, Continue and Agree as for 9.1 from
+  18 billion, to "Install/Remove Software" (Options... at 203 443), Start
+  at 23.4 billion: "This installation/removal requires a restart and
+  cannot take place while other applications are running. Click Continue
+  to automatically quit all other running applications. Click Stop to
+  leave your disk untouched." Continue (532 372), finished by 30 billion
+  (74 MB written), Restart (532 348), and Blue restarts the machine into
+  8.6.
+- **The iMac's serial controller in the device tree** (the modem): the
+  SCC has no port on the outside; its channel A is the internal modem's
+  and channel B the infrared port's. The firmware describes it twice:
+  `escc` (compatible `escc`, `CHRP,es0`; the registers at Mac I/O
+  `+0x13000`) and `escc-legacy` (`chrp,es1`; the old Macs' layout at
+  `+0x12000`), each with a `ch-a` and a `ch-b` of device type `serial`.
+  `escc`'s channels (compatible `chrp,es2` and `chrp,es3`) have five `reg`
+  entries and `AAPL,address`es (control, data and enhancement registers,
+  one byte each, then the transmit and receive DMA channels, 0x100 bytes
+  each: A's 4 and 5, B's 6 and 7), three interrupts (the SCC's own, 15 or
+  16, then the two DMA channels') and `slot-names` (`Modem`, `IrDA`);
+  `escc-legacy`'s (`chrp,es4` and `chrp,es5`) only `reg` and
+  `AAPL,address`. Mac OS's serial driver finds the channels by
+  `compatible`. Which channel is the modem the extensions find in two
+  ways, as Linux does (`pmac_scc_enable()` in its `feature.c`: a channel
+  whose compatible names `cobalt`, or whose `slot-names` is `Modem`, is
+  the modem; `IrDA`, the infrared port). Mac OS 8.5's iMac Modem Extension
+  wants a `ch-a` whose compatible is `chrp,es2` itself and whose
+  `slot-names` is `Modem`; with `cobalt` added to that compatible it
+  doesn't find the modem. Mac OS 9's Internal V.90 Modem wants a `ch-a`
+  whose compatible names `cobalt`, which Blue gives `escc-legacy`'s
+  (`chrp,es4`, `cobalt`), so both find it. Either way the port is
+  "Internal Modem" in the Modem control panel, and Mac OS chooses the
+  modem's script there itself (8.5's "iMac Internal 56k", 9's "Apple
+  Internal 56K Modem (v.90)"). Mac OS 9's extension also resets the modem
+  through Heathrow's modem-reset GPIO (`+0x6D`, Linux's
+  `HRW_GPIO_MODEM_RESET`) at `0x8000006D`, the real iMac's Mac I/O
+  address written in rather than taken from the tree; Blue keeps that byte
+  there when the modem is attached.
+- **SerialDMA on the iMac** (the modem): the ROM's serial driver moves
+  the data by DMA both ways, not through the SCC's interrupts. It
+  receives into a ring of DBDMA input commands with the SCC's W/REQ as the
+  receiver's DMA request (WR1 `0xE0`), and stops and restarts the channel
+  now and then to see what has come in, rather than waiting for a buffer
+  to fill. It transmits through a ring of output commands, a character
+  going whenever the transmit FIFO has room. The SCC's own interrupts are
+  for the rest: receive errors, breaks and CTS changes (external/status,
+  for hardware handshaking), through the 68k-style dispatch of Mac OS's
+  SCC interrupt handler (RR3, and the vector modified with the status,
+  read through channel B). RR0's CTS bit is inverted on Power Macs: clear
+  while CTS is asserted. When the driver resets its channel (opening the
+  port, a change of speed) it drops DTR for a moment, so a modem set to
+  hang up on DTR (`&D2`, as 9's script sets) has to wait a little (`S25`)
+  before taking it as a hang-up.
+- **The modem scripts' strings** (the modem): 8.5's "iMac Internal 56k"
+  sends `AT`, then `AT&FE0Q0V1X4&C1&K3S95=1S7=75S0=0` and, as its
+  settings ask, `AT\N0` (no error correction), `AT%C0` (no compression),
+  `ATM0` (the speaker off) or `ATX1S6=4` (dialling without waiting for
+  the dial tone); it sets the serial port to 57,600 or 115,200 bits a
+  second (`serreset`). It dials with `ATD` and the number, in up to three
+  parts for a long one (`ATD^3^7;`, `ATD^3^8;`, `ATD^3^9`: `;` keeps the
+  modem in command mode), answers with `ATA`, and hangs up with `+++ATH`
+  (the escape, followed at once by a command) and DTR. 9's "Apple
+  Internal 56K Modem (v.90)" sends `AT` and `ATI12`, and picks its
+  initialisation by the answer: after Blue's `D1`,
+  `AT&FL3E0Q0V1X4&C1&K3S95=0&D2S7=75S0=0W2` (it has others, such as
+  `AT&F1&D0&H1&R1&B1S0=0E0V1Q0&A3S7=60`, for other answers); it dials and
+  hangs up the same way. The numbers go to
+  the modem as typed, so `127.0.0.1:5555` reaches Blue's modem whole
+  (`ATDT127.0.0.1:5555`, the T for tone dialling).
+- **Remote Access over the modem** (the modem; Mac OS 8.5 and 9.2.2, in
+  real time, dialling a test PPP server on the host): Remote Access opens
+  with LCP (async control character map 0, a magic number, protocol and
+  address-and-control field compression), then each protocol it uses.
+  9.2.2's, with TCP/IP set to PPP, negotiates IPCP (an address of the
+  server's), AppleTalk's control protocol and sends AppleTalk datagrams,
+  and shows "Connected at: 56000 bps" from the modem's `CONNECT 56000`.
+  8.5's, with TCP/IP left on Ethernet, negotiates AppleTalk's control
+  protocol only and waits at "Starting Network Protocols" for AppleTalk
+  answers the test server didn't give. Both send an LCP echo request
+  about every 13 seconds while connected. When the far end hangs up, the
+  modem drops DCD and says `NO CARRIER`.

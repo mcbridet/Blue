@@ -808,7 +808,7 @@ static void test_write_back_again(void)
 		remove_tree(dir);
 		return;
 	}
-	char real[1024];
+	char real[PATH_MAX];
 	CHECK(realpath(dir, real) && !strcmp(share_folder(s), real));
 	CHECK(!strcmp(share_name(s), root) && !share_put_away(s));
 	const struct disk_backend *b = share_disk(s);

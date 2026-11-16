@@ -50,10 +50,11 @@ enum display_event_type {
 					 * chooser), until the next event */
 	DISPLAY_EVENT_DROP_FILE,        /* a file was dropped on the window: path (until the next event) */
 	DISPLAY_EVENT_CLIPBOARD,        /* the host's clipboard may have changed (or the window got the focus) */
-	DISPLAY_EVENT_WHEEL,            /* the scroll wheel: dx, dy (right and up, as the host has it) */
+	DISPLAY_EVENT_WHEEL,            /* the scroll wheel: dx, dy (right and up, as the host has it), in
+					 * 1/WHEEL_LINE lines (wheel.h) */
 	/* game controllers (SDL's), each by Blue's number for it, pad (0 to PAD_MAX - 1) */
-	DISPLAY_EVENT_PAD_ADDED,        /* pad, path: its name (until the next event); value 1 if it's a virtual one
-					 * (display_pad_virtual()) */
+	DISPLAY_EVENT_PAD_ADDED,        /* pad, path: its name (until the next event), guid: SDL's GUID ("": none);
+					 * value 1 if it's a virtual one (display_pad_virtual()) */
 	DISPLAY_EVENT_PAD_REMOVED,      /* pad */
 	DISPLAY_EVENT_PAD_BUTTON,       /* pad, button (pad.h's, SDL's), down */
 	DISPLAY_EVENT_PAD_AXIS,         /* pad, button: the axis (pad.h's), value (-32768 to 32767; triggers 0 up) */
@@ -65,9 +66,11 @@ struct display_event {
 	int button;                     /* 0 = primary, 1 middle, 2 secondary */
 	bool down;
 	uint8_t adb_key;                /* ADB key code */
-	enum ui_action action;
+	enum ui_action action;          /* (UI_PAD_EDIT: the type's id in path, the change in button, the control in
+					 * value, the stick's way or the action, as a 'pipp' SwitchData's word, in x) */
 	const char *path;
 	int pad, value;
+	char guid[33];
 };
 
 /*
@@ -209,6 +212,9 @@ void display_pads_state(struct display *d, const struct ui_pads *pads);
 
 /* ... and of the microphone: what it's doing (NULL: not shown), and whether sound input is on */
 void display_mic_state(struct display *d, const char *status, bool on);
+
+/* ... and the modem: what it's doing (copied; NULL: there's none), and whether it has a call to hang up */
+void display_modem_state(struct display *d, const char *text, bool call);
 
 /*
  * Game controllers: SDL's (2.0.14 and later) virtual ones, for scripted

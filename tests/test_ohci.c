@@ -277,7 +277,7 @@ void test_ohci(void)
 	test_pci();
 
 	uint32_t masks[2][8];
-	bootinfo_level_masks(masks);
+	bootinfo_level_masks(masks, false);
 	CHECK(masks[0][2] & 0x80000000u >> IRQ_USB);            /* USB interrupts at 68k level 2 */
 	mem_free(&mem);
 }

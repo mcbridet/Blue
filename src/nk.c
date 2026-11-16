@@ -1,5 +1,6 @@
 #include "nk.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -25,6 +26,8 @@
 #include "macio.h"
 #include "mic.h"
 #include "mmio.h"
+#include "modem.h"
+#include "modemnet.h"
 #include "mp.h"
 #include "ndrv.h"
 #include "net.h"
@@ -44,11 +47,13 @@
 #include "rave.h"
 #include "rtas.h"
 #include "scc.h"
+#include "settings.h"
 #include "share.h"
 #include "startup.h"
 #include "tools.h"
 #include "via.h"
 #include "video.h"
+#include "wheel.h"
 
 /* Mac OS low-memory globals */
 #define LOWMEM_VIA 0x01D4u
@@ -569,14 +574,20 @@ struct machine {
 	struct pad pad;
 	bool pads_off;                  /* ... the menu turned them off */
 	bool pad_window[PAD_MAX];       /* ... each one the window's (in scripted runs, a virtual one the script plugged in) */
+	char pad_guid[PAD_MAX][33];     /* ... each one's SDL GUID ("": none, a script's without a window) */
+	struct settings *settings;      /* Blue's mappings of them (settings.h) */
+	char settings_path[1024];       /* ... kept here ("": not kept) */
 	struct {
 		bool attached;          /* a Pippin title runs, with Blue Pippin Library (pippin.h) */
 		bool front;             /* ... in front, last seen (see pippin_front()) */
-		uint32_t aj;            /* ... its AppleJack's data (AJGlobalData) */
+		uint32_t aj;            /* ... its first AppleJack's data (AJGlobalData) */
+		unsigned applejacks;    /* ... how many the library has (an older one's: one) */
+		unsigned now;           /* ... and the title has now, as the library was told */
 		uint32_t psn[2];        /* ... its process */
 		char name[32];
-		uint8_t map[4 * PAD_AJ_SWITCHES];       /* ... the AppleJack's mapping, as last seen */
+		uint8_t map[PIPPIN_APPLEJACKS][4 * PAD_AJ_SWITCHES];   /* ... the AppleJacks' mappings, as last seen */
 	} pippin;
+	struct wheel wheel;             /* the scroll wheel's lines (wheel.h) */
 	struct isp isp;                 /* games reading them through InputSprocket (isp.h) */
 	bool isp_used, isp_front;       /* ... one does, in front, last seen */
 	bool realtime;                  /* guest time follows the host clock */
@@ -629,6 +640,17 @@ struct machine {
 	struct net net;                 /* Ethernet */
 	uint8_t lanlib[4096];
 	uint64_t net_poll_ns;           /* host time the host network was last serviced */
+	/* the internal modem, on the SCC's channel A (see modem_setup()) */
+	bool modem_on;                  /* it's there */
+	struct modem modem;
+	struct modemnet modemnet;       /* ... its calls over TCP (real time) */
+	struct modem_phonebook phonebook;
+	int modem_far;                  /* the input script's far end (MODEM_FAR_*) */
+	bool modem_pickup;              /* ... picks up the next call dialled */
+	char modem_far_got[512];        /* ... and what it got since it last said */
+	size_t modem_far_len;
+	uint64_t modem_poll_ns;         /* host time the calls were last serviced */
+	uint8_t modem_gpio;             /* its reset line, as Mac OS 9 sets it (see modem_gpio_read()) */
 	uint32_t level_mask[2][8];      /* 68k interrupt level of each source */
 	uint32_t pending[2];            /* last pending sources reported in HWInfo */
 	unsigned ipl;                   /* last 68k interrupt level posted to the emulator */
@@ -1008,6 +1030,280 @@ static void fill_page_holes(struct machine *m)
 	}
 }
 
+/* ---- the internal modem ----------------------------------------------------------- */
+
+/*
+ * The iMac's internal modem (modem.h) on the SCC's channel A, its serial
+ * port. It's there in a window or real time (unless --no-modem), and in
+ * instruction-time runs that ask for it (--modem-listen, --modem-phonebook,
+ * or an input script's "modem" commands): the device tree has the SCC's
+ * channels only then (Mac OS's serial driver and the iMac Modem Extension
+ * find the modem by them), so other runs stay as they were. Its calls go
+ * over TCP in real time only, as Ethernet does; in instruction time
+ * dialling gives NO CARRIER, but for the input script's own far end
+ * (modem pickup, modem ring), so runs stay reproducible.
+ */
+enum { MODEM_FAR_NONE, MODEM_FAR_RINGING, MODEM_FAR_CALL };    /* the input script's far end */
+
+static void update_device_time(struct machine *m);
+
+static void scc_to_modem(void *ctx, uint8_t byte, uint64_t tb)
+{
+	struct machine *m = ctx;
+	modem_from_dte(&m->modem, byte, tb);
+}
+
+static int modem_to_scc(void *ctx, uint64_t tb)
+{
+	struct machine *m = ctx;
+	modem_set_time(&m->modem, tb);
+	return modem_to_dte(&m->modem);
+}
+
+static void scc_lines_to_modem(void *ctx, bool dtr, bool rts, uint64_t tb)
+{
+	struct machine *m = ctx;
+	modem_dte_lines(&m->modem, dtr, rts, tb);
+}
+
+static void modem_ready(void *ctx)
+{
+	struct machine *m = ctx;
+	scc_rx_ready(&m->scc, SCC_A);
+}
+
+static void modem_lines_to_scc(void *ctx, bool dcd, bool cts)
+{
+	struct machine *m = ctx;
+	scc_set_inputs(&m->scc, SCC_A, dcd, cts);
+}
+
+/* What the script's far end got since it last said, printed (\r, \n, \\, \" and \xHH for the rest) */
+static void far_end_got(struct machine *m)
+{
+	if (!m->modem_far_len)
+		return;
+	printf("modem: the far end got \"");
+	for (size_t k = 0; k < m->modem_far_len; k++) {
+		uint8_t b = (uint8_t)m->modem_far_got[k];
+		if (b == '\r' || b == '\n')
+			printf("\\%c", b == '\r' ? 'r' : 'n');
+		else if (b == '"' || b == '\\')
+			printf("\\%c", b);
+		else if (b >= 32 && b < 127)
+			putchar(b);
+		else
+			printf("\\x%02X", b);
+	}
+	printf("\"\n");
+	m->modem_far_len = 0;
+}
+
+static bool far_dial(void *ctx, const char *host, unsigned port)
+{
+	struct machine *m = ctx;
+	if (m->modem_pickup) {
+		m->modem_pickup = false;
+		m->modem_far = MODEM_FAR_CALL;
+		printf("modem: the script's far end answers the call to %s:%u\n", host, port);
+		modem_connected(&m->modem);
+		return true;
+	}
+	return m->realtime && modemnet_dial(&m->modemnet, host, port);
+}
+
+static bool far_answer(void *ctx)
+{
+	struct machine *m = ctx;
+	if (m->modem_far == MODEM_FAR_RINGING) {
+		m->modem_far = MODEM_FAR_CALL;
+		return true;
+	}
+	return modemnet_answer(&m->modemnet);
+}
+
+static void far_send(void *ctx, const uint8_t *data, size_t len)
+{
+	struct machine *m = ctx;
+	if (m->modem_far != MODEM_FAR_CALL) {
+		modemnet_send(&m->modemnet, data, len);
+		return;
+	}
+	for (size_t k = 0; k < len; k++) {
+		if (m->modem_far_len == sizeof m->modem_far_got)
+			far_end_got(m);
+		m->modem_far_got[m->modem_far_len++] = (char)data[k];
+	}
+}
+
+static void far_hangup(void *ctx)
+{
+	struct machine *m = ctx;
+	if (m->modem_far == MODEM_FAR_NONE) {
+		modemnet_hangup(&m->modemnet);
+		return;
+	}
+	far_end_got(m);
+	m->modem_far = MODEM_FAR_NONE;
+	printf("modem: the call with the script's far end ended\n");
+}
+
+/*
+ * Mac OS 9's Internal V.90 Modem resets the modem through the Heathrow GPIO
+ * for it (+0x6D) at the iMac's Mac I/O address, 0x80000000, which it has
+ * written in; Blue's Mac I/O is elsewhere (bootinfo.h), so while the modem is
+ * attached that byte is answered there too. The modem needs no resetting:
+ * what's written is only kept.
+ */
+#define MODEM_GPIO_BASE 0x80000000u
+#define MODEM_GPIO_RESET 0x6Du
+
+static uint32_t modem_gpio_read(void *ctx, uint32_t offset, unsigned size)
+{
+	const struct machine *m = ctx;
+	uint32_t v = 0;
+	for (unsigned k = 0; k < size; k++)
+		v = v << 8 | (offset + k == MODEM_GPIO_RESET ? m->modem_gpio : 0);
+	return v;
+}
+
+static void modem_gpio_write(void *ctx, uint32_t offset, unsigned size, uint32_t value)
+{
+	struct machine *m = ctx;
+	for (unsigned k = 0; k < size; k++)
+		if (offset + k == MODEM_GPIO_RESET)
+			m->modem_gpio = (uint8_t)(value >> (8 * (size - 1 - k)));
+}
+
+static const struct mmio_ops modem_gpio_ops = { modem_gpio_read, modem_gpio_write };
+
+static void modem_setup(struct machine *m, const struct nk_boot_options *opt)
+{
+	m->modem.log = getenv("BLUE_LOG_MODEM") != NULL;
+	m->modem.book = &m->phonebook;
+	m->modem.line = (struct modem_line){ far_dial, far_answer, far_send, far_hangup, m };
+	m->modem.dte = (struct modem_dte){ modem_ready, modem_lines_to_scc, m };
+	scc_attach(&m->scc, SCC_A, &(struct scc_port){ scc_to_modem, modem_to_scc, scc_lines_to_modem, m });
+	modem_init(&m->modem, TIMEBASE_HZ);
+	modemnet_init(&m->modemnet, &m->modem);
+	m->modemnet.log = m->modem.log;
+	mmio_add(&m->bus, MODEM_GPIO_BASE, MEM_PAGE_SIZE, &modem_gpio_ops, m, "modem gpio");
+	if (opt->modem_listen && m->realtime) {
+		char err[300];
+		if (modemnet_listen(&m->modemnet, opt->modem_listen, err, sizeof err))
+			printf("modem: listening for calls on %s\n", m->modemnet.listening);
+		else
+			fprintf(stderr, "modem: can't listen for calls: %s\n", err);
+	}
+}
+
+/* --modem-phonebook's file: nonzero (and why, said) if it can't be read */
+static int modem_load_phonebook(struct modem_phonebook *pb, const char *path)
+{
+	FILE *f = fopen(path, "r");
+	char *text = NULL, err[200];
+	size_t len = 0;
+	if (f) {
+		fseek(f, 0, SEEK_END);
+		long size = ftell(f);
+		fseek(f, 0, SEEK_SET);
+		text = size >= 0 && size < (1 << 20) ? malloc((size_t)size + 1) : NULL;
+		if (text) {
+			len = fread(text, 1, (size_t)size, f);
+			text[len] = '\0';
+		}
+		fclose(f);
+	}
+	if (!text) {
+		fprintf(stderr, "%s: can't be read\n", path);
+		return -1;
+	}
+	int n = modem_phonebook_parse(pb, text, err, sizeof err);
+	free(text);
+	if (n < 0) {
+		fprintf(stderr, "%s: %s\n", path, err);
+		return -1;
+	}
+	printf("modem: %d number%s in the phonebook\n", n, n == 1 ? "" : "s");
+	return 0;
+}
+
+/* The input script's modem commands: its own far end, for reproducible runs */
+static int modem_text(const char *in, uint8_t *out, size_t size)
+{
+	size_t n = 0;
+	for (; *in && n < size; in++) {
+		unsigned v;
+		if (*in == '\\' && (in[1] == 'r' || in[1] == 'n' || in[1] == '\\')) {
+			in++;
+			out[n++] = *in == 'r' ? '\r' : *in == 'n' ? '\n' : '\\';
+		} else if (*in == '\\' && in[1] == 'x' && sscanf(in + 2, "%2x", &v) == 1) {
+			out[n++] = (uint8_t)v;
+			in += isxdigit((unsigned char)in[3]) ? 3 : 2;
+		} else {
+			out[n++] = (uint8_t)*in;
+		}
+	}
+	return (int)n;
+}
+
+static void modem_script(struct machine *m, int what, const char *arg)
+{
+	struct modem *mo = &m->modem;
+	update_device_time(m);
+	switch (what) {
+	case 1:                                 /* ring: the script's far end calls */
+		if (mo->call != MODEM_IDLE) {
+			printf("modem: the script's call finds the line busy\n");
+			break;
+		}
+		m->modem_far = MODEM_FAR_RINGING;
+		modem_incoming(mo, "the input script");
+		break;
+	case 2:                                 /* pickup: it answers the next call dialled */
+		m->modem_pickup = true;
+		break;
+	case 3: {                               /* recv TEXT: it sends that */
+		uint8_t data[256];
+		int n = modem_text(arg, data, sizeof data);
+		if (mo->call != MODEM_CONNECTED || (size_t)n > modem_room(mo))
+			printf("modem: the far end's text goes nowhere (no call, or the modem's in command mode)\n");
+		else
+			modem_received(mo, data, (size_t)n);
+		break;
+	}
+	case 4:                                 /* hangup: the far end hangs up */
+		if (m->modem_far != MODEM_FAR_NONE) {
+			far_end_got(m);
+			m->modem_far = MODEM_FAR_NONE;
+		} else {
+			modemnet_hangup(&m->modemnet);
+		}
+		modem_far_hangup(mo);
+		break;
+	default:
+		fprintf(stderr, "input script: modem ring, modem pickup, modem recv TEXT or modem hangup\n");
+		break;
+	}
+	m->dev_dirty = true;
+}
+
+/* What the menu shows of the modem */
+static void modem_state(struct machine *m)
+{
+	char text[400] = "", state[300];
+	if (!m->display)
+		return;
+	if (m->modem_on) {
+		modem_state_text(&m->modem, state, sizeof state);
+		if (m->modem.call != MODEM_IDLE || !m->modemnet.listening[0])
+			snprintf(text, sizeof text, "Modem: %s", state);
+		else
+			snprintf(text, sizeof text, "Modem: idle, listening for calls on %s", m->modemnet.listening);
+	}
+	display_modem_state(m->display, m->modem_on ? text : NULL, m->modem_on && m->modem.call != MODEM_IDLE);
+}
+
 /* What went in the floppy drive */
 static void floppy_said(const struct disk *d)
 {
@@ -1105,6 +1401,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	mem_map(&m->mem, FB_BASE, FB_SIZE, MEM_RW);
 	video_init(&m->video, &m->mem, FB_BASE, FB_SIZE, TIMEBASE_HZ);
 	helper_init(&m->helper);
+	m->helper.log_wheel = getenv("BLUE_LOG_WHEEL") != NULL;
 	isp_init(&m->isp, TIMEBASE_HZ);
 	m->isp.log = getenv("BLUE_LOG_PADS") != NULL;
 	clip_guest_reset(&m->clip);
@@ -1271,6 +1568,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		.boot_device = have_boot_device ? boot_device : NULL,
 		/* (a ROM file before 9.1's has its Start Manager take the first drive that works: the chosen one) */
 		.first_disk = !parcels && opt->rom_from_disk && opt->rom_chosen ? opt->rom_disk : 0,
+		.escc = m->modem_on,
 	};
 	memcpy(hw.mac, mac, 6);
 	for (unsigned k = 0; k < m->disks; k++) {
@@ -1284,7 +1582,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	if (hw.parcels)
 		printf("rom: %u parcels, %u device-tree properties from them (tree %u KB)\n", hw.parcels->count,
 		       m->bootinfo.parcel_props, m->bootinfo.device_tree_size >> 10);
-	bootinfo_level_masks(m->level_mask);
+	bootinfo_level_masks(m->level_mask, hw.escc);
 	m->clock = (struct guest_clock){ opt->fixed_time, &m->cpu.tb, TIMEBASE_HZ };
 	m->rtas.clock = &m->clock;
 
@@ -1296,13 +1594,17 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	mmio_add(&m->bus, MACIO_BASE, MACIO_PAGE_SIZE, &macio_mmio_ops, &m->macio, "mac-io");
 	mmio_add(&m->bus, MACIO_VIA1, VIA_SIZE, &via_mmio_ops, &m->via, "via1");
 	mmio_pure_reads(&m->bus, via_pure_read);
-	scc_init(&m->scc);
+	scc_init(&m->scc, TIMEBASE_HZ);
+	m->scc.log = getenv("BLUE_LOG_SERIAL") != NULL;
 	mmio_add(&m->bus, MACIO_SCC, SCC_SIZE, &scc_mmio_ops, &m->scc, "scc");
 	dbdma_init(&m->dbdma, &m->mem, m->ram_size);
 	m->dbdma.bus = &m->bus;
 	m->dbdma.interrupt = dma_interrupt;
 	m->dbdma.interrupt_ctx = &m->macio;
 	mmio_add(&m->bus, MACIO_DBDMA, DBDMA_SIZE, &dbdma_mmio_ops, &m->dbdma, "dbdma");
+	scc_dma(&m->scc, &m->dbdma);
+	if (m->modem_on)
+		modem_setup(m, opt);
 	burgundy_init(&m->sound, &m->dbdma, TIMEBASE_HZ);
 	m->sound.log = getenv("BLUE_LOG_SOUND") != NULL;
 	m->audio_log = getenv("BLUE_LOG_AUDIO") != NULL;
@@ -1676,6 +1978,11 @@ static void nap(struct machine *m, uint64_t deadline, bool idle)
 	ev = video_next_vbl(&m->video);
 	if (ev != UINT64_MAX && host_ns_at(m, ev, TIMEBASE_HZ) < until)
 		until = host_ns_at(m, ev, TIMEBASE_HZ);
+	ev = scc_next_event(&m->scc);
+	if (m->modem_on && modem_next_event(&m->modem) < ev)
+		ev = modem_next_event(&m->modem);
+	if (ev != UINT64_MAX && host_ns_at(m, ev, TIMEBASE_HZ) < until)
+		until = host_ns_at(m, ev, TIMEBASE_HZ);
 	if (deadline != UINT64_MAX && host_ns_at(m, deadline, TIMEBASE_HZ) < until)
 		until = host_ns_at(m, deadline, TIMEBASE_HZ);
 	bool sound = burgundy_playing(&m->sound), fast = m->fast_start && !sound && now >= m->fast_pause_ns;
@@ -1685,8 +1992,8 @@ static void nap(struct machine *m, uint64_t deadline, bool idle)
 		until = m->next_frame_ns;
 	if (sound && now + SOUND_WAKE_NS < until)
 		until = now + SOUND_WAKE_NS;   /* (the sound DMA moves only as time is seen to pass) */
-	if (m->net.backend && now + NET_WAKE_NS < until)
-		until = now + NET_WAKE_NS;     /* (to see the host network's traffic) */
+	if ((m->net.backend || (m->modem_on && modemnet_active(&m->modemnet))) && now + NET_WAKE_NS < until)
+		until = now + NET_WAKE_NS;     /* (to see the host network's traffic, and the modem's calls) */
 	if (until <= now + 20000)       /* not worth a system call */
 		return;
 	if (m->display) {
@@ -2014,25 +2321,54 @@ static bool isp_front(const struct machine *m, const char **name)
 	       (!m->helper.running || !m->helper.front_known || (m->helper.front[0] == psn[0] && m->helper.front[1] == psn[1]));
 }
 
+/* A Pippin title's AppleJack k's data (0: none to be had) */
+static uint32_t applejack_data(const struct machine *m, unsigned k)
+{
+	uint32_t aj = m->pippin.aj + PAD_AJ_SIZE * k;
+	return m->pippin.attached && k < m->pippin.applejacks && mem_ok(&m->mem, aj, PAD_AJ_SIZE, MEM_RW) ? aj : 0;
+}
+
 /* The mapping, and whether presses count, before the pads change */
 static void pads_ready(struct machine *m)
 {
 	struct pad *p = &m->pad;
 	p->quiet = m->paused || m->prompting;
 	p->mapping = m->pads_off ? PAD_MAP_OFF : PAD_MAP_DEFAULT;
+	p->applejacks = m->pippin.now;
 	bool isp = isp_front(m, NULL);
 	for (unsigned k = 0; k < PAD_MAX; k++)
 		p->slot[k].taken = isp ? isp_taken(&m->isp, k) : 0;
-	if (!m->pads_off && !isp && pippin_front(m) && mem_ok(&m->mem, m->pippin.aj, PAD_AJ_SIZE, MEM_R) &&
-	    pad_pipp(mem_ptr(&m->mem, m->pippin.aj), PAD_AJ_SIZE, p->pippin))
+	uint32_t aj = applejack_data(m, 0), second = applejack_data(m, 1);
+	if (!m->pads_off && !isp && pippin_front(m) && aj && pad_pipp(mem_ptr(&m->mem, aj), PAD_AJ_SIZE, p->pippin[0])) {
 		p->mapping = PAD_MAP_PIPPIN;
+		if (!second || !pad_pipp(mem_ptr(&m->mem, second), PAD_AJ_SIZE, p->pippin[1]))
+			memcpy(p->pippin[1], p->pippin[0], sizeof p->pippin[1]);
+	}
 }
 
-/* ... and after: the AppleJack's switches as they are now (0 while down) */
+/*
+ * ... and after: how many AppleJacks a Pippin title has (two while two pads
+ * are plugged in, if its library has them), and their switches as they are
+ * now (0 while down)
+ */
 static void pads_done(struct machine *m)
 {
-	if (m->pippin.attached && mem_ok(&m->mem, m->pippin.aj, PAD_AJ_SIZE, MEM_RW))
-		mem_w32(&m->mem, m->pippin.aj + PAD_AJ_STATES, ~pad_applejack(&m->pad));
+	if (!m->pippin.attached)
+		return;
+	unsigned now = m->pippin.applejacks > 1 && pad_count(&m->pad) > 1 ? 2 : 1;
+	uint32_t aj = applejack_data(m, 0);
+	if (now != m->pippin.now && aj && mem_ok(&m->mem, aj + PIPPIN_AJ_COUNT, 2, MEM_RW)) {
+		mem_w16(&m->mem, aj + PIPPIN_AJ_COUNT, (uint16_t)now);
+		if (m->pippin.now)
+			printf("pippin: %s has %s\n", m->pippin.name, now > 1 ? "two AppleJacks: the second pad is the second" :
+			       "one AppleJack");
+		fflush(stdout);
+		m->pippin.now = now;
+	}
+	m->pad.applejacks = m->pippin.now;
+	for (unsigned k = 0; k < PIPPIN_APPLEJACKS; k++)
+		if ((aj = applejack_data(m, k)) != 0)
+			mem_w32(&m->mem, aj + PAD_AJ_STATES, ~pad_applejack(&m->pad, k));
 }
 
 /* What the menu shows of them */
@@ -2053,11 +2389,113 @@ static void pads_state(struct machine *m)
 		snprintf(s.mapping, sizeof s.mapping, "off: they do nothing in Mac OS");
 	else if (isp_front(m, &game))
 		snprintf(s.mapping, sizeof s.mapping, "%s's, through InputSprocket (the rest by Blue's mapping)", game);
+	else if (pippin_front(m) && m->pippin.now > 1)
+		snprintf(s.mapping, sizeof s.mapping, "as the Pippin's AppleJacks (the second pad the second), by %s's "
+			 "mapping", m->pippin.name);
 	else if (pippin_front(m))
 		snprintf(s.mapping, sizeof s.mapping, "as the Pippin's AppleJack, by %s's mapping", m->pippin.name);
 	else
-		snprintf(s.mapping, sizeof s.mapping, "Blue's mapping: the arrows, Return, Space, Tab, the mouse...");
+		snprintf(s.mapping, sizeof s.mapping, "Blue's mapping%s", s.count ? ", as Mappings... shows it" :
+			 ": the arrows, Return, Space, Tab, the mouse...");
+	/* the mappings: for all of them, and for each type plugged in */
+	snprintf(s.type[0].name, sizeof s.type[0].name, "All controllers");
+	s.type[s.types++].map = m->settings->all;
+	for (unsigned k = 0; k < PAD_MAX; k++) {
+		const struct pad_slot *slot = &m->pad.slot[k];
+		const char *id = m->pad_guid[k][0] ? m->pad_guid[k] : slot->name;
+		bool seen = !slot->connected;
+		for (unsigned j = 1; j < s.types && !seen; j++)
+			seen = !strcmp(s.type[j].id, id);
+		if (seen || s.types == UI_PAD_TYPES)
+			continue;
+		struct ui_pad_type *t = &s.type[s.types++];
+		snprintf(t->id, sizeof t->id, "%s", id);
+		snprintf(t->name, sizeof t->name, "%s", slot->name);
+		t->map = *settings_pad_map(m->settings, m->pad_guid[k], slot->name, &t->own);
+	}
+	if (m->settings_path[0])
+		snprintf(s.kept, sizeof s.kept, "Kept in %s", m->settings_path);
+	else if (m->scripted || !m->realtime || !m->display)
+		snprintf(s.kept, sizeof s.kept, "For this run only (runs with an input script or in instruction time "
+			 "keep them only with --settings FILE)");
+	else
+		snprintf(s.kept, sizeof s.kept, "For this run only (no settings file)");
 	display_pads_state(m->display, &s);
+}
+
+/* Each pad's mapping, Blue's (its type's, or the one for all) */
+static void pads_mapped(struct machine *m)
+{
+	for (unsigned k = 0; k < PAD_MAX; k++)
+		if (m->pad.slot[k].connected)
+			pad_set_map(&m->pad, k, settings_pad_map(m->settings, m->pad_guid[k], m->pad.slot[k].name, NULL));
+}
+
+/* A change to a mapping in the menu: made, kept in the settings file (if there's one), and in force */
+static void pad_edit(struct machine *m, const struct display_event *ev)
+{
+	const char *id = ev->path ? ev->path : "";
+	const char *guid = NULL, *name = NULL;
+	for (unsigned k = 0; k < PAD_MAX && id[0] && !name; k++) {
+		const struct pad_slot *slot = &m->pad.slot[k];
+		if (slot->connected && !strcmp(id, m->pad_guid[k][0] ? m->pad_guid[k] : slot->name)) {
+			guid = m->pad_guid[k];
+			name = slot->name;
+		}
+	}
+	if (id[0] && !name)
+		return;                 /* (unplugged meanwhile) */
+	bool own = !id[0];
+	struct pad_map map = id[0] ? *settings_pad_map(m->settings, guid, name, &own) : m->settings->all;
+	const char *what = NULL;
+	char text[64];
+	switch ((enum ui_pad_change)ev->button) {
+	case UI_PAD_SET:
+		if ((unsigned)ev->value >= PAD_CONTROLS || !own)
+			return;
+		map.control[ev->value] = (struct pad_switch){ (uint8_t)(ev->x >> 24), (uint8_t)(ev->x >> 16),
+							      (uint8_t)(ev->x >> 8), (uint8_t)ev->x };
+		pad_action_name(&map.control[ev->value], text, sizeof text);
+		printf("pads: %s: %s is %s\n", id[0] ? name : "all controllers", pad_control_name((unsigned)ev->value), text);
+		break;
+	case UI_PAD_STICK:
+		if ((unsigned)ev->value > 1 || !own)
+			return;
+		map.stick[ev->value] = ev->x == PAD_STICK_MOUSE ? PAD_STICK_MOUSE : PAD_STICK_KEYS;
+		printf("pads: %s: the %s stick is %s\n", id[0] ? name : "all controllers", ev->value ? "right" : "left",
+		       ev->x == PAD_STICK_MOUSE ? "the mouse" : "keys");
+		break;
+	case UI_PAD_OWN:
+		if (!id[0])
+			return;
+		own = ev->x != 0;
+		map = m->settings->all;
+		printf("pads: %s has %s\n", name, own ? "a mapping of its own" : "the mapping for all controllers");
+		break;
+	case UI_PAD_RESTORE:
+		if (!own)
+			return;
+		map = pad_default_map;
+		printf("pads: %s: Blue's default mapping\n", id[0] ? name : "all controllers");
+		break;
+	default:
+		return;
+	}
+	if (!id[0])
+		m->settings->all = map;
+	else if (!settings_set_pad_map(m->settings, guid, name, own ? &map : NULL))
+		what = "Blue keeps mappings for at most 32 kinds of controller";
+	char err[1200] = "";
+	if (!what && m->settings_path[0] && settings_save(m->settings, m->settings_path, err, sizeof err))
+		what = err;
+	if (what) {
+		printf("pads: the mapping can't be kept: %s\n", what);
+		snprintf(m->menu_status, sizeof m->menu_status, "The mapping can't be kept: %s", what);
+		menu_state(m);
+	}
+	fflush(stdout);
+	pads_mapped(m);
+	pads_state(m);
 }
 
 /* A Pippin title's AppleJack mapping, as it changes it */
@@ -2068,21 +2506,26 @@ static void pippin_watch(struct machine *m)
 		{ "B (green)", 15 }, { "X (yellow)", 9 }, { "Y (blue)", 8 }, { "left shoulder (left fire)", 17 },
 		{ "right shoulder (right fire)", 16 }, { "Back", 0 }, { "Guide", 1 }, { "Start", 2 },
 	};
-	uint32_t aj = m->pippin.aj;
-	struct pad_switch map[PAD_AJ_SWITCHES];
-	if (!mem_ok(&m->mem, aj, PAD_AJ_SIZE, MEM_R) ||
-	    !memcmp(mem_ptr(&m->mem, aj + PAD_AJ_MAP), m->pippin.map, sizeof m->pippin.map))
-		return;
-	memcpy(m->pippin.map, mem_ptr(&m->mem, aj + PAD_AJ_MAP), sizeof m->pippin.map);
-	if (!pad_pipp(mem_ptr(&m->mem, aj), PAD_AJ_SIZE, map))
-		return;
-	printf("pippin: %s's AppleJack mapping:", m->pippin.name);
-	for (size_t k = 0; k < sizeof shown / sizeof shown[0]; k++) {
-		char what[48];
-		pad_switch_text(&map[shown[k].sw], what, sizeof what);
-		printf("%s %s %s", k ? "," : "", shown[k].name, what);
+	for (unsigned j = 0; j < m->pippin.applejacks; j++) {
+		uint32_t aj = applejack_data(m, j);
+		struct pad_switch map[PAD_AJ_SWITCHES];
+		if (!aj || !memcmp(mem_ptr(&m->mem, aj + PAD_AJ_MAP), m->pippin.map[j], sizeof m->pippin.map[j]))
+			continue;
+		memcpy(m->pippin.map[j], mem_ptr(&m->mem, aj + PAD_AJ_MAP), sizeof m->pippin.map[j]);
+		if (!pad_pipp(mem_ptr(&m->mem, aj), PAD_AJ_SIZE, map))
+			continue;
+		if (j && !memcmp(m->pippin.map[j], m->pippin.map[0], sizeof m->pippin.map[j])) {
+			printf("pippin: %s's second AppleJack mapping: the same\n", m->pippin.name);
+			continue;
+		}
+		printf("pippin: %s's %sAppleJack mapping:", m->pippin.name, j ? "second " : "");
+		for (size_t k = 0; k < sizeof shown / sizeof shown[0]; k++) {
+			char what[48];
+			pad_switch_text(&map[shown[k].sw], what, sizeof what);
+			printf("%s %s %s", k ? "," : "", shown[k].name, what);
+		}
+		printf("\n");
 	}
-	printf("\n");
 	fflush(stdout);
 }
 
@@ -2095,13 +2538,25 @@ static void pippin_call(struct machine *m, struct ndrv_call *c)
 		m->pippin.attached = true;
 		m->pippin.front = false;
 		m->pippin.aj = aj;
+		/* (an older library's has one: its 68k code after it) */
+		m->pippin.applejacks = mem_ok(&m->mem, aj, PIPPIN_AJ_COUNT + 2, MEM_RW) &&
+				       mem_r32(&m->mem, aj + PAD_AJ_SIZE) == PAD_AJ_SIGNATURE ? PIPPIN_APPLEJACKS : 1;
+		m->pippin.now = 0;
 		m->pippin.psn[0] = mem_r32(&m->mem, c->arg[1]);
 		m->pippin.psn[1] = mem_r32(&m->mem, c->arg[1] + 4);
 		memset(m->pippin.map, 0, sizeof m->pippin.map);
 		const uint8_t *name = mem_ptr(&m->mem, LM_CUR_AP_NAME);
 		snprintf(m->pippin.name, sizeof m->pippin.name, "%.*s", name[0] < 31 ? name[0] : 31, name + 1);
 		m->helper.front_known = false;
-		printf("pippin: %s runs, with an AppleJack for game controllers (its data at 0x%08X)\n", m->pippin.name, aj);
+		if (m->pippin.applejacks > 1)
+			printf("pippin: %s runs, with AppleJacks for game controllers (their data at 0x%08X and 0x%08X)\n",
+			       m->pippin.name, aj, aj + PAD_AJ_SIZE);
+		else
+			printf("pippin: %s runs, with an AppleJack for game controllers (its data at 0x%08X)\n",
+			       m->pippin.name, aj);
+		m->pippin.now = 1;
+		if (m->pippin.applejacks > 1)
+			mem_w16(&m->mem, aj + PIPPIN_AJ_COUNT, 1);
 		pads_done(m);
 		pads_state(m);
 	} else if (c->entry == PIPPIN_ENTRY_DETACH && m->pippin.attached && aj == m->pippin.aj) {
@@ -2159,15 +2614,19 @@ static void pads_sync(struct machine *m)
 }
 
 /* A pad plugged in (slot k, or -1: the first free) or out, the window's or a script's */
-static void pad_plugged(struct machine *m, int k, const char *name, bool window)
+static void pad_plugged(struct machine *m, int k, const char *name, const char *guid, bool window)
 {
 	pads_ready(m);
 	k = pad_plug(&m->pad, k, name);
 	if (k < 0)
 		return;
 	m->pad_window[k] = window;
-	printf("pad %d: %s plugged in\n", k, m->pad.slot[k].name);
+	snprintf(m->pad_guid[k], sizeof m->pad_guid[k], "%s", guid ? guid : "");
+	bool own;
+	pad_set_map(&m->pad, (unsigned)k, settings_pad_map(m->settings, m->pad_guid[k], m->pad.slot[k].name, &own));
+	printf("pad %d: %s plugged in%s\n", k, m->pad.slot[k].name, own ? " (with a mapping of its own)" : "");
 	fflush(stdout);
+	pads_done(m);
 	pads_state(m);
 }
 
@@ -2247,6 +2706,7 @@ static void menu_state(struct machine *m)
 	drives_state(m);
 	pads_state(m);
 	mic_state(m);
+	modem_state(m);
 	display_tools_state(m->display, m->tools_offer, install_unofferable(&m->install));
 }
 
@@ -2401,6 +2861,14 @@ static void menu_action(struct machine *m, enum ui_action action, const char *pa
 	case UI_RELEASE_MOUSE:
 		m->mouse_released = action == UI_RELEASE_MOUSE;
 		break;
+	case UI_MODEM_HANG_UP:
+		if (m->modem_on) {
+			update_device_time(m);
+			modem_hangup(&m->modem);
+			m->dev_dirty = true;
+			modem_state(m);
+		}
+		break;
 	case UI_PADS:
 		m->pads_off = !m->pads_off;
 		printf("pads: %s\n", m->pads_off ? "off (they do nothing in Mac OS)" : "on, as the keyboard and mouse");
@@ -2408,8 +2876,12 @@ static void menu_action(struct machine *m, enum ui_action action, const char *pa
 		break;
 	case UI_MIC:
 		if (m->mic) {
+			char err[1200];
 			m->mic->off = !m->mic->off;
+			m->settings->mic_off = m->mic->off;
 			printf("mic: sound input %s\n", m->mic->off ? "off (Mac OS records silence)" : "on");
+			if (m->settings_path[0] && settings_save(m->settings, m->settings_path, err, sizeof err))
+				printf("mic: the setting can't be kept: %s\n", err);
 			fflush(stdout);
 		}
 		break;
@@ -2702,12 +3174,47 @@ static void stay_paused(struct machine *m)
 #define ADB_RIGHT 0x3C
 #define ADB_DOWN 0x3D
 #define ADB_UP 0x3E
-#define WHEEL_MAX 8                     /* (presses for a turn of the wheel, at most) */
+#define WHEEL_WAIT (TIMEBASE_HZ / 4)           /* (how long the wheel's lines wait for the program in front) */
 
-static void wheel_key(struct machine *m, uint8_t key)
+/*
+ * The scroll wheel (wheel.h): its lines for Blue Enhancements to scroll the
+ * window under the pointer by, as the program in front next looks for an
+ * event; those it doesn't scroll by (or doesn't take: a program that
+ * doesn't look), and all of them without it, as the arrow keys, a press a
+ * line
+ */
+static void wheel_keys_now(struct machine *m)
 {
-	adb_key(&m->cuda.adb, key, true);
-	adb_key(&m->cuda.adb, key, false);
+	int32_t d[2];
+	if (!wheel_keys(&m->wheel, &d[0], &d[1]))
+		return;
+	for (unsigned k = 0; k < 2; k++) {
+		uint8_t key = k ? (d[k] > 0 ? ADB_UP : ADB_DOWN) : (d[k] > 0 ? ADB_RIGHT : ADB_LEFT);
+		for (int32_t n = d[k] < 0 ? -d[k] : d[k]; n > 0; n--) {
+			adb_key(&m->cuda.adb, key, true);
+			adb_key(&m->cuda.adb, key, false);
+		}
+	}
+}
+
+static void wheel_in(struct machine *m, int32_t dx, int32_t dy)
+{
+	bool scroll = m->wheel.enabled && m->helper.running && m->helper.patched && !m->helper.old;
+	wheel_turn(&m->wheel, dx, dy, m->cpu.tb, scroll);
+	if (wheel_wake(&m->wheel)) {
+		adb_key(&m->cuda.adb, WHEEL_WAKE_KEY, true);
+		adb_key(&m->cuda.adb, WHEEL_WAKE_KEY, false);
+	}
+	wheel_keys_now(m);
+}
+
+static void wheel_sync(struct machine *m)
+{
+	if (!m->helper.running || !m->helper.patched)
+		wheel_expire(&m->wheel, m->cpu.tb, 0);
+	else
+		wheel_expire(&m->wheel, m->cpu.tb, WHEEL_WAIT);
+	wheel_in(m, 0, 0);
 }
 
 /* The window's input, for the guest (or the menu) */
@@ -2737,7 +3244,10 @@ static void display_input(struct machine *m, uint64_t now)
 			follow_cursor(m, now);          /* (resumed: it may be captured again) */
 			break;
 		case DISPLAY_EVENT_MENU_ACTION:
-			menu_action(m, ev.action, ev.path, now);
+			if (ev.action == UI_PAD_EDIT)
+				pad_edit(m, &ev);
+			else
+				menu_action(m, ev.action, ev.path, now);
 			break;
 		/* (a script drives scripted runs: the host's input would change what they do) */
 		case DISPLAY_EVENT_KEY:
@@ -2785,17 +3295,14 @@ static void display_input(struct machine *m, uint64_t now)
 			adb_mouse_button(&m->cuda.adb, ev.down);
 			fast_start_input(m, -1, ev.down);
 			break;
-		case DISPLAY_EVENT_WHEEL:       /* as the arrow keys, a press a step (where the Mac's cursor shows) */
+		case DISPLAY_EVENT_WHEEL:       /* (where the Mac's cursor shows) */
 			if (m->scripted || m->mouse_captured || m->paused)
 				break;
-			for (int k = 0; k < (ev.dy < 0 ? -ev.dy : ev.dy) && k < WHEEL_MAX; k++)
-				wheel_key(m, ev.dy > 0 ? ADB_UP : ADB_DOWN);
-			for (int k = 0; k < (ev.dx < 0 ? -ev.dx : ev.dx) && k < WHEEL_MAX; k++)
-				wheel_key(m, ev.dx > 0 ? ADB_RIGHT : ADB_LEFT);
+			wheel_in(m, ev.dx, ev.dy);
 			break;
 		case DISPLAY_EVENT_PAD_ADDED:   /* (a scripted run's are the script's own virtual ones: see pad_script()) */
 			if (!m->scripted || ev.value)
-				pad_plugged(m, ev.pad, ev.path, true);
+				pad_plugged(m, ev.pad, ev.path, ev.guid, true);
 			break;
 		case DISPLAY_EVENT_PAD_REMOVED:
 			if (ev.pad >= 0 && ev.pad < PAD_MAX && m->pad_window[ev.pad])
@@ -2948,6 +3455,23 @@ static int script_load(struct script *s, const char *path)
 			e.a = !strcmp(what, "eject") ? 1 : !strcmp(what, "refresh") ? 2 : !strcmp(what, "file") ? 3 : 0;
 			if (e.a == 3)
 				script_text(rest + n, e.arg, sizeof e.arg);
+		} else if (strcmp(e.cmd, "modem") == 0) {
+			/* modem ring, modem pickup, modem hangup; modem recv TEXT (the rest of the line, with \xHH too) */
+			char what[16] = "";
+			int n = 0;
+			sscanf(rest, " %15s%n", what, &n);
+			e.a = !strcmp(what, "ring") ? 1 : !strcmp(what, "pickup") ? 2 : !strcmp(what, "recv") ? 3 :
+			      !strcmp(what, "hangup") ? 4 : 0;
+			if (e.a == 3) {
+				const char *t = rest + n + (rest[n] == ' ');
+				snprintf(e.arg, sizeof e.arg, "%.*s", (int)strcspn(t, "\r\n"), t);
+			}
+		} else if (strcmp(e.cmd, "wheel") == 0) {
+			/* wheel DX DY: lines (or parts of one) right and up, in the host's units */
+			double dx = 0, dy = 0;
+			sscanf(rest, " %lf %lf", &dx, &dy);
+			e.a = (int)lround(dx * WHEEL_LINE);
+			e.b = (int)lround(dy * WHEEL_LINE);
 		} else if (strcmp(e.cmd, "pad") == 0) {
 			/* pad N plug [NAME], pad N unplug, pad N button NAME down|up, pad N axis NAME VALUE */
 			e.a = -1;
@@ -3019,7 +3543,7 @@ static void pad_script(struct machine *m, int n, const char *arg)
 			while (*label == ' ')
 				label++;
 			if (in)
-				pad_plugged(m, n, *label ? label : "Scripted controller", false);
+				pad_plugged(m, n, *label ? label : "Scripted controller", NULL, false);
 			else if (!m->pad_window[n])
 				pad_unplugged(m, (unsigned)n);
 			return;
@@ -3050,6 +3574,8 @@ static void script_run(struct machine *m, struct script *s)
 			move_mouse_to(m, e->a, e->b);
 		} else if (strcmp(e->cmd, "motion") == 0) {    /* as the mouse moved, captured (see follow_cursor()) */
 			adb_mouse_move(&m->cuda.adb, e->a, e->b);
+		} else if (strcmp(e->cmd, "wheel") == 0) {     /* the scroll wheel turned: lines right and up */
+			wheel_in(m, e->a, e->b);
 		} else if (strcmp(e->cmd, "press") == 0) {
 			move_mouse_to(m, e->a, e->b);
 			adb_mouse_button(&m->cuda.adb, true);
@@ -3150,6 +3676,9 @@ static void script_run(struct machine *m, struct script *s)
 				mic_stop(m);
 			else if (e->a != 1)
 				fprintf(stderr, "input script: mic play FILE, or mic stop\n");
+		} else if (strcmp(e->cmd, "modem") == 0) {
+			if (m->modem_on)
+				modem_script(m, e->a, e->arg);
 		} else if (strcmp(e->cmd, "pad") == 0) {
 			pad_script(m, e->a, e->arg);
 		} else {
@@ -3180,12 +3709,15 @@ static void follow_window(struct machine *m)
 	m->want_w = m->want_h = 0;
 }
 
-/* Device time: VIA ticks from the timebase; DMA channels that had more to do continue. */
+/* Device time: VIA ticks from the timebase, the serial port's characters; DMA channels that had more to do continue. */
 static void update_device_time(struct machine *m)
 {
 	via_set_time(&m->via, m->cpu.tb * VIA_HZ / TIMEBASE_HZ);
 	ohci_set_time(&m->ohci, m->cpu.tb / TIMEBASE_HZ * OHCI_BIT_HZ + m->cpu.tb % TIMEBASE_HZ * OHCI_BIT_HZ / TIMEBASE_HZ);
 	video_set_time(&m->video, m->cpu.tb);
+	scc_set_time(&m->scc, m->cpu.tb);
+	if (m->modem_on)
+		modem_set_time(&m->modem, m->cpu.tb);
 	if (m->dbdma.poll)
 		dbdma_poll(&m->dbdma);
 	burgundy_set_time(&m->sound, m->cpu.tb);
@@ -3193,9 +3725,11 @@ static void update_device_time(struct machine *m)
 
 /*
  * The first timebase at which devices change by themselves: an enabled VIA
- * timer runs out, a USB frame with an enabled interrupt starts or the
- * display's vertical blank interrupts, or now if sound DMA moves or a DMA
- * channel is to continue.
+ * timer runs out, a USB frame with an enabled interrupt starts, the
+ * display's vertical blank interrupts, a character goes out or comes in on
+ * the serial port, or the modem's timers (an escape's guard time, a ring,
+ * dialling's timeout) run out, or now if sound DMA moves or a DMA channel
+ * is to continue.
  * Until then, and unless something touched them, updating the devices and
  * interrupts would change nothing, so exits skip it.
  */
@@ -3214,7 +3748,10 @@ static uint64_t device_next_tb(const struct machine *m)
 		if (usb < next)
 			next = usb;
 	}
-	return next;
+	uint64_t serial = scc_next_event(&m->scc);
+	if (m->modem_on && modem_next_event(&m->modem) < serial)
+		serial = modem_next_event(&m->modem);
+	return serial < next ? serial : next;
 }
 
 /*
@@ -3321,6 +3858,8 @@ static bool update_interrupts(struct machine *m, bool force)
 	macio_set_line(&m->macio, IRQ_VIA1, via_irq(&m->via));
 	macio_set_line(&m->macio, IRQ_USB, ohci_irq(&m->ohci));
 	macio_set_line(&m->macio, IRQ_DISPLAY, video_irq(&m->video));
+	macio_set_line(&m->macio, IRQ_SCC_A, scc_irq(&m->scc, SCC_A));
+	macio_set_line(&m->macio, IRQ_SCC_B, scc_irq(&m->scc, SCC_B));
 	if (force)
 		macio_release(&m->macio);
 
@@ -4302,7 +4841,7 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		video_driver_call(&m->video, &c);
 		break;
 	case HOSTCALL_TOOLS_HELPER:
-		helper_call(&m->helper, &c, &m->video, &m->clip);
+		helper_call(&m->helper, &c, &m->video, &m->clip, &m->wheel);
 		break;
 	case HOSTCALL_TOOLS_RAVE:
 		if (m->frame_due && cpu->pc == m->frame_pc && cpu->gpr[1] == m->frame_sp)
@@ -4988,6 +5527,8 @@ static void stop_machine(struct machine *m)
 	rave_free(&m->rave);
 	opengl_free(&m->opengl);
 	net_free(&m->net);
+	if (m->modem_on)
+		modemnet_free(&m->modemnet);
 	jit_free(m->cpu.jit);
 	mem_free(&m->mem);
 }
@@ -5082,11 +5623,15 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	m->mouse_captured = old.mouse_captured;
 	m->mouse_released = old.mouse_released;
 	m->clip = old.clip;             /* (the host's side: start_machine() starts Mac OS's again) */
+	m->wheel.enabled = old.wheel.enabled;
 	m->scripted = old.scripted;
 	m->pad = old.pad;               /* (the pads stay; what they held went with the keyboard and mouse) */
 	pad_forget(&m->pad);
 	m->pads_off = old.pads_off;
 	memcpy(m->pad_window, old.pad_window, sizeof m->pad_window);
+	memcpy(m->pad_guid, old.pad_guid, sizeof m->pad_guid);
+	m->settings = old.settings;
+	memcpy(m->settings_path, old.settings_path, sizeof m->settings_path);
 	m->tools_offer = old.tools_offer;
 	if (old.prompting && old.prompt_news)   /* (the installer's news stays: Mac OS restarting is in it) */
 		m->prompting = m->prompt_news = true;
@@ -5103,6 +5648,8 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	m->dev_accesses = old.dev_accesses;
 	m->dev_inline = old.dev_inline;
 	m->net_poll_ns = old.net_poll_ns;
+	m->modem_on = old.modem_on;
+	m->phonebook = old.phonebook;
 	/* (discs stay in their drives) */
 	snprintf(m->floppy_path, sizeof m->floppy_path, "%s", old.floppy.media ? old.floppy.media_path : "");
 	memcpy(m->floppy_queue, old.floppy_queue, sizeof m->floppy_queue);
@@ -5169,11 +5716,30 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		return 1;
 	m.scripted = opt->input_script != NULL;
 	pad_init(&m.pad, &(struct pad_output){ &m, pad_key, pad_click, pad_motion });
+	/* the settings file: a window's in real time (without a script), unless told which (settings.h) */
+	m.settings = malloc(sizeof *m.settings);
+	if (!m.settings)
+		return 1;
+	settings_init(m.settings);
+	if (opt->settings && strcmp(opt->settings, "none"))
+		snprintf(m.settings_path, sizeof m.settings_path, "%s", opt->settings);
+	else if (!opt->settings && opt->window && opt->realtime && !opt->input_script &&
+		 !settings_default_path(m.settings_path, sizeof m.settings_path))
+		m.settings_path[0] = '\0';
+	if (m.settings_path[0]) {
+		char err[1200];
+		if (settings_load(m.settings, m.settings_path, err, sizeof err)) {
+			printf("settings: %s: Blue's own instead, and the file left as it is\n", err);
+			m.settings_path[0] = '\0';
+		} else if (err[0]) {
+			printf("settings: %s\n", err);
+		}
+	}
 	/* (the host's microphone only in real time: instruction-time runs record silence, or a file) */
 	if (!(m.mic = calloc(1, sizeof *m.mic)))
 		return 1;
 	mic_init(m.mic, opt->realtime ? &host_mic : NULL);
-	m.mic->off = opt->no_mic;
+	m.mic->off = opt->no_mic || m.settings->mic_off;
 	if (opt->mic_file && mic_play(&m, opt->mic_file, true))
 		return 1;
 	/*
@@ -5198,6 +5764,15 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 	m.share_swap = opt->share && (opt->window || opt->realtime);
 	for (size_t k = 0; k < script.count; k++)
 		m.share_swap |= opt->share && strcmp(script.ev[k].cmd, "share") == 0;
+	/* The internal modem, where someone can use it, or where asked for (see modem_setup()) */
+	m.modem_on = opt->window || opt->realtime || opt->modem_listen || opt->modem_phonebook;
+	for (size_t k = 0; k < script.count; k++)
+		m.modem_on |= strcmp(script.ev[k].cmd, "modem") == 0;
+	m.modem_on &= !opt->no_modem;
+	if (m.modem_on && opt->modem_phonebook && modem_load_phonebook(&m.phonebook, opt->modem_phonebook))
+		return 1;
+	if (opt->modem_listen && !opt->realtime && !opt->no_modem)
+		printf("modem: --modem-listen is for real time (the window, or --headless --realtime): no calls come in\n");
 	m.gpu = open_gpu(opt);          /* (getting ready in the background) */
 	if (start_machine(&m, opt))
 		return 1;
@@ -5206,9 +5781,12 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 	printf("boot: emulator entry 0x%08X, emulator data 0x%08X, dispatch table 0x%08X, %u MB RAM\n",
 	       m.cpu.pc, m.cpu.gpr[3], m.cpu.gpr[4], m.ram_size >> 20);
 
-	for (size_t k = 0; k < script.count; k++)       /* (a script's clipboard stands in for the host's) */
+	for (size_t k = 0; k < script.count; k++) {     /* (a script's clipboard stands in for the host's) */
 		m.clip.enabled |= strcmp(script.ev[k].cmd, "clipboard") == 0 ||
 				  strcmp(script.ev[k].cmd, "print-clipboard") == 0;
+		m.wheel.enabled |= strcmp(script.ev[k].cmd, "wheel") == 0;
+	}
+	m.wheel.enabled |= opt->window && opt->realtime && !m.scripted;
 
 	m.start_ns = host_ns();
 	m.idle_sleep = opt->realtime && !opt->no_idle;
@@ -5294,6 +5872,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		if (sync) {
 			script_run(&m, &script);
 			pads_sync(&m);
+			wheel_sync(&m);
 			if (m.install.phase == INSTALL_WAIT_FINDER && finder_current(&m))
 				install_finder(&m.install, cpu->tb);    /* (at idle calls it may well be another's turn) */
 			follow_window(&m);
@@ -5310,6 +5889,16 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 				m.net.kick = false;
 				macio_pulse(&m.macio, IRQ_DMA_ENET_RX);
 			}
+			if (m.modem_on && modemnet_active(&m.modemnet)) {
+				uint64_t now = host_ns();
+				if (now - m.modem_poll_ns >= NET_POLL_NS) {
+					m.modem_poll_ns = now;
+					update_device_time(&m);
+					modemnet_poll(&m.modemnet);
+				}
+			}
+			if (m.modem_far_len)
+				far_end_got(&m);
 			if (m.perf_on)
 				perf_report(&m);
 			if (m.audio_log)
@@ -5602,6 +6191,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 	if (m.helper.launches && m.clip.enabled)
 		printf("; clipboard: %lu scrap calls, %lu texts to Mac OS, %lu from it", m.helper.scrap_calls,
 		       m.clip.to_mac, m.clip.to_host);
+	if (m.wheel.scrolled || m.wheel.pressed)
+		printf("\nwheel: %lu lines scrolled, %lu as the arrow keys", m.wheel.scrolled, m.wheel.pressed);
 	if (m.rave.calls)
 		printf("\n3d engine: %lu calls, %lu contexts, %lu textures, %lu frames, %lu triangles (%lu back-facing)",
 		       m.rave.calls, m.rave.contexts, m.rave.textures, m.rave.frames, m.rave.triangles, m.rave.backfacing);
@@ -5636,6 +6227,9 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		jit_print_stats(m.cpu.jit, stdout);
 	if (m.net.sent || m.net.received)
 		printf("net: %lu frames sent, %lu received, %lu dropped\n", m.net.sent, m.net.received, m.net.dropped);
+	if (m.modem_on && (m.modem.calls || m.scc.ch[SCC_A].tx_bytes || m.scc.ch[SCC_A].rx_bytes))
+		printf("modem: %lu calls; the serial port sent %lu characters and received %lu\n", m.modem.calls,
+		       m.scc.ch[SCC_A].tx_bytes, m.scc.ch[SCC_A].rx_bytes);
 	uint64_t cycles, insns;
 	if (m.perf_on && perf_read(&m.perf, &cycles, &insns) && m.cpu.icount)
 		printf("perf total: %.3f billion host cycles; %.2f instructions and %.3f cycles per guest instruction\n",

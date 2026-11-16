@@ -98,6 +98,17 @@
     <rect x="8.5" y="6.5" width="15" height="23" rx="7.5" fill="#ddd" stroke="#000"/>
     <path d="M8.5 15.5h15M16 6.5v9" stroke="#000"/>
   </symbol>
+  <symbol id="i-modem" viewBox="0 0 32 32">
+    <g stroke="#000" stroke-linejoin="round">
+      <path d="M3.5 18.5 7.5 14.5H28.5L24.5 18.5Z" fill="#eee"/>
+      <path d="M24.5 18.5 28.5 14.5V21.5L24.5 25.5Z" fill="#999"/>
+      <rect x="3.5" y="18.5" width="21" height="7" fill="#ddd"/>
+    </g>
+    <rect x="6" y="21" width="2" height="2" fill="#00a000"/>
+    <rect x="9.5" y="21" width="2" height="2" fill="#00a000"/>
+    <rect x="13" y="21" width="2" height="2" fill="#fc0"/>
+    <path d="M6.5 11c0-3.2 4.5-4.5 9.5-4.5s9.5 1.3 9.5 4.5v1.5h-5V11c-1.2-.6-2.7-.9-4.5-.9s-3.3.3-4.5.9v1.5h-5Z" fill="#555" stroke="#000" stroke-linejoin="round"/>
+  </symbol>
   <symbol id="i-pad" viewBox="0 0 32 32">
     <path d="M9 9.5h14c4 0 6.5 3 7 8l.5 5c.3 3-2.5 4.5-4.5 2.5l-3.5-4h-13l-3.5 4c-2 2-4.8.5-4.5-2.5l.5-5c.5-5 3-8 7-8z" fill="#ddd" stroke="#000"/>
     <path d="M9.5 12.5v6M6.5 15.5h6" stroke="#000" stroke-width="1.5"/>
@@ -265,7 +276,6 @@
               <tr><th scope="row">Runs on</th><td class="blue yes">macOS 11 and later, and Linux: Apple silicon, ARM64 and <span class="nw">x86-64</span></td><td class="yes">macOS, Linux and Windows</td><td class="yes">macOS, Linux and Windows</td><td>PowerPC Macs, with Mac OS X <span class="nw">10.0–10.4</span></td></tr>
               <tr><th scope="row">How</th><td class="blue">Apple’s code, unmodified, on a native kernel in place of the NanoKernel</td><td>Apple’s code on a patched ROM, with a kernel of its own</td><td>A whole Power Mac emulated, firmware and all</td><td>Mac OS 9 as a program in Mac OS X, on a real PowerPC</td></tr>
               <tr><th scope="row">Speed</th><td class="blue yes">A JIT on every host: about 18 times a Power Mac G3/300 in MacBench 5’s processor test, on an Apple M5</td><td>A JIT on Intel and AMD; none on Apple silicon</td><td>A JIT, with every device and the memory management unit emulated</td><td class="yes">The PowerPC’s own, up to a Power Mac G5</td></tr>
-              <tr><th scope="row">AltiVec</th><td class="blue">Not yet</td><td class="yes">Yes, as a G4 (7400)</td><td class="yes">Yes, as a G4</td><td class="yes">On G4 and G5 Macs</td></tr>
               <tr><th scope="row">What you need</th><td class="blue yes">A Mac OS CD or disk image</td><td>A Mac OS CD or disk image, and a ROM file found elsewhere</td><td class="yes">A Mac OS CD or disk image</td><td>Mac OS 9 installed beside Mac OS X</td></tr>
               <tr><th scope="row">3D</th><td class="blue yes">QuickDraw 3D, RAVE (as an ATI Rage 128) and OpenGL, drawn on your GPU</td><td>Software only</td><td>Software only</td><td>Programs that draw straight to the screen or the hardware often fail</td></tr>
               <tr><th scope="row">Restart and Startup Disk</th><td class="blue yes">Both work</td><td>Restarting can freeze or crash it; Startup Disk doesn’t work</td><td>Neither works</td><td>Mac OS X’s own</td></tr>
@@ -275,14 +285,14 @@
               <tr><th scope="row">Disk images</th><td class="blue yes">Dropped on the window or inserted from the menu: CD images in most formats, compressed <code>.dmg</code> and Disk Copy images, floppies</td><td>Uncompressed images, and one at a time dropped in as a CD</td><td>Raw and QEMU’s own formats, changed from a menu</td><td>Mac OS X’s</td></tr>
               <tr><th scope="row">Shared folders</th><td class="blue yes">A folder of yours as a disk, its changes written back when Mac OS shuts down or puts it away, and offered again with yours</td><td class="yes">A folder as a live disk, though programs can’t run from it</td><td>Separate experimental drivers</td><td class="yes">Mac OS X’s disks, directly</td></tr>
               <tr><th scope="row">Networking</th><td class="blue yes">TCP/IP through its NAT; no port forwarding yet</td><td class="yes">TCP/IP through its NAT, with port forwarding; AppleTalk with extra setup, on some hosts</td><td class="yes">TCP/IP through its NAT, with port forwarding; AppleTalk through bridged networking, run as root</td><td class="yes">Mac OS X’s, AppleTalk included</td></tr>
-              <tr><th scope="row">USB devices</th><td class="blue">Not yet</td><td>No</td><td class="yes">Passed through from the host</td><td>Through Mac OS X</td></tr>
+              <tr><th scope="row">Modem</th><td class="blue yes">The iMac’s internal modem, its calls going over the internet</td><td>The modem and printer ports passed to the host’s serial ports; no modem of its own</td><td>A host serial port, through an emulated USB serial adapter and FTDI’s driver; no modem of its own</td><td>Mac OS X’s dial-up connection, for internet programs; terminal and fax programs can’t use the modem</td></tr>
               <tr><th scope="row">Game controllers</th><td class="blue yes">Gamepads, as keys or through InputSprocket</td><td>No</td><td class="yes">A USB gamepad, passed through</td><td>Unreliable</td></tr>
               <tr><th scope="row">Pippin titles</th><td class="blue yes">Yes</td><td>No</td><td>No</td><td>No</td></tr>
             </tbody>
           </table>
         </div>
         <div class="doc compare-outro">
-          <p>SheepShaver also runs System 7.5 to Mac OS 8.1, given an Old World ROM. Blue’s other gaps, such as serial ports and modems, are in its <a href="https://github.com/__REPO__#what-isnt-there">README</a>.</p>
+          <p>SheepShaver also runs System 7.5 to Mac OS 8.1, given an Old World ROM. Blue’s other gaps, such as USB devices, are in its <a href="https://github.com/__REPO__#what-isnt-there">README</a>.</p>
         </div>
       </div>
     </div>
@@ -313,11 +323,11 @@
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-mouse"/></svg>Keyboard &amp; Mouse</span>
-          <span class="notes">Over ADB. The right button Control-clicks, and the scroll wheel presses the arrow keys.</span>
+          <span class="notes">Over ADB, with the right button as Control-click. Scroll wheel emulation: with the guest tools, the wheel and trackpad scroll the window under the pointer; elsewhere they press the arrow keys.</span>
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-pad"/></svg>Game controllers</span>
-          <span class="notes">Xbox, PlayStation, Switch and other pads, as the keyboard and mouse; in Pippin titles, as the Pippin’s AppleJack, by each title’s own mapping; in InputSprocket games, as controllers of their own, set up in each game’s controls dialog.</span>
+          <span class="notes">Xbox, PlayStation, Switch and other pads, as the keyboard and mouse, by a mapping you can change; in Pippin titles, as the Pippin’s AppleJacks (two pads, two AppleJacks), by each title’s own mapping; in InputSprocket games, as controllers of their own, set up in each game’s controls dialog.</span>
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-doc"/></svg>Clipboard</span>
@@ -336,6 +346,10 @@
           <span class="notes">Built-in Ethernet (BMac+, as in the iMac) working, through the host’s connection. Needs libslirp.</span>
         </div>
         <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-modem"/></svg>Modem</span>
+          <span class="notes">The iMac’s internal 56K modem, on its serial controller, with calls over the internet: dial a host and port (telnet BBSes, another Blue) and it answers <code>CONNECT 56000</code>, or let calls ring in. Terminal programs and Remote Access use it as on the iMac.</span>
+        </div>
+        <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-cube"/></svg>QuickDraw 3D &amp; RAVE</span>
           <span class="notes">Working, through a RAVE engine games see as an ATI Rage 128. Drawn with OpenGL on the host’s GPU (over Metal on Apple silicon), or in software.</span>
         </div>
@@ -350,10 +364,6 @@
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-chip"/></svg>CPU</span>
           <span class="notes">PowerPC G3 (750) equivalent. JIT on Apple silicon, ARM64 (AArch64) Linux and x86_64 (Intel from 2013, AMD from 2015; older processors interpret). Fast start speeds through startup timeouts. Supports napping.</span>
-        </div>
-        <div class="row unsupported">
-          <span class="name"><svg aria-hidden="true"><use href="#i-chip"/></svg>AltiVec</span>
-          <span class="notes">Not yet.</span>
         </div>
       </div>
     </div>
@@ -387,7 +397,7 @@
 # Linux (or Blue-aarch64.AppImage)
 ./Blue-x86_64.AppImage disk create hd.img 2G "Macintosh HD"
 ./Blue-x86_64.AppImage boot --disk hd.img --cdrom 85.iso --nvram blue.nvram</pre>
-          <p>In the installer’s Options, turn off “Update Apple Hard Disk Drivers”. A 9.2.2 CD that restores an image with Apple Software Restore instead needs the new disk chosen as its destination.</p>
+          <p>Open Mac OS Install on the CD and follow it. A 9.2.2 CD that restores an image with Apple Software Restore instead needs the new disk chosen as its destination.</p>
 
           <h3>Start up</h3>
 <pre class="code"># macOS

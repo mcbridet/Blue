@@ -93,13 +93,17 @@ Super key on a PC's) is Mac OS's Command key, Alt is Option, and Control
 is Control. The left mouse button is the Mac's; the right one is a
 Control-click (Control pressed, a click, Control let go), for Mac OS 8's
 contextual menus, while the Mac's cursor shows (a game that has the mouse,
-below, gets nothing from it). The scroll wheel presses the arrow keys, a
-press (down and up) for each of SDL's steps of the wheel, at most 8 at a
-time, up and down (and left and right for a sideways wheel) as the host
-has them, natural scrolling included: Mac OS 8 and 9 had no scroll wheels,
-and the arrows scroll most windows of the time (the Finder's move the
-selection). Again not while a game has the mouse, where the arrows would
-move the player. F12 is Blue's own (the menu), and isn't passed on.
+below, gets nothing from it). The scroll wheel's turns come in parts of
+a line (SDL's precise amounts, SDL 2.0.18 and later: a mouse wheel's
+notch a line, a trackpad's two-finger scrolling in tenths), up and down
+(and left and right for a sideways wheel) as the host has them, natural
+scrolling included. Mac OS 8 and 9 had no scroll wheels: with Blue
+Enhancements the lines scroll the window under the pointer by its scroll
+bar ([guest-tools.md](guest-tools.md#the-scroll-wheel)), and otherwise
+they're the arrow keys, a press (down and up) a line, which scroll many
+windows of the time (the Finder's move the selection). Again not while a
+game has the mouse, where the arrows would move the player. F12 is Blue's
+own (the menu), and isn't passed on.
 
 Every Command-key combination is Mac OS's, on macOS too. SDL makes a menu
 bar of its own when it starts (`CreateApplicationMenus()` in SDL 2.32.10's
@@ -134,7 +138,8 @@ The window takes game controllers through SDL2's GameController API
 started after the video's: the pads SDL recognises (its database of
 mappings covers Xbox, PlayStation, Switch and most others), up to four,
 each plugged in at startup or later (`SDL_CONTROLLERDEVICEADDED`) opened
-and numbered 0 to 3, and closed again when it goes. The hint
+and numbered 0 to 3 (with its kind, SDL's GUID, for its mapping), and
+closed again when it goes. The hint
 `SDL_GAMECONTROLLER_USE_BUTTON_LABELS` is off, so that SDL's A is the
 bottom face button on every pad, a Switch pad's included. Their buttons
 and axes reach the Mac's thread through the window's input queue
@@ -175,8 +180,9 @@ for when it was taken); fullscreen (at the desktop's resolution); the
 window's scale (radio buttons: Auto, saying what it chose, and 1x to 4x;
 see [the scale](#the-scale)); the
 status bar; whether the pointer is captured while the Mac hides its
-cursor; the game controllers (their names, the mapping they follow, and a
-checkbox that turns it off: see [Game controllers](#game-controllers)); what's in the floppy and CD-ROM drives, each with Eject and
+cursor; the game controllers (their names, the mapping they follow, a
+checkbox that turns it off, and Mappings..., which shows Blue's mappings
+in the menu's place, to change: see [input.md](input.md#mappings-of-ones-own)); what's in the floppy and CD-ROM drives, each with Eject and
 Insert... (see [drives.md](drives.md#removable-drives)); and Refresh for the shared folder
 (see [shared-folder.md](shared-folder.md#put-away-and-offered-again)). In real time guest time doesn't count
 the pause, so the Mac's clock is that much behind afterwards.

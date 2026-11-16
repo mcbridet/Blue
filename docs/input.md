@@ -1,10 +1,11 @@
 # Game controllers
 
 The host's game controllers reach Mac OS three ways: as the Mac's ADB
-keyboard and mouse, by Blue's mapping; while a Pippin title runs in front,
-as the Pippin's AppleJack controller, by the title's own mapping; and in
-games that use InputSprocket (Apple Game Sprockets' input library), as
-game controllers of their own, through a driver among the guest tools.
+keyboard and mouse, by Blue's mapping (or one of the user's own); while a
+Pippin title runs in front, as the Pippin's AppleJack controllers, by the
+title's own mapping; and in games that use InputSprocket (Apple Game
+Sprockets' input library), as game controllers of their own, through a
+driver among the guest tools.
 This document describes how. How to use them is in the
 [README](../README.md#game-controllers); how the window takes the pads
 from SDL2 is in [window.md](window.md#game-controllers).
@@ -20,32 +21,129 @@ and turns controls into ADB keys and mouse button presses (`adb_key()`,
 `adb_mouse_button()`) and motion (`adb_mouse_move()`).
 
 Before each change `pads_ready()` in `src/nk.c` sets the mapping in force:
-off (the menu's Controllers checkbox), Blue's, or a Pippin title's; and,
+off (the menu's Controllers checkbox), Blue's (each pad's own, below), or
+a Pippin title's; and,
 for each pad, the controls a game reads itself through InputSprocket
 (`pad_slot.taken`, below), which do nothing here. What a control does is
 decided as it goes down and undone as it comes up, whatever the mapping
 is by then, so a key never stays down; a key two controls hold goes up
-when the last lets go. The left stick and the triggers are buttons too,
-pressed past half way and let go below 3/8. While Blue's menu or a prompt
-is up, presses do nothing.
+when the last lets go. The sticks' four ways and the triggers are buttons
+too, pressed past half way and let go below 3/8. While Blue's menu or a
+prompt is up, presses do nothing.
 
-Blue's mapping (`default_map`): the D-pad and left stick the arrow keys,
-A Return, B Command-period, X Space, Y Tab, Start Esc, Back Command
+Blue's mapping (`pad_default_map`): the D-pad and left stick the arrow
+keys, A Return, B Command-period, X Space, Y Tab, Start Esc, Back Command
 (held), the shoulders Shift and Option (held), the right trigger the
 mouse button and the left a Control-click, the right stick the mouse
-(pressed: the button). The right stick moves the ADB mouse as guest time
-passes, at up to `PAD_MOUSE_SPEED` (900) counts a second, growing as the
-square of how far it's pushed past a dead zone of about 15%; it's worked
-out at the machine's sync points in whole numbers, so that instruction-time
-runs come out the same on any host.
+(pressed: the button). A stick that's the mouse moves the ADB mouse as
+guest time passes, at up to `PAD_MOUSE_SPEED` (900) counts a second,
+growing as the square of how far it's pushed past a dead zone of about
+15%; it's worked out at the machine's sync points in whole numbers, so
+that instruction-time runs come out the same on any host. Its four ways
+do nothing then; a stick that's keys does what each of its ways is
+mapped to instead.
 
-## A Pippin title's AppleJack
+## Mappings of one's own
+
+A mapping (`struct pad_map`) says what each of the 31 controls does (the
+21 buttons, the triggers, the sticks' ways) and whether each stick is the
+mouse or keys. A control can be a key, with modifiers or not (Command,
+Shift, Option, Control: pressed before it and let go after), held as long
+as the control is; a modifier key alone; a click, with modifiers or not;
+a double-click; Click Lock (the mouse button down until the control is
+pressed again); or nothing. These are the AppleJack driver's functions,
+and `struct pad_switch` its SwitchData. Each pad has its mapping in its
+slot (`pad_set_map()`): its kind's own, if the user gave it one, else the
+one for all controllers, which is Blue's until the user changes it. A
+kind of controller is SDL's GUID for it (`SDL_JoystickGetGUID()`, as
+`SDL_JoystickGetGUIDString()` writes it), or, for a script's pads
+without a window, its name. A control down when its mapping changes goes
+up as it went down. Mappings apply to Blue's mapping only: a Pippin
+title's AppleJacks keep the title's, and a game's InputSprocket needs its
+own controls dialog.
+
+**The menu.** Mappings… under Controllers in Blue's menu shows a box in
+the menu's place (`mappings()` in `src/ui.cpp`): a radio button for each
+kind (All controllers, and each kind plugged in), a checkbox for whether
+a kind has a mapping of its own (turned on, it starts as a copy of the
+one for all; off, the kind takes that one again), and the controls on
+three pages (Buttons, the D-pad and the rest, the Sticks), each with
+what it does in a box like a Mac OS 8 pop-up menu. Its menu has Press a
+Key…, the clicks (plain, with Shift, Command, Option or Control), Double-
+Click, Click Lock and Nothing. Press a Key… waits for a key on the host's
+keyboard (`ui_capture_key()`: the window hands the menu every key then,
+Esc too, F12 aside): the first that isn't a modifier, with the modifiers
+held, or a modifier let go of alone. Restore Defaults makes the mapping
+shown Blue's. Each change goes to the machine's thread as a menu action
+(`UI_PAD_EDIT`, `pad_edit()` in `src/nk.c`), which changes the settings,
+writes the settings file, and maps the pads again. The machine logs each:
+
+```
+pads: Xbox Wireless Controller has a mapping of its own
+pads: Xbox Wireless Controller: a is Command-Q
+pads: all controllers: the left stick is the mouse
+```
+
+## The settings file
+
+Blue's own settings, those the user chooses in its menu, are kept in a
+file of their own (`src/settings.c`), apart from the Mac's NVRAM
+(`--nvram`): for now, the mappings. It's where each platform keeps such
+things: `~/Library/Application Support/Blue/settings.ini` on macOS,
+`$XDG_CONFIG_HOME/blue/settings.ini` on Linux (`~/.config/blue/` without
+it). It's text, as INI files are: `name = value` lines under a
+`[section]`, names and sections in any case, `#` starting a comment line.
+The launcher on the [roadmap](roadmap.md) can keep its settings there
+too; sections and lines Blue doesn't know are kept as they are when it
+writes the file. The mappings:
+
+```
+[controller]
+a = Return
+b = Command-Period
+leftshoulder = Shift
+lefttrigger = Control-Click
+leftstickmode = Keys
+leftstickup = Up Arrow
+rightstickmode = Mouse
+...
+
+[controller 030000005e040000e002000003090000]
+name = Xbox Wireless Controller
+a = Command-Q
+...
+```
+
+`[controller]` is the mapping for all controllers; `[controller ID]` a
+kind's own, by its GUID (32 hex digits) or, without one, its name. The
+controls go by SDL's names (`a`, `leftshoulder`, `dpup`, `misc1`,
+`lefttrigger`), and the sticks' ways as `leftstickup` to
+`rightstickright`; `leftstickmode` and `rightstickmode` are `Keys` or
+`Mouse`. What a control does is a key by its name on a US keyboard (`A`,
+`1`, `Period`, `Left Bracket`, `Return`, `Esc`, `Up Arrow`, `F5`, `Keypad
+5`; a character such as `.` is taken too) after modifiers
+(`Command-Shift-Z`), a modifier alone (`Shift`), `Click` (`Control-Click`),
+`Double-Click`, `Click Lock` or `Nothing`. A control without a line keeps
+Blue's default. A line Blue can't read is left out, and said once
+(`settings: settings.ini, line 7: not a key, a click or Nothing (left
+out)`); a file it can't read at all is left alone, and not written over.
+Blue writes all its sections whole, each time something changes: to a
+new file in the same folder (made if need be), synced, then renamed over
+the old one, so the file is always one or the other.
+
+Only runs in a window, in real time and without an input script, use the
+file, so that reproducible runs and tests don't depend on (or change) the
+user's: `--settings FILE` uses that file in any run, and `--settings none`
+none. Blue's menu says where the mappings are kept, or that they're for
+the run only.
+
+## A Pippin title's AppleJacks
 
 The Pippin's controller, the AppleJack, was an ADB device with 18
 switches, whose driver turned them into keys and mouse clicks by a
 mapping a title can set: Blue Pippin Library holds that driver's data
-(AJGlobalData), makes it findable as the AppleJack among the ADB devices,
-and tells Blue where it is and which process the title is
+(AJGlobalData) for two, makes them findable as AppleJacks among the ADB
+devices, and tells Blue where they are and which process the title is
 ([guest-tools.md](guest-tools.md#blue-pippin-library) has the detail,
 [findings.md](findings.md), "The AppleJack", the driver's data). While
 the title is the front process (Blue Enhancements asks Mac OS which is,
@@ -56,8 +154,30 @@ Guide and Start its three system buttons; and the right stick its
 trackball, the mouse. Blue reads a switch's mapping in guest memory as
 the control goes down, so a title's changes (Super Marathon's menus and
 its game have their own) apply at once, and keeps the data's
-switchStates as the pads have them, for titles that read them. Every pad
-is the one AppleJack.
+switchStates as the pads have them, for titles that read them.
+
+**Two AppleJacks.** A Pippin had two ADB ports in front, and Apple's note
+on the driver says to keep a pointer to each AppleJack found, four at
+most. With one pad plugged in (or none), a title finds one AppleJack, as
+before; with two or more, it finds two (the library's count, which Blue
+sets as pads come and go: `pads_done()`), and the second pad (the second
+slot in use, in Blue's numbering) is the second AppleJack, by its own
+mapping and with its own switchStates; the others are the first. Each is
+an ADB device first at address 3 (now 15 and 14), with a cursor device
+record of its own whose refCon points at its AJGlobalData; a title that
+goes through them (as Apple's note does, from the last to the first)
+finds both, and sets each one's mapping. Blue logs the count and each
+one's mapping:
+
+```
+pippin: marathon.ppc runs, with AppleJacks for game controllers (their data at 0x06F437FC and 0x06F43858)
+pippin: marathon.ppc has two AppleJacks: the second pad is the second
+pippin: marathon.ppc's second AppleJack mapping: the same
+```
+
+A copy of the library from before (one AppleJack) still works: Blue
+finds no second AJGlobalData after the first, and every pad is its one
+AppleJack.
 
 ## InputSprocket
 
@@ -184,18 +304,27 @@ as by the mouse, far faster with the stick; use the mouse there.
 
 ## Testing
 
-`tests/test_pad.c` covers the mapper (Blue's mapping, a Pippin title's,
-the sticks, controls a game takes), `tests/test_pippin.c` the Pippin
-library, and `tests/test_isp.c` the driver: its fragment and file, the
+`tests/test_pad.c` covers the mapper (Blue's mapping, mappings of one's
+own, the sticks as keys or the mouse, a Pippin title's, two AppleJacks,
+controls a game takes, the actions' names), `tests/test_settings.c` the
+settings file (read and written, what Blue doesn't know kept, a kind's
+mapping by GUID or name, written whole as a new file renamed over the
+old, its place), `tests/test_pippin.c` the Pippin library (with the ADB
+patches' 68k code run as a title calls them, for one AppleJack and two),
+and `tests/test_isp.c` the driver: its fragment and file, the
 autoconfiguration of Unreal Tournament's needs and a flight game's, the
 data, and the driver as InputSprocket drives it against a Mac OS of the
 test's own (registration, a game's needs, the task's pushes, the state,
 the panel, a copy of another version's). In a run, input scripts play
-pads in instruction time (`pad 0 axis rightx 0.8`), and `BLUE_LOG_PADS=1`
-logs every control with the mapping it went to and, for InputSprocket,
-each call InputSprocket makes to the driver (but the task's and
-Tickle's) and each of a game's needs with its kind, label and flags.
-Unreal Tournament was played this way on Mac OS 8.6 (see
-[findings.md](findings.md), "Unreal Tournament's needs"): run, turn,
-look, fire, jump and slide, and its Options, Input Device dialog opened,
-a control changed in the panel, OK, and back to the game.
+pads in instruction time (`pad 0 axis rightx 0.8`; `pad 1 button a
+down`, a second pad), and `BLUE_LOG_PADS=1` logs every control with the
+mapping it went to and, for InputSprocket, each call InputSprocket makes
+to the driver (but the task's and Tickle's) and each of a game's needs
+with its kind, label and flags. Unreal Tournament was played this way on
+Mac OS 8.6 (see [findings.md](findings.md), "Unreal Tournament's
+needs"): run, turn, look, fire, jump and slide, and its Options, Input
+Device dialog opened, a control changed in the panel, OK, and back to the
+game. Super Marathon was played with two scripted pads on Mac OS 8.5
+(see [findings.md](findings.md), "A second AppleJack"): it found both
+AppleJacks and gave each its game's mapping, and the second pad's D-pad
+moved the player forward through the second.

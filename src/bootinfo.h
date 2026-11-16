@@ -35,10 +35,19 @@
 #define MACIO_DMA_ENET_RX (MACIO_DBDMA + 3 * 0x100u)
 #define MACIO_DMA_SOUND_OUT (MACIO_DBDMA + 8 * 0x100u)
 #define MACIO_DMA_SOUND_IN (MACIO_DBDMA + 9 * 0x100u)
+#define MACIO_DMA_SCC_A_TX (MACIO_DBDMA + 4 * 0x100u)
+#define MACIO_DMA_SCC_A_RX (MACIO_DBDMA + 5 * 0x100u)
+#define MACIO_DMA_SCC_B_TX (MACIO_DBDMA + 6 * 0x100u)
+#define MACIO_DMA_SCC_B_RX (MACIO_DBDMA + 7 * 0x100u)
+#define MACIO_ESCC (MACIO_SCC + 0x1000u)       /* the SCC's escc layout (channel A at +0x20) */
 
 /* Interrupt sources (Heathrow bit numbers) */
 #define IRQ_DMA_ENET_TX 2u
 #define IRQ_DMA_ENET_RX 3u
+#define IRQ_DMA_SCC_A_TX 4u
+#define IRQ_DMA_SCC_A_RX 5u
+#define IRQ_DMA_SCC_B_TX 6u
+#define IRQ_DMA_SCC_B_RX 7u
 #define IRQ_ENET 14u
 #define IRQ_DMA_SOUND_OUT 8u
 #define IRQ_DMA_SOUND_IN 9u
@@ -101,6 +110,7 @@ struct bootinfo_machine {
 	bool settings;                  /* ... with Open Firmware's settings (/options, /openprom), */
 	const char *boot_device;        /* ... boot-device among them, from NVRAM (NULL: unset) */
 	unsigned first_disk;            /* the disk whose node comes first (the others in order): Mac OS drives them so */
+	bool escc;                      /* the SCC's channels, the modem's and the infrared's (see nk.c) */
 };
 
 struct bootinfo {
@@ -135,9 +145,10 @@ int bootinfo_build(struct mem *mem, struct bootinfo *bi, const struct bootinfo_m
 
 /*
  * 68k interrupt level of each source: masks[bank][level], bank 0 = sources
- * 0-31, bank 1 = 32-63, source n at bit 0x80000000 >> (n % 32).
+ * 0-31, bank 1 = 32-63, source n at bit 0x80000000 >> (n % 32). The SCC's
+ * DMA channels have one only with `escc`.
  */
-void bootinfo_level_masks(uint32_t masks[2][8]);
+void bootinfo_level_masks(uint32_t masks[2][8], bool escc);
 
 /*
  * Fills the NKHWInfo record that the NanoKernel copies from the Trampoline:

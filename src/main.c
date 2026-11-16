@@ -79,6 +79,13 @@ static int usage(void)
 		"                               and the processor's speed; F12's menu shows it)\n"
 		"      --no-net                 in real time, no network behind the guest's Ethernet\n"
 		"                               (with: NAT to the host's, DHCP on 10.0.2.0/24)\n"
+		"      --no-modem               no internal modem (a window or real time has one,\n"
+		"                               whose calls go over TCP: ATDT host:port)\n"
+		"      --modem-listen [<address>:]<port>\n"
+		"                               in real time, a connection to this port is a call\n"
+		"                               to the modem: it rings (ATA, or S0 answers)\n"
+		"      --modem-phonebook <file> numbers the modem dials: lines of\n"
+		"                               \"NUMBER HOST:PORT [telnet|raw]\"\n"
 		"      --no-gpu                 the guest tools' 3D engine draws in software (in real\n"
 		"                               time it draws with the GPU, if there's OpenGL 3.3)\n"
 		"      --interp                 interpret PowerPC code instead of translating it\n"
@@ -90,7 +97,8 @@ static int usage(void)
 		"                               motion DX DY (the mouse moved, as games read it),\n"
 		"                               key HEX [down|up], resize W H, screenshot FILE,\n"
 		"                               floppy insert FILE, floppy eject, cdrom insert FILE,\n"
-		"                               cdrom eject, mic play FILE, mic stop,\n"
+		"                               cdrom eject, modem ring|pickup|hangup, modem recv TEXT\n"
+		"                               (the modem's far end), mic play FILE, mic stop,\n"
 		"                               tools install|later|never (the answer to that offer;\n"
 		"                               never: Don't Ask Again), tools offer (the offer, now)\n"
 		"      --max <n>                stop after n PowerPC instructions (with --headless,\n"
@@ -125,6 +133,9 @@ static int usage(void)
 		"                               changes on it is written back when it shuts down\n"
 		"      --nvram <file>           keep NVRAM (PRAM, settings) in this file; Mac OS 9.1\n"
 		"                               and later's Startup Disk choice is kept there too\n"
+		"      --settings <file>|none   Blue's own settings (game controllers' mappings) in\n"
+		"                               this file, or none; without, a window in real time\n"
+		"                               (without --input) keeps them in the platform's place\n"
 		"      --screenshot <file.png>  save the screen when the run ends\n"
 		"      --dump-ram <file>        save guest RAM when the run ends\n"
 		"      --log-hostcalls          log driver requests handled natively\n"
@@ -398,6 +409,8 @@ static int cmd_boot(int argc, char **argv)
 			headless = true;
 		} else if (strcmp(argv[k], "--input") == 0 && k + 1 < argc) {
 			opt.input_script = argv[++k];
+		} else if (strcmp(argv[k], "--settings") == 0 && k + 1 < argc) {
+			opt.settings = argv[++k];
 		} else if (strcmp(argv[k], "--fixed-time") == 0 && k + 1 < argc) {
 			opt.fixed_time = strtoll(argv[++k], NULL, 0);
 		} else if (strcmp(argv[k], "--interp") == 0) {
@@ -428,6 +441,12 @@ static int cmd_boot(int argc, char **argv)
 			opt.no_status_bar = true;
 		} else if (strcmp(argv[k], "--no-net") == 0) {
 			opt.no_net = true;
+		} else if (strcmp(argv[k], "--no-modem") == 0) {
+			opt.no_modem = true;
+		} else if (strcmp(argv[k], "--modem-listen") == 0 && k + 1 < argc) {
+			opt.modem_listen = argv[++k];
+		} else if (strcmp(argv[k], "--modem-phonebook") == 0 && k + 1 < argc) {
+			opt.modem_phonebook = argv[++k];
 		} else if (strcmp(argv[k], "--no-gpu") == 0) {
 			opt.no_gpu = true;
 		} else if (strcmp(argv[k], "--seconds") == 0 && k + 1 < argc) {

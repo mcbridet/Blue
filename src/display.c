@@ -21,6 +21,7 @@
 #include "icon.h"
 #include "menubar.h"
 #include "pad.h"
+#include "wheel.h"
 #include "ui.h"
 
 /* The parts of the SDL2 ABI we use (stable across SDL 2.x). */
@@ -126,6 +127,7 @@ typedef union {
 		uint32_t type, timestamp, window, which;
 		int32_t x, y;
 		uint32_t direction;
+		float precise_x, precise_y;     /* (SDL 2.0.18 and later) */
 	} wheel;
 	struct {
 		uint32_t type, timestamp;
@@ -219,6 +221,7 @@ struct sdl {
 	const char *(*GameControllerName)(void *);
 	void *(*GameControllerGetJoystick)(void *);
 	int32_t (*JoystickInstanceID)(void *);
+	struct sdl_guid { uint8_t data[16]; } (*JoystickGetGUID)(void *);
 	int32_t (*JoystickGetDeviceInstanceID)(int);
 	int (*NumJoysticks)(void);
 	void (*GameControllerUpdate)(void);
@@ -266,6 +269,8 @@ struct handed {
 	struct ui_pads pads;
 	char mic[96];                   /* ("": not shown) */
 	bool mic_on;
+	char modem[160];                /* ("": no modem) */
+	bool modem_call;
 	struct display_pad_request {    /* virtual pads' changes (display_pad_virtual()), in order */
 		enum display_pad_op op;
 		unsigned n, which;
@@ -322,6 +327,7 @@ struct display {
 	bool recheck;                   /* the window may have gone to another display, or its density changed */
 	uint64_t checked_ns;            /* ... last looked at */
 	bool compat;                    /* SDL 2 is sdl2-compat (on SDL 3), whose displays have no physical size */
+	bool precise_wheel;             /* ... has the wheel's movements in parts of a line (2.0.18 and later) */
 	bool follows;                   /* the screen follows the window's size (display_follow()) */
 	bool caps_lock;
 	bool ctrl[2], alt[2];           /* (left and right) held, for the release key */
@@ -340,6 +346,8 @@ struct display {
 	struct ui_pads pads;
 	char mic[96];                   /* ... and the microphone (display_mic_state()) */
 	bool mic_on;
+	char modem[160];                /* ... and the modem (display_modem_state(); "": none) */
+	bool modem_call;
 	/* game controllers (with SDL's support for them: `pads_on`), by Blue's number for them */
 	bool pads_on;
 	struct {
@@ -623,6 +631,7 @@ static bool load_sdl(struct sdl *s)
 	*(void **)&s->GameControllerName = dlsym(s->lib, "SDL_GameControllerName");
 	*(void **)&s->GameControllerGetJoystick = dlsym(s->lib, "SDL_GameControllerGetJoystick");
 	*(void **)&s->JoystickInstanceID = dlsym(s->lib, "SDL_JoystickInstanceID");
+	*(void **)&s->JoystickGetGUID = dlsym(s->lib, "SDL_JoystickGetGUID");
 	*(void **)&s->JoystickGetDeviceInstanceID = dlsym(s->lib, "SDL_JoystickGetDeviceInstanceID");
 	*(void **)&s->NumJoysticks = dlsym(s->lib, "SDL_NumJoysticks");
 	*(void **)&s->GameControllerUpdate = dlsym(s->lib, "SDL_GameControllerUpdate");
@@ -1073,6 +1082,8 @@ static void draw(struct display *d)
 			.tools_why_not = d->tools_why_not[0] ? d->tools_why_not : NULL,
 			.scale = d->scale_chosen,
 			.scale_auto = d->scale_auto,
+			.modem = d->modem[0] ? d->modem : NULL,
+			.modem_call = d->modem_call,
 		};
 		enum ui_action action = ui_draw(d->ui, &s, ww, wh, ww > 0 ? (float)pw / (float)ww : 1, now - d->menu_time);
 		d->menu_time = now;
@@ -1244,6 +1255,17 @@ static void chosen(struct display *d, enum ui_action action)
 		insert(d, (unsigned)(action - UI_INSERT));
 		return;
 	}
+	if (action == UI_PAD_EDIT && d->ui) {
+		/* (the machine's to act on: the type's id in path, the rest in numbers) */
+		struct ui_pad_edit e;
+		ui_pad_edit(d->ui, &e);
+		ev.button = (int)e.change;
+		ev.value = (int)e.control;
+		ev.x = e.change == UI_PAD_SET ? (int)((uint32_t)e.action.function << 24 | (uint32_t)e.action.modifiers << 16 |
+						      (uint32_t)e.action.key << 8 | e.action.chr) : (int)e.mode;
+		emit(d, &ev, strdup(e.id), 0);
+		return;
+	}
 	if (action >= UI_SCALE && action <= UI_SCALE_LAST) {
 		d->scale_chosen = (unsigned)(action - UI_SCALE);
 		unsigned scale = d->scale_chosen ? d->scale_chosen : d->scale_auto;
@@ -1310,6 +1332,12 @@ static void pad_added(struct display *d, int index)
 	d->pad[k].id = s->JoystickInstanceID(s->GameControllerGetJoystick(gc));
 	const char *name = s->GameControllerName(gc);
 	struct display_event ev = { .type = DISPLAY_EVENT_PAD_ADDED, .pad = k };
+	if (s->JoystickGetGUID) {
+		/* (as SDL_JoystickGetGUIDString() has it: its type, for the mappings of Blue's) */
+		struct sdl_guid g = s->JoystickGetGUID(s->GameControllerGetJoystick(gc));
+		for (unsigned n = 0; n < 16; n++)
+			snprintf(ev.guid + 2 * n, 3, "%02x", g.data[n]);
+	}
 	for (unsigned n = 0; n < PAD_MAX; n++)
 		ev.value |= d->virtual_pad[n].joystick && d->virtual_pad[n].id == d->pad[k].id;
 	emit(d, &ev, strdup(name ? name : "Game controller"), 0);
@@ -1426,6 +1454,12 @@ static void handle(struct display *d, SDL_Event *e)
 		if (e->key.repeat)
 			return;
 		unsigned sc = (unsigned)e->key.scancode;
+		/* (a key for a game controller's button, chosen in the menu: Esc too) */
+		if (d->menu && d->ui && ui_capturing(d->ui) && sc != SDL_SCANCODE_F12) {
+			ui_capture_key(d->ui, display_hid_to_adb(sc), down);
+			d->stale = true;
+			return;
+		}
 		/* F12 opens and closes the menu (Esc closes it too): the guest doesn't get them */
 		if (sc == SDL_SCANCODE_F12 || (d->menu && sc == SDL_SCANCODE_ESCAPE)) {
 			if (down)
@@ -1508,11 +1542,14 @@ static void handle(struct display *d, SDL_Event *e)
 			d->stale = true;
 			return;
 		}
-		if (d->menu || d->prompt || (!e->wheel.x && !e->wheel.y))
+		if (d->menu || d->prompt)
 			return;
+		/* (in parts of a line: a trackpad's small movements too, where SDL has them) */
 		ev.type = DISPLAY_EVENT_WHEEL;
-		ev.dx = e->wheel.x;
-		ev.dy = e->wheel.y;
+		ev.dx = d->precise_wheel ? (int)lroundf(e->wheel.precise_x * WHEEL_LINE) : e->wheel.x * WHEEL_LINE;
+		ev.dy = d->precise_wheel ? (int)lroundf(e->wheel.precise_y * WHEEL_LINE) : e->wheel.y * WHEEL_LINE;
+		if (!ev.dx && !ev.dy)
+			return;
 		break;
 	case SDL_CONTROLLERDEVICEADDED:
 		pad_added(d, e->cdevice.which);
@@ -1666,6 +1703,8 @@ static void take(struct display *d, struct taken *t)
 		d->pads = in->pads;
 		memcpy(d->mic, in->mic, sizeof d->mic);
 		d->mic_on = in->mic_on;
+		memcpy(d->modem, in->modem, sizeof d->modem);
+		d->modem_call = in->modem_call;
 		d->stale |= d->menu;
 		in->info_changed = false;
 	}
@@ -1896,6 +1935,7 @@ static struct display *open_window(const char *title, unsigned width, unsigned h
 	SDL_version v = { 0, 0, 0 };
 	d->sdl.GetVersion(&v);
 	d->compat = v.major == 2 && v.patch >= 50;      /* (sdl2-compat's versions: 2.x.50 and on) */
+	d->precise_wheel = v.major > 2 || v.minor > 0 || v.patch >= 18;
 	/* (on high-density displays, drawn at their full resolution rather than scaled up by the system;
 	 * shown once it's the screen's size at the scale) */
 	d->window = d->sdl.CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, (int)width, (int)height,
@@ -2239,6 +2279,19 @@ void display_mic_state(struct display *d, const char *status, bool on)
 	if (strcmp(d->in.mic, status ? status : "") != 0 || d->in.mic_on != on) {
 		snprintf(d->in.mic, sizeof d->in.mic, "%s", status ? status : "");
 		d->in.mic_on = on;
+		d->in.info_changed = true;
+	}
+	pthread_mutex_unlock(&host.lock);
+}
+
+void display_modem_state(struct display *d, const char *text, bool call)
+{
+	pthread_mutex_lock(&host.lock);
+	char t[sizeof d->in.modem];
+	snprintf(t, sizeof t, "%s", text ? text : "");
+	if (strcmp(t, d->in.modem) != 0 || call != d->in.modem_call) {
+		memcpy(d->in.modem, t, sizeof t);
+		d->in.modem_call = call;
 		d->in.info_changed = true;
 	}
 	pthread_mutex_unlock(&host.lock);
