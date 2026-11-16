@@ -434,6 +434,7 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct 
 				clip->listening = false;
 			}
 			h->running = false;
+			h->quits++;
 			ndrv_finish(c, 0);
 			return;
 		}

@@ -4,8 +4,9 @@
  * a localized Extensions folder, a locked volume; Apple's OpenGL libraries
  * enabled or disabled), when they're offered, and the installer driven as
  * Mac OS would drive it, against a small File Manager of the test's own
- * (Apple's OpenGL libraries moved to Extensions (Disabled) and back), and
- * the restart it asks the Process Manager for once all is in place (or not).
+ * (Apple's OpenGL libraries moved to Extensions (Disabled) and back; a
+ * running Enhancements, or one being launched, that's in use), and the
+ * restart it asks the Process Manager for once all is in place (or not).
  */
 #include <fcntl.h>
 #include <stdlib.h>
@@ -328,6 +329,7 @@ struct file {
 	uint8_t fork[2][FORK_MAX];
 	uint32_t len[2];
 	bool locked;
+	bool busy;                      /* open (an application's, running or being launched) */
 };
 
 static struct fs {
@@ -434,6 +436,8 @@ static int16_t file_manager(unsigned call, const uint32_t *a)
 			return -43;
 		if (f->locked)
 			return -45;
+		if (f->busy)
+			return -47;
 		f->used = false;
 		return 0;
 	case CREATE:
@@ -700,6 +704,13 @@ static void test_installer_errors(void)
 			      "couldn't restart Mac OS: there isn't enough memory. Restart Mac OS to use them.") == 0);
 }
 
+/* Enhancements quits, as when it's asked to (helper.quit) */
+static void quit(struct helper *h)
+{
+	h->quit = h->running = false;
+	h->quits++;
+}
+
 /* A running Enhancements that's to be replaced quits first; if it can't be replaced after all, it starts with Mac OS */
 static void test_installer_quit(void)
 {
@@ -721,7 +732,7 @@ static void test_installer_quit(void)
 	CHECK(h.quit);
 	for (unsigned k = 0; k < 20; k++, w.tb += HZ / 20)     /* (it takes its time) */
 		CHECK(!install_idle(&in, &w));
-	h.quit = h.running = false;                     /* it has quit */
+	quit(&h);                                       /* it has quit */
 	CHECK(!install_idle(&in, &w));
 	w.tb += HZ / 5;
 	CHECK(install_idle(&in, &w));                   /* soon after, the installer */
@@ -739,7 +750,7 @@ static void test_installer_quit(void)
 	w.tb = HZ;
 	for (unsigned k = 0; k < 40 && in.phase != INSTALL_QUITTING; k++, w.tb += HZ / 20)
 		CHECK(!install_idle(&in, &w));
-	h.quit = h.running = false;
+	quit(&h);
 	w.tb += HZ / 5;
 	CHECK(!install_idle(&in, &w));
 	w.tb += HZ / 5;
@@ -789,7 +800,111 @@ static void test_installer_quit(void)
 	CHECK_EQ(in.phase, INSTALL_DONE);
 }
 
-/* Mac OS 9: Blue's OpenGL in, Apple's out to Extensions (Disabled); then, Blue's gone, Apple's back */
+/*
+ * Enhancements being launched (Mac OS has its file open, but it hasn't run
+ * yet, so Blue doesn't know): the installer finds it in use as it replaces
+ * it, leaves everything as it was, and has it quit; it goes in again once
+ * it has, and all is done. Found in use again: said, and no restart.
+ */
+static void test_installer_busy(void)
+{
+	static struct install in;
+	struct helper h = { .running = false };
+	struct item items[8] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
+				 tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 64, NULL, true) };
+	write_volume(items, with_libs(items, 2, EXTENSIONS, 70), 0);
+	memset(&fs, 0, sizeof fs);
+	fs.next_id = 100;
+	struct file *old = add_file(EXTENSIONS, "Blue Enhancements", 64, &tools[TOOLS_ENHANCEMENTS]);
+	old->fork[0][0] ^= 1;
+	old->busy = true;
+	install_begin(&in, volume_path, 0, false);
+	install_answer(&in, INSTALL_YES, &h);
+	uint64_t tb = HZ;
+	mem_w32(&mem, TRAP_ENTRY, ROUTINE);
+	CHECK(idle_until_diverted(&in, &h, &tb));
+	run_installer(&in);
+	CHECK_EQ(in.phase, INSTALL_BUSY);
+	CHECK(!in.news_ready && !in.restarting);
+	CHECK(old->used && old->fork[0][0] != tools[TOOLS_ENHANCEMENTS].data[0]);
+	CHECK(!find(EXTENSIONS, "Blue 3D Engine") && !find(EXTENSIONS, "Blue installing"));
+	CHECK(fs.opened == 0 && fs.flushes == 0 && fs.restarts == 0);
+	CHECK(install_unofferable(&in) != NULL);        /* (Mac OS is installing them) */
+
+	/* asked to quit: it does at its first WaitNextEvent, seconds later; the installer waits for it */
+	struct install_idle w = { &mem, &h, true, tb, HZ, 1000, DRIVE, IDLE_TRAP };
+	CHECK(!install_idle(&in, &w));
+	CHECK(in.phase == INSTALL_QUITTING && h.quit);
+	for (unsigned k = 0; k < 200; k++, w.tb += HZ / 20)    /* (10 s: longer than one that's running gets) */
+		CHECK(!install_idle(&in, &w));
+	h.running = true;
+	CHECK(!install_idle(&in, &w));
+	quit(&h);
+	old->busy = false;
+	w.tb += HZ / 20;
+	CHECK(!install_idle(&in, &w));
+	w.tb += HZ / 10;
+	CHECK(install_idle(&in, &w));                   /* soon after, the installer again */
+	run_installer(&in);
+	CHECK_EQ(in.phase, INSTALL_DONE);
+	CHECK(same_as(find(EXTENSIONS, "Blue Enhancements"), TOOLS_ENHANCEMENTS));
+	CHECK(same_as(find(EXTENSIONS, "Blue 3D Engine"), TOOLS_3D_ENGINE));
+	CHECK(!find(EXTENSIONS, "Blue installing"));
+	CHECK(fs.flushes == 1 && fs.restarts == 1 && in.restarting);
+	CHECK(strcmp(in.news, "updated Blue Enhancements in \"Test:System Folder:Extensions\" and installed Blue 3D "
+			      "Engine in \"Test:System Folder:Extensions\". Mac OS is restarting.") == 0);
+
+	/* in use for good (it never starts): the installer goes in again after a while, once, and says so */
+	memset(&fs, 0, sizeof fs);
+	fs.next_id = 100;
+	old = add_file(EXTENSIONS, "Blue Enhancements", 64, &tools[TOOLS_ENHANCEMENTS]);
+	old->fork[0][0] ^= 1;
+	old->busy = true;
+	install_begin(&in, volume_path, 0, false);
+	install_answer(&in, INSTALL_YES, &h);
+	tb = HZ;
+	CHECK(idle_until_diverted(&in, &h, &tb));
+	run_installer(&in);
+	CHECK_EQ(in.phase, INSTALL_BUSY);
+	uint64_t from = tb;
+	w = (struct install_idle){ &mem, &h, true, tb, HZ, 1000, DRIVE, IDLE_TRAP };
+	unsigned k = 0;
+	for (; k < 2000 && !install_idle(&in, &w); k++)
+		w.tb += HZ / 20;
+	CHECK(k < 2000 && w.tb - from >= 60 * (uint64_t)HZ);
+	run_installer(&in);
+	CHECK_EQ(in.phase, INSTALL_DONE);
+	CHECK(old->used && old->fork[0][0] != tools[TOOLS_ENHANCEMENTS].data[0]);
+	CHECK(!find(EXTENSIONS, "Blue 3D Engine") && !find(EXTENSIONS, "Blue installing"));
+	CHECK(fs.flushes == 0 && fs.restarts == 0 && !in.restarting);
+	CHECK(strcmp(in.news, "couldn't update Blue Enhancements (replacing the old copy): it's in use. "
+			      "Blue Enhancements starts with Mac OS next time.") == 0);
+	h.quit = false;
+
+	/* asked to quit before it went in, and quit, but its process hadn't gone: tried again without asking */
+	old->busy = true;
+	h.running = true;
+	install_begin(&in, volume_path, 0, false);
+	install_answer(&in, INSTALL_YES, &h);
+	w = (struct install_idle){ &mem, &h, true, HZ, HZ, 1000, DRIVE, IDLE_TRAP };
+	for (k = 0; k < 40 && in.phase != INSTALL_QUITTING; k++, w.tb += HZ / 20)
+		CHECK(!install_idle(&in, &w));
+	CHECK(in.phase == INSTALL_QUITTING && h.quit);
+	quit(&h);
+	tb = w.tb;
+	CHECK(idle_until_diverted(&in, &h, &tb));
+	run_installer(&in);
+	CHECK_EQ(in.phase, INSTALL_BUSY);
+	w = (struct install_idle){ &mem, &h, true, tb, HZ, 1000, DRIVE, IDLE_TRAP };
+	CHECK(!install_idle(&in, &w));
+	CHECK(in.phase == INSTALL_QUITTING && !h.quit);
+	old->busy = false;
+	w.tb += HZ / 5;
+	CHECK(install_idle(&in, &w));
+	run_installer(&in);
+	CHECK(same_as(find(EXTENSIONS, "Blue Enhancements"), TOOLS_ENHANCEMENTS));
+	CHECK(fs.restarts == 1 && in.restarting);
+}
 static void test_installer_apple(void)
 {
 	static struct install in;
@@ -1001,6 +1116,7 @@ void test_install(void)
 	test_installer();
 	test_installer_errors();
 	test_installer_quit();
+	test_installer_busy();
 	test_installer_apple();
 	test_never();
 	fflush(stdout);

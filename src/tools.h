@@ -65,6 +65,7 @@ struct helper {
 	uint32_t v1_extra;              /* ... and where version 1's data is */
 	bool running;
 	bool quit;                      /* to quit when it next looks (see install.h) */
+	unsigned long quits;            /* times it has quit (asked by Blue or by the Process Manager) */
 	bool old;                       /* an older copy has run (see current()) */
 	bool patched;                   /* its Scrap Manager patches are in place */
 	uint32_t patched_toc;           /* ... by the copy with this data */

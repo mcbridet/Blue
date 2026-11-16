@@ -24,7 +24,12 @@
  *     the folder it goes in, which then takes the old copy's place (so that
  *     no file is ever left half written). A copy of Enhancements that's
  *     running (an older one) is asked to quit first (helper.quit): its file
- *     is in use while it runs, and can't be replaced.
+ *     is in use while it runs, and can't be replaced. Mac OS opens it as it
+ *     launches it, some seconds before it first runs: if the installer still
+ *     finds it in use as it replaces it, the temporary file goes, Enhancements
+ *     is asked to quit (it does at its first WaitNextEvent), and the
+ *     installer goes in again once it has (once; Enhancements goes first,
+ *     so there's nothing else to undo).
  *   - Once everything is in place (and only then), FlushVol, and the Process
  *     Manager is sent a Restart Apple event: Mac OS restarts as from Special
  *     > Restart (programs can ask to save their work first, or stop it), and
@@ -122,6 +127,7 @@ enum install_phase {
 	INSTALL_OFF,            /* nothing to offer (or not offering: see install_begin()) */
 	INSTALL_WAIT_FINDER,    /* until the Finder is up */
 	INSTALL_ASKING,
+	INSTALL_BUSY,           /* the installer found Enhancements in use: it's to quit, and the installer to go in again */
 	INSTALL_QUITTING,       /* asked the running Enhancements to quit */
 	INSTALL_INJECT,         /* at the next idle call */
 	INSTALL_INJECTED,       /* the trap goes to the bootstrap */
@@ -156,6 +162,9 @@ struct install {
 	/* until the Finder is up: the Finder is the current application, idling without disk transfers */
 	uint64_t finder_tb, quiet_tb, idle_tb, disk;
 	uint64_t quit_tb, stopped_tb;   /* when Enhancements was asked to quit, when it had */
+	unsigned long quits;            /* ... its quits until then (helper.quits) */
+	bool quit_running;              /* ... it was running then (else being launched: it quits once started) */
+	bool retried;                   /* the installer found it in use, and went in again once it had quit */
 	uint64_t inject_tb;             /* when the installer first waited for the idle trap */
 	/* the bootstrap */
 	uint32_t trap_entry, trap_routine;      /* the idle trap's entry in the trap table, its own routine */
@@ -167,7 +176,7 @@ struct install {
 	int16_t vref, refnum;
 	uint32_t ext_dir, dir, scan_dir, scan_index;
 	bool scanned_ext, replacing, temp_made, temp_open, old_deleted;
-	bool quit_asked;                /* the running Enhancements was asked to quit */
+	bool quit_asked;                /* Enhancements was asked to quit */
 	char ext_name[HFSREAD_NAME_MAX];        /* the Extensions folder's */
 	struct install_result {
 		bool done, replaced;

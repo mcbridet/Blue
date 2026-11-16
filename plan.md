@@ -618,7 +618,10 @@ the kernel); 8 onwards as the boot progresses.
   restarted (through the Cuda), the check then found them current;
   Enhancements ran and switched to 1024x768 for a `resize`, and Blue GL
   Test (from a tools volume made with `BLUE_TOOLS_GL_TEST=1`) drew its
-  triangle scene through Blue's OpenGL. Open: none.
+  triangle scene through Blue's OpenGL. An Enhancements that Mac OS has
+  launched but that hasn't run yet is found in use as it's replaced: it's
+  asked to quit, and the installer goes in again once it has (Findings,
+  "Enhancements is in use before it runs"). Open: none.
 
 ### 14. Clipboard
 
@@ -1998,6 +2001,34 @@ Facts later tasks need, added as they are found.
   went in (`fBsyErr` again); Blue now asks it again just before going
   in. If it can't be replaced after it quit, it isn't started again
   (Mac OS doesn't restart either): it starts with Mac OS next time.
+- **Enhancements is in use before it runs:** the Process Manager opens
+  its file as it launches it, seconds of guest time before its main
+  routine first runs (when `helper.running` becomes true): on an
+  installed 8.5, from the first idle call (67.5 s of guest time) to its
+  main routine (74.4 s); on 9.2.2 (MacOS9Lives) from 118.6 s to 137.7 s,
+  and there the Finder is up, and the offer made, about 15 s before it
+  runs. An answer in that gap found Enhancements "not running", and the
+  installer's FSpDelete of the old copy gave `fBsyErr`: "couldn't update
+  Blue Enhancements (replacing the old copy): it's in use", nothing
+  installed, no restart (the reported failure). Reproduced every time on
+  copies of an 8.5 and a 9.2.2 with an older Enhancements (installed by
+  an older Blue): the menu's offer answered at instruction 1.0-1.195
+  billion on 8.5 (Enhancements first ran at 1.205 billion), and on 9.2.2
+  the Finder's offer answered at 2.0 billion (it ran at 2.22 billion).
+  Now "running?" is decided where it matters, as the old copy is
+  replaced: on `fBsyErr` there (Enhancements only, once) the installer
+  deletes its temporary file and stops, leaving everything as it was
+  (Enhancements goes first, so nothing else is done yet); Blue sets
+  `helper.quit`, which one that's being launched sees at its first
+  WaitNextEvent, waits for it to have quit (`helper.quits`, a count; up
+  to 60 s for one that hasn't started, 5 s for one that runs), and the
+  installer goes in again and starts over. One that had quit already
+  (asked before the installer went in) isn't asked again: its process
+  just hadn't gone. Still in use the second time: said as before, no
+  restart. Both reproductions now update everything and restart, as do
+  answers at every point tried around Enhancements' start (8.5: 1.0 to
+  1.3 billion; 9.2.2: 1.8 to 2.21 billion). Test:
+  `test_installer_busy()` in `tests/test_install.c`.
 - **Restarting Mac OS after an install** (all three of 8.5, 8.6 and
   9.2.2): the Process Manager takes the Restart Apple event (`aevt`
   `rest`, kCoreEventClass and kAERestart) sent to the system process

@@ -783,7 +783,11 @@ plan.md): each goes to a temporary file in the folder it belongs in, which
 then takes the old copy's place, so an error (a full or locked disk) leaves
 nothing half written; a disabled copy is updated where it is and stays
 disabled. An older Blue Enhancements that's running is asked to quit
-first (its file is in use while it runs). Once everything is in place,
+first (its file is in use while it runs). Mac OS opens its file some
+seconds before it first runs (on 9.2.2 after the Finder is up), so if the
+installer still finds it in use as it replaces it, the copy written is
+deleted, Enhancements is asked to quit (it does as soon as it runs), and
+the installer goes in again once it has. Once everything is in place,
 Mac OS restarts as Special > Restart does (Blue's installer sends the
 Process Manager the Restart Apple event): programs are asked to quit, and
 can ask to save their work first, or stop the restart (the tools are in

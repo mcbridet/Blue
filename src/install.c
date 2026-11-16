@@ -515,7 +515,7 @@ static bool inject(struct install *in, struct mem *m, uint16_t trap)
 	in->fragment_len = (uint32_t)len;
 	in->phase = INSTALL_INJECTED;
 	if (in->job == INSTALL_JOB_TOOLS)
-		printf("tools: installing (Mac OS writes the files)\n");
+		printf("tools: installing%s (Mac OS writes the files)\n", in->retried ? " again" : "");
 	return true;
 }
 
@@ -549,6 +549,7 @@ static void injected(struct install *in, struct mem *m)
 #define FINDER_BUSY_TB(hz) ((hz) / 4)           /* (longer between idle calls: busy) */
 #define FINDER_LONGEST_TB(hz) ((hz) * 15)       /* up anyway, this long after it first ran */
 #define QUIT_WAIT_TB(hz) ((hz) * 5)             /* for Enhancements to quit */
+#define START_WAIT_TB(hz) ((hz) * 60)           /* ... one being launched: to start, then quit */
 #define QUIT_AFTER_TB(hz) ((hz) / 10)           /* ... and then for its process to go */
 #define INJECT_WAIT_TB(hz) ((hz) * 10)          /* for the idle trap's call */
 
@@ -610,39 +611,58 @@ static bool finder_up(struct install *in, const struct install_idle *w)
 	return w->tb - in->quiet_tb >= FINDER_QUIET_TB(w->tb_hz) || w->tb - in->finder_tb >= FINDER_LONGEST_TB(w->tb_hz);
 }
 
-/* A running Enhancements that's to be replaced quits first (its file is in use while it runs): true if asked to */
-static bool ask_to_quit(struct install *in, struct helper *h)
+/*
+ * Enhancements' file is in use while it runs, so a copy that's to be
+ * replaced quits first (it does at its next WaitNextEvent, or at its first,
+ * one that's being launched). Not asked again if it has quit for this
+ * install already: then its process just hadn't gone.
+ */
+static void ask_to_quit(struct install *in, struct helper *h)
+{
+	if (!in->quit_asked || h->quits == in->quits || h->running) {
+		h->quit = true;
+		in->quits = h->quits;
+		in->quit_running = h->running;
+	}
+	in->quit_asked = true;
+	in->quit_tb = in->stopped_tb = in->inject_tb = 0;
+	in->phase = INSTALL_QUITTING;
+}
+
+/* Before the installer goes in: a running Enhancements that's to be replaced quits first (true if asked to) */
+static bool quit_first(struct install *in, struct helper *h)
 {
 	if (in->job != INSTALL_JOB_TOOLS || in->quit_asked || in->check.tool[TOOLS_ENHANCEMENTS].state != INSTALL_DIFFERS ||
 	    !h->running)
 		return false;
-	h->quit = true;
-	in->quit_asked = true;
-	in->phase = INSTALL_QUITTING;
+	ask_to_quit(in, h);
 	printf("tools: asking Blue Enhancements to quit, to replace it\n");
 	return true;
 }
 
 bool install_idle(struct install *in, const struct install_idle *w)
 {
+	struct helper *h = w->helper;
 	if (in->phase == INSTALL_WAIT_FINDER && finder_up(in, w)) {
 		in->phase = INSTALL_ASKING;
 		if (in->answered) {
-			install_answer(in, in->answer, w->helper);
+			install_answer(in, in->answer, h);
 		} else {
 			in->ask = true;
 			printf("tools: the Finder is up: asking (%s?)\n", in->yes);
 		}
 	}
-	if (in->phase == INSTALL_INJECT && ask_to_quit(in, w->helper))
+	if (in->phase == INSTALL_INJECT && quit_first(in, h))
 		return false;           /* (one that started after the answer) */
+	if (in->phase == INSTALL_BUSY)
+		ask_to_quit(in, h);     /* (the installer found it in use: see install_call()) */
 	if (in->phase == INSTALL_QUITTING) {
 		if (!in->quit_tb)
 			in->quit_tb = w->tb;
-		if (!w->helper->running && !in->stopped_tb)
+		if (h->quits != in->quits && !h->running && !in->stopped_tb)
 			in->stopped_tb = w->tb;
 		if ((in->stopped_tb && w->tb - in->stopped_tb >= QUIT_AFTER_TB(w->tb_hz)) ||
-		    w->tb - in->quit_tb >= QUIT_WAIT_TB(w->tb_hz))
+		    w->tb - in->quit_tb >= (in->quit_running ? QUIT_WAIT_TB(w->tb_hz) : START_WAIT_TB(w->tb_hz)))
 			in->phase = INSTALL_INJECT;
 	}
 	if (in->phase == INSTALL_INJECT) {
@@ -684,7 +704,7 @@ void install_answer(struct install *in, enum install_answer a, struct helper *h)
 		} else if (a == INSTALL_NEVER) {
 			in->phase = INSTALL_INJECT;
 			printf("tools: don't ask again (Mac OS writes " INSTALL_PREFS_NAME ")\n");
-		} else if (!ask_to_quit(in, h)) {
+		} else if (!quit_first(in, h)) {
 			in->phase = INSTALL_INJECT;
 		}
 		break;
@@ -697,7 +717,7 @@ const char *install_unofferable(const struct install *in)
 {
 	if (!in->checked)
 		return "There's no startup disk Blue can install them on (a writable disk image with a System Folder)";
-	if (in->phase >= INSTALL_QUITTING && in->phase <= INSTALL_RUNNING)
+	if (in->phase >= INSTALL_BUSY && in->phase <= INSTALL_RUNNING)
 		return "Mac OS is installing them";
 	if (in->phase == INSTALL_DONE && in->restarting)
 		return "Mac OS is restarting";
@@ -716,7 +736,7 @@ void install_offer(struct install *in)
 	in->phase = INSTALL_ASKING;
 	in->answered = false;
 	in->ask = true;
-	in->quit_asked = false;
+	in->quit_asked = in->retried = false;
 	in->quit_tb = in->stopped_tb = in->inject_tb = 0;
 	printf("tools: asking (%s?)\n", in->yes);
 }
@@ -730,6 +750,7 @@ void install_offer(struct install *in)
 #define FS_RD_WR_PERM 3u
 #define SM_SYSTEM_SCRIPT 0xFFFFFFFFu    /* (-1) */
 #define FNF_ERR (-43)
+#define FBSY_ERR (-47)
 #define WRONG_DISK 1                    /* (not an OSErr: the System Folder isn't the one checked) */
 #define TEMP_NAME "Blue installing"
 #define TEMP_TYPE FOURCC('T', 'E', 'M', 'P')    /* (until it's whole: nothing is started from it) */
@@ -767,12 +788,13 @@ void install_offer(struct install *in)
 
 enum {
 	S_FIND_FOLDER, S_VOLUME, S_EXT_NAME, S_SCAN, S_DELETE_TEMP, S_CREATE, S_OPEN_DF, S_WRITE_DF, S_CLOSE_DF,
-	S_OPEN_RF, S_WRITE_RF, S_CLOSE_RF, S_SET_INFO, S_DELETE_OLD, S_RENAME, S_CLEANUP_CLOSE, S_CLEANUP_DELETE,
+	S_OPEN_RF, S_WRITE_RF, S_CLOSE_RF, S_SET_INFO, S_DELETE_OLD, S_RENAME, S_CLEANUP_CLOSE, S_CLEANUP_DELETE, S_BUSY,
 	S_DISABLED_FOLDER, S_DISABLED_NAME, S_APPLE_MOVE, S_FLUSH, S_RESTART_ADDRESS, S_RESTART_EVENT,
 	S_RESTART_SEND, S_DISPOSE_EVENT, S_DISPOSE_ADDRESS,
 	S_PREFS_FOLDER, S_PREFS_NAME, S_PREFS_DELETE, S_PREFS_CREATE, S_PREFS_OPEN, S_PREFS_WRITE, S_PREFS_CLOSE,
 	S_PREFS_FLUSH, S_PREFS_FORGET,
 };
+_Static_assert(TOOLS_ENHANCEMENTS == 0, "Enhancements goes first: when it's found in use, the installer starts over");
 
 static void callout(struct install *in, struct ndrv_call *c, unsigned step, unsigned imp, uint32_t a0, uint32_t a1,
 		    uint32_t a2, uint32_t a3)
@@ -1133,6 +1155,15 @@ void install_call(struct install *in, struct ndrv_call *c)
 		}
 		return;
 	case S_DELETE_OLD:
+		if (err == FBSY_ERR && in->tool == TOOLS_ENHANCEMENTS && !in->retried) {
+			/* running after all (being launched, it hasn't started yet): the installer comes back once it has
+			 * quit, and starts over (nothing else is done yet) */
+			in->retried = true;
+			in->temp_made = false;
+			printf("tools: Blue Enhancements is in use: asking it to quit, then trying again\n");
+			callout(in, c, S_BUSY, I_FSP_DELETE, at(R_TEMP), 0, 0, 0);
+			return;
+		}
 		if (err) {
 			stop(in, c, err, "replacing the old copy");
 			return;
@@ -1161,6 +1192,10 @@ void install_call(struct install *in, struct ndrv_call *c)
 	case S_CLEANUP_CLOSE:
 	case S_CLEANUP_DELETE:
 		stop(in, c, in->error, in->error_doing);
+		return;
+	case S_BUSY:
+		in->phase = INSTALL_BUSY;
+		ndrv_finish(c, 0);
 		return;
 	case S_DISABLED_FOLDER:
 		if (err) {
