@@ -139,20 +139,10 @@ and numbered 0 to 3, and closed again when it goes. The hint
 bottom face button on every pad, a Switch pad's included. Their buttons
 and axes reach the Mac's thread through the window's input queue
 (`DISPLAY_EVENT_PAD_*`, a stick's run of moves made one), and go to the
-ADB keyboard and mouse there (`src/pad.c`): Blue's mapping, or a Pippin
-title's (see [guest-tools.md](guest-tools.md#blue-pippin-library)), or
-nothing, as the menu's Controllers checkbox says; the menu lists the pads
-by SDL's names for them. What a button does is decided as it goes down
-and undone as it comes up, whichever mapping is in force by then; a key
-two buttons hold goes up when both have let go. The left stick and the
-triggers are buttons there, pressed past half way and let go below 3/8
-(so they don't flicker at the edge). The right stick moves the ADB mouse,
-at up to 900 counts a second (before Mac OS's acceleration), growing as
-the square of how far it's pushed past a dead zone of about 15%, as guest
-time passes (worked out at each of the machine's sync points, in whole
-numbers, so instruction-time runs come out the same on any host). While
-the menu or a prompt is up, presses do nothing (their releases neither).
-SDL only reports a pad's input while the window has the focus (and lets
+ADB keyboard and mouse there, by Blue's mapping or a Pippin title's, and
+to games that use InputSprocket, as [input.md](input.md) describes, or
+nowhere, as the menu's Controllers checkbox says; the menu lists the pads
+by SDL's names for them, and which mapping they follow. SDL only reports a pad's input while the window has the focus (and lets
 go of what was held when it loses it); a script's virtual pads (below)
 are taken in the background too. SDL's own look at the pads as it waits
 for events is turned off (`SDL_AUTO_UPDATE_JOYSTICKS`): while there was a

@@ -86,7 +86,7 @@ scripted run leaves the window's alone), for Blue Enhancements to share
 then brought to the front.
 
 `pad` plays a game controller (see
-[window.md](window.md#game-controllers)): in a window, through one of
+[input.md](input.md)): in a window, through one of
 SDL's virtual game controllers (SDL 2.0.14 and later), as a real pad
 would; otherwise, or without them, straight to the pads' mapping. A
 scripted run ignores the host's own pads. Its right stick moves the mouse
@@ -208,7 +208,7 @@ and doesn't read it.
 | `BLUE_LOG_LIBS=1` | the file SDL2 and libslirp were loaded from |
 | `BLUE_LOG_MP=1` | Multiprocessing Services' calls, task switches, timers and software interrupts |
 | `BLUE_LOG_NET=1` | the Ethernet driver's calls |
-| `BLUE_LOG_PADS=1` | the game controllers' buttons and axes, and the mapping each went to |
+| `BLUE_LOG_PADS=1` | the game controllers' buttons and axes, and the mapping each went to; InputSprocket's calls to Blue Game Controllers, and each of a game's needs ([input.md](input.md#testing)) |
 | `BLUE_LOG_PCI=1` | PCI configuration space accesses |
 | `BLUE_LOG_RAVE=1` | every call to the 3D engine |
 | `BLUE_LOG_SHARE=1` | Mac OS's writes to the shared folder |

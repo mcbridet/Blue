@@ -2,8 +2,8 @@
 
 Some things only code inside Mac OS can do. Blue's guest tools are that
 code: Blue Enhancements (the screen following the window, the
-clipboard), Blue 3D Engine, Blue's OpenGL libraries and Blue Pippin
-Library. This document describes how Blue offers and installs them, and
+clipboard), Blue 3D Engine, Blue's OpenGL libraries, Blue Pippin Library
+and Blue Game Controllers. This document describes how Blue offers and installs them, and
 how each works. How to use them is in the
 [README](../README.md#the-guest-tools).
 
@@ -37,7 +37,7 @@ OS doesn't restart, and the box says what. This works on Mac OS 8.5, 8.6,
 through the restart, until OK) and printed:
 
 ```
-tools: installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory, Blue OpenGL Utility and Blue Pippin Library in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
+tools: installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory, Blue OpenGL Utility, Blue Pippin Library and Blue Game Controllers in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
 ```
 
 Mac OS 9 has OpenGL libraries of Apple's with the names Blue's have
@@ -346,3 +346,20 @@ on a Pippin", has what each does on a Pippin):
 Nothing provides the Pippin's video calls (`PippinVideo.h`'s, which
 aren't among PippinPPC's twelve) or its floppy dock, for titles that use
 them.
+
+## Blue Game Controllers
+
+Blue Game Controllers is an InputSprocket driver (`src/isp.c`): a shared
+library of creator `insp` in Extensions, which InputSprocketLib loads for
+each game that starts it, so that each of the host's pads is a game
+controller of its own in games that use InputSprocket, set up in the
+game's own controls dialog. Its code is a host call for each entry, as
+the 3D engine's; how it works is in [input.md](input.md#inputsprocket).
+Other makers' InputSprocket drivers (`insp` too) are left alone by the
+check, which knows Blue's by its host call. A copy from another version
+of Blue doesn't run (each copy carries a hash of its layout), and Blue
+says so:
+
+```
+isp: the guest's Blue Game Controllers is from another version of Blue: update it (Blue offers to, in a window), or by hand from a volume made with "blue tools create"
+```

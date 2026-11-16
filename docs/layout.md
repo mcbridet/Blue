@@ -28,7 +28,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           the startup disk, and a Pippin disc's without one), ofnvram.c (Open Firmware's variables in
           NVRAM: boot-device), share.c (shared folder),
           rsrc.c (resource forks), tools.c (guest tools), pippin.c (their
-          PippinPPC, for Pippin titles), install.c
+          PippinPPC, for Pippin titles), isp.c (their InputSprocket driver,
+          for game controllers in games), install.c
           (installing them from inside Mac OS), clip.c (the clipboard they
           share with the host), rave.c (3D engine), opengl.c +
           opengl_table.h (the guest's OpenGL libraries), glfront.c + gltex.c + gllight.c +

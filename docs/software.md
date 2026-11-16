@@ -37,6 +37,16 @@ draws with Blue's OpenGL libraries, on 8.6 and on 9.2.2: the same
 pictures as with RAVE, at 60 frames a second on the GPU and about 50 in
 software (on 8.6, an M5 Mac).
 
+A game controller plays UT through InputSprocket (with Blue Game
+Controllers, on 8.6 with InputSprocket 1.4.1, as UT installs it): the
+left stick runs and slides, the right turns and looks, the triggers fire,
+A jumps, and Start is Esc, for its menus; Options, Input Device shows the
+pad in InputSprocket's dialog (see [input.md](input.md#inputsprocket)).
+It wants its CD in the drive. A scripted run plays it in instruction
+time: from the intro, Tab and `open DM-Tempest` (its console) start a
+practice match, and `clock 300` makes it fast enough to play (see
+[findings.md](findings.md), "Unreal Tournament's needs").
+
 ## MacBench
 
 ZD MacBench 5.0 runs (tested from a shared folder, on an installed 8.5):

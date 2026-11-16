@@ -105,7 +105,7 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **Connections into the Mac** | Not yet | Through port forwarding | Through port forwarding | — |
 | **AppleTalk** | Not yet | With extra setup, on some hosts | Through bridged networking, run as root | Through Mac OS X's network |
 | **USB devices** | Not yet | No | Passed through from the host | Through Mac OS X |
-| **Game controllers** | Not yet | No | A USB gamepad, passed through | Unreliable |
+| **Game controllers** | Gamepads, as keys or through InputSprocket | No | A USB gamepad, passed through | Unreliable |
 | **Pippin titles** | Yes | No | No | No |
 
 SheepShaver also runs System 7.5 to Mac OS 8.1, given an Old World ROM.
@@ -384,6 +384,7 @@ that it installs there for you:
 | Blue 3D Engine | Accelerates QuickDraw 3D and RAVE games, which see an ATI Rage 128. |
 | Blue OpenGL Library, Memory and Utility | OpenGL for Mac OS 9 games, drawn on your GPU. |
 | Blue Pippin Library | Lets Bandai Pippin titles run, and game controllers play them as the Pippin's AppleJack (see [Pippin titles](#pippin-titles)). |
+| Blue Game Controllers | Game controllers in games that use InputSprocket, as themselves, set up in each game's own controls dialog (see [Game controllers](#game-controllers)). |
 
 When the Finder is up and a tool is missing, or comes from another
 version of Blue, Blue offers to install them, over the Mac's screen:
@@ -486,9 +487,24 @@ A, B, X and Y its red, green, yellow and blue buttons; the shoulders and
 triggers its left and right fire buttons; Back, Guide (Home, PS) and
 Start its three buttons below; and the right stick its trackball.
 
+Games that use InputSprocket (Apple Game Sprockets' input library, which
+most Mac action games of the late 1990s do, Unreal Tournament among them)
+get each pad as a game controller of its own, through Blue Game
+Controllers, one of the [guest tools](#the-guest-tools). The game sets it
+up as it would a joystick: shooters move and slide with the left stick,
+turn and look with the right (as with the mouse), fire with the right
+trigger and jump with A, and the game's own controls dialog (Unreal
+Tournament's Options, Input Device) shows the pad, its buttons, sticks
+and triggers by name, to change what each does; the game keeps your
+choices. While the game is in front, the controls it uses do only that;
+the rest keep the mapping above, so Start is still Esc, for its menus.
+InputSprocket itself is Apple's, not Blue's: games that use it come with
+it, to install with them.
+
 **Controllers** in Blue's menu (F12) lists the pads connected and which
 mapping they follow, and turns them off. A pad's input reaches Blue only
-while its window is in front.
+while its window is in front. How it all works is in
+[docs/input.md](docs/input.md).
 
 ### Copy and paste
 
@@ -798,10 +814,9 @@ Blue doesn't have everything a real iMac had, yet:
 - **AltiVec,** the G4's vector instructions: programs that need a G4
   don't run.
 - **Modems, serial ports, infrared and printing.**
-- **InputSprocket,** for games that read game controllers themselves:
-  pads reach Mac OS as the keyboard and mouse (see
-  [Game controllers](#game-controllers)). USB and FireWire devices of any
-  kind aren't there either.
+- **USB and FireWire devices** of any kind (game controllers reach Mac OS
+  as the keyboard and mouse, and through InputSprocket: see
+  [Game controllers](#game-controllers)).
 - **Sound input** (a microphone), and 3D sound.
 - **AppleTalk** networking, and connections into the Mac.
 - **3dfx Glide,** for games that draw with a Voodoo card.
@@ -936,9 +951,12 @@ the pad should be listed, and the checkbox on. Blue takes the pads SDL
 recognises as game controllers (most Xbox, PlayStation and Switch pads,
 and many others); a build of your own needs a recent SDL2 (2.0.18 or
 later, as for the menu).
-Games that read InputSprocket get the pad as keys, which their own key
-settings may not use: set the game's keys to the arrows, Return, Space and
-Tab, or use the keyboard.
+A game that uses InputSprocket gets the pad as a controller of its own
+once Blue Game Controllers is installed (Install Guest Tools… in Blue's
+menu), and if InputSprocket is (it comes with the game); look for the pad
+in the game's controls dialog. Other games get the pad as keys, which
+their own key settings may not use: set the game's keys to the arrows,
+Return, Space and Tab, or use the keyboard.
 
 ### The CD came out when Mac OS restarted
 
