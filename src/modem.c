@@ -319,7 +319,12 @@ static void dial(struct modem *m, const char *d)
 	size_t n = strlen(d);
 	bool stay = n && d[n - 1] == ';';       /* dial, and stay in command mode: the number goes on */
 	char full[MODEM_ADDRESS_MAX];
-	snprintf(full, sizeof full, "%s%.*s", m->dialled, (int)(stay ? n - 1 : n), d);
+	size_t have = strnlen(m->dialled, sizeof full - 1), add = stay ? n - 1 : n;
+	if (add > sizeof full - 1 - have)
+		add = sizeof full - 1 - have;
+	memcpy(full, m->dialled, have);
+	memcpy(full + have, d, add);
+	full[have + add] = '\0';
 	if (stay) {
 		snprintf(m->dialled, sizeof m->dialled, "%s", full);
 		result(m, R_OK);
