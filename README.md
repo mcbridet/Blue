@@ -5,10 +5,7 @@
 <h1 align="center">Blue</h1>
 
 <p align="center">
-  <strong>A blazing-fast, feature-rich Mac OS 8, 9 &amp; Pippin runtime.</strong><br>
-  Mac OS 8.5 to 9.2.2 and Pippin titles on today's Macs and Linux PCs:
-  Apple's own code runs unmodified, on a native replacement for the Power
-  Mac's NanoKernel instead of an emulated Power Mac.
+  <strong>A blazing-fast, feature-rich Mac OS 8, 9 &amp; Pippin runtime.</strong>
 </p>
 
 <p align="center">
