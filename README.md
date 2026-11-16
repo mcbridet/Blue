@@ -1460,35 +1460,36 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 
 ## Next steps
 
-1. 3D: OpenGL with Mac OS 9, then Glide: docs/opengl-plan.md (what Mac OS
-   9.1's OpenGL is and what games link to, the design; under way: textures,
-   arrays, lighting, fog and stencil are done and Unreal Tournament's OpenGL
-   build plays; display lists and pixel paths are next) and
-   docs/glide-plan.md. (The
-   RAVE engine draws with the host's GPU; what's left there, such as
-   reading back less of each frame, is in docs/gpu-plan.md.)
-2. Networking: host ports forwarded to the guest (so it can serve).
-3. Shared folder: writing back when Mac OS ejects the volume, then offering
-   the folder again as new media, so that changes cross during a run (it
-   needs the disk driver's removable media).
-4. Startup-disk selection; Open Transport's stall with a full
-   interrupt set for the Ethernet node; then the NanoKernel v2 interface,
-   which the ROM files from Mac OS ROM 1.7.1 on use, and Mac OS 9.1's needs
-   (see Mac OS 9.1).
-5. More JIT speed for disk boots: the interpreter, which runs code
+1. More JIT speed for disk boots: the interpreter, which runs code
    until it's hot at about 10 ns an instruction, mostly in overheads per
    block (about 8%); translating (4%), with the instruction-cache upkeep
    that follows (4%); device register accesses, though made in place, still
    cost about 25 ns each in the devices' bookkeeping (about 4% of the 8.5
-   CD boot).
-6. The window: drawing and presenting on a thread of their own, so the
+   CD boot). On x86-64, the front end: about a third of a 9.2.2 boot's
+   cycles on a Zen 5 are stalls from branch misses in the 68k emulator's
+   dispatch and returns, and instruction-cache misses
+   (docs/x86-jit-plan.md).
+2. The window: drawing and presenting on a thread of their own, so the
    Mac doesn't stop for them; and knowing which framebuffer pages were
    written (by protecting them) rather than comparing it with a copy each
    frame, which is most of what showing a 32-bit screen still costs (plan.md,
    Findings, "Showing the screen").
+3. Known problems: on a 9.2.2 that Apple Software Restore has just
+   restored, quitting the Setup Assistant at the first startup leaves the
+   desktop without a menu bar (plan.md, task 17); a "don't ask again" for
+   the guest tools' offer, and the offer on an installed 9.1; startup-disk
+   selection (the Startup Disk control panel); whether Open Transport's
+   stall with a full interrupt set for the Ethernet node is still there.
+4. Later: host ports forwarded to the guest (so it can serve); the shared
+   folder written back when Mac OS ejects the volume and offered again as
+   new media, so that changes cross during a run; Glide
+   (docs/glide-plan.md); and, when a program needs them, what OpenGL
+   leaves out (OpenGLUtility's tessellators and NURBS, antialiased
+   polygons, auxiliary buffers, color index: docs/opengl-plan.md).
 
-future.md has ideas not planned yet: a modem, infrared, 3D sound, sound
-input, AltiVec, printing, game controllers, and more CD formats.
+future.md has ideas not planned yet: a modem, a serial port, infrared, 3D
+sound, sound input, AltiVec, printing, game controllers, and more CD
+formats.
 
 ## Build and test
 
