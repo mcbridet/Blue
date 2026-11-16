@@ -995,7 +995,11 @@ software (on 8.6, an M5 Mac).
     that faults (a device register, an unmapped or read-only page) is sent
     by a SIGSEGV handler (SIGBUS on macOS) to the interpreter, and
     translated with flag checks from then on. A few thousand do so in a
-    boot. `BLUE_JIT_FASTMEM=0` checks every access.
+    boot. `BLUE_JIT_FASTMEM=0` checks every access. In a window the
+    framebuffer's pages are write-protected there too while they're watched
+    for the window (`MEM_WATCH`, see Host side): a store to one makes the
+    handler let the page go and the store go ahead, the instruction as it
+    was; checked stores call into C for watched pages.
   - Code changes are tracked per instruction word: stores (by either engine,
     or the host, e.g. disk reads) to a page with translated code drop only
     the blocks translated from those words, which matters because the 68k
@@ -1312,15 +1316,28 @@ software (on 8.6, an M5 Mac).
   MacPorts' directories, which aren't searched for bare library names;
   redrawn only when the screen, the pointer or the status bar changes;
   drawn at the display's full resolution, so high-density displays don't
-  blur it). Up to 60 times a second the framebuffer is compared with a
-  copy of what was last shown, row by row, and only the bands of rows that
-  changed are converted, straight into a streaming texture in the 32-bit
-  format renderers take as it is (ARGB8888: a byte swap at 32 bits per
-  pixel, the 5-bit channels widened at 16, the CLUT expanded to 32-bit
-  colours at 8 and fewer), and drawn again in the scaled copy below (all
-  of it when the mode or colours change, and once a second if nothing
-  has). The screen is scaled to fill the window above the status bar,
-  keeping its shape:
+  blur it). The window has a thread of its own, the process's main thread
+  (where SDL wants windows, events and drawing on macOS), and the Mac runs
+  on another: up to 60 times a second (and when each of a 3D game's frames
+  is due) the Mac hands over a frame, the rows of the screen that changed
+  copied into the window's copy of the framebuffer, and goes on while the
+  window converts, uploads, draws and presents it (about a millisecond
+  later); the window's input reaches the Mac through a queue. The Mac
+  doesn't compare the whole framebuffer to find what changed: its pages
+  are watched for writes (in the JIT's view of guest memory they're
+  write-protected, and the first store to one, whichever way it comes, is
+  seen and lets the page go; see fastmem), so only the pages written since
+  the last frame are compared with the copy, a host page at a time (16 KB
+  on Apple silicon). A page written in most frames (a game's, a movie's) is
+  compared rather than watched, until it has stayed the same for 8 frames:
+  being seen written costs several times what comparing it does.
+  `BLUE_WINDOW_COMPARE=1` compares the whole screen instead. The rows that
+  changed are converted into the 32-bit format renderers take as it is
+  (ARGB8888: a byte swap at 32 bits per pixel, the 5-bit channels widened
+  at 16, the CLUT expanded to 32-bit colours at 8 and fewer), uploaded,
+  and drawn again in the scaled copy below (all of it when the mode or
+  colours change, and once a second if nothing has). The screen is scaled
+  to fill the window above the status bar, keeping its shape:
   whole multiples exactly, other sizes by drawing it at the multiple above
   on the GPU and filtering that down, so every screen pixel comes out the
   same size with edges blended over at most one window pixel.
@@ -1469,18 +1486,13 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    cycles on a Zen 5 are stalls from branch misses in the 68k emulator's
    dispatch and returns, and instruction-cache misses
    (docs/x86-jit-plan.md).
-2. The window: drawing and presenting on a thread of their own, so the
-   Mac doesn't stop for them; and knowing which framebuffer pages were
-   written (by protecting them) rather than comparing it with a copy each
-   frame, which is most of what showing a 32-bit screen still costs (plan.md,
-   Findings, "Showing the screen").
-3. Known problems: on a 9.2.2 that Apple Software Restore has just
+2. Known problems: on a 9.2.2 that Apple Software Restore has just
    restored, quitting the Setup Assistant at the first startup leaves the
    desktop without a menu bar (plan.md, task 17); a "don't ask again" for
    the guest tools' offer, and the offer on an installed 9.1; startup-disk
    selection (the Startup Disk control panel); whether Open Transport's
    stall with a full interrupt set for the Ethernet node is still there.
-4. Later: host ports forwarded to the guest (so it can serve); the shared
+3. Later: host ports forwarded to the guest (so it can serve); the shared
    folder written back when Mac OS ejects the volume and offered again as
    new media, so that changes cross during a run; Glide
    (docs/glide-plan.md); and, when a program needs them, what OpenGL
@@ -1647,7 +1659,17 @@ how the host's sound queue fared (its depth, how much faster or slower it
 played, chunks dropped, silence added) and what paces it (the frames the
 guest's sound DMA gave, how far guest time is ahead of the host clock, the
 disks' transfers and the guest time they took, how much the host's sleeps
-overran). `BLUE_LOG_USB=1` logs the USB
+overran). `BLUE_WINDOW_PROFILE=1` prints, every second in a window, the
+frames the Mac handed the window and how much of the screen changed in
+them, and where showing them took the host's time: on the Mac's thread
+(which stops the Mac meanwhile: finding and copying the changes, taking
+the input) and on the window's (converting, uploading, drawing,
+presenting, events), in milliseconds a frame of the host clock and of the
+thread's processor time, the pages seen written a frame, and how long after
+the hand-over a frame was on the screen. `BLUE_WINDOW_COMPARE=1` finds the
+changes by comparing the whole screen, without watching the framebuffer;
+`BLUE_WINDOW_CHECK=1` compares the watched pages too, and says where a
+write went unseen. `BLUE_LOG_USB=1` logs the USB
 controller's register accesses (not the frame number, which drivers poll),
 `BLUE_LOG_PCI=1` configuration space accesses.
 `--io-ram` backs unmodelled I/O pages with plain RAM. Under gdb, `handle
@@ -1708,7 +1730,8 @@ the one in the startup disk's System Folder.
 ## Layout
 
 ```
-src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
+src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its page
+          flags, pages watched for writes),
           ppc.c + ppc_exec.inc + ppc_fp.c (interpreter), jit.c (the JIT's
           runtime), jit_a64.c + a64.h and jit_x86.c + x86.h (its AArch64
           and x86-64 translators), nk.c (native kernel), mp.c (its Multiprocessing
@@ -1733,7 +1756,7 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           vertex's work, client arrays, the attribute stacks), gltest.c (their test application),
           surface.c + raster.c + gpu.c + gl.c (the 3D backend:
           drawing, in software and with OpenGL, and presenting), display.c (SDL2
-          window), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
+          window, on the main thread, and what the Mac hands it), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), env.c (settings' old names),
           icon.c (the window's icon), main.c
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
