@@ -147,7 +147,7 @@ Done:
   in place of the Driver Services timer. The restored 9.2.2 reaches the
   Finder in instruction time without a key. See Findings, "The display's
   interrupt".
-- **OpenGL** (Task 18; milestones 0 to 8 of docs/opengl-plan.md): the
+- **OpenGL** (Task 18; milestones 0 to 8 of [opengl-plan.md](opengl-plan.md)): the
   libraries, AGL and clears, checked by a test application in the guest;
   gl calls recorded in guest memory by the library's own code, and a
   fixed-function front end on the host drawing triangles (matrices,
@@ -504,12 +504,12 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 6. Reference run under QEMU (optional, research only)
 
-- **Status:** done. `docs/nk2-reference.md` answers the questions; 9.1
+- **Status:** done. [nk2-reference.md](nk2-reference.md) answers the questions; 9.1
   boots to the Finder on QEMU's `mac99` unpatched. Tools:
   `tools/qemu-ref/run91.sh`, `shots.py`, `rsp.py` (gdbstub client, no gdb
   needed), `mptrace.py` (MP call trace), `nk2dump.py` (decodes RAM dumps).
 - **Owns:** `tools/qemu-ref/` (new files only), a notes file
-  `docs/nk2-reference.md`.
+  [nk2-reference.md](nk2-reference.md).
 - **Goal:** what Apple's 9.1 Trampoline and NanoKernel 2 really do, to
   check Blue against: the page map they build (and the areas from it),
   the device tree after the Trampoline (parcel properties applied), the
@@ -772,7 +772,7 @@ the kernel); 8 onwards as the boot progresses.
   mounts as "Audio CD 1", and MoviePlayer's conversion of a track to AIFF
   holds its samples bit for bit. Instruction-time runs of the 8.5 and 9.1
   CDs reach the Finder as before, but for the CD icon (on the desktop and
-  in the window's title). Open: see future.md, "More CD formats".
+  in the window's title). Open: see [future.md](future.md), "More CD formats".
 
 ### 17. The display's VBL interrupt
 
@@ -826,7 +826,7 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 18. OpenGL for Mac OS 9 games
 
-- **Status:** milestones 0 to 8 done (docs/opengl-plan.md has the plan,
+- **Status:** milestones 0 to 8 done ([opengl-plan.md](opengl-plan.md) has the plan,
   its milestones and what's built). Milestone 8, the rest of OpenGL 1.2:
   logic ops (OpenGL's own on the GPU); line stipple (the counter going on
   along strips and loops, starting again for separate lines) and polygon
@@ -1020,7 +1020,7 @@ the kernel); 8 onwards as the boot progresses.
   made in scratch: playing through a level isn't scriptable. The other
   Pippin disc here, "1995.1.17 Hanshin Daishinsai" (a Director 4
   projector, 68k), runs on both.
-- **Open:** the AppleJack controller (future.md); titles that use the
+- **Open:** the AppleJack controller ([future.md](future.md)); titles that use the
   Pippin's video calls (PippinVideo.h's) or its floppy dock.
 
 ## Findings
@@ -1181,7 +1181,7 @@ Facts later tasks need, added as they are found.
   backing store, MP safe, robust, multiscreen and compliant, not
   accelerated or full screen. Its `gldGetString` gives "Apple", "Generic",
   "1.1" and an extension list ending in `GL_ARB_multitexture` (left out of
-  docs/opengl-plan.md before). The engine's `glGetString` passes the
+  [opengl-plan.md](opengl-plan.md) before). The engine's `glGetString` passes the
   vendor, renderer and version on as they are, and makes the extensions
   its own seven followed by those of the renderer's it knows (13), in the
   renderer's order, each with a space after it. ATI's
@@ -1190,7 +1190,7 @@ Facts later tasks need, added as they are found.
   smooth points or lines are on, whatever the hint. ATI's `gldGetString`
   picks its renderer's name and extensions by the chip; a Rage 128's
   list has `GL_EXT_texture_env_combine`, `GL_EXT_texture_lod_bias` and
-  `GL_SGIS_texture_edge_clamp` (docs/opengl-plan.md had guessed, from the
+  `GL_SGIS_texture_edge_clamp` ([opengl-plan.md](opengl-plan.md) had guessed, from the
   strings' order, a shorter one). The engine keeps `glTexEnv`'s LOD bias as
   given, per unit, but answers no `GL_MAX_TEXTURE_LOD_BIAS_EXT`
   (`GL_INVALID_ENUM`); its specular vector is the specification's formula.
@@ -1513,7 +1513,7 @@ Facts later tasks need, added as they are found.
   54,143,452: deadlines are seen at the next sync point or exit (every
   20,000 instructions at most, about 1.2 ms of guest time), never while the
   blue task runs with its 68k interrupts masked.
-- **Reference run** (`docs/nk2-reference.md`, QEMU `mac99`): up to call 7
+- **Reference run** ([nk2-reference.md](nk2-reference.md), QEMU `mac99`): up to call 7
   the real sequence is Blue's, plus a first MPYieldWithHint (13) from the
   emulator. Right after the third task is named, Mixed Mode starts making
   `sc` with r0 = -1 (53k per boot): not an MP call; the kernel sets r0 =

@@ -7,7 +7,7 @@ the host in batches, where Blue does OpenGL's fixed-function work and
 draws with the 3D backend the RAVE engine already uses, on the GPU in real
 time and in software otherwise, so instruction-time runs stay reproducible.
 
-3dfx Glide has a plan of its own, docs/glide-plan.md, on the same backend.
+3dfx Glide has a plan of its own, [glide-plan.md](glide-plan.md), on the same backend.
 It should come first (see Order).
 
 ## Status
@@ -501,7 +501,7 @@ Milestone 6:
   position's tokens; a buffer overflowed; the name stack's hits; two of
   evaluators: curves', patches' points and lines with their colors and
   texture coordinates, lit ones' colors) give Mesa's records, within
-  1e-3. Where Mesa departs from OpenGL 1.2 (see Findings in plan.md), the
+  1e-3. Where Mesa departs from OpenGL 1.2 (see Findings in [plan.md](plan.md)), the
   scenes avoid it and `tests/test_glfront.c` checks OpenGL's way: line
   reset tokens, flat shading's colors in feedback, the current values after
   evaluation, `glGetMap`'s order, a backwards domain's normals, filled
@@ -561,7 +561,7 @@ Milestone 5:
   (`RASTER_CMD_PIXELS`), without texturing, fog or the color sum; the GPU's
   depth and stencil are read back when they're read or copied. Images go
   from the raster position rounded to the nearest pixel corner, as Mesa
-  does (see Findings in plan.md for where Mesa departs from OpenGL 1.2's
+  does (see Findings in [plan.md](plan.md) for where Mesa departs from OpenGL 1.2's
   rectangles).
 - **3D textures:** `glTexImage3D`, `glTexSubImage3D`, `GL_TEXTURE_3D`
   (before 2D and 1D in a unit), the r coordinate's wrap, the image height
@@ -603,7 +603,7 @@ Milestone 5:
   libGLU (`libGLU.so.1`). Unit tests (`tests/test_glfront.c`,
   `tests/test_opengl.c`) check what Mesa can't: OpenGL 1.2's rectangles
   for fractional and negative zooms, pixel maps (Mesa 25.2's corrupt its
-  heap: see Findings in plan.md; that was milestone 5's intermittent crash
+  heap: see Findings in [plan.md](plan.md); that was milestone 5's intermittent crash
   in the tests), color indices, depth and stencil images read and drawn,
   OpenGLUtility's matrices, projections, images, objects, strings and
   errors.
@@ -850,7 +850,7 @@ Milestone 3:
   exactly on the diagonal two triangles share are drawn by neither in
   `raster.c` (its edge functions are floats, and both triangles' come out
   just negative there); the GPU and Mesa draw them. (Since fixed: exact
-  edge functions, see Findings in plan.md; none differ now.)
+  edge functions, see Findings in [plan.md](plan.md); none differ now.)
 - **Tests:** `tests/test_glfront.c` (every format and type unpacked, the
   pixel stores, objects and their errors, completeness, the backend's copy
   made, shared and retired, each environment mode for each base format
@@ -1793,7 +1793,7 @@ user has.
 
 ### Glide
 
-docs/glide-plan.md. The same backend, presentation and pacing serve it;
+[glide-plan.md](glide-plan.md). The same backend, presentation and pacing serve it;
 Glide's vertices are already in screen space, so it skips the front end.
 
 ## Order: Glide or OpenGL first

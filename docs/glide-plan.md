@@ -9,7 +9,7 @@ the Voodoo's rendering state drives the 3D backend the RAVE engine uses
 reproducible), and the Glide image is shown in Blue's window in place of
 the Mac's screen, as a Voodoo's own video output replaced it.
 
-This is a plan of its own rather than part of docs/opengl-plan.md because
+This is a plan of its own rather than part of [opengl-plan.md](opengl-plan.md) because
 it's a different API with its own milestones and games, small enough to
 build and test alone, and it's recommended first (see Order in
 opengl-plan.md). Both use the same backend extensions, presentation and

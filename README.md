@@ -148,7 +148,7 @@ record:
 - [Virtual machine description](#virtual-machine-description),
   [Next steps](#next-steps), [Build and test](#build-and-test),
   [QEMU reference](#qemu-reference), [Assets](#assets), [Layout](#layout)
-- Plans and findings: [plan.md](plan.md), [future.md](future.md), and
+- Plans and findings: [docs/plan.md](docs/plan.md), [docs/future.md](docs/future.md), and
   `docs/` (OpenGL, Glide, the GPU backend, the x86-64 JIT)
 
 Blue was called syshm until November 2026. Its settings in the environment
@@ -513,7 +513,7 @@ instruction time its startup used to stop short of the Finder until a key
 was pressed: a Time Manager software interrupt the 68k emulator never took,
 and nothing else to interrupt the native code it then napped in. The
 display's vertical blank interrupts it 60 times a second now, as an iMac's
-does (plan.md, Findings).
+does (docs/plan.md, Findings).
 
 A volume Apple Software Restore has restored but not yet given back (Blue
 closed with its last dialog up) has neither folder, and on its first
@@ -528,7 +528,7 @@ and it learns of activity from the ADB keyboard's key-downs but not from an
 ADB mouse (the iMac's mouse is USB, and its driver tells the power manager
 itself), so the dialog's Quit took no click until a key was pressed. While
 Mac OS dozes, Blue now has mouse input go after a tap of Option, which
-wakes it (`src/cuda.c`; plan.md, Findings): clicks and moves work after
+wakes it (`src/cuda.c`; docs/plan.md, Findings): clicks and moves work after
 half an hour's idling too.
 
 The CD's system and the restored one start up as quickly as before in
@@ -825,7 +825,7 @@ mounted again after a restart (checked on 8.5, 8.6, 9.1 and 9.2.2):
 Command-E, Put Away and the Trash eject it (and the next of several
 `--floppy` images goes in), a restart doesn't. A floppy is never the
 startup disk: the drive is empty as far as Mac OS knows until applications
-run (see plan.md, Findings), and Blue doesn't look for a ROM file on it.
+run (see docs/plan.md, Findings), and Blue doesn't look for a ROM file on it.
 Transfers take guest time at the disks' rate. The status bar's floppy light
 (with a floppy drive only) is dimmed while it's empty. Disk Copy can't
 make floppies from images in this drive (it looks for Apple's floppy
@@ -858,7 +858,7 @@ real time on an M5 (`--realtime`, a script in seconds; medians of 4 runs,
 interleaved) it scored 7,085 before the JIT's floating-point work above
 and 16,616 after (in a later session, 6,250 and 14,700: the host's speed
 varies), while the Processor test's code runs as fast as before; see
-Findings in plan.md.
+Findings in docs/plan.md.
 
 Its CD-ROM tests run with the MacBench 5.0 CD (`MacBench5.toast`) in a
 CD-ROM drive, on an installed 8.5 and 9.2.2: the CD-ROM test (148 MB of
@@ -867,7 +867,7 @@ instruction time, 4,261 on 9.2.2 with `clock 400`, 5,366-5,383 in real
 time, a window or not) and the CD-ROM inspection tests (sequential and
 random reads of 512 bytes and 1 MB). They read through the File Manager
 only; below it MacBench just takes an inventory of the drives (see
-Findings in plan.md, "MacBench's CD-ROM test"). A report of the test
+Findings in docs/plan.md, "MacBench's CD-ROM test"). A report of the test
 freezing MacBench on 9.2.2 in a window (the Memory Manager faulting on a
 broken system heap, then the Toolbox) didn't reproduce here.
 
@@ -878,7 +878,7 @@ HFS CDs, and many of their programs run on a Mac, but some link to the
 Pippin's own library, PippinPPC, which Mac OS hasn't got ("could not be
 opened because "PippinPPC" could not be found"). Blue Pippin Library, one
 of the guest tools (below), is Blue's own PippinPPC, with the Pippin's
-twelve functions mapped onto Mac OS 8.5 to 9.2.2 (`src/pippin.c`; plan.md
+twelve functions mapped onto Mac OS 8.5 to 9.2.2 (`src/pippin.c`; docs/plan.md
 has what each does on a Pippin):
 
 - The Pippin's file dialogs are Standard File's, starting in the title's
@@ -920,7 +920,7 @@ them onto the keyboard).
 Japanese, shown in Mac OS Roman without a Japanese system; typing "c" in the
 Finder selects it), then JISIN. It shows its title, then a photo at a
 time, the next at a click. A scripted click doesn't select a desktop icon
-(see plan.md, Findings), which is why opening the disc that way seemed to
+(see docs/plan.md, Findings), which is why opening the disc that way seemed to
 do nothing.
 
 ### The window's scale
@@ -979,7 +979,7 @@ them, and once the Finder is up, if one is missing or isn't this version's
 (both forks compared with what it makes), a box over the screen says so,
 with Install and Restart (or Update and Restart), Not Now and Don't Ask
 Again (below); Mac OS runs on meanwhile. On Install, Mac OS writes the files itself (see Findings in
-plan.md): each goes to a temporary file in the folder it belongs in, which
+docs/plan.md): each goes to a temporary file in the folder it belongs in, which
 then takes the old copy's place, so an error (a full or locked disk) leaves
 nothing half written; a disabled copy is updated where it is and stays
 disabled. An older Blue Enhancements that's running is asked to quit
@@ -1146,7 +1146,7 @@ invisible file at its top, `Icon\r`):
   Games of the time go wrong at the frame rates the host's GPU reaches:
   Unreal Tournament's engine ticks its actors at least 5 ms at a time, so
   at 400 frames a second its game, timers and match clock included, ran
-  at twice the speed (see Findings in plan.md). Waiting, the host sleeps,
+  at twice the speed (see Findings in docs/plan.md). Waiting, the host sleeps,
   as when the guest idles (but guest time ahead of the host clock isn't
   made up then: the game would show it). In a window in real time, the
   window shows each such frame when it's due, so frames come at an even
@@ -1613,7 +1613,7 @@ software (on 8.6, an M5 Mac).
     on. The guest waits in the driver's call until the transfer is over,
     taking interrupts meanwhile, so the sound keeps the host clock's pace (a
     movie streaming from disk used to run guest time 1.1 to 2.3 times as
-    fast, its sound dropped in pieces; plan.md, Findings).
+    fast, its sound dropped in pieces; docs/plan.md, Findings).
 - Ethernet (`src/net.c`): no chip is emulated. On New World Macs the
   firmware supplies the hardware layer of Mac OS's Ethernet driver, as a
   code fragment in the `ethernet` node's `lanLib,AAPL,MacOS,PowerPC`
@@ -1661,7 +1661,7 @@ software (on 8.6, an M5 Mac).
   sound chip and the Ethernet node have them (the Ethernet node only for
   its receive DMA channel, the one Blue raises; lanLib takes its set's
   last member, which is that channel's in the iMac's set of all three as
-  well, and Open Transport doesn't stall with that one either: plan.md,
+  well, and Open Transport doesn't stall with that one either: docs/plan.md,
   Findings), with
   `AAPL,interrupt-index` when the ROM file's Trampoline makes it (the
   display's always: earlier ROMs ignore it). Their handlers mask and
@@ -1797,7 +1797,7 @@ software (on 8.6, an M5 Mac).
   (InterfaceLib's, and the 68k emulator's for the `_BlockMove` trap) take
   0.3-1.2% of guest instructions in the CD boots and a game's startup, and
   1-2% of host time, mostly in copies too small to be worth a kernel exit
-  (plan.md, Findings).
+  (docs/plan.md, Findings).
 
 ## Virtual machine description
 
@@ -1876,7 +1876,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 ## Next steps
 
 1. More JIT speed: what's left of a boot's host time outside generated
-   code is mostly the kernel's (plan.md, Findings, "Where a boot's host
+   code is mostly the kernel's (docs/plan.md, Findings, "Where a boot's host
    time goes" and what followed it): host calls, the disk and display
    drivers (5-10%); Multiprocessing Services' calls; kernel calls made in
    place, now 17 ns each with the context switch's copies vectorized; and
@@ -1898,7 +1898,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    leaves out (OpenGLUtility's tessellators and NURBS, antialiased
    polygons, auxiliary buffers, color index: docs/opengl-plan.md).
 
-future.md has ideas not planned yet: a modem, a serial port, infrared, 3D
+docs/future.md has ideas not planned yet: a modem, a serial port, infrared, 3D
 sound, sound input, AltiVec, printing, game controllers, and more CD
 formats.
 

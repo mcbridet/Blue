@@ -109,7 +109,7 @@ results after the arrow; IDs are slot << 16 | use count):
 | 255 | 0.313 | blue kc8 | 52 MPWaitForEvent | 0x001E0001, timeout 0 → r4 = 8 (first level-1 software interrupt) |
 | 256-259 |   | blue    | 18 (0x00300001, timeout 0) → message; 31; 13; 18 → -29296 | the Time Manager's loop |
 
-Up to call 7 this is exactly the sequence Blue sees (plan.md, Findings),
+Up to call 7 this is exactly the sequence Blue sees ([plan.md](plan.md), Findings),
 with three differences: the very first call is 13 from the emulator
 (Blue's log starts at 63); the first MPSetQueueReserve passes 2 where
 Blue's run passes 1; and the IDs differ (section 3). The reserve on queue
@@ -397,7 +397,7 @@ MPArmTimer.
 8. Software interrupts are needed early (the first at t = 0.313 s, 0.19 s
    after call 63, from the Time Manager's first timer), and arrive at the
    68k as vector 0x58 with the group ID pushed (section 6); Task 5's
-   description in plan.md is right on the kernel side.
+   description in [plan.md](plan.md) is right on the kernel side.
 
 ## 7. Mac OS 9.2.2 (the MacOS9Lives CD)
 
@@ -418,4 +418,4 @@ Finder, from a RAM dump):
 
 HWInfo's new fields (+0x9C, +0xA0 the device tree's checksum, +0xA8
 CascadeInfo), the `sc` calls of the boot (`-d int`) and what Blue does
-with them are in plan.md's Findings ("Mac OS 9.2.2: the CD" and after).
+with them are in [plan.md](plan.md)'s Findings ("Mac OS 9.2.2: the CD" and after).

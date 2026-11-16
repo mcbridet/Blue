@@ -3418,14 +3418,14 @@ static const char *frame_wait(struct machine *m)
  * idle_wait() makes it up, which it doesn't while sound plays; and while
  * sound plays, guest time ahead is sound played ahead, which the host's
  * sound output can only drop: a movie streaming from disk ran guest time
- * 1.1 to 2.3 times as fast as the host clock, its sound in pieces (plan.md,
- * Findings). So while sound plays, a transfer takes host time instead, all
- * of it, as a real drive's DMA does while the processor goes on: the guest
- * waits in the driver's call until it's over, taking interrupts meanwhile
- * (it makes the call again, which goes no further until then, as for the 3D
- * engine's frames), and guest time keeps the host clock's pace. (A call
- * made while another waits, from an interrupt, or by another task than Mac
- * OS's, moves guest time on as before.)
+ * 1.1 to 2.3 times as fast as the host clock, its sound in pieces
+ * (docs/plan.md, Findings). So while sound plays, a transfer takes host
+ * time instead, all of it, as a real drive's DMA does while the processor
+ * goes on: the guest waits in the driver's call until it's over, taking
+ * interrupts meanwhile (it makes the call again, which goes no further
+ * until then, as for the 3D engine's frames), and guest time keeps the
+ * host clock's pace. (A call made while another waits, from an interrupt,
+ * or by another task than Mac OS's, moves guest time on as before.)
  */
 #define HD_BYTES_PER_SECOND 20000000u   /* a hard disk around 2000 */
 #define CD_BYTES_PER_SECOND 4000000u    /* a 24x to 32x CD-ROM drive */

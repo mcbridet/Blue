@@ -110,7 +110,7 @@ measurements):
   return stack (no fewer branch misses: the indirect predictor already had
   the returns). **Measured, not needed**: spreading the 68k emulator's
   dispatch, which each handler's block already has a copy of.
-- **The kernel's costs** (both hosts; plan.md, Findings): the context
+- **The kernel's costs** (both hosts; [plan.md](plan.md), Findings): the context
   switch's register copies in AVX2 vectors where the processor has it
   (found at run time; a third of the instructions), kernel calls made in
   place while devices are to be brought up to date (the update made in
@@ -982,7 +982,7 @@ statistics (the JIT's own line aside).
    - Device registers in place (the mmio stub).
    - `code_store()` for stores to code pages.
    - String instructions through the interpreter, as on AArch64.
-   - README (the JIT section: hosts, x86 specifics, Rosetta), plan.md
+   - README (the JIT section: hosts, x86 specifics, Rosetta), [plan.md](plan.md)
      Findings.
 
    Kernel and device exit counts as AArch64's.
@@ -1087,7 +1087,7 @@ statistics (the JIT's own line aside).
    - `nk.c` (its "no JIT" line gives way to the JIT's reason);
    - `tests/test_jit.c`;
    - `.github/workflows/ci.yml`;
-   - README and plan.md;
+   - README and [plan.md](plan.md);
    - `mem.c` (milestone 5's guard below the view).
 
    Any objection?
@@ -1111,6 +1111,6 @@ Rough, with tests:
 | Floating point, settle stubs | 1,100 |
 | Kernel calls, `sc`, mmio, code stores, match hook, profiler | 400 |
 | Tests (encoder table, benchmark, `BLUE_TEST_JIT`) | 600 |
-| CI, Makefile, README, plan.md | 150 |
+| CI, Makefile, README, [plan.md](plan.md) | 150 |
 
 About 5,500 lines, nearly all new. Milestone 1 is about half of that.
