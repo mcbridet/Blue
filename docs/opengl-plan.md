@@ -199,7 +199,7 @@ Milestone 8:
 
   | scene | GPU | Mesa | what differs |
   |---|---|---|---|
-  | logicop (seven operations over a gradient, blending on too; a line drawn twice by XOR) | 0 (1) | 0 (1) | |
+  | logicop (seven operations over four flat colors, each a whole number of 255ths, blending on too; a line drawn twice by XOR) | 0 (0) | 0 (0) | |
   | stipple (a stippled strip, separate lines, a wide loop; stippled polygons) | 0 (1) | 34 (229) | dashes: Mesa's counter goes on by segments' lengths, not their fragments |
   | lines (aliased lines every way, ends in and out of diamonds; widths 2, 3, 5; points 1 to 5) | 0 (1) | 3 (3) | a smooth-shaded loop's colors |
   | smoothlines (antialiased lines 1 and 2.5 wide, points 7.5 and 3.2, blended) | 0 (1) | 278 (122) | llvmpipe's coverage (above) |
@@ -294,6 +294,27 @@ Milestone 8:
   row-loop variant loaded it in more instructions; the new state is at the
   end of `raster_state` and `gl_state` now (`struct raster_lod`), and the
   row loops are the same instructions as milestone 8's.
+- **On radeonsi** (Mesa 26.2.6, a Radeon RX 6800 XT, x86-64 Linux; gcc
+  16.2 and clang 23.1 with `-Werror`, no warnings; `BLUE_TEST_GPU=1 make
+  test` with Mesa's GLU): everything passes, the same with either
+  compiler. The first run failed three scenes, on ties in the tests and
+  radeonsi's own ways, not Blue's: logicop (298 pixels: its gradient's
+  colors a step from llvmpipe's here and there, which the logic ops turn
+  into high bits; the colors are flat whole 255ths now), lines (a point
+  at x.5, now off it; a clear of 0.1, 25.5 of 255, rounded down by
+  radeonsi and up by Blue and llvmpipe, now 0.11; and an aliased point of
+  size 2.6, which radeonsi draws 2.6 pixels across where OpenGL 1.2
+  rounds the size to 3: not compared there, with a message) and
+  smoothlines (radeonsi's coverage thinner than llvmpipe's: allowed, 450
+  pixels and 150 covered by one only). By scene, the GPU backend against
+  software and radeonsi against software (pixels differing by more than
+  2, the most; covered by one only): logicop 0 (0), 0 (0), 0; stipple 0
+  (1), 0 (1), 0 (radeonsi's stipple counter is Blue's); lines 0 (1), 4
+  (3), 0; smoothlines 0 (1), 402 (155), 129; texlines 0 (1), 49 (20), 0;
+  accum 0 (1); lodbias 0 (0), 0 (0), 0; lodrange 0 (0), 0 (0), 0;
+  combine 0 (1), 0 (1), 0; combine2 0 (1), 0 (1), 0. Milestone 7's as
+  before (depth 1, smooth 2,739, clamp 3,840). llvmpipe and Metal pass
+  the changed scenes too (logicop exact on both).
 - **Not done:** OpenGLUtility's tessellators and NURBS (their objects and
   properties only: until a program needs them); antialiased polygons
   (`GL_POLYGON_SMOOTH` is kept but not drawn); auxiliary buffers (the

@@ -749,7 +749,9 @@ the kernel); 8 onwards as the boot progresses.
   milestone 8's runs the code costs 0.06% more host instructions in Quake
   III, none measurable in UT (a first build cost 0.2%: new fields in the
   middle of the state put the per-pixel loads out of AArch64's reach; they
-  are at the ends now).
+  are at the ends now). On radeonsi (x86-64 Linux, gcc and clang) all
+  tests pass, the new scenes within 1 of Blue's software; three older
+  scenes were moved off ties first (see Findings).
   Nine more scenes against Mesa (logic ops, the LOD bias and range
   exactly, combine within 2; the rest where llvmpipe's stipple counter,
   smooth coverage and line texturing depart),
@@ -1024,7 +1026,18 @@ Facts later tasks need, added as they are found.
   quad's). Exact rational numbers make them: perspective with q of 1 to
   2.5 across 32 pixels and 16 texels put many pixel centers on edges.
   The tests keep a margin now (a thousandth of a texel; an alpha's 0.5
-  between pixel centers).
+  between pixel centers). After milestone 8, the same with colors: a
+  clear of 0.1 (25.5 of 255: radeonsi rounds it down, llvmpipe and Blue
+  up) and logic ops over a gradient (radeonsi's interpolated colors a
+  step from llvmpipe's at some pixels, which XOR and the like turn into
+  differences in high bits); the scenes' colors are whole 255ths, flat,
+  where logic ops take them.
+- **radeonsi's aliased points** (OpenGL, after milestone 8; Mesa 26.2.6
+  on a Radeon RX 6800 XT, compatibility profile): a point of size 2.6
+  without `GL_POINT_SMOOTH` is a square 2.6 pixels across (as core
+  profiles have it), where OpenGL 1.2's 3.3 rounds the size to the
+  nearest whole number, 3 (llvmpipe and Blue do). Whole sizes are drawn
+  alike; `tests/test_opengl.c` leaves the 2.6 point out on radeonsi.
 - **Apple's renderers' info on Mac OS 9.2.2** (OpenGL, milestone 8,
   disassembled): `gldGetRendererInfo` of the ATI renderer gives no
   accumulation buffer, no stencil and no offscreen drawables (accelerated,
