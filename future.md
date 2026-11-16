@@ -242,6 +242,11 @@ only, as with Ethernet, with input-script commands for reproducible tests.
 - **Related, small:** right-click as Control-click (Mac OS 8's contextual
   menus), and the scroll wheel (Mac OS 9 had no system-wide support; the
   guest tools could turn it into scrolling).
+- **Pippin titles:** the Bandai Pippin's AppleJack pad was an ADB device
+  whose buttons its driver turned into keys, as each title's `pipp`
+  resources say (Super Marathon's: arrows, Space, Tab, Option, Command,
+  Shift, Control and letters); a host pad mapped the same way would play
+  them as on a Pippin (the key mapping above, set per title).
 - **Size:** small to moderate for the InputSprocket driver and the key
   mapping; moderate for the USB gamepad.
 
