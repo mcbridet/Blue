@@ -14,11 +14,11 @@
 <p align="center">
   <a href="https://mcbridet.github.io/Blue/">Website</a> ·
   <a href="https://github.com/mcbridet/Blue/releases/latest">Download</a> ·
-  <a href="#get-started">Get started</a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="#license">License</a> ·
-  <a href="#acknowledgements">Acknowledgements</a> ·
-  <a href="#documentation">Documentation</a>
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#using-blue">Using Blue</a> ·
+  <a href="#troubleshooting-and-faq">FAQ</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="#license">License</a>
 </p>
 
 <p align="center">
@@ -33,7 +33,19 @@
   <img src="docs/images/blue-window.png" width="800" alt="Mac OS 8.5's Setup Assistant in Blue's window, above Blue's status bar">
 </p>
 
-## Highlights
+## What Blue is
+
+Blue runs classic Mac OS, from version 8.5 to 9.2.2, on a Mac or a Linux
+PC of today. It doesn't emulate a whole Power Mac: it replaces the lowest
+layer of Mac OS, the NanoKernel, with a native program, and runs
+everything above it, Apple's own code, unmodified. To Mac OS, the machine
+looks like an original iMac from 1998.
+
+You bring the Mac OS: the Mac starts up from a Mac OS CD image, Mac OS's
+own installer puts it on a disk image, and from then on the Mac starts up
+from that disk, in a window on your desktop.
+
+### Highlights
 
 - **Mac OS 8.5 to 9.2.2,** unmodified, from their CDs or installed on a disk
   image. Blue starts the "Mac OS ROM" file from the startup disk, as the
@@ -53,43 +65,13 @@
 - **Reproducible runs** for testing and debugging: in instruction time, a run
   is the same every time, down to the instruction.
 
-## Download
+### How it works
 
-| Platform | Download |
-|---|---|
-| macOS, Apple silicon | [Blue-arm64.dmg](https://github.com/mcbridet/Blue/releases/latest/download/Blue-arm64.dmg) |
-| macOS, Intel | [Blue-x86_64.dmg](https://github.com/mcbridet/Blue/releases/latest/download/Blue-x86_64.dmg) |
-| Linux x86-64 | [Blue-x86_64.AppImage](https://github.com/mcbridet/Blue/releases/latest/download/Blue-x86_64.AppImage) |
-| Linux AArch64 | [Blue-aarch64.AppImage](https://github.com/mcbridet/Blue/releases/latest/download/Blue-aarch64.AppImage) |
-
-macOS 11 or later. To open the app the first time, and run the AppImages: [Installing](#installing).
-
-Or build it from source: `git clone https://github.com/mcbridet/Blue` and
-`make` (see [Build and test](#build-and-test)).
-
-## Get started
-
-Blue doesn't include any Apple software: you need an image of a Mac OS CD
-from 8.5 to 9.2.2. Below, `blue` is `/Applications/Blue.app/Contents/MacOS/blue`
-on macOS, the AppImage on Linux, or `build/blue` if you built it.
-
-```sh
-blue disk create hd.img 2G "Macintosh HD"                            # a blank disk
-blue boot --disk hd.img --cdrom 85.iso --window --nvram blue.nvram   # install Mac OS from its CD
-blue boot --disk hd.img --window --nvram blue.nvram                  # then start up from the disk
-```
-
-In the installer's Options, turn off "Update Apple Hard Disk Drivers". Once
-the Finder is up, Blue offers to install its guest tools, then restarts Mac
-OS. Drop CD and floppy images on the window, or use Insert… in Blue's menu
-(F12); `--share DIR` shows a folder of yours as a disk.
-
-## How it works
-
-On a real Power Mac only the NanoKernel runs in supervisor mode; the 68k
-emulator, the Toolbox, applications and drivers all run in PowerPC user mode
-and reach the kernel through a small interface. Blue keeps all of that Apple
-code unmodified and supplies the rest natively:
+On a real Power Mac, only the NanoKernel runs in the processor's
+supervisor mode. The 68k emulator, the Toolbox, applications and drivers
+all run in user mode and reach the kernel through a small interface. Blue
+keeps all of that Apple code as it is and supplies everything below the
+interface itself:
 
 ```
 68k apps, 68k Toolbox code    → Apple's own 68k emulator (from the ROM, unchanged)
@@ -98,6 +80,809 @@ PPC apps, Toolbox, drivers    → Blue's user-mode PowerPC JIT and interpreter
 Native kernel + an iMac's devices + drivers + loader   ← Blue, portable C
 macOS and Linux hosts, AArch64 and x86-64
 ```
+
+[docs/architecture.md](docs/architecture.md) tells the whole story.
+
+## Download and install
+
+| Platform | Download |
+|---|---|
+| macOS, Apple silicon | [Blue-arm64.dmg](https://github.com/mcbridet/Blue/releases/latest/download/Blue-arm64.dmg) |
+| macOS, Intel | [Blue-x86_64.dmg](https://github.com/mcbridet/Blue/releases/latest/download/Blue-x86_64.dmg) |
+| Linux x86-64 | [Blue-x86_64.AppImage](https://github.com/mcbridet/Blue/releases/latest/download/Blue-x86_64.AppImage) |
+| Linux AArch64 | [Blue-aarch64.AppImage](https://github.com/mcbridet/Blue/releases/latest/download/Blue-aarch64.AppImage) |
+
+Each [release](https://github.com/mcbridet/Blue/releases) also has a
+`SHA256SUMS` file with the downloads' checksums, the source code it was
+built from, and `Blue-third-party-sources.tar.gz`: the exact sources of
+the libraries the packages carry (SDL2, libslirp and GLib, with what they
+need), as [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) describes.
+
+### macOS
+
+Blue needs macOS 11 (Big Sur) or later. Open the disk image for your Mac
+(`Blue-arm64.dmg` for Apple silicon, `Blue-x86_64.dmg` for Intel) and drag
+Blue to Applications.
+
+The first time, macOS won't open Blue by double-clicking it. Blue is
+signed ad hoc rather than by a registered Apple developer, and isn't
+notarised, so macOS asks you to confirm it once:
+
+- On macOS 14 and earlier, right-click (or Control-click) Blue in
+  Applications and choose Open, then Open again.
+- On macOS 15 and later, try to open it once, then go to System Settings >
+  Privacy & Security, scroll down, and click Open Anyway next to the note
+  about Blue.
+
+After that it opens normally. If you prefer Terminal,
+`xattr -dr com.apple.quarantine /Applications/Blue.app` does the same.
+
+Blue runs from Terminal for now, as `/Applications/Blue.app/Contents/MacOS/blue`.
+To type just `blue`, make a link to it in a folder on your `PATH`, for
+example: `ln -s /Applications/Blue.app/Contents/MacOS/blue /usr/local/bin/blue`.
+
+### Linux
+
+The AppImages run on Linux with glibc 2.35 or later (Ubuntu 22.04, Debian
+12, Fedora 36 and later): `Blue-x86_64.AppImage` for x86-64 PCs,
+`Blue-aarch64.AppImage` for ARM64. Make yours executable, then run it as
+Blue itself:
+
+```sh
+chmod +x Blue-x86_64.AppImage
+./Blue-x86_64.AppImage --version
+```
+
+An AppImage mounts itself with FUSE, so it needs `fusermount` (the `fuse`
+or `fuse3` package, which most desktops already have). Without FUSE, in a
+container for example, add `--appimage-extract-and-run` before Blue's own
+arguments: the AppImage then unpacks itself into a temporary folder each
+time. Or unpack it once with `--appimage-extract` and run
+`squashfs-root/AppRun` instead. AppImage integration tools, such as
+AppImageLauncher and Gear Lever, can add Blue to your desktop's
+applications.
+
+### From source
+
+You can also build Blue yourself: see
+[Building from source](#building-from-source).
+
+### Opening Blue from the desktop
+
+If you double-click Blue.app or an AppImage, Blue shows a small window
+rather than a Mac. For now, Blue is started from the command line, where
+you tell it which disks and CDs to use. The window shows the command for
+your copy of Blue, with a button that copies it, ready to paste into
+Terminal.
+
+A launcher is coming: a window for choosing the disks, CDs, memory and
+shared folder, which remembers them between launches (see
+[docs/roadmap.md](docs/roadmap.md)).
+
+<p align="center">
+  <img src="docs/images/welcome.png" width="450" alt="Blue's window when it's opened from the desktop: the command to start it from a terminal, with Copy Command and Quit buttons">
+</p>
+
+## Quick start
+
+Here's how to install Mac OS on a disk image and start it up. In the
+commands below, `blue` stands for Blue's command:
+
+| You have | Type this for `blue` |
+|---|---|
+| Blue.app on macOS | `/Applications/Blue.app/Contents/MacOS/blue` |
+| An AppImage on Linux | `./Blue-x86_64.AppImage` (or `./Blue-aarch64.AppImage`) |
+| Your own build | `build/blue` |
+
+### What you need
+
+- **A Mac OS CD image,** of version 8.5 to 9.2.2 (see
+  [Compatibility](#mac-os-versions)): an `.iso`, `.toast`, `.cdr` or `.img`
+  file, or a `.cue` sheet with its `.bin` files. Blue includes no Apple
+  software, and needs no separate ROM file: it uses the "Mac OS ROM" file
+  on the CD. To make an image of a CD you own, use Disk Utility on a Mac
+  (File > New Image > Image from the disc, in the "DVD/CD master" format,
+  which makes a `.cdr`), or `dd` on Linux.
+- **About 2 GB of free space** for the Mac's disk.
+
+### 1. Make a disk
+
+```sh
+blue disk create hd.img 2G "Macintosh HD"
+```
+
+This makes `hd.img`, a 2 GB disk image holding an empty Mac OS Standard
+(HFS) volume called Macintosh HD. On most file systems the file only takes
+up the space Mac OS fills. Blue won't overwrite a file that's already
+there.
+
+### 2. Install Mac OS
+
+```sh
+blue boot --disk hd.img --cdrom macos.iso --window --nvram blue.nvram
+```
+
+This starts the Mac in a window, with the new disk and the CD attached:
+
+- `--disk hd.img` attaches the disk image, which Mac OS can write to.
+- `--cdrom macos.iso` puts the CD image in a CD-ROM drive.
+- `--window` shows the Mac in a window, running in real time.
+- `--nvram blue.nvram` keeps the Mac's settings in a file (see
+  [below](#keeping-your-settings)).
+
+Blue starts up from the first drive that has a System Folder with a "Mac
+OS ROM" file in it, in the order you gave them. The new disk is empty, so
+the Mac starts up from the CD.
+
+**Mac OS 8.5 to 9.1:** open "Mac OS Install" on the CD and follow it.
+Choose Macintosh HD as the destination, and when you reach the Install
+screen, click **Options** and turn off **"Update Apple Hard Disk
+Drivers"**: the driver updater only knows Apple's own drives, and fails
+on Blue's. The installation takes a few minutes at most.
+
+**Mac OS 9.2.2 restore CDs,** which install with Apple Software Restore:
+open Apple Software Restore from the CD's window. Click Switch Disk until
+the destination is Macintosh HD, then Restore, and OK. This erases the
+disk and copies Mac OS onto it (the disk then takes the restored
+system's name). When it's done, click **Quit**, so that the Finder can
+set the new disk up.
+Drive Setup may open too, and list no drives: that's expected, and you
+don't need it.
+
+When the installation is over, choose **Shut Down** from Mac OS's Special
+menu. Blue quits when the Mac turns itself off.
+
+### 3. Start up from the disk
+
+```sh
+blue boot --disk hd.img --window --nvram blue.nvram
+```
+
+The disk now has a System Folder, so the Mac starts up from it. The first
+time, Mac OS Setup Assistant asks a few questions. (While it's open, it
+keeps one of your processor's cores busy, as it kept a real Mac's
+processor busy; once it's finished, Blue goes back to resting while Mac OS
+is idle.)
+
+You can leave the CD attached if you like: the disk comes first on the
+command line, so it stays the startup disk.
+
+### 4. Install the guest tools
+
+Once the Finder is up, Blue offers to install its guest tools on the
+startup disk. Click **Install and Restart**: Mac OS writes the tools into
+its Extensions folder and restarts, and from then on the screen follows
+the window's size, the clipboard is shared, and 3D games are accelerated.
+See [The guest tools](#the-guest-tools).
+
+### Keeping your settings
+
+`--nvram FILE` keeps the Mac's NVRAM in a file: the settings Mac OS keeps
+in parameter RAM, and the startup disk chosen in the Startup Disk control
+panel. Without it, the Mac starts each time with blank settings. Use the
+same file every time you start a particular Mac, and give each
+installation its own. Mac OS 9.1 and later write their settings when they
+shut down or restart, so shut down from Mac OS to keep changes.
+
+## Using Blue
+
+### The window
+
+The window shows the Mac's screen, with Blue's status bar below it. The
+Mac runs in real time while the window is open, and rests when Mac OS is
+idle.
+
+To finish, shut down from Mac OS (Special > Shut Down): applications get
+to save their work, the shared folder's changes are written back, and
+Blue quits when the Mac turns itself off. Closing the window is like
+pulling the plug: Blue stops at once, keeping NVRAM, but anything unsaved
+in Mac OS is lost, and a shared folder's changes aren't written back.
+
+### Blue's menu (F12)
+
+<p align="center">
+  <img src="docs/images/menu.png" width="330" alt="Blue's menu: Resume, Restart, Shut down, Turn off, Install Guest Tools, the floppy and CD-ROM drives with Eject and Insert buttons, Screenshot, Fullscreen, Scale, Status bar and Capture the mouse">
+</p>
+
+Press **F12** to open Blue's menu. The Mac pauses while the menu is open;
+F12 or Esc closes it again.
+
+- **Resume** closes the menu.
+- **Restart** restarts the Mac at once, like its reset button: anything
+  unsaved in Mac OS is lost.
+- **Shut down…** presses the Mac's power key, so Mac OS asks whether to
+  shut down, and does it properly if you say so.
+- **Turn off** turns the Mac off at once, like its power switch, for a Mac
+  that has stopped responding. NVRAM is kept.
+- **Install Guest Tools…** offers the [guest tools](#the-guest-tools)
+  again, whenever there's something to install.
+- **The drives:** each floppy and CD-ROM drive shows what's in it, with
+  **Eject** and **Insert…** buttons (see
+  [Disks, CDs and floppies](#disks-cds-and-floppies)).
+- **Screenshot** saves the Mac's screen as a PNG on your Desktop.
+- **Fullscreen** fills your display with the Mac.
+- **Scale** sets how big the Mac's pixels are (see
+  [Screen size and scale](#screen-size-and-scale)).
+- **Status bar** shows or hides the status bar.
+- **Capture the mouse** sets whether the mouse is captured while Mac OS
+  hides its pointer, as games do (see [Keyboard and mouse](#keyboard-and-mouse)).
+
+While the menu is open, the Mac's clock stops, so it's behind by that
+much afterwards.
+
+### The status bar
+
+The status bar has a light for each of the Mac's parts, and what each is
+doing:
+
+- **CPU** glows green as the Mac works and soft blue while it rests, and
+  shows the Mac's speed, as the clock rate of a G3 that would keep up.
+- **Disk**, **CD-ROM** and **Floppy** light up as they read (green) and
+  write (amber), with how many bytes a second they move.
+- **Network** lights up as the Mac sends and receives, in bits a second.
+
+A dimmed light means there's no such device, and "F12: menu" on the
+right is a reminder of where the menu is. `--no-status-bar` starts
+without the status bar; the menu brings it back.
+
+### The guest tools
+
+Some things only code inside Mac OS can do, so Blue comes with guest tools
+that it installs there for you:
+
+| Guest tool | What it does |
+|---|---|
+| Blue Enhancements | The screen follows the window's size, and the clipboard is shared with your computer. |
+| Blue 3D Engine | Accelerates QuickDraw 3D and RAVE games, which see an ATI Rage 128. |
+| Blue OpenGL Library, Memory and Utility | OpenGL for Mac OS 9 games, drawn on your GPU. |
+| Blue Pippin Library | Lets Bandai Pippin titles run (see [Pippin titles](#pippin-titles)). |
+
+When the Finder is up and a tool is missing, or comes from another
+version of Blue, Blue offers to install them, over the Mac's screen:
+
+<p align="center">
+  <img src="docs/images/guest-tools-offer.png" width="540" alt="Blue's offer: Blue's guest tools aren't installed on Macintosh HD. They make the screen follow the window, share the clipboard and accelerate 3D. Buttons: Don't Ask Again, Not Now, Install and Restart">
+</p>
+
+- **Install and Restart** (or **Update and Restart**) writes the tools
+  into the System Folder's Extensions folder and restarts Mac OS, as
+  Special > Restart does: applications may ask to save their work first.
+  CDs and floppies stay in their drives.
+- **Not Now** leaves them for now: Blue asks again the next time Mac OS
+  starts up.
+- **Don't Ask Again** stops the offer for that disk. Blue remembers it in
+  a "Blue Preferences" file in the disk's Preferences folder; Install
+  Guest Tools… in Blue's menu still offers them.
+
+Mac OS 9 comes with OpenGL libraries of Apple's under the same names, so
+when Blue's are installed, Apple's move to Extensions (Disabled). If you
+delete Blue's later, Blue offers to put Apple's back.
+
+Blue doesn't offer the tools when the startup disk is a CD, or can't be
+written. To install them by hand instead, make a disk of them with
+`blue tools create tools.img`, attach it with `--cdrom tools.img`, drag
+its files onto the System Folder, and restart.
+
+### Screen size and scale
+
+With Blue Enhancements installed, the Mac's screen follows the window:
+resize the window, or make it full screen, and Mac OS changes its
+resolution to fill it once you let go. Without it, the screen keeps the
+resolution chosen in Mac OS's Monitors & Sound control panel (640 × 480 to
+1280 × 1024), and the window scales it to fit.
+
+The **scale** is how many of your display's pixels make one of the Mac's,
+from 1 to 4. **Auto**, the default, makes Mac OS about as big on your
+display as on a 1999 Mac's screen (about 80 pixels to the inch), from
+your display's size and resolution: 1× on a typical 27-inch 1440p
+display, 2× on a 4K one, 3× on a 5K iMac or a 14-inch MacBook Pro. If
+Mac OS looks too small or too big, choose another scale in the menu, or
+start with `--scale 2` (or `auto`, `1`, `3`, `4`). `--integer-scale` keeps
+the picture crisp, with a border if need be, where the window would
+otherwise scale the screen by a fraction.
+
+### Keyboard and mouse
+
+| Mac key | On a Mac keyboard | On a PC keyboard |
+|---|---|---|
+| Command (⌘) | Command | Windows or Super |
+| Option (⌥) | Option | Alt |
+| Control | Control | Ctrl |
+
+Command-key shortcuts go to Mac OS, as on a Mac. F12 is Blue's: it opens
+the menu, and Mac OS never sees it. (On a Mac laptop, you may need to hold
+fn as you press F12.)
+
+On macOS, Blue's own menu bar has a few Command-key shortcuts of its own,
+which act on Blue as well as reaching Mac OS: **Command-Q** quits Blue
+and **Command-W** closes its window (both at once, as if you pulled the
+plug), Command-H hides Blue and Command-M minimises its window. Choose
+Quit and Close from Mac OS's File menu instead.
+
+The Mac has a one-button mouse: the left button is its button, and the
+others, and the scroll wheel, do nothing. For a contextual menu,
+Control-click.
+
+The Mac's pointer follows yours. When Mac OS hides its pointer for a
+moment, as games do, Blue captures the mouse, so that its movements go to
+the game; the window's title says so. Press **Control-Option**
+(Ctrl+Alt) to get your pointer back, and click in the window to capture
+it again. Capture the mouse in the menu turns this off.
+
+### Copy and paste
+
+With Blue Enhancements, the clipboard is shared both ways: text you copy
+in Mac OS can be pasted on your computer, and text you copy on your
+computer is what Command-V pastes in Mac OS. Only text is shared, not
+styles or pictures, up to 4 MB. Characters that Mac OS's own character set
+lacks reach Mac OS 9's Unicode-aware applications as they are, and
+others as the closest match (½ as "1/2", for example) or "?".
+
+### Disks, CDs and floppies
+
+The Mac has up to four drives for disks and CDs (a shared folder takes
+one of them), and a floppy drive:
+
+| Option | Gives the Mac |
+|---|---|
+| `--disk FILE` | A disk. Mac OS can write to it if you can write to the file. |
+| `--cdrom FILE` | A CD-ROM drive, with that disc in it (read-only). |
+| `--floppy FILE` | The floppy drive, with that disk in it. |
+
+In a window there's always a floppy drive, and a CD-ROM drive if you
+didn't give one, so you can put discs in later. Blue tries the drives
+for startup in the order you give them.
+
+**Putting a disc in:** drop its image on the window, or click Insert… for
+a drive in Blue's menu and choose it. A floppy-sized image (2880K or
+smaller) goes in the floppy drive, and anything else in a CD-ROM drive.
+Mac OS sees it go in as on a real Mac, so an installer waiting for its
+next disc carries on. On Linux, Insert… needs zenity or kdialog.
+
+**Several floppies:** give `--floppy` once for each disk of a set. The
+first is in the drive at startup, and each time Mac OS ejects one, the
+next goes in a moment later, so a multi-disk installer just carries on.
+The menu shows what's still to come.
+
+**Ejecting:** eject discs from Mac OS, as on any Mac: drag a disc to the
+Trash, or select it and choose Put Away from the File menu or Eject from
+the Special menu. Blue's menu can only eject a disc that Mac OS isn't
+using. Discs and floppies stay in their drives when Mac OS restarts, as
+in a real iMac.
+
+**The startup disk:** Mac OS 9.1 and later choose it in the Startup Disk
+control panel, as on a real Mac; keep NVRAM with `--nvram` so the choice
+lasts. Mac OS 8.5 and 8.6 start up from the first drive with a System
+Folder, and their Startup Disk lists only the current one. A CD you put
+in while the Mac is running is never the startup disk.
+
+**Images Blue takes:**
+
+- **CDs:** `.iso`, `.toast`, `.cdr` and `.img` files (raw images of HFS or
+  ISO 9660 discs), and cue sheets: a `.cue` file with its `.bin`, WAVE or
+  AIFF tracks. Audio CDs and games' soundtracks need the cue sheet: give
+  Blue the `.cue` file, not the `.bin`. `blue disk toc FILE` lists a
+  disc's tracks. Compressed images and `.dmg` files aren't taken: on a
+  Mac, `hdiutil convert image.dmg -format UDTO -o image` makes a raw
+  `.cdr` from a `.dmg`.
+- **Floppies:** raw images of 400K, 720K, 800K, 1440K and 2880K disks
+  (`.img`, `.dsk`, `.ima`, `.flp`), and Disk Copy 4.2 images (`.image`).
+  Convert other kinds first, with Disk Copy in Mac OS or a tool on your
+  computer. `blue disk create blank.img 1440K "Untitled"` makes a blank,
+  formatted floppy.
+- **Disks:** raw disk images, with an Apple partition map or a bare
+  volume, as `blue disk create` makes.
+
+Mac OS writes to a disk as soon as it mounts it. To keep a floppy or disk
+image as it is, lock it in the Finder, or make the file read-only: Mac OS
+then shows the disk as locked.
+
+### The shared folder
+
+```sh
+blue boot --disk hd.img --share ~/Mac --window --nvram blue.nvram
+```
+
+`--share FOLDER` shows a folder on your computer to Mac OS as a disk of
+its own, named after the folder. It's the easiest way to move files
+between your computer and the Mac: put a downloaded program in the
+folder, and install it from the disk in Mac OS.
+
+Changes cross over once per run, in each direction:
+
+- Files you add to the folder while the Mac runs appear in Mac OS the next
+  time you start it.
+- What Mac OS changes on the disk is written back to the folder when Mac
+  OS shuts down (or you put the disk away). If Blue stops without that,
+  because you closed the window or turned the Mac off, nothing is written
+  back, and anything that had changed is kept as a disk image in the
+  folder's `.blue-recovery` folder instead.
+
+Blue never destroys your files: a file that Mac OS deleted or replaced is
+moved to `.blue-recovery` inside the folder, under the date and time, and
+if a file changed on both sides, Mac OS's version is kept beside yours as
+`name (Mac OS).ext`. Blue lists what it wrote back.
+
+Resource forks and Finder information (type and creator) are kept: on
+macOS in the files themselves, and on Linux in AppleDouble `._name`
+files. Files without them get a type from their extension. Files whose
+names start with a dot, links to folders and files larger than 2 GB are
+left out, and long names are shortened, as Mac OS 9 shortens them. More
+in [docs/shared-folder.md](docs/shared-folder.md).
+
+### Networking
+
+In a window, the Mac's built-in Ethernet reaches the internet through
+your computer's connection. Mac OS gets its address by DHCP, so TCP/IP
+works as soon as it's turned on. On Mac OS 8.5, it starts out inactive:
+open the TCP/IP control panel, click Yes to make it active, then close the
+panel and save.
+
+The Mac can connect out, but nothing outside can connect in, and only IP
+gets through: AppleTalk and file sharing between Macs don't. Browsers of
+the time can't open most of today's secure (HTTPS) sites, though plain
+HTTP sites work. `--no-net` leaves the Ethernet unplugged.
+
+Blue's network uses libslirp, which Blue.app and the AppImages carry. A
+build of your own needs it installed (see
+[Building from source](#building-from-source)).
+
+### Sound
+
+Sound plays while the Mac runs in a window, through Mac OS's own sound
+driver, and follows Mac OS's volume and mute (in the Monitors & Sound or
+Sound control panel, or the Control Strip). CD audio, from an audio CD's
+or a game's cue sheet, plays through the same chip and follows the same
+volume, as on the iMac; AppleCD Audio Player, in the Apple menu, plays
+audio CDs. `--no-sound` turns sound off.
+
+### 3D graphics
+
+With the guest tools installed, games that use QuickDraw 3D or RAVE draw
+with Blue 3D Engine, and games that use OpenGL draw with Blue's OpenGL
+libraries. Both draw on your computer's GPU, through OpenGL 3.3 (over
+Metal on Apple silicon), or in software if there's no GPU to use, or with
+`--no-gpu`. Install what a game needs from Mac OS as on a real Mac, such
+as QuickDraw 3D, Game Sprockets or URL Access. Frames come at most 60 a
+second, as on the iMac's display, which keeps games of the time at their
+proper speed.
+
+### Pippin titles
+
+Many discs for the Bandai Pippin, Apple's 1996 game console design, run
+in Blue. Titles that need the Pippin's own library get Blue Pippin
+Library, one of the guest tools. Their saved games and preferences go in
+`System Folder:Preferences:Pippin:`, under the title's name. The Pippin's
+AppleJack controller isn't emulated: titles map its buttons to keys. More
+in [docs/software.md](docs/software.md#pippin-titles).
+
+## Command-line reference
+
+Blue's commands:
+
+| Command | What it does |
+|---|---|
+| `blue boot [OPTIONS]` | Starts the Mac (see the options below). |
+| `blue disk create FILE SIZE [NAME]` | Makes a disk image holding an empty HFS volume. `SIZE` is in bytes, or with `K`, `M` or `G`: 1M or more, or a floppy's size (400K, 720K, 800K or 1440K). The name is Macintosh HD, or Untitled for a floppy, unless you give one. |
+| `blue disk toc FILE` | Lists a CD image's tracks, as its CD-ROM drive gives them to Mac OS. |
+| `blue tools create FILE` | Makes a disk of the guest tools, to install them by hand (attach it with `--cdrom`). |
+| `blue rom info FILE` | Describes a Mac OS ROM file, or the one in a disk or CD image's System Folder. |
+| `blue rom config FILE` | Shows the ROM's NanoKernel configuration and memory map. |
+| `blue rom parcels FILE` | Lists the parcels of a Mac OS 9.1 or later ROM file. |
+| `blue rom extract FILE OUT` | Writes the ROM's 4 MB Toolbox image. |
+| `blue rom trampoline FILE OUT` | Writes the ROM file's Trampoline (an ELF file). |
+| `blue run-raw FILE ADDR [N]` | For developers: loads raw PowerPC code at hex address `ADDR` in 64 MB of memory, runs it for at most `N` instructions (100 million unless you say), and shows the registers. |
+| `blue --version` | Shows Blue's version, and which SDL2 and libslirp it found. |
+| `blue` | Lists the commands and options. |
+
+The options of `blue boot`:
+
+**Drives and memory**
+
+| Option | What it does |
+|---|---|
+| `--disk FILE` | Attaches a disk image, writable if the file is. |
+| `--cdrom FILE` | Attaches a CD image, read-only, in a CD-ROM drive. |
+| `--cdrom-drive` | Adds an empty CD-ROM drive. (A window, or `--realtime`, has one anyway, unless four drives are taken.) |
+| `--floppy FILE` | Puts a floppy image in the floppy drive; give it again for each disk of a set, up to 16. |
+| `--floppy-drive` | Adds an empty floppy drive. (A window, or `--realtime`, has one anyway.) |
+| `--share FOLDER` | Shows a folder on your computer as a disk (one folder). |
+| `--nvram FILE` | Keeps the Mac's NVRAM (settings, the startup disk) in this file. |
+| `--ram MB` | The Mac's memory, from 8 to 1024 MB (128 unless you say). |
+| `--rom FILE` | Starts this ROM file, or 4 MB ROM image, instead of the startup disk's. |
+
+Up to four drives in all can be disks, CD-ROM drives or the shared folder.
+
+**The window**
+
+| Option | What it does |
+|---|---|
+| `--window` | Shows the Mac in a window, in real time, until you close it or the Mac turns off. |
+| `--scale auto\|1\|2\|3\|4` | How many of the display's pixels make one of the Mac's (Auto unless you say). |
+| `--integer-scale` | Scales the screen by whole numbers only: crisp, with a border if need be. |
+| `--no-status-bar` | Starts without the status bar. |
+| `--no-sound` | Doesn't play the Mac's sound. |
+| `--no-net` | Leaves the Mac's Ethernet unplugged. |
+| `--no-gpu` | Draws 3D in software rather than on the GPU. |
+
+**Time and speed**
+
+| Option | What it does |
+|---|---|
+| `--realtime` | Runs in real time without a window. |
+| `--instruction-time` | With `--window`, counts time in instructions, as without a window. |
+| `--no-idle` | Keeps running flat out while Mac OS is idle, rather than resting. |
+| `--no-fast-start` | Doesn't hurry through the timeouts of startup. |
+| `--interp` | Interprets the PowerPC code, without the JIT. |
+| `--seconds S` | Stops after `S` seconds of your computer's time. |
+| `--max N` | Stops after `N` instructions (without a window, 500 million unless you say). |
+| `--fixed-time T` | Starts the Mac's clock at Unix time `T` rather than now. |
+
+**Testing and debugging**
+
+| Option | What it does |
+|---|---|
+| `--input FILE` | Plays scripted input: clicks, keys, discs and more at given instruction counts. |
+| `--screenshot FILE.png` | Saves the screen when the run ends. |
+| `--dump-ram FILE` | Saves the Mac's memory when the run ends. |
+| `--trace`, `--trace-from N`, `--trace-reg R`, `--trace-range LO:HI`, `--trace-insn WORD` | Logs the instructions run. |
+| `--watch ADDR` | Logs every write to the page holding `ADDR`. |
+| `--traps N`, `--traps-after N` | Logs the first `N` 68k traps. |
+| `--log-hostcalls` | Logs the requests Blue's drivers handle. |
+| `--io-ram` | Treats unknown device addresses as plain memory. |
+
+Without `--window` or `--realtime`, a run counts time in instructions, so
+it's the same every time: see [docs/debugging.md](docs/debugging.md),
+which also lists the `BLUE_*` environment variables.
+
+## Compatibility and limits
+
+### Mac OS versions
+
+| Mac OS | Works | Notes |
+|---|---|---|
+| 8.5 | Yes | Starts from its CD and installs. TCP/IP starts out inactive. |
+| 8.6 | Yes | Includes URL Access, which some games need. |
+| 9.0 to 9.0.4 | Yes | The 9.0.4 CD installs 9.0, and its 9.0.4 update installs too. |
+| 9.1 | Yes | Starts from its CD and installs. Startup Disk chooses the startup disk. |
+| 9.2.x | Yes | Tested with a 9.2.2 CD that installs with Apple Software Restore. |
+
+Blue's machine is an original iMac, which covers Mac OS from 8.5 to
+9.2.2. Earlier versions aren't supported, and Mac OS X, which has no
+NanoKernel, can't run on Blue.
+
+### Your computer
+
+| Computer | Blue runs on | Speed |
+|---|---|---|
+| Mac with Apple silicon | macOS 11 or later | JIT |
+| Mac with an Intel processor | macOS 11 or later | JIT on most Macs from 2013 on |
+| PC with an x86-64 processor | Linux with glibc 2.35 or later (the AppImage) | JIT on most processors from 2013 (Intel) or 2015 (AMD) on |
+| ARM64 computer | Linux with glibc 2.35 or later (the AppImage) | JIT |
+
+The JIT translates PowerPC code into your processor's, which makes Blue
+many times faster than a real G3. On x86-64 it needs the x86-64-v3
+features (AVX2, FMA3, BMI1 and 2, LZCNT and MOVBE), which Intel's Core
+processors have from Haswell (2013) and AMD's from Excavator (2015), but
+some Pentium, Celeron and Atom processors lack. Without them, Blue says
+what's missing and interprets the code instead: slower, but it still
+works. On a Mac with Apple silicon, use `Blue-arm64.dmg`: the Intel
+version runs in Rosetta 2 without the JIT.
+
+### What isn't there
+
+Blue doesn't have everything a real iMac had, yet:
+
+- **AltiVec,** the G4's vector instructions: programs that need a G4
+  don't run.
+- **Mac OS's virtual memory,** which stays off: give the Mac more memory
+  with `--ram` instead.
+- **Modems, serial ports, infrared and printing.**
+- **Game controllers** (joysticks and gamepads), and USB or FireWire
+  devices of any kind: the keyboard and mouse are the Mac's input.
+- **Sound input** (a microphone), and 3D sound.
+- **AppleTalk** networking, and connections into the Mac.
+- **3dfx Glide,** for games that draw with a Voodoo card.
+- **Old World Macs:** Blue is an original iMac, and can't start the ROMs
+  of earlier Power Macs or 68k Macs.
+
+[docs/future.md](docs/future.md) has ideas for most of these, and
+[docs/roadmap.md](docs/roadmap.md) what's next.
+
+## Troubleshooting and FAQ
+
+### macOS won't open Blue
+
+Blue isn't notarised, so macOS asks you to confirm it the first time: see
+[macOS](#macos) under Download and install. If macOS says the app is
+damaged, `xattr -dr com.apple.quarantine /Applications/Blue.app` in
+Terminal clears the download's quarantine.
+
+### The AppImage won't run
+
+Check that it's executable (`chmod +x`). If it says it can't mount itself,
+your system lacks FUSE: install the `fuse` or `fuse3` package, or run it
+with `--appimage-extract-and-run` before Blue's arguments. See
+[Linux](#linux).
+
+### Double-clicking Blue only shows a small window
+
+That's expected for now: Blue is started from the command line. The
+window shows the command to use. See
+[Opening Blue from the desktop](#opening-blue-from-the-desktop).
+
+### Mac OS won't start from my CD
+
+- Blue says "no drive has a System Folder with a Mac OS ROM file in it":
+  the image isn't a startup CD of Mac OS 8.5 to 9.2.2. Update CDs and
+  other programs' CDs can't start the Mac.
+- Blue refuses the image: it's compressed, a `.dmg`, or a `.bin` without
+  its `.cue`. See [Images Blue takes](#disks-cds-and-floppies).
+- Attach CDs with `--cdrom`, not `--disk`: the Mac OS 8.5 CD won't start
+  from a drive it can write to.
+- If you used `--rom`, leave it out: Blue then uses the CD's own ROM file,
+  which is the one that version of Mac OS needs.
+
+### The installer stops, or complains about drivers
+
+Turn off "Update Apple Hard Disk Drivers" in the installer's Options (see
+[Install Mac OS](#2-install-mac-os)). Drive Setup lists no drives: that's
+expected, and you don't need it.
+
+### There's no menu bar after restoring Mac OS 9.2.2
+
+If Blue closed before Apple Software Restore finished (you didn't click
+its last Quit), the new disk has no Desktop Folder yet, and quitting the
+Setup Assistant leaves the desktop without a menu bar. Restart: the Finder
+has made the folder by then, and the next startup is as it should be.
+
+### Mac OS is tiny, or huge
+
+Choose another Scale in Blue's menu (F12), or start with `--scale`. See
+[Screen size and scale](#screen-size-and-scale).
+
+### There's no sound
+
+Sound plays only with `--window` (and not with `--no-sound`). Check Mac
+OS's own volume and mute, in the Monitors & Sound or Sound control panel.
+For a CD's music, attach the `.cue` file of a cue sheet image: a plain
+`.iso` has no audio tracks.
+
+### The network doesn't work
+
+- The network runs only with `--window` or `--realtime`, and not with
+  `--no-net`.
+- In your own build, Blue needs libslirp: `blue --version` says whether
+  it found it.
+- On Mac OS 8.5, make TCP/IP active (see [Networking](#networking)).
+- Most of today's websites need HTTPS, which browsers of the time can't
+  manage: plain HTTP sites work. AppleTalk doesn't work, and nothing can
+  connect in to the Mac.
+
+### Blue says "no JIT"
+
+Your processor lacks what the JIT needs (on x86-64, the x86-64-v3
+features), and Blue says what's missing. Blue still runs, by interpreting
+the code, but more slowly. See [Your computer](#your-computer).
+
+### Blue keeps a processor core busy
+
+Mac OS Setup Assistant never rests while it's open: finish or quit it.
+Otherwise an idle Mac costs only a few percent of one core.
+
+### Where do screenshots go?
+
+On your Desktop, as `blue` followed by the date and time (in the folder
+Blue was started from, if there's no Desktop). `--screenshot FILE.png`
+saves one when a run ends.
+
+### F12 doesn't open the menu
+
+On a Mac laptop, hold fn as you press F12, or set the function keys to
+work as standard function keys in System Settings > Keyboard. In your
+own build, the menu needs SDL 2.0.18 or later: with an older SDL, F12
+only pauses the Mac.
+
+### Blue quit when I pressed Command-Q (or Command-W)
+
+On macOS, Blue's own menu bar takes Command-Q, Command-W, Command-H and
+Command-M as well as Mac OS (see [Keyboard and mouse](#keyboard-and-mouse)):
+use Mac OS's File menu to quit applications and close windows.
+
+### My mouse is stuck in the window
+
+Press Control-Option (Ctrl+Alt), or switch to another application. Click
+in the window to capture the mouse again.
+
+### The CD came out when Mac OS restarted
+
+It shouldn't any more: discs and floppies now stay in their drives through
+a restart, as in a real iMac. If one came out, Mac OS ejected it (with Put
+Away, the Trash, Eject, or an installer).
+
+### A disc I dropped didn't go in
+
+Blue's menu opens to say why: there's no empty drive, the drive's disc is
+in use by Mac OS (eject it from Mac OS first), or the image isn't one Blue
+takes (see [Disks, CDs and floppies](#disks-cds-and-floppies)). If all
+four drives are taken by disks and CDs, there's no spare CD-ROM drive.
+
+### My changes in the shared folder didn't reach my computer
+
+Changes are written back when Mac OS shuts down, not when you close the
+window. If Blue stopped without a shutdown, look in the folder's
+`.blue-recovery` folder. See [The shared folder](#the-shared-folder).
+
+### Mac OS forgot my settings, or my startup disk
+
+Start with the same `--nvram` file each time, and shut down from Mac OS:
+Mac OS 9.1 and later write their settings when they shut down or restart.
+
+### Blue doesn't offer the guest tools, or I want it to stop
+
+Blue offers them only in a window, and only on a startup disk Mac OS can
+write to. If you chose Don't Ask Again, Install Guest Tools… in Blue's
+menu still offers them. To stop the offer, choose Don't Ask Again.
+
+### An application says there isn't enough memory
+
+Mac OS's virtual memory stays off in Blue. Give the Mac more memory with
+`--ram` (up to 1024 MB), and the application more in its Get Info window.
+
+### StuffIt archives won't open on Mac OS 8.5 or 8.6
+
+Most archives from 1998 on need StuffIt Expander 5 or later, and 8.5 and
+8.6 come with 4.5, which quits without a word. Install Expander 5.5, or
+expand the archive on your computer with The Unarchiver's `unar`, which
+keeps the files' resource forks on macOS for the shared folder.
+
+### The Mac's clock is a little out
+
+While Mac OS starts up, Blue runs its clock fast to hurry through the
+timeouts of startup, so the clock is 15 to 25 seconds ahead at first, and
+right again after a minute or two of the Mac resting. While Blue's menu is open, the clock stops.
+
+## Building from source
+
+Blue builds with a C11 and C++17 compiler (Clang or GCC) and `make`, on
+macOS and Linux:
+
+```sh
+git clone https://github.com/mcbridet/Blue
+cd Blue
+make            # builds build/blue
+make test       # runs the unit tests
+```
+
+Blue loads SDL2 (the window, sound and input) and libslirp (the network)
+when it runs, so they aren't needed to build it, but you'll want them to
+use it: `brew install sdl2 libslirp` on macOS, or your distribution's
+SDL2 and libslirp packages on Linux.
+
+`make app` and `make dmg` make Blue.app and its disk image on macOS, and
+`make appimage` an AppImage on Linux. [docs/building.md](docs/building.md)
+has the details: the tests, CI, packaging and releases.
+
+## Documentation
+
+The [docs](docs/README.md) folder goes further:
+
+- [How Blue works](docs/architecture.md), and how Mac OS 8.5 to 9.2.2
+  [were brought up](docs/bring-up.md) on it.
+- [The iMac's devices](docs/devices.md), [the drives](docs/drives.md),
+  [the shared folder](docs/shared-folder.md), [the window](docs/window.md)
+  and [the guest tools](docs/guest-tools.md), in depth.
+- [The JIT](docs/jit.md).
+- [Notes on programs and games](docs/software.md).
+- [Building, testing and packaging](docs/building.md),
+  [testing and debugging](docs/debugging.md), and
+  [the source layout](docs/layout.md).
+- [The QEMU reference](docs/qemu-reference.md) and
+  [NanoKernel 2 under QEMU](docs/nk2-reference.md).
+- [The roadmap](docs/roadmap.md), [the plan](docs/plan.md) with its
+  findings, [ideas for later](docs/future.md), and the plans for
+  [OpenGL](docs/opengl-plan.md), [the GPU backend](docs/gpu-plan.md),
+  [Glide](docs/glide-plan.md) and [the x86-64 JIT](docs/x86-jit-plan.md).
 
 ## License
 
@@ -133,2189 +918,6 @@ Blue stands on other people's careful work:
 - **Apple's own documentation:** Inside Macintosh, the technotes and
   developer notes, and the headers published with Darwin.
 
-## Documentation
-
-The rest of this file is Blue's technical documentation and development
-record:
-
-- [Target](#target) and [Status](#status): what runs, and how each part was
-  made to work: [Mac OS 9](#mac-os-9), [9.1](#mac-os-91-from-its-cd),
-  [9.2.2](#mac-os-922-from-its-cd), [networking](#networking),
-  [the shared folder](#shared-folder),
-  [floppies and CDs](#floppies-and-cds-removable-drives),
-  [MacBench](#macbench), [Pippin titles](#pippin-titles),
-  [guest tools](#guest-tools)
-- [Virtual machine description](#virtual-machine-description),
-  [Next steps](#next-steps), [Build and test](#build-and-test),
-  [QEMU reference](#qemu-reference), [Assets](#assets), [Layout](#layout)
-- Plans and findings: [docs/plan.md](docs/plan.md), [docs/future.md](docs/future.md), and
-  `docs/` (OpenGL, Glide, the GPU backend, the x86-64 JIT)
-
 Blue was called syshm until November 2026. Its settings in the environment
 are `BLUE_*` now: if one of the old names is set, Blue says what it's
 called now, and doesn't read it.
-
-## Target
-
-- **ROM:** the "Mac OS ROM" file from the startup disk's System Folder, as
-  a New World Mac's firmware starts it (see Status); `--rom` for one of your
-  own. Tested: 8.5's own (Toolbox release 0x44F3), 8.6's (0x44B5), 9.1's
-  (6.1f9, in parcels), MacOS9Lives 9.2.2's (10.2f1, in parcels, 0x45F6),
-  and `MOS.rom`, a 1.x file (0x44F1, compatible with
-  `iMac,1 PowerMac1,1 PowerBook1,1`; the family SheepShaver uses).
-- **OS:** the retail Mac OS 8.5 CD (`85.iso`). It boots with the ROM file it
-  carries itself (1.1.x, no `<COMPATIBLE>` list) or with `MOS.rom`.
-- **Machine identity:** the original iMac (`iMac,1`): its device tree,
-  devices and drivers, as the universal info tables Blue builds describe
-  it. Retail 8.5 predates the Power Mac G3 (Blue and White), so the iMac
-  covers the whole range from 8.5 on.
-- **OS ladder:** 8.5 → 8.6 → 9.0.4 on the NanoKernel v1 interface, then the
-  v2 interface for 9.1 and 9.2.2 (both CDs start up to the Finder; see
-  below).
-
-## Status
-
-**Retail Mac OS 8.5 installs onto a disk image and boots from it, and so
-does Mac OS 9.0 (see below).** Both also boot straight from their CDs.
-Mac OS 8.6 works too, on the same ROM file and NanoKernel interface. Mouse
-and keyboard work in a window or from scripted input, and sound plays
-through the host (in real time). Games run accelerated by the guest tools'
-3D engine, on the host's GPU: Unreal Tournament plays, and Bugdom (QuickDraw
-3D, Game Sprockets) reached about 100 frames per second in play on an M1
-Max, with music (it needs URL Access, which comes with Mac OS 8.6 and
-later; frames for the screen now come at most 60 a second, see Guest
-tools). The built-in Ethernet reaches the host's
-network, so Internet Explorer loads web pages. CD-ROM drives play audio CDs
-and games' CD soundtracks (cue sheets) through the sound chip, as the iMac's
-drive did.
-
-```
-build/blue disk create hd.img 2G "Macintosh HD"      # an empty HFS volume
-build/blue boot --disk hd.img --cdrom 85.iso --window --nvram blue.nvram
-```
-
-Run "Mac OS Install" from the CD (about 30 billion instructions, about a
-minute). In its Options, turn off "Update Apple Hard Disk Drivers": Drive
-Setup only knows Apple's own ATA/SCSI drives and quits on ours. Then boot the
-installed system with just `--disk hd.img`. Drives are tried in command-line
-order. In the window, the GUI/Super key is Command and Alt is Option.
-
-As a New World Mac's firmware does, Blue starts the "Mac OS ROM" file from
-the startup disk: the first drive, in command-line order (an image's HFS
-partitions in partition-map order), whose blessed System Folder holds a file
-of type `tbxi`. Above, the new disk is empty, so that's the CD's; once 8.5
-is installed, the disk's own. `src/hfsread.c` reads HFS and HFS+ volumes
-(HFS+ also inside an HFS wrapper), only the blocks it needs. Blue says where
-the file came from:
-
-```
-rom: "Mac OS 9.1:System Folder:Mac OS ROM" from 91.iso, partition "Toast 4.0 PPC Partition" (Mac OS ROM 6.1f9, 2448470 bytes)
-```
-
-`--rom FILE` starts a ROM file (or a raw 4 MB ROM image) of your own
-instead. `blue rom info` and the other `rom` commands take a disk or CD
-image too, and show the ROM file that would be started from it.
-
-Restart starts the machine over in the same window, from the ROM with
-memory and devices reset as on a real Mac (NVRAM is kept, and so are guest
-time and the instruction count, which input scripts and `--max` go by).
-Shut Down quits.
-
-The Startup Disk control panel of Mac OS 9.1 and later chooses the startup
-disk, as on an iMac: it sets Open Firmware's `boot-device`, which Mac OS
-keeps in NVRAM (as `boot-device=/pci@80000000/blue,disk@3@3:8,\\:tbxi`:
-the disk's PCI device number, its SCSI target, the partition), and a
-restart, or the next launch with the same `--nvram` file, starts the ROM
-file in that disk's System Folder, whichever system it is:
-
-```
-build/blue boot --disk hd91.img --disk hd922.img --cdrom 922.iso --cdrom 85.iso --window --nvram blue.nvram
-rom: "MacOS9Lives:System Folder:Mac OS ROM" from hd922.img (Mac OS ROM 10.2f1, 2796822 bytes), which boot-device names
-```
-
-If that disk isn't attached (or has no ROM file there now), Blue starts up
-from the first drive as before, and says why; `--rom FILE` overrides it.
-For this, a ROM file with parcels (9.1 and later) gets Open Firmware's
-settings in the device tree (`/options` with `boot-device`, `/openprom`
-with `supports-bootinfo`, without which StartLib doesn't set it) and their
-NVRAM partition (`common`, which Blue makes in NVRAM's first 2 KB the first
-time; Mac OS's PRAM stays at `0x1400`), when NVRAM is kept (`--nvram`) or
-in real time: Mac OS reads them at startup, so instruction-time runs
-without `--nvram` are as they were. Mac OS 8.5 and 8.6's Startup Disk
-lists only the current startup disk (it asks drives what to put in PRAM,
-which Blue's don't answer), and their ROM files' Start Manager starts up
-from the first drive with a System Folder: when `boot-device` (set by 9.x)
-names such a disk, Blue puts that drive first, so it is (choosing the 8.5
-CD in 9.1's Startup Disk starts 8.5 from it). From those systems, start
-with `--rom` or without the disk to go back.
-
-Mac OS 8.5 also starts up with the ROM file from its own System Folder
-(the data fork of "Mac OS ROM", release 0x44F3), from the CD or from a
-system installed from it. That ROM has the DAV audio component's 'thng'
-resource in it, and registering the component copies the resource's
-description onto itself, in the ROM. The NanoKernel drops such stores
-(quiet writes; see Virtual machine description); until Blue's kernel did
-too, startup stopped there with a bus error.
-
-### Mac OS 9
-
-Mac OS 9.0 installs and boots too, on the same ROM file and NanoKernel
-interface. The "Mac OS 9" volume of Apple's 9.0.4 CD (9.0, with the 9.0.4
-update alongside) starts up from the CD; its installer puts 9.0 on an empty
-disk image in under a minute in real time (turn off "Update Apple Hard Disk
-Drivers" again), and the installed system starts up to the Setup Assistant.
-The 9.0.4 update on the same CD installs too, and 9.0.4 boots to the Finder
-in under 3 s in real time, with fast start (see below). Without it, that's
-13 s, or 5 s with AppleTalk inactive (Chooser): with AppleTalk active on
-Ethernet, startup waits out its timeouts, as on a real Mac with no other
-AppleTalk machine around, and behind Blue's NAT (IP only) there never is
-one. That's 5 s for a node address and a router (AARP probes, then ZIP
-GetNetInfo) and 3 s for Apple Remote Access's personal server to make sure
-its name is unique (NBP lookups). Two things were in the way of those
-13 s:
-
-- Mac OS 9 waits up to 10 s during "Starting Up…" for the root hubs of the
-  machine's USB controllers, and without any it waits it all out. Blue has
-  an empty USB controller (below), whose root hub the ROM's driver finds at
-  once.
-- The input component of Mac OS 9's AWACS sound driver ('sind' 'awgc') has a
-  bug in its close routine, which runs at every startup (the Component
-  Manager opens and closes the component to register it): it unlocks its
-  globals, passes a pointer into them to a call that allocates memory, which
-  can move them, and afterwards writes through that pointer. With some
-  layouts of the system heap that corrupts its free list, and startup
-  stopped with an address error or hung (with the USB controller, every
-  time). The sound node now says the chip has output hardware only
-  (`hardware-types` 2; input only ever recorded silence), so the input
-  component never claims it.
-
-Sound works in Mac OS 9 too: its DMA plug-in for the sound chip needs the
-chip's interrupts as a Driver Services interrupt set, and those sets' DMA
-interrupts need acknowledging by the kernel (see interrupt sets below).
-
-Mac OS 8.6 and later carry a newer NanoKernel in the System file (a `krnl`
-resource) and replace the running kernel with it at startup unless that one
-is at least as new. Blue's kernel reports NanoKernelInfo version 2.28, with
-the multiprocessing fields empty (no "blue task"), so those Systems keep it;
-their MPLibrary then doesn't use the version 2 interfaces, as on a machine
-without them. One call does come through, though: 8.6's Process Manager
-(its ProcessMgrSupport fragment), when nothing needs to run, sleeps until
-the next process's wake time with Multiprocessing Services call 55
-(`MPDispatch`, kernel call 8, with an AbsoluteTime in r3:r4). Blue naps
-then until that time or an interrupt, as for `PowerDispatch`; any other
-`MPDispatch` call stops the run, naming it.
-
-### Mac OS 9.1 (from its CD)
-
-9.1's System won't start with `MOS.rom` ("This startup disk will not work
-on this Macintosh model"). It needs the ROM file from its own CD (Mac OS ROM
-6.1f9, which Blue takes from the CD's System Folder; `MOS91.rom` here is a
-copy of its data fork, for `--rom` and the tools), which keeps its contents
-in parcels (`src/parcels.h`; `rom parcels` lists them): the Toolbox image;
-libraries the ROM prepares and registers at startup (MotherBoardHAL,
-TimeManagerLib, NVRAMServicesLib, RTCServicesLib, NativePowerMgrLib,
-StartLib), which earlier ROMs had inside
-the image; and drivers for machines' devices. Blue loads it and puts the
-libraries, and the drivers that match its devices (Cuda, Grackle, the
-RTC, NVRAM), in the device tree as the Trampoline would. Its ConfigInfo no longer
-describes the address space (the Trampoline in the same file hands the
-kernel a page map instead), so Blue lays it out as earlier ROMs describe
-it.
-
-The 68k emulator then starts, and the ROM starts Multiprocessing Services,
-which want a NanoKernel 2 underneath: one that runs Mac OS as its "blue"
-task. For these ROM files Blue's kernel reports one (NanoKernelInfo's
-version 2 fields; the ROM checks that the blue process has ID 1, the first
-one a NanoKernel 2 makes), and takes their calls (`sc`, or kernel call 8,
-with the call number in r0; `src/mp.c`): queues, semaphores, critical
-regions, event groups (setting one that's marked for it raises a 68k
-software interrupt, which the emulator takes much as it does a device's),
-notifications, the areas startup's address space is made of (Mac OS's RAM
-and the page map's regions), and timers, which fire on the guest timebase.
-`BLUE_LOG_MP=1` logs them, the switches between tasks, timers firing and
-software interrupts raised.
-
-Mixed Mode asks with every call whether the current task is the blue one
-(`sc` with r0 -1; -2 asks for the task's word too), about a million times
-per billion instructions. Generated code and the interpreter answer those
-themselves, from values the kernel gives them before each run (`sc_*` in
-`src/ppc.h`), unless the kernel would have more to do at that exit (see
-the JIT's kernel calls in place); in a 4-billion-instruction run from the
-CD, 3.3 of 4.5 million `sc` no longer leave generated code.
-
-Tasks besides the blue one run on the same processor, one at a time: each
-has its registers saved while another runs, and the blue task's stay as
-its NanoKernel 1 contexts left them. They're scheduled as NanoKernel 2
-does it: by priority (a task woken by what it waited for goes ahead of the
-blue task; the blue task goes ahead of all once an interrupt is posted to
-it, or while its 68k code has interrupts masked, and gives that up when
-the emulator yields once its 68k code unmasks them), and in time slices
-shared by weight, measured on the guest timebase so that runs stay
-reproducible. A task that waits blocks, and makes its call again once
-what it waits for comes, or its timeout; tasks can also wait for a time.
-The blue task may not wait, and polls instead, letting other tasks run,
-or naps while they do. Startup makes three tasks, which first run once the
-68k code has unmasked interrupts: one that waits for other tasks to end,
-one for the debugger's queue, and the page ager, which then waits for 3
-seconds. Meanwhile the Time Manager's timers fire, each setting an event
-group that raises a level-1 software interrupt; the 68k handler takes the
-group's flags and the Time Manager carries on, and so does startup. Every
-3 seconds the page ager looks through the areas for pages to age: it asks
-for each area's details, skips the contiguous ones (all but Mac OS's RAM),
-and makes some of the RAM's pages older (with no virtual memory, nothing
-makes them younger again).
-
-Later in startup Mac OS looks for a CPU plugin, code that knows the
-machine's processors, and registers the one for G3 machines with Grackle;
-the kernel runs its routines when asked, there and then, with interrupts
-off (it says there's one processor). Then Mac OS makes a process of its
-own and moves the blue task into it.
-
-The CD then starts up to the Finder ("Mac OS 9.1", Starting Up with the
-extensions' icons, then the CD's window), within about a billion
-instructions (under a second):
-
-```
-build/blue boot --cdrom 91.iso --max 3000000000 --screenshot finder.png
-```
-
-Startup used to wait 25 s first. 9.1's Start Manager, unlike earlier ones,
-starts up only from the drive Open Firmware booted from until the internal
-disk's wait time (25 s unless set in PRAM) has passed, and only then from
-any drive. It learns which drive that is from StartLib (one of the ROM
-file's libraries), which reads the path Open Firmware leaves in the device
-tree (`/chosen`'s `bootpath`: the device, the partition, and the System
-Folder's ROM file) and asks each disk driver, through DriverGestalt, which
-device-tree node, unit and partition its drives are. Blue's tree had no
-such path. For ROM files with parcels it now names the partition the ROM
-file came from (if it has boot blocks; otherwise, or with `--rom`, the
-first partition with boot blocks, in command-line order), and Blue's disk
-driver answers those questions, its drives being a SCSI target at the
-disk's PCI device number (StartLib knows units only for SCSI, ATA, USB
-and FireWire drives). In real time with fast start the CD is at the
-Finder after 16 s of guest time (1.3 s on the host) instead of 41 (3.8 s);
-what's left is mostly AppleTalk on Ethernet finding no one (5 s, as with
-9.0.4) and the CD's transfers.
-
-The clock and NVRAM work as on an iMac. 9.1 reaches neither through RTAS,
-as 8.5 does: its ROM prepares the libraries in order and stops at the
-first one that fails, and NVRAMServicesLib failed for want of an NVRAM
-device, so RTCServicesLib, the next, never ran (the clock said 12:00 AM
-and never moved). For these ROM files the device tree has the NVRAM an
-iMac has, `nvram` under Mac I/O at `+0x60000` (8 KB, a byte every 16 bytes
-of address space; `src/nvram.c`), which the ROM file's own driver for it
-drives. RTCServicesLib then finds the RTC under via-cuda, whose driver
-(also the ROM file's) asks the Cuda for the time; setting the time in Date
-& Time sets the Cuda's clock, until the next restart (with 8.5, whose RTAS
-clock ignores it, a restart goes back to the host's time as well). The
-NVRAM is the same 8 KB that RTAS serves 8.5–9.0.4, kept in the same
-`--nvram` file, and both keep PRAM in the same place, at `0x1400`, so a
-file goes with an install whichever ROM starts it. 9.1 reads NVRAM at
-startup and keeps its changes in memory until it shuts down or restarts,
-when it writes them to the chip, as on an iMac: changes since startup are
-lost when Blue quits otherwise (closing the window, or Turn off in its
-menu). The end-of-run statistics count the chip's reads and writes.
-
-9.1 installs onto a disk image with its own installer, as 9.0 does
-(`build/blue disk create hd91.img 2G "Macintosh HD"`, then the CD and the
-disk; Mac OS Install from the CD's window: Continue, Select with Macintosh
-HD as the destination, Continue, Continue, Agree, then Options... to turn
-off "Update Apple Hard Disk Drivers", and Start). A scripted run installed
-it (268 MB written) by instruction 40 billion; the installed system starts
-up from the disk alone (`rom: "Macintosh HD:System Folder:Mac OS ROM"`) to
-the Finder with the Mac OS Setup Assistant, and takes the guest tools (see
-Guest tools). By then the screen has gone to sleep, as Energy Saver puts
-it after a while without input, and the first click or key press only
-wakes it: the installer's last dialog takes the second.
-
-### Mac OS 9.2.2 (from its CD)
-
-The MacOS9Lives 9.2.2 CD (`922.iso`, "Mac OS 9.2.2 Universal", for Macs
-Apple's 9.2.2 doesn't support; its ROM file is Mac OS ROM 10.2f1, a
-modified 10.2.1 compatible with any `MacRISC` model) starts up to the
-Finder on the same kernel, and opens its Read Me in SimpleText, as under
-QEMU:
-
-```
-build/blue boot --cdrom 922.iso --max 3000000000 --screenshot finder.png
-```
-
-The Finder is up by instruction 1.5 billion; in real time with fast start
-after 13-14 s of guest time (about 1 s on the host; how far guest time
-gets in that second depends on how busy the host is), and then the host
-sleeps most of the time. Its ROM file carries NanoKernel 2.28 (the version
-Blue's kernel reports), and wants a few things 9.1's doesn't:
-
-- The info records as NanoKernel 2.28 has them: HWInfo version 0x0108 (0xC0
-  bytes), ProcessorInfo 0x0112 (0xA0 bytes, with the processor's clock
-  rates) and SystemInfo 0x0107. The ROM's 68k startup reads HWInfo's new
-  CascadeInfo pointer (`+0xA8`: interrupt controllers cascaded from an
-  OpenPIC, none on an iMac); with the old, shorter record it read the end of
-  RAM instead and stopped. Earlier ROMs still get NanoKernel 1's records.
-- Multiprocessing Services calls 62 (`MPGetNextCpuID`), 44 and 45
-  (`MPStartScheduling`, `MPStopScheduling`: the power manager stops the
-  other processors before it sleeps; the one the kernel started on can't
-  be) and 132 (`NKSetClockDriftCorrection`). The kernel now has the
-  machine's coherence group and processor, as a NanoKernel 2 has them
-  before its first call, so the blue task, page queue and address space
-  have the real kernel's IDs.
-- A task ('accu') that measures the timebase's drift against KeyLargo's
-  counter at Mac I/O `+0x15038`. On the iMac's Mac I/O that's the floppy
-  controller's cell, which now reads as zeros (it faulted before): the task
-  finds the counter stopped and corrects nothing.
-- Its ROM file has a lanLib for the iMac's own Ethernet controller (BMAC+),
-  which the Trampoline puts in the Ethernet node in place of the firmware's.
-  Blue has no BMAC, so its own lanLib stays.
-- Kernel call 7 (CacheDispatch) with a selector for no cache (4), from the
-  power manager as it dozes after half an hour of idling: -2, as both
-  NanoKernels answer.
-- `AAPL,interrupt-index` in the nodes with interrupt sets. Its
-  DriverServicesLib makes a node's interrupt set only if the node has one
-  (its Trampoline gives every node with interrupts one: each interrupt's
-  slot in HWInfo's VectorLookupTable, here the source), so without it the
-  sound chip, the USB controller and the Ethernet node had no sets: no
-  sound, USB's driver waiting for an interrupt that never came, and lanLib
-  polling. Blue gives them one for ROM files whose Trampoline makes it
-  (9.2's; earlier ROMs' trees are as they were; the display's set has
-  always had one). The sound plays (alerts; the Sound control panel's
-  volume and Mute), USB's root hub runs with its interrupts (start of
-  frame, frame number overflow), and lanLib receives by interrupt (TCP/IP
-  gets its address by DHCP in real time).
-- The sound codec's status says it's valid (bit 22), as a running codec's
-  does. The sound plug-in (two start on 9.2.2) polls for it after setting
-  the codec up, and gives up after a thousand polls: 2 s of guest time in
-  instruction time, 17 s in real time with fast start, whose slower guest
-  processor stretches each poll (the CD's Finder came at 22-30 s of guest
-  time). It's set for every system: 8.5's and 9.1's plug-ins wait for it
-  too (with fast start, the 8.5 CD's Finder came 0.9 s later without it,
-  9.1's 1.4 s).
-
-The CD installs with Apple Software Restore (its Read Me says how), which
-copies the CD's disk image onto a volume, erasing it. Drive Setup, which
-opens too, lists no drives (it knows Apple's own ATA and SCSI drives only)
-and isn't needed:
-
-```
-build/blue disk create hd922.img 2G "Macintosh HD"
-build/blue boot --disk hd922.img --cdrom 922.iso --window --nvram blue.nvram
-```
-
-In Apple Software Restore (open it from the CD's window), click Switch Disk
-until the destination disk is "Macintosh HD", then Restore, and OK. A
-scripted run restored 671 MB in under 20 billion instructions; the volume is
-then called MacOS9Lives. Click Quit when it says so: Apple Software Restore
-quits the Finder while it works, and the Finder, started again then, makes
-the new volume's Desktop Folder and Trash. Then `build/blue boot --disk
-hd922.img --window --nvram blue.nvram` starts it, to the Finder (the first
-time, with the Setup Assistant over it), in real time and in instruction
-time. In
-instruction time its startup used to stop short of the Finder until a key
-was pressed: a Time Manager software interrupt the 68k emulator never took,
-and nothing else to interrupt the native code it then napped in. The
-display's vertical blank interrupts it 60 times a second now, as an iMac's
-does (docs/plan.md, Findings).
-
-A volume Apple Software Restore has restored but not yet given back (Blue
-closed with its last dialog up) has neither folder, and on its first
-startup the Setup Assistant, quit, leaves the desktop without a menu bar:
-it puts its Register with Apple alias in the Desktop Folder as it quits,
-and without one it quits without showing the menu bar again. The Finder
-makes the folder then, so the next startup is as it should be. That's Mac
-OS's own doing, with that disk, on any Mac. What led there: Mac OS 9.2.2's
-power manager dozes after half an hour without user activity (in a
-scripted restore, half an hour after the last click, its last dialog up),
-and it learns of activity from the ADB keyboard's key-downs but not from an
-ADB mouse (the iMac's mouse is USB, and its driver tells the power manager
-itself), so the dialog's Quit took no click until a key was pressed. While
-Mac OS dozes, Blue now has mouse input go after a tap of Option, which
-wakes it (`src/cuda.c`; docs/plan.md, Findings): clicks and moves work after
-half an hour's idling too.
-
-The CD's system and the restored one start up as quickly as before in
-real time, give or take the half second USB's root hub and the sound
-plug-ins now take at startup (measured without fast start too), and the
-host sleeps while they idle: their sound output's DMA stops when nothing
-plays, and a USB controller with only frame number overflow enabled wakes
-the host when a frame overflows (every 33 s), not at every frame (1 ms).
-The restored system, set up and idle at the Finder, left the host asleep
-37 s of 40.
-
-### Networking
-
-In real time (`--window`, `--realtime`), the guest's built-in Ethernet is
-connected to the host's network through libslirp, the user-mode NAT QEMU
-uses (loaded at run time if installed, so not a build dependency;
-`--no-net` leaves the Ethernet unconnected). DHCP gives the guest
-10.0.2.15, with the gateway at 10.0.2.2 and DNS at 10.0.2.3. The guest can
-open connections out; nothing outside can connect in. Only IP gets through,
-so AppleTalk over Ethernet finds nobody (and makes startup wait, though
-fast start mostly hides that; see Mac OS 9).
-
-A fresh Mac OS 8.5 has TCP/IP set up for Ethernet and DHCP but inactive:
-open the TCP/IP control panel, answer Yes to make it active, then close it
-and save. Browsers of the time can't load most of today's HTTPS sites;
-plain-HTTP sites work.
-
-`BLUE_NET=1` connects the Ethernet in instruction-time runs too (the
-host network's timing then makes them unreproducible), and
-`BLUE_LOG_NET=1` logs the driver's calls. Frame counts are printed at
-exit.
-
-### Shared folder
-
-`--share DIR` shows a host folder to Mac OS as a volume of its own, named
-after the folder, with the files and folders in it: the way to move files
-between the host and Mac OS, such as a program downloaded on the host to
-install. It's an ordinary HFS volume, so everything works on it (the
-Finder, installers, programs run from it), and what Mac OS changes on it
-goes back to the folder when Mac OS shuts down.
-
-```
-build/blue boot --disk hd.img --share ~/Mac --window --nvram blue.nvram
-```
-
-The volume (`src/share.c`) is made when Blue starts: its catalog and the
-rest of its metadata in memory (`src/hfs.c` lays volumes out), its files'
-contents read from the host's files only as Mac OS reads them. It has half
-as much free space as there is in it, at least 1 GB but under 2 GB (older
-installers count free space in 31 bits). It is attached after the other
-drives, as one of the four, and is never the startup disk (no boot blocks,
-no System Folder). Names become Mac OS Roman, with `/` for `:` as macOS
-shows them; one longer than 31 characters, or the same as another's to
-Mac OS (which ignores case), is shortened with the item's ID, as Mac OS 9
-does (`A very long file name#1A.txt`). Dot files, symbolic links to
-folders and files over 2 GB (HFS's limit) are left out, and Blue says so.
-Dates are the host's, but none later than the guest's clock as the run
-starts (`--fixed-time`'s, else the host's), and none created after it was
-modified (as a file macOS copied or unpacked is: it's created when it was
-modified): Norton Utilities takes either for damage, a volume's creation
-date in the future for "damage to the Master Directory Block (Error
-16,005)". The volume was created when the folder was (on Linux, when it
-last changed), so Mac OS knows it from run to run.
-Resource forks and Finder info (type, creator, flags) are the host's: on
-macOS the file's own (`..namedfork/rsrc`, `com.apple.FinderInfo`), and
-otherwise an AppleDouble file, `._name` beside it or in a `__MACOSX` folder
-(as zip archives keep them). A file without Finder info gets a type and
-creator from its extension (`.sit`, `.hqx`, `.bin`, `.zip` for StuffIt
-Expander; `.txt`; `.jpg`, `.gif`, `.png` for PictureViewer; `.pdf`; `.img`,
-`.dmg`, `.toast`, `.dsk` for Disk Copy; `.mov`, `.mp3`, `.aiff`, `.html`
-and a few more), else SimpleText's if it's plain text, else `????`.
-Archives in the StuffIt 5 format (from 1998 on; `lsar` calls them "StuffIt
-5") need StuffIt Expander 5 or later; Mac OS 8.5 and 8.6 come with 4.5,
-which quits without a word on them. Either install Expander 5.5 (as a
-`.hqx` or `.bin`, which 4.5 opens), or expand on the host with The
-Unarchiver's `unar` (Homebrew's `unar`), which keeps resource forks and
-Finder info on macOS, so they reach Mac OS through the share.
-
-What Mac OS writes goes to a temporary file (in `$TMPDIR`, gone when
-Blue exits), never to the folder during the run. At the end of the run,
-if Mac OS put the volume away (Shut Down, or Put Away), Blue writes back
-what changed: new, changed, renamed, moved and deleted files and folders,
-with their resource forks and Finder info as the host keeps them (on
-macOS the file's own; otherwise an AppleDouble `._name` file, only for a
-file with a resource fork or Finder info its name and contents wouldn't
-give it) and their dates. Nothing of the host's is destroyed: a file or
-folder Mac OS deleted (emptying the Trash or not) or replaced is moved to
-`DIR/.blue-recovery/<date and time>/`, under the path it had, and a file
-that changed on the host as well during the run is kept, with Mac OS's
-version beside it as `name (Mac OS).ext`. What Mac OS and its extensions
-keep on a volume for themselves (the desktop database, the Trash, invisible
-files at its top) isn't written back. Blue lists what it did:
-
-```
-share: writing back what Mac OS changed on "Shared" to /Users/me/Shared
-share:   changed Read Me.txt (the host's was put in .blue-recovery/2026-11-15 00.13.05)
-share:   new untitled folder
-share: 1 new, 1 changed, 0 moved or renamed, 0 deleted; the host's old ones are in /Users/me/Shared/.blue-recovery/2026-11-15 00.13.05
-```
-
-If the run ends without Mac OS having put the volume away (the window
-closed, or Turn off in Blue's menu, rather than Mac OS shutting down),
-nothing is written back, as the volume may be half-written; if anything
-of the user's had changed on it, it is saved as a disk image in the
-recovery folder instead (attach it with `--disk` to get at what's on it;
-Mac OS may check it first, as after a crash). Mac OS marks the volume in use
-in its MDB as soon as it mounts it (its first write) and put away when it
-unmounts it; that's how Blue tells. A restart keeps the volume as Mac OS
-left it. `BLUE_LOG_SHARE=1` logs Mac OS's writes.
-
-Changes cross only once a run: files added on the host during the run
-appear in Mac OS the next time, and changes made in Mac OS reach the host
-at the end. Text files keep their line endings (a host's LF shows as boxes
-in SimpleText). Folders' Finder info (window positions, custom icons) and
-the Locked checkbox aren't written back.
-
-### Floppies and CDs: removable drives
-
-The floppy drive (`--floppy`) and the CD-ROM drives (`--cdrom`) take disc
-images that come and go while Mac OS runs, mainly to install software that
-came on floppies or on several CDs. Mac OS ejects a disc as on any Mac: Put
-Away or dragging it to the Trash, Eject in the Finder's Special menu, an
-installer's own eject, an Initialize dialog's Eject. The drive is then
-empty, and Blue says so (`cdrom: Mac OS ejected ut.iso`). To put an image
-in, drop it on the window: one of a floppy's size (2880K or less) goes in
-the floppy drive, any other in a CD-ROM drive, the first that's empty (else
-one whose disc Mac OS isn't using). Mac OS learns of a disc going in as
-from a real drive, by a disk-inserted event, so whatever application is in
-front and waiting for one (an installer, Disk Copy) gets it, and mounts it.
-
-In a window or real time there's always a floppy drive, and a CD-ROM drive
-unless one was given: Blue adds an empty one of each (as `--floppy-drive`
-and `--cdrom-drive` do), so a disc can go in whatever Mac OS started with.
-The CD-ROM drive is one of the four disks: with four already, there's none
-(Blue says so, `drives: no CD-ROM drive: all 4 drives are taken`).
-Instruction-time runs without a window have only the drives given, as
-before, so they stay reproducible.
-
-```
-build/blue boot --disk hd.img --window
-build/blue boot --disk hd.img --cdrom "Game CD 1.iso" --window
-build/blue boot --disk hd.img --floppy "Install 1.image" --floppy "Install 2.image" --window
-```
-
-The window's menu (F12) shows what's in each drive, with Eject and
-Insert... buttons. Insert... opens the host's file chooser (on macOS the
-system's Open panel; on Linux zenity's or kdialog's, if one is installed),
-and the image chosen goes in that drive as a dropped one would, with the
-same checks (without a chooser, the menu says to drop an image on the
-window). Neither the window nor Mac OS waits for the chooser. Blue won't
-take a disc out that Mac OS has mounted (it's using it: Eject is disabled,
-and the menu says to put it away in Mac OS); one that isn't mounted
-(unreadable, say, or just put in) it can, and Insert... puts another in its
-place. If an image can't go in (no empty drive, a drive Mac OS is using, not
-an image Blue takes), the menu opens to say why.
-
-`--floppy IMAGE` puts a floppy disk image in the floppy drive; given
-several times, for a set of disks, the first is in the drive at startup
-and the others go in, in turn, as Mac OS ejects the one in (a second
-later, as from a quick hand): a multi-disk installer that ejects disk 1 and
-asks for disk 2 gets it with nothing to do, and the menu lists what's still
-to come. Dropping an image puts that one in instead (when the drive is
-free), and the rest follow as before. `--floppy-drive` gives a floppy drive
-with nothing in it, `--cdrom-drive` an empty CD-ROM drive (one of the four
-disks): in a window or real time only for a second empty CD-ROM drive, say,
-as there's one of each anyway. Input scripts have `floppy insert FILE` and
-`cdrom insert FILE` (the rest of the line), `floppy eject` and `cdrom
-eject` (the first CD-ROM drive whose disc Mac OS isn't using), which follow
-the same rules.
-
-CD-ROM drives answer as CD-ROM drives (see CDs: audio and cue sheets
-below), and the swappable ones say their disc is ejectable. As in an iMac,
-a disc stays in its drive through a restart (Special > Restart, the guest
-tools' Install and Restart, the menu's Restart) and when Mac OS shuts
-down, and is mounted again after the restart; so does a floppy (see
-Floppies), and the next of several `--floppy` images doesn't go in then.
-A CD-ROM drive gives
-Mac OS a drive for each HFS partition of the disc in it at startup (one if
-it's empty); a disc put in later with more shows its first ones, and a
-disc comes out once none of its volumes is in use. A CD put in while Mac OS runs is never
-the startup disk (it's shown to Mac OS once applications run); one in at
-startup may be, as before, and Mac OS won't eject the startup disk ("The
-startup disk cannot be removed from the desktop"). CD images are raw (an
-`.iso`, `.toast`, `.cdr` or `.img`, with or without a partition map) or cue
-sheets (below); compressed ones and UDIF `.dmg` (`hdiutil convert -format
-UDTO` makes a raw `.cdr`) are refused, saying what they are, and so is a
-`.bin` of raw sectors given without its `.cue` (when it starts with a data
-track; one that starts with audio can't be told from a plain image). Ejectable drives change what Mac OS does all along (it looks at
-the drives' flags as it runs), so CD-ROM drives are ejectable only where
-discs can be swapped: in a window or real time, with `--cdrom-drive`, or
-with an input script that swaps CDs (`cdrom` commands); other
-instruction-time runs keep them fixed, as before, the same instruction for
-instruction.
-
-#### CDs: audio and cue sheets
-
-A CD-ROM drive (every one, swappable or not) answers Mac OS as Apple's
-CD-ROM driver does on a real Mac (`src/cdrom.c`, after Apple's Technical
-Note DV22): its driver is named `.AppleCD`, DriverGestalt says `cdrm` (and
-`ejec`, that a restart or shutdown leaves the disc in), and
-it has the calls that AppleCD Audio Player, the Control Strip's CD module,
-Audio CD Access, QuickTime and games make: the table of contents
-(ReadTOC), where the drive is (AudioStatus, the Q subchannel), playing
-(AudioPlay, AudioTrackSearch, AudioPause, AudioStop, AudioScan), the
-drive's volume and channels (AudioControl, ReadAudioVolume), the track
-play lists the driver plays itself (AppleCD Audio Player's shuffle and
-programs, with repeat), reading audio digitally (ReadAudio, with the Q or
-all of the subchannel). The Finder shows a CD and a CD-ROM drive icon (a
-disc's own volume icon, if it has one, goes before them), and Get Info says
-"Blue CD-ROM drive".
-
-Images with audio come as cue sheets (`.cue`, with `.bin` files, as most
-CD rips are): tracks in raw 2352-byte sectors (audio; mode 1 or mode 2
-data), in 2048- or 2336-byte data sectors, or in WAVE or AIFF files (44.1
-kHz, 16-bit stereo); `BINARY` and `MOTOROLA` files, one for the disc or one
-a track; `INDEX 00` pregaps in the file and `PREGAP`/`POSTGAP` silence that
-isn't; several sessions (`REM SESSION`, as on CD-Extra discs); `CATALOG` and
-`ISRC`. The disc's own addresses are worked out as a drive has them (track 1
-at 00:02:00). `blue disk toc FILE` lists what the drive will say:
-
-```
-$ build/blue disk toc "Quake [1996].cue"
-Quake [1996].cue: 11 tracks, 1 session, lead-out at 61:47:11 (LBA 277886)
-   1  mode 1  00:02:00  LBA      0  02:47:20  (Mac OS sees its data)
-   2  audio   02:51:20  LBA  12695  05:08:38  (pregap 00:02:00)
-   3  audio   07:59:65  LBA  35840  02:25:60  (pregap 00:00:07)
-   ...
-```
-
-Mac OS mounts the data track (the first one): an HFS volume, with or
-without a partition map, or ISO 9660 with ISO 9660 File Access (in an
-installed system: the PC Quake CD shows up as QUAKE106). A disc of audio
-alone reads as blank data, and Foreign File Access with Audio CD Access
-mounts it as "Audio CD 1", its tracks as documents (on 8.5; AppleCD Audio
-Player opens them, QuickTime's MoviePlayer converts them to AIFF files,
-reading them digitally).
-
-The drive plays audio as the iMac's did: into the sound chip's analog input,
-which Mac OS sets to play the CD through to the outputs (8.5 selects the CD
-and turns loop-through on; with no input selected, as Mac OS 9 leaves it
-here, it plays through too). So CD audio is mixed with Mac OS's own sound
-and follows its volume and mute (Monitors & Sound), as on the real machine,
-and the drive's own volume (AudioControl) comes before. It's paced by guest
-time: where the drive is follows from where and when play started, so
-instruction-time runs are reproducible, and `BLUE_SOUND_WAV` records it.
-To play a music CD's or a game's soundtrack, start Mac OS with the cue
-sheet, or drop it on the window:
-
-```
-build/blue boot --disk hd.img --cdrom "Quake [1996].cue" --window    # then AppleCD Audio Player, in the Apple menu
-```
-
-On an installed 8.5, the Control Strip's CD module plays a disc that's in at
-startup by itself (its AutoPlay); for one put in later it keeps the table of
-contents it read at startup (none) and doesn't, while AppleCD Audio Player
-plays either. AppleCD Audio Player numbers a mixed disc's audio tracks from
-1 (on the Quake CD, its Track 1 is the disc's track 2).
-
-#### Floppies
-
-Images: raw ones of 400K, 720K, 800K, 1440K and 2880K disks (`.img`,
-`.dsk`, `.ima`, `.flp`), and Disk Copy 4.2 ones (`.image`: an 84-byte
-header, the blocks, then the 400K and 800K disks' tags; also in
-MacBinary), whose checksums Blue keeps right as Mac OS writes (they're
-worked out again a second after the last write, and when the disk is
-ejected or flushed). They're told apart by their contents and size, not
-their names. Compressed images and archives (Disk Copy 6's NDIF, DART,
-UDIF `.dmg`, StuffIt, zip, gzip, BinHex) aren't taken: Blue says what
-they are, or that their size is no floppy's. Convert them to a raw or Disk
-Copy 4.2 image first (with Disk Copy in Mac OS, or a tool on the host). An
-image is read-only (Mac OS shows it locked) if its file can't be written,
-or is locked in the Finder; lock an image to keep it as it was, as Mac OS
-writes to a writable disk as soon as it mounts it (its volume information,
-the desktop database). Mac OS mounts what it can read: HFS, FAT (PC
-floppies) with File Exchange, which a full install has (the 8.5 CD's
-System doesn't: it offers to initialize them). MFS disks (System 1-6 era,
-400K) are refused: Mac OS 8.5 and later can't read them. A blank image (or
-one Mac OS can't read) brings up Mac OS's "unreadable, initialize?"
-dialog, and Erase Disk works on floppies (Format, Verify, then a new
-volume; the format offered is the image's size). `blue disk create
-blank.img 1440K "Untitled"` makes a blank formatted floppy (400K, 720K,
-800K or 1440K).
-
-The iMac has no floppy controller, so none is emulated: the drive is a
-third kind of drive of Blue's own disk driver (`src/disk.c`, images in
-`src/floppy.c`, which drive an image goes in `src/drives.c`), at PCI
-device 7, much as a USB floppy drive is on a real iMac, and needs nothing
-installed in Mac OS. It answers as a floppy drive
-(DriverGestalt 'devt' 'flop', a floppy disk's icon and the drive's, in
-color, the 'where' of Get Info, the format list) and says its disk is
-ejectable. As the CD-ROM drives do, it tells Mac OS to leave the disk in
-when it restarts or shuts down (DriverGestalt 'ejec'), and the disk is
-mounted again after a restart (checked on 8.5, 8.6, 9.1 and 9.2.2):
-Command-E, Put Away and the Trash eject it (and the next of several
-`--floppy` images goes in), a restart doesn't. A floppy is never the
-startup disk: the drive is empty as far as Mac OS knows until applications
-run (see docs/plan.md, Findings), and Blue doesn't look for a ROM file on it.
-Transfers take guest time at the disks' rate. The status bar's floppy light
-(with a floppy drive only) is dimmed while it's empty. Disk Copy can't
-make floppies from images in this drive (it looks for Apple's floppy
-drives): put the image in instead, or a copy of it.
-
-### MacBench
-
-ZD MacBench 5.0 runs (tested from a shared folder, on an installed 8.5):
-it registers, opens its main window and runs its Processor and Floating
-Point tests (the others are untried). Right after registering it uses
-Gary Davidian's skeleton key, a kernel call that gives a program
-supervisor mode, to read the processor's L2CR and HID0 (see the kernel
-calls and privileged instructions below); without it, MacBench quit with
-"an error of type 1". Its scores are relative to its reference machine, a
-Power Macintosh G3/300 (1000 in every test). Benchmark in real time, in a
-window: in instruction time, guest time follows the instruction count, so
-the guest processor looks like a 16.6 MIPS one (Processor: 62, 6% of the
-G3/300); in one real-time run on an M5, with other work on the host,
-Processor scored 18,324 (the test took about 25 s). MacBench times things
-by polling the VIA's timer in a tight loop; in real time, a loop whose
-device register read fell on the last instruction before a sync point
-kept Blue from ever reaching one (guest time stood still, and the window
-froze); it no longer does. Its Floating Point test runs for about 50 s
-of guest time (five parts of about 10 s that count iterations: an FFT, an
-LU decomposition, MathLib's functions, NaNs and infinities among their
-arguments, a table of log factorials from MathLib's log and exp,
-arithmetic on special values); the score weighs them like a harmonic
-mean, so the log factorials (60% of it on Blue) count most. Headless in
-real time on an M5 (`--realtime`, a script in seconds; medians of 4 runs,
-interleaved) it scored 7,085 before the JIT's floating-point work above
-and 16,616 after (in a later session, 6,250 and 14,700: the host's speed
-varies), while the Processor test's code runs as fast as before; see
-Findings in docs/plan.md.
-
-Its CD-ROM tests run with the MacBench 5.0 CD (`MacBench5.toast`) in a
-CD-ROM drive, on an installed 8.5 and 9.2.2: the CD-ROM test (148 MB of
-File Manager reads replayed from five CD titles; 1,442 on 8.5 in
-instruction time, 4,261 on 9.2.2 with `clock 400`, 5,366-5,383 in real
-time, a window or not) and the CD-ROM inspection tests (sequential and
-random reads of 512 bytes and 1 MB). They read through the File Manager
-only; below it MacBench just takes an inventory of the drives (see
-Findings in docs/plan.md, "MacBench's CD-ROM test"). A report of the test
-freezing MacBench on 9.2.2 in a window (the Memory Manager faulting on a
-broken system heap, then the Toolbox) didn't reproduce here.
-
-### Pippin titles
-
-Discs for the Bandai Pippin (Apple's 1996 console design, System 7.5) are
-HFS CDs, and many of their programs run on a Mac, but some link to the
-Pippin's own library, PippinPPC, which Mac OS hasn't got ("could not be
-opened because "PippinPPC" could not be found"). Blue Pippin Library, one
-of the guest tools (below), is Blue's own PippinPPC, with the Pippin's
-twelve functions mapped onto Mac OS 8.5 to 9.2.2 (`src/pippin.c`; docs/plan.md
-has what each does on a Pippin):
-
-- The Pippin's file dialogs are Standard File's, starting in the title's
-  folder: on a Pippin that is at the root of its 120 KB of flash (or a
-  floppy's), here `System Folder:Preferences:Pippin:` and the title's name
-  (its `pipn` resource's, else the application's). Saves and preferences
-  go there, never to the CD. The file chosen comes back with a working
-  directory for its folder as its vRefNum, as the old Standard File's did,
-  since titles such as Marathon take the folder from that.
-  `PippinStandardDeleteFile`, the Pippin's "make room" dialog, is a file
-  chosen in the title's folder, deleted once a caution alert is answered
-  Delete. `MakeWritesPermanent` (writing the flash) flushes the volume;
-  there's no floppy dock; the soft keyboard and the Pippin's extra PRAM do
-  nothing.
-- While a title that links to it runs, Gestalt answers `pipn` (titles
-  check it, and Super Marathon quits without it: "Sorry, but this game is
-  only for the Pippin."), and ShutDwnStart and ShutDwnPower return at once:
-  a Pippin turns off when its title quits, which here would shut Mac OS
-  down.
-
-Super Marathon (Bungie, 1996: Marathon and Marathon 2 for the Pippin)
-plays from its disc on Mac OS 8.5 and 9.2.2 installed on disks, with the
-library installed. Open `M1:marathon.ppc` or `M2:marathon2.ppc`; the
-Pippin's menu offers Begin New Game, Continue Saved Game, Delete Saved
-Game, Preferences and Quit. The Pippin builds don't save at pattern
-buffers: they ask "Save game as:" when a level ends, and the saves land
-in `Preferences:Pippin:marathon.ppc` or `marathon2.ppc`; Continue Saved
-Game opens them there, and Quit goes back to the Finder. The keyboard
-works: in Marathon 2 the up arrow moves forward, Space fires, Tab acts (terminals),
-Return pages through a terminal, Command-Q asks to end the game; Marathon
-1 took Tab and Return held for a second in scripted tests, and its
-movement keys weren't found there (the Preferences screen sets them). The
-mouse works in the menus and dialogs. The Pippin's AppleJack controller
-isn't emulated (its buttons are keys: the titles' `pipp` resources map
-them onto the keyboard).
-
-"1995.1.17 Hanshin Daishinsai" (a Macromedia Director projector, `JISIN`,
-68k, without PippinPPC) runs on 8.5 and 9.2.2: open its disc (its name is
-Japanese, shown in Mac OS Roman without a Japanese system; typing "c" in the
-Finder selects it), then JISIN. It shows its title, then a photo at a
-time, the next at a click. A scripted click doesn't select a desktop icon
-(see docs/plan.md, Findings), which is why opening the disc that way seemed to
-do nothing.
-
-### The window's scale
-
-In a window, each of the Mac's pixels is a whole number of the display's
-pixels, 1 to 4: the window's scale. Auto, the default, picks the number
-that brings Mac OS nearest, in proportion, to 80 pixels per inch, as on a
-1999 Mac's screen, from the display's own density: its physical size from
-CoreGraphics on macOS; on Linux SDL 2's figure (the X server's or the
-compositor's) or, under sdl2-compat, whose displays have no physical size,
-the kernel's EDID of the display (`/sys/class/drm`). So 1x up to 113 pixels
-per inch (a 27-inch 1440p display: 109), 2x up to 196 (a 27-inch 4K one:
-163), 3x up to 277 (a 5K iMac: 218; a 14-inch MacBook Pro: 254), and 4x
-above (a 13-inch MacBook Air made to look like 1710 x 1112: 299). Where the
-density isn't known, or isn't plausible (a television giving its shape for
-its size), it's the display's own scale: 1x, or 2x on a Retina display. It's
-worked out again when the window goes to another display, and Blue says
-what it found:
-
-```
-display: 218 pixels per inch: Auto's scale is 3
-```
-
-`--scale auto|1|2|3|4` sets it at startup, and F12's menu has it (Scale:
-Auto (3x), 1x, 2x, 3x, 4x; Auto says what it chose). The menu, prompts and
-status bar are in the window's own units (points), whatever the scale.
-
-- With Blue Enhancements (see Guest tools) the screen follows the window:
-  resized, the window asks Mac OS for its size in the display's pixels over
-  the scale, rounded to what the display driver takes (the width down to a
-  multiple of 8, at least 512 x 384, and smaller, keeping its shape, if 16
-  MB wouldn't hold it at 32 bits a pixel), and that screen is drawn at
-  exactly the scale, crisp, with a border of what the rounding left. A
-  full-screen window on a 5K iMac is 1704 x 944 at 3x, with the status bar.
-  A new scale changes the screen, the window staying as it is (as Mac OS
-  resumes, chosen in the menu).
-- Without it, the window shows the screen at the scale: it opens at the
-  screen's size times the scale, within the display (smaller, keeping its
-  shape, if that doesn't fit), and a new scale resizes it. Resized by hand,
-  it scales the screen to fill it (see Host side, under Guest tools).
-- `--integer-scale` keeps to whole numbers wherever the window scales a
-  screen that isn't its own size (without Enhancements; while the window is
-  being resized; a resolution chosen in Mac OS that doesn't fit the
-  display), leaving a border rather than filtering; a window that doesn't
-  fit the display at the scale is the largest whole multiple that does.
-  With the screen following the window it changes nothing: that screen is
-  drawn at the scale anyway.
-
-### Guest tools
-
-Some things only code inside Mac OS can do: Blue Enhancements, Blue
-3D Engine, Blue's OpenGL libraries and Blue Pippin Library (below). In a window, Blue offers to install them: before Mac OS
-starts it looks in the startup disk's System Folder (its folders,
-Extensions whatever its name and Extensions (Disabled) among them) for
-them, and once the Finder is up, if one is missing or isn't this version's
-(both forks compared with what it makes), a box over the screen says so,
-with Install and Restart (or Update and Restart), Not Now and Don't Ask
-Again (below); Mac OS runs on meanwhile. On Install, Mac OS writes the files itself (see Findings in
-docs/plan.md): each goes to a temporary file in the folder it belongs in, which
-then takes the old copy's place, so an error (a full or locked disk) leaves
-nothing half written; a disabled copy is updated where it is and stays
-disabled. An older Blue Enhancements that's running is asked to quit
-first (its file is in use while it runs). Mac OS opens its file some
-seconds before it first runs (on 9.2.2 after the Finder is up), so if the
-installer still finds it in use as it replaces it, the copy written is
-deleted, Enhancements is asked to quit (it does as soon as it runs), and
-the installer goes in again once it has. Once everything is in place,
-Mac OS restarts as Special > Restart does (Blue's installer sends the
-Process Manager the Restart Apple event): programs are asked to quit, and
-can ask to save their work first, or stop the restart (the tools are in
-place then, and load at the next restart). CDs and floppies stay in their
-drives through the restart (see Floppies and CDs). Afterwards the tools load as
-any extension does: Blue Enhancements runs, programs find the 3D engine
-and Blue's OpenGL, and nothing is offered. If anything goes wrong, Mac
-OS doesn't restart, and the box says what. This works on Mac OS 8.5, 8.6,
-9.1 and 9.2.2 installed on disk images. The outcome is shown (the box stays
-through the restart, until OK) and printed:
-
-```
-tools: installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory, Blue OpenGL Utility and Blue Pippin Library in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
-```
-
-Mac OS 9 has OpenGL libraries of Apple's with the names Blue's have
-(OpenGLLibrary, OpenGLMemory, OpenGLUtility), so only one set can be
-enabled. Once Blue's are in Extensions, the installer moves Apple's to
-Extensions (Disabled) and says so (the offer says it will). If Blue's
-are gone (deleted by hand) while Apple's are disabled, the offer is to put
-Apple's back (Put Back and Restart) instead of installing Blue's, and
-Blue's aren't offered again for the rest of the run. Checked on 9.2.2:
-
-```
-tools: installed Blue OpenGL Library, Blue OpenGL Memory and Blue OpenGL Utility in "MacOS9Lives:System Folder:Extensions"; moved Apple's OpenGLLibrary, OpenGLMemory and OpenGLUtility to "MacOS9Lives:System Folder:Extensions (Disabled)". Mac OS is restarting.
-```
-
-Nothing is offered when the startup disk is a CD, an image attached
-read-only, or a locked volume, nor without a window: an input script can
-answer instead (`tools install`, `tools later`, `tools never`), and that
-turns the check on; `tools install` restarts Mac OS too, and
-instruction-time runs stay reproducible. The startup disk is the partition
-the ROM file came from (with `--rom`, the first with boot blocks).
-
-The offer has a third button, on its left: Don't Ask Again. Blue then
-doesn't offer the tools by itself on that disk again, whatever version
-they are: Mac OS writes a small preferences file, "Blue Preferences", in
-the startup disk's Preferences folder (through the installer, as it writes
-the tools; text: `Offer the guest tools: no`), which Blue finds there as it
-looks for the tools before startup. The choice goes with the disk, so
-another system Blue starts has its own. Install Guest Tools... in Blue's
-menu (F12) makes the offer any time there's something to install (it's
-disabled otherwise, saying why), Don't Ask Again or not; installing the
-tools deletes the file, so newer versions of them are offered again.
-Deleting the file by hand does the same. In scripts, `tools offer` is the
-menu item.
-
-```
-tools: Blue won't offer its guest tools on "MacOS9Lives" again (Blue Preferences in "MacOS9Lives:System Folder:Preferences" says so). To install them later, choose Install Guest Tools... in Blue's menu (F12).
-tools: not offered (Blue Preferences: Don't Ask Again; Blue's menu, F12, offers them)
-```
-
-They can still be installed by hand: `blue tools create FILE` writes a
-small volume, "Blue Tools", holding them, which `--cdrom FILE` attaches
-(read-only); drag them onto the System Folder (the Finder puts them in
-Extensions) and restart, as Blue's installer does. The Finder shows each
-tool with an icon of Blue's (custom icons: resource ID -16455 in each
-file, with the Finder flag that says so), and the volume too (an
-invisible file at its top, `Icon\r`):
-
-- **Blue Enhancements**: from then on, resizing the window changes the
-  screen's resolution to match once the window has stopped changing (its
-  size in the display's pixels over the window's scale, see The window's
-  scale; while it's being dragged, the window scales the screen), and the
-  Finder lays out the desktop again. A
-  resolution chosen in Mac OS (Monitors & Sound, or the Control Strip)
-  resizes the window instead. Without it, the window scales the
-  screen. It
-  also shares the clipboard (below). One installed by a version of Blue
-  from before the clipboard isn't this version's (so in a window Blue
-  offers to update it), and it still switches modes until then: its data carries its
-  version, as the 3D engine's does, so that Blue finds the older copy's
-  data where it is, and says so. An `appe` only starts from Extensions, so
-  a CD's system can't run it; to try it there, `BLUE_TOOLS_APPL=1 blue
-  tools create FILE` makes the volume's copy an application the Finder
-  opens with a double-click.
-- **Clipboard** (with Blue Enhancements, in a window in real time): text
-  copied in Mac OS is on the host's clipboard, and text copied on the host
-  is what Command-V pastes in Mac OS, in the front application, without
-  switching applications (tested: SimpleText, Note Pad, Scrapbook, the
-  Finder's names and Internet Explorer 4's fields on 8.5, SimpleText on
-  9.1). Mac OS keeps text in Mac OS Roman with CR line ends (`TEXT`), and
-  applications that know Unicode (Mac OS 9's MLTE) in UTF-16 too (`utxt`);
-  the host has UTF-8 with LF. Accents come out precomposed (macOS often
-  decomposes them), and characters Mac OS Roman lacks become something
-  close where there is one (½ "1/2", → "->", other spaces a space) or
-  else "?"; `utxt`, which Blue puts in the scrap too, has them all, for
-  applications that read it, and is what the host gets when an
-  application puts both. Styles (`styl`) and pictures aren't passed, nor
-  texts over 4 MB (Blue says so). How: each application has a scrap of
-  its own (the Process Manager hands it to the next one brought to the
-  front), and many keep a private one besides, such as TextEdit's, which
-  they take from the scrap only when resumed with "the clipboard has
-  changed". Enhancements patches ZeroScrap and PutScrap to see what
-  applications copy; puts the host's new text in the front application's
-  scrap just before it gets its next event (a GetNextEvent filter: some
-  read the scrap's size in low memory rather than asking); and posts it a
-  resume event saying the clipboard has changed, as the Process Manager
-  does when one switches applications. Keys typed in the window meanwhile
-  wait for that (at most half a second), so that a quick Command-V pastes
-  the new text. An application that puts its copy in the scrap only when
-  switched out (from a private scrap, at a suspend) reaches the host once
-  another Mac application comes to the front. Scripted runs have a
-  stand-in for the host's clipboard (`clipboard` and `print-clipboard`,
-  see Debugging boot); other runs without a window, or in instruction
-  time, leave the clipboard alone.
-- **Blue 3D Engine**: a QuickDraw 3D RAVE drawing engine (put it in
-  Extensions). QuickDraw 3D's interactive renderer and RAVE games then find
-  an accelerator: it reports itself as an ATI engine (vendor 1, engine 5),
-  because games of the time, Bugdom among them, take nothing else for
-  hardware. Contexts draw to the screen or to memory, with textures and
-  bitmaps in the 16- and 32-bit formats, Z buffering, Gouraud shading,
-  perspective-correct and mipmapped texturing (modulate, decal, highlight),
-  fog, alpha test, the blend modes including OpenGL-style factors, and
-  depth-sorted transparency (`kQATag_ZSortedHint`). The host side
-  (`src/rave.c`) records each frame's drawing, a batch at a time, and while
-  the guest goes on recording the next, the GPU or a software rasterizer
-  draws it:
-  - In real time (`--window`, `--realtime`) the host's GPU draws, if it has
-    hardware OpenGL 3.3 (`src/gpu.c`): in an off-screen context of its own
-    (CGL on macOS, EGL without a window system elsewhere; `src/gl.c`,
-    loaded at run time, so not a build dependency), on a thread of its own,
-    and each frame is read back into the context's device in guest memory as
-    before. The first context says which (`3d: drawing with OpenGL 4.1
-    Metal - 91.7 (Apple M5)`). The pixels are those of the software
-    rasterizer but for rounding in filtering (and at the odd triangle edge),
-    and mipmapping, which is per pixel (trilinear with the Best texture filter,
-    with anisotropic filtering where there is some). If OpenGL fails, the
-    engine says so and goes on in software.
-  - Otherwise, a software rasterizer (`src/raster.c`) draws it in bands of
-    rows on helper threads (with vertices snapped to 1/256 of a pixel, as
-    GPUs snap them, and exact edges: triangles sharing an edge leave no
-    gap and draw no pixel twice); the pixels are always the same, however many
-    threads draw them, and it's built without the fused multiply-adds
-    compilers use on some hosts (Apple silicon's), so instruction-time runs
-    stay the same on every host. `BLUE_RASTER_THREADS` sets the number
-    (default 3, counting the emulated processor's).
-
-  The rasterizer and the GPU take what Mac OS 9's OpenGL will need too
-  (docs/opengl-plan.md): two texture units combined in stages as OpenGL's
-  texture environments combine them, blend equations, color masks, fog by
-  a fog coordinate, a stencil buffer and its test; RAVE's texture
-  operations are such stages.
-
-  `--no-gpu` (or `BLUE_GPU=0`) draws in software in real time too;
-  `BLUE_GPU=1` draws with OpenGL in any run, a software renderer such as
-  Mesa's llvmpipe included. `BLUE_RAVE_FPS=1` prints the frame rate every
-  second, and `BLUE_LOG_RAVE=1` logs every call. docs/gpu-plan.md
-  describes the GPU backend in full.
-
-  Frames for the screen come at most one a vertical blank of the display's
-  (60 a second of guest time), which shows no more; the iMac's 3D hardware
-  drew games no faster. The call that ends one (QARenderEnd) returns once
-  the display shows it: in real time the guest waits in it, taking
-  interrupts meanwhile; in instruction time guest time moves on instead.
-  Games of the time go wrong at the frame rates the host's GPU reaches:
-  Unreal Tournament's engine ticks its actors at least 5 ms at a time, so
-  at 400 frames a second its game, timers and match clock included, ran
-  at twice the speed (see Findings in docs/plan.md). Waiting, the host sleeps,
-  as when the guest idles (but guest time ahead of the host clock isn't
-  made up then: the game would show it). In a window in real time, the
-  window shows each such frame when it's due, so frames come at an even
-  pace.
-- **Blue OpenGL Library, Memory and Utility** (under way:
-  docs/opengl-plan.md): Mac OS 9's OpenGL libraries, as Blue's own, under
-  Apple's fragment names (OpenGLLibrary, OpenGLMemory, OpenGLUtility) with
-  Apple's exports, put in Extensions; on Mac OS 9 Apple's go to Extensions
-  (Disabled) meanwhile (above; installing by hand, move them there too). Their
-  calls are host calls (`src/opengl.c`), but for most of gl's: the
-  library's own code records those in a buffer in the program's memory,
-  done on the host all together at its next host call (a swap,
-  `glGetError`). A front end on the host (`src/glfront.c`, `src/gltex.c`)
-  does OpenGL's
-  fixed function, and it draws with the 3D engine's backend, on the GPU in
-  real time and in software otherwise, into the context's window (clipped
-  to its regions), the screen or an offscreen buffer, when it's swapped.
-  So far: AGL (ATI's accelerated "Rage 128 OpenGL Engine" as on Mac OS 9,
-  and, for pixel formats with an accumulation buffer, which only Apple's
-  software renderer offered, that one, "Generic", drawn the same way but
-  with Apple's strings; their pixel formats and renderer info; contexts
-  laid out as Apple's, with their dispatch tables; drawables, swaps, swap
-  and buffer rectangles) and, of
-  OpenGL, the matrices and their stacks, `glBegin` and `glEnd`'s points,
-  lines, triangles, quads and polygons with their colors, transformed,
-  clipped, culled, flat or smooth shaded, depth tested, blended or by logic
-  ops, alpha tested, masked and scissored in the viewport; points and lines
-  by OpenGL's rules (wide, antialiased, stippled, textured), the polygon
-  stipple, the accumulation buffer, 16-bit drawables dithered, Apple's
-  specular vector, the texture LOD bias and texture environment combine
-  extensions; textures
-  (objects, 1D and 2D images in every format and type, parameters, two
-  units with their texture environments, the texture matrices);
-  client arrays (`glDrawArrays`, `glDrawElements`, interleaved, compiled);
-  lighting (`src/gllight.c`: 8 lights, materials, two sides, separate
-  specular), fog, generated texture coordinates, user clip planes,
-  stencil, polygon offset and modes, the attribute stacks
-  (`src/glarray.c`, `src/glattrib.c`); display lists (`src/gllist.c`);
-  the raster position, `glBitmap`, `glDrawPixels`, `glCopyPixels` and the
-  pixel transfer (`src/glpixel.c`); `glReadPixels`, `glCopyTexImage` and
-  `glGetTexImage`; 3D textures; clears, strings, errors and queries;
-  OpenGLMemory's allocations; and OpenGLUtility, done on the host as SGI's
-  GLU does it (`src/glu.c`: the matrices, `gluProject`, scaled images and
-  mipmaps, quadrics); selection and feedback (`src/glselect.c`);
-  evaluators (`src/gleval.c`); `aglSetFullScreen` (the Display Manager
-  switches the screen to the size asked for, and back when the drawable
-  goes) and `aglUseFont` (QuickDraw draws the glyphs, as with Apple's).
-  Not yet: OpenGLUtility's tessellators and NURBS (they draw nothing);
-  antialiased polygons (`GL_POLYGON_SMOOTH` is kept, not drawn), auxiliary
-  buffers and color index; S3TC and paletted textures aren't offered (nor
-  were they by Apple's for a Rage 128). An OpenGLLibrary installed by an older version of Blue is left
-  alone, and Blue says to update it.
-  Unreal Tournament's OpenGL build (on the UT CD, `Extras:OpenGL UT.sea`)
-  and Quake III Arena's demo play with them, on the GPU and in software.
-  Swaps to the screen or a window are paced as the 3D engine's frames are
-  (above). `BLUE_GL_FPS=1` prints the frame rate every second, and
-  `BLUE_LOG_GL=1` logs every call. `BLUE_GL_PROFILE=FILE` writes a line
-  to FILE for each frame shown on the screen: the host time since the one
-  before and where it went (the libraries' host calls, waiting for the
-  backend, reading back from the GPU, writing the frame to guest memory,
-  waiting for the frame's turn), the calls, records and primitives, and
-  the GPU thread's time drawing and reading back; and a line for each
-  update of the window (see docs/opengl-plan.md, milestone 7).
-- **Blue Pippin Library**: PippinPPC, the Bandai Pippin's library, for
-  Pippin titles (see Pippin titles above), put in Extensions. Unlike the
-  others its code is its own, calling Mac OS through InterfaceLib and
-  AppearanceLib; it makes no host calls.
-
-Like the drivers, these are generated code fragments whose logic runs in
-Blue through host calls (`src/tools.c`; but for the Pippin library's). Bugdom's setup, for the record:
-QuickDraw 3D 1.6, Game Sprockets, URL Access (part of Mac OS 8.6 and later;
-Bugdom won't load without it) and the 3D engine in
-Extensions; it asks for a registration code, which shareware-era copies
-came with. Unreal Tournament (the Mac CD, 4.32) needs only the 3D engine in
-Extensions: its first-time configuration offers RAVE only for an ATI engine
-that answers ATI's engine-specific tag 1011 (the hardware's generation;
-0x304 and up a Rage Pro, 0x500 and up a Rage 128). The engine answers
-0x500, and the game picks its "RAVE (Rage 128)" settings, with which it
-also asks for ATI's table of extensions (tag 1021, a pointer) and calls
-them without checking: clearing the draw and z buffers, and replacing a
-texture's pixels (for its animated textures). It lights surfaces with the
-Rage 128's multitexturing: a second texture (the lightmap; tag 1018, a
-pointer) modulates the first while tag 1012 is on, at coordinates in the
-vertices' specular fields (ks: u/w, v/w, 1/w); both renderers do that,
-filtering the lightmap bilinearly, clamped (the other tags UT sets then,
-always the same, are taken to mean that). It plays at 60 frames a second,
-in time (a match's Elapsed Time 30 s in 30 s of host time, on 8.6 and
-9.2.2; 66 s at 640x480 and 40-46 s at 1024x768 before the frames were
-paced). The engine's data carries
-its version, so one installed by an older version of Blue isn't asked for
-what it lacks: Blue says to install it again (and a window offers to update
-it).
-UT's OpenGL build (the application and `OpenGLDrv.ini` from the CD's
-`Extras:OpenGL UT.sea`, in place of UT's application, and
-`GameRenderDevice=OpenGLDrv.OpenGLRenderDevice` in `UnrealTournament.ini`)
-draws with Blue's OpenGL libraries, on 8.6 and on 9.2.2: the same
-pictures as with RAVE, at 60 frames a second on the GPU and about 50 in
-software (on 8.6, an M5 Mac).
-
-- `blue rom` decodes NewWorld bootinfo files and raw 4 MB ROMs, verifies the
-  checksum, extracts the Toolbox image and Trampoline, and decodes the
-  NanoKernel ConfigInfo (memory map, low-memory init list).
-- User-mode PowerPC interpreter (integer, FP, string/multiple, reservations)
-  with kernel exits for `sc`, traps, privileged instructions, faults and a
-  host-call opcode (primary opcode 6). AltiVec is not implemented. Floating
-  point is the host's IEEE arithmetic, but NaN results are a 750's on
-  every host (the first NaN of frA, frB and frC, quieted, else
-  0x7FF8000000000000; never negated by `fnmadd`/`fnmsub`; cut to single
-  precision by single-precision operations and `frsp`), where hosts
-  differed (x86's default NaN is negative; each picked among NaN operands
-  its own way).
-- A JIT to AArch64 and x86-64, on Linux and macOS (`src/jit.c`, the
-  runtime both share; `src/jit_a64.c` and `src/a64.h`, `src/jit_x86.c` and
-  `src/x86.h`, the translators; `--interp` turns it off). What follows is
-  the AArch64 JIT; the x86-64 one works the same way, with differences
-  below (and in docs/x86-jit-plan.md). Blocks of up to 128
-  instructions are translated
-  natively once they have run 16 times (`BLUE_JIT_HOT`). A block ends at
-  an unconditional or computed branch; past a conditional one it goes on
-  along the not-taken path, and the taken path leaves through out-of-line
-  code. Rarer instructions call the interpreter from inside the block
-  (`lwarx` and `stwcx.`, which the CD boots run nearly 2 million times
-  a boot, are translated);
-  traps, system calls and host calls go straight to the kernel (but for
-  those made in place, below); anything
-  that faults leaves the block so the interpreter executes it (but for
-  device registers, below). The time base is read natively.
-  - Exactness: blocks run only when the instruction budget covers them, and
-    each instruction checks before it changes anything, so instruction
-    counts, device timing and faults are exactly the interpreter's (boots,
-    the install and `--fixed-time` runs give identical results either
-    way; `tests/test_jit.c` compares random programs).
-  - Kernel calls in place: the 68k emulator's switches to native code and
-    back (kernel calls 1 and 0, RunAlternateContext and
-    ReturnFromException: 7 million in 4 billion instructions of 9.1 from
-    its CD, 2.8 million in 8.5's) and NanoKernel 2's quick `sc` (see Mac
-    OS 9.1) don't leave generated code or the interpreter. For the
-    switches, generated code calls the kernel's function from inside the
-    block (`kcall` in `src/ppc.h`), which makes the call in its common
-    cases (no interrupt pending; verdict 0 or 32-255) with the same code
-    as at an exit, then goes on through the block table. The kernel allows
-    it before each run only while an exit would do nothing more
-    (Multiprocessing Services tick due, task switch, software interrupt or
-    preemption waiting: `in_place()` in `src/nk.c`); with the devices to
-    be brought up to date (after an exit that may have touched them), the
-    call does that first, at the instruction count and time base that
-    exit would have had, and goes on unless an interrupt changed or the
-    loop has more to do. As at an exit the call retires nothing, so runs
-    are the same instruction for instruction. Kernel exits in that 9.1 run
-    went from 11.7 to 1.5 million (8.5: 2.8 million to 153,000), host time
-    from 1.50 to 1.32 s (8.5: 1.03 to 1.02 s). The context switch copies
-    registers in vectors (NEON; AVX2 where the processor has it): a call
-    in place costs about 17 ns.
-  - Device registers in place: loads and stores to device registers (1.6
-    million in 4 billion instructions of the 8.5 CD boot: the Time Manager
-    programming and reading VIA timer 2, its interrupt flags, and the USB
-    driver polling the frame number; 0.7 million for 8.5 and 8.6
-    installed, nearly all VIA) don't leave generated code or the
-    interpreter either. Both offer a load or store that faults to the
-    kernel's hook (`mmio` in `src/ppc.h`, `device_hook()` in `src/nk.c`),
-    with the instruction count and time base as at the exit; it does what
-    the kernel's loop does at that exit, with the same code (devices
-    brought up to date, the access, interrupts, the next device event,
-    what the engines may do in place), and the run goes on; or it stops
-    right after the access when the loop has more to do (interrupts that
-    changed, a preemption, a Multiprocessing Services tick, a Cuda
-    shutdown or restart: about 2% of accesses). Not on a run's last
-    instruction (see devices below), nor with `clock`. Generated code gets
-    the hook's path, out of line, for instructions whose fastmem access
-    faulted on a page that isn't mapped; it writes all registers back and
-    reloads them afterwards (the hook may change any, CR when it posts an
-    interrupt). In the 8.5 CD boot device-register exits went from 1.64
-    million to 36,000 and host time from 1.00 to 0.96 s (8.5 installed:
-    0.87 to 0.86 s; 8.6: 1.24 to 1.21 s; 9.1's CD, with 17,000, as before)
-    on an M5, where an access cost about 50 ns with its exit and costs
-    about 25 now, nearly all of it the devices' own bookkeeping.
-    A read that changes nothing (the VIA's registers but for T1CL, T2CL
-    and SR, which clear interrupt flags; the USB controller's), with the
-    devices not due to change by themselves, skips the bookkeeping after
-    the access (interrupts, the next device event), which would find
-    everything as it was: about 12 ns less, for most of 8.5's accesses.
-    `BLUE_DEVICE_EXITS=1` has every access exit as before, for
-    comparisons. Stores to the NanoKernel's info records, which the
-    kernel keeps read-only to see them (the 68k emulator's, mostly), go
-    the same way: the hook makes them as the exit would (`info_store()`),
-    and generated code offers it stores that fault on a page that isn't
-    writable too.
-  - Registers: CR, LR, r1, r3, r4, r24, r27 and r29 (the hottest across the
-    68k emulator and native code) live in host registers while generated
-    code runs; others are cached within a block and written back at exits
-    (each side exit stores what is dirty at its point).
-  - Control flow: exits to known addresses are patched into direct branches
-    between blocks; computed ones look the target up in a two-level table
-    (guest page, word) inline. Blocks follow unconditional branches into the
-    ROM, so each 68k opcode handler gets its own copy of the emulator's
-    dispatch code and of its indirect branch.
-  - Memory ("fastmem"): guest memory is mapped a second time (a memfd on
-    Linux, `mach_vm_remap()` on macOS) for generated code with host page
-    protections that follow the guest's page flags (and write-protect pages
-    holding translated code). Loads and stores then need no checks; one
-    that faults (a device register, an unmapped or read-only page) is sent
-    by a SIGSEGV handler (SIGBUS on macOS) to the interpreter, and
-    translated with flag checks from then on. A few thousand do so in a
-    boot. `BLUE_JIT_FASTMEM=0` checks every access. In a window the
-    framebuffer's pages are write-protected there too while they're watched
-    for the window (`MEM_WATCH`, see Host side): a store to one makes the
-    handler let the page go and the store go ahead, the instruction as it
-    was; checked stores call into C for watched pages.
-  - Code changes are tracked per instruction word: stores (by either engine,
-    or the host, e.g. disk reads) to a page with translated code drop only
-    the blocks translated from those words, which matters because the 68k
-    emulator rewrites its own translation cache all the time. Rewritten
-    code must run 16 times again before it's translated: most of the 68k
-    emulator's translations are replaced after a few runs (a boot
-    translated 222,000 blocks before this, 140,000 after).
-  - Floating point: arithmetic, conversions, compares, moves, FPR loads
-    and stores and the FPSCR instructions (mffs, mtfsf, mtfsfi, mtfsb0,
-    mtfsb1, mcrfs) run natively, arithmetic where the interpreter's fast
-    path would apply (round to nearest, no exceptions enabled, operands and
-    results well inside the normal range, so that inexact is the only
-    possible exception and an error-free transformation finds it). The
-    FPSCR comes out exactly as the interpreter's; anything else calls the
-    interpreter for that instruction from out-of-line code. FPRs are cached
-    in host registers within a block as GPRs are (sixteen: d8-d15, which
-    calls into C keep, and d24-d31), and the rounding mode and enables are
-    checked once a block (again after anything that may change them): in
-    another mode each FP operation leaves the block for the interpreter.
-    The FPSCR is kept lazily: XX and FX at once (they change only while XX
-    is clear; checks only the inexact test needs are skipped while it's
-    set), but an operation's FR, FI and result class, which the next one
-    replaces, wait. Its record (the operation and its operands, still in
-    their FPRs) is itself only stored when something might look (an exit,
-    a call into C, an FPSCR reader) or an operand is about to change; then
-    a native routine (mffs and the like) or the interpreter (C) replays the
-    operation to work them out. Keeping them exactly at every operation
-    cost QuickDraw 3D's code (Bugdom) 13%. An lfd of the two words a block
-    has just stored with stw (how compilers turn integers into doubles) is
-    put together from the registers stored: the host can't forward two
-    stores to one load.
-  - Hosts: generated code is the same on Linux and macOS. It never uses
-    x18, which macOS reserves; on macOS the code buffer is `MAP_JIT`
-    memory, which the emulation thread makes writable only while it writes
-    code (`pthread_jit_write_protect_np()`, about 25 ns a switch). What's
-    left that only macOS pays (those switches, its slower fault signals) is
-    under 1% of a boot.
-  - x86-64 (docs/x86-jit-plan.md): the same blocks,
-    links, budget, exits, hooks and time base, with integer, compare,
-    condition-register and branch instructions translated, loads and
-    stores (fastmem, as above, with MOVBE; checked once one faults; stores
-    to pages with translated code in place), floating point as above (with
-    FMA3; FPRs cached in xmm6-xmm15), and kernel calls, the quick `sc` and
-    device registers in place as above (byte-reversed accesses to device
-    registers too, which AArch64 leaves to the interpreter). String
-    instructions call the interpreter from inside the block, as on
-    AArch64. It needs x86-64-v3 (AVX2, FMA3,
-    BMI1/2, LZCNT, MOVBE; other processors interpret, and Blue says
-    what's missing). Five guest registers live in host registers (CR, LR,
-    r3, r4, r24) and four more are cached within a block. Blocks' main
-    lines are packed together and their out-of-line code (but for the
-    taken paths of conditional branches) kept apart, which the Zen 5's
-    small instruction caches gain from (its front end, starved about half
-    the time, is what limits these boots there). Its code takes
-    about as many host instructions per guest instruction as AArch64's:
-    in the CD boots, everything included, 1.04-1.10 times AArch64's
-    (counted by QEMU; docs/x86-jit-plan.md). On an AMD Zen 5 (Linux) the
-    8.5, 9.1 and 9.2.2 CD boots took 1.46, 1.54 and 1.51 s when it was
-    finished (interpreted: 14.7, 14.5 and 10.2 s); 9.2.2's takes 1.21 s
-    now. Under Rosetta 2,
-    `ROSETTA_ADVERTISE_AVX=1` in the environment has it offer x86-64-v3.
-    The 8.5, 9.1 and 9.2.2 CD boots in instruction time end exactly as on
-    AArch64, and so do an installed 9.2.2's start and Unreal Tournament's
-    intro on 8.6; under Rosetta on an M5 the 8.5 CD's 4 billion
-    instructions take about 5.5 s (interpreted: 21 s), about 30% of it in
-    Rosetta's handling of Blue's writes to code that has run (new blocks,
-    links: about 13 µs each), a cost x86 processors don't have.
-  - `BLUE_JIT_PROFILE=1` samples where host time goes (translated blocks
-    by guest address, stubs, C functions) and prints it at the end;
-    `BLUE_JIT_PROFILE=FROM:TO` samples only from instruction FROM to TO.
-    On Linux it's SIGPROF; on macOS, which delivers SIGPROF at the next
-    system call rather than where the time went, a thread of its own
-    stops the emulation thread every 250 µs to read its pc.
-    `BLUE_PERF=1` reads the host processor's counters for the emulation
-    thread (Linux): every second, guest instructions per second and host
-    instructions and cycles per guest instruction; a total at the end.
-- Idle: the Process Manager calls `_SynchIdleTime` when no process can run,
-  and in real time the kernel then sleeps until the next VIA timer
-  interrupt or vertical blank, window frame or input. An idle Finder costs a few percent of
-  one core (`--no-idle` turns it off). The 68k emulator dispatches traps
-  it interprets through its dispatch table, so the kernel watches the entry
-  for `_SynchIdleTime` there; but code its dynamic recompiler has
-  translated (the hot code, such as the Process Manager's idle loop) calls
-  one entry of the recompiler's for every A-line trap, with `r24` pointing
-  at the trap word. There a conditional hook stops only for
-  `_SynchIdleTime` (`hook_match_*` in `src/ppc.h`: the JIT checks the trap
-  word at the start of its block for that entry, which costs nothing
-  measurable; stopping for every trap cost 30%). The kernel finds the entry
-  by its first instructions. The NanoKernel's PowerDispatch nap call
-  idles too, though neither Mac OS 8.5 nor 9.0.4 makes it here. The Mac OS
-  Setup Assistant never idles: while it's in front, it keeps a core busy,
-  as it kept a real Mac's processor.
-- Fast start: in real time, from startup until the Finder is up, guest time
-  runs 10 times as fast as the host clock, so that the timeouts startup
-  waits out (AppleTalk on Ethernet looking for other machines, Apple Remote
-  Access making sure of its name, USB, DHCP) pass in a tenth of the time;
-  meanwhile the guest sees a processor a tenth as fast. Mac OS 9.0.4 is at
-  the Finder in under 3 s instead of 13, the 8.5 CD in about 1.5 s, the 9.1
-  CD in about 1.3 s. Most of
-  those waits are busy loops, which don't call `_SynchIdleTime`, so guest
-  time runs faster throughout. The Finder counts as up once it has run (the
-  Process Manager names the current application in `CurApName`, which stays
-  unset until the first one runs) and the guest has then idled for 1.5 s of
-  guest time without disk transfers (network traffic doesn't count: what's
-  left may be looking for printers in the background), so a dialog before
-  the Finder can't end it. Input (keys, the mouse button) ends it too once
-  the Finder has run; before that (a dialog during startup, such as the one
-  after a crash, or keys held down) it only holds it back while a key or
-  the button is down and for the Mac's double-click time after (Mac OS
-  times clicks, double-clicks and key repeat in its own ticks), and
-  startup then goes on faster. Two minutes of guest time after the Finder
-  has run end it as well (the Setup Assistant never idles), or ten from the
-  start if the Finder never runs. Guest time is then ahead of the host
-  clock by what it gained, 15-25 s (about two minutes after the startup
-  disk check that follows a crash), which it makes
-  up while the guest idles, as for disk transfers (below): the Mac's clock
-  is that much ahead at first, and right after a minute or two of idling.
-  A restart starts guest time over from the host clock. `--no-fast-start`
-  turns it off.
-- `blue boot` takes the Mac OS ROM file from the startup disk (see above;
-  `src/hfsread.c`: the blessed System Folder is word 0 of the volume's
-  Finder info, its files follow its thread record in the catalog B-tree, and
-  a fragmented file's extents go on in the extents overflow file), or the
-  one `--rom` names. It builds the user address space from ConfigInfo, does what the
-  Trampoline would (hardware info record, universal tables, interrupt vector
-  tables, device tree), fills in the kernel's info records and starts Apple's
-  68k emulator from the ROM.
-- Native kernel calls: `ReturnFromException` (all verdicts), `RunAlternateContext`,
-  `ResetSystem`, `VMDispatch` (VM off; `VMAllocateMemory` supported),
-  `PrioritizeInterrupts` and `RTASDispatch`. `ResetSystem` with Gary
-  Davidian's skeleton key (r3 'Gary', r4 0x05051956) doesn't reset: its
-  caller goes on with MSR = (MSR & ~r5) | r7, as with both NanoKernels.
-- Privileged instructions: in user mode, `mfmsr` reads the user MSR and the
-  rest raise the privileged instruction exception. In supervisor mode (the
-  skeleton key's MSR with PR off) the kernel does them (`src/priv.c`):
-  `mfmsr`, `mtmsr` (PR on again ends it), `rfi`, the 750's supervisor SPRs
-  with an iMac's values (PVR, HID0, HID1 for 266 MHz on a 66 MHz bus, L2CR
-  for its 512 KB L2 at half speed, the thermal assist unit reading 40 °C,
-  the decrementer, SPRGs, SRR0/1, BATs...), segment registers, and `tlbie`,
-  `tlbsync` and `dcbi`, which do nothing; writes are kept, without effect.
-  Real mode is the same address space (identity for RAM). While the MSR has
-  EE off, interrupts wait.
-- Exceptions go the NanoKernel way: to the running context's handler if
-  enabled, otherwise ending the native (alternate) context. An interrupt that
-  arrives while native code runs ends that context with exception 0, so the
-  68k emulator takes it and resumes the native code afterwards.
-- Interrupts reach the emulator the way the NanoKernel's Heathrow handler
-  (kind 10) does it: `PendingInts` in HWInfo, the 68k level at
-  EmulatorData`+0x70`, and the CR post/clear masks. Latched pulses (DMA
-  channels) are acknowledged in the controller when delivered and stay in
-  `PendingInts` until a PrioritizeInterrupts after Mac OS has handled them
-  (see interrupt sets).
-- Devices: RTAS (clock, NVRAM, power), a 6522 VIA with timers, the Cuda (time,
-  PRAM, power, ADB with autopoll), an ADB keyboard and mouse, a Heathrow-style
-  interrupt controller and a Z8530 SCC with nothing attached (LocalTalk sees an
-  idle network), and for ROM files with parcels the NVRAM chip behind Mac I/O
-  (`src/nvram.c`; see Mac OS 9.1). Device registers are emulated by decoding the faulting
-  load/store (`src/mmio.c`), without an exit where it would do nothing more
-  (see the JIT's device registers in place).
-- DBDMA (`src/dbdma.c`): Mac I/O's 16 descriptor-based DMA channels, after
-  the CHRP I/O Device Reference (chapter 15): input/output with the MORE and
-  LAST forms and streams, STORE_QUAD/LOAD_QUAD (memory, device registers,
-  channel registers), NOP, STOP; conditional interrupt, branch and wait on
-  the channel's status bits; run, pause, flush, wake and dead. Devices plug
-  into a channel's streams and may stall it until they have data or room;
-  transfers take no time of their own, so DMA happens at deterministic points.
-  Channel interrupts are pulses that the interrupt controller latches until
-  cleared, or until the kernel takes them when it delivers them (see
-  interrupts above).
-- Sound (`src/awacs.c`): an AWACS-family codec on the Mac I/O "davbus", which
-  Mac OS drives with its own driver stack from the System file (`.DAVAudio`,
-  DAVAudioLib, the GCAwacs hardware plug-in and the 'awgc' sound output and
-  port components; Mac OS 9's has a DMA plug-in in DAVAudioLib's place). Output takes 16-bit stereo frames from DMA channel 8 at
-  the sample rate of guest time, so guest-visible behaviour never depends on
-  the host; input (channel 9) records silence. The codec's analog input
-  carries the CD-ROM drives' audio (`src/cdaudio.c`), played through to
-  the outputs when the input selector has the CD and loop-through is on
-  (or no input was selected), mixed with the DMA's frames or alone,
-  resampled to the codec's rate. The codec's attenuation and
-  mute bits are applied before the frames go to the host, so the volume
-  slider and Mute in Monitors & Sound work. What it took for Mac OS to use
-  it: a DecoderInfo address for the chip (Gestalt `snhw` is then `awgc`),
-  the device-tree node with `AAPL,interrupt-vectors` (which Mac OS 8.5's
-  DAVAudioLib uses) and an interrupt set (`driver-ist`, which Mac OS 9's
-  DMA plug-in needs: without one it fails to start, and Mac OS 9 had no
-  sound output at all), and a `sound` child whose `vendor-id`/`device-id`
-  (Apple, 1) pick a port layout the 'soph' component knows; without them the
-  output device opens but never plays. The node declares output hardware
-  only (`hardware-types` 2, bit 0 being input), which keeps Mac OS 9's buggy
-  input component away (see Mac OS 9). The codec's status says it's valid
-  (bit 22), which Mac OS's sound plug-in polls for (see Mac OS 9.2.2).
-- Device tree (`src/devtree.c`, `src/bootinfo.c`): an `iMac,1` with a Grackle
-  PCI bridge, Mac I/O, a framebuffer display and a disk, flattened into the
-  format the ROM's Name Registry reads.
-- Native drivers: Blue generates PEF NDRVs (`src/ndrv.c`) and puts them in
-  the device tree, so Mac OS loads them like any PCI card's driver. Their code
-  is a loop around a host call; the driver logic is C (`src/video.c`,
-  `src/disk.c`), and the stub can call Mac OS services on its behalf
-  (`IOCommandIsComplete`, `SetInterruptTimer`, Driver Services' interrupt
-  sets, Video Services' VBL service).
-  - Display: 640x480 to 1280x1024 at 1-32 bits per pixel, CLUT and gamma
-    calls, and a vertical-blank (VBL) interrupt, as the iMac's ATI chip
-    has: 60 times a second of guest time, a device event on the timebase
-    (vertical blank n at n/60 s), on the chip's line into the interrupt
-    controller (source 22, level 2) while the driver has it on. At Open the
-    driver installs its handler in the display node's interrupt set (its
-    `driver-ist`), keeping the set's enabler and disabler, makes the Video
-    Services Library's VBL service and turns the interrupt on; SetInterrupt
-    (Control 7) turns it off and on. The handler acknowledges the vertical
-    blank in the chip and queues a secondary interrupt handler, which runs
-    Mac OS's VBL tasks for the screen (`VSLDoInterruptService`: the cursor's,
-    games' page flips). Vertical blanks the guest doesn't get to in time
-    are one interrupt. It used to be a Driver Services timer, which ran on
-    the Time Manager and so stopped whenever that did. Two more
-    modes take the host window's size on request (up to what the 16 MB
-    framebuffer holds at 32 bits per pixel), for Blue Enhancements (a guest
-    tool) to switch between; each is listed only while in use.
-    In window runs in real time it has a hardware cursor: Mac OS hands it
-    each new cursor (SetHardwareCursor, which Video Services'
-    `VSLPrepareCursorForHardwareCursor` converts to 8 bits a pixel, with
-    values for transparent and inverting pixels) and where it is, as it
-    moves (DrawHardwareCursor), and the window draws it over the screen, so
-    the pointer moving changes nothing in the framebuffer. Cursors the
-    library can't convert, Mac OS draws itself. Headless and
-    instruction-time runs have none (the driver is as it was without it),
-    so Mac OS draws the pointer into the framebuffer as before; screenshots
-    show it either way.
-  - Disk: host files as drives (`--disk`, writable; `--cdrom`, read-only;
-    the 8.5 CD's System refuses to start from a writable drive, as from a
-    copy of the CD), and a host folder (`--share`; see Shared folder),
-    whose blocks come from `src/share.c` rather than a file; and a floppy
-    drive (`--floppy`): the floppy and CD-ROM drives' discs come and go
-    (see Floppies and CDs). CD-ROM drives answer as Apple's CD-ROM driver
-    (`src/cdrom.c`: the table of contents, audio, icons), their discs
-    plain images or cue sheets (`src/cdimage.c`).
-    An Apple partition map gives one drive per HFS partition; otherwise the
-    file is one volume. (When there's a map entry at offset 512, entries are
-    512 bytes apart and count 512-byte blocks even if the driver descriptor
-    gives larger ones, as on CDs with 2048-byte blocks.) A timer posts
-    disk-inserted events until each volume has been mounted (the driver
-    loads before events are enabled). The
-    drives decline to hold virtual memory backing store (DriverGestalt
-    `vmop`), so Mac OS boots with VM off. The kernel doesn't page; give the
-    guest more RAM with `--ram` instead.
-    Transfers take guest time, at 20 MB/s on disks and 4 MB/s on CDs (at
-    most a tick each, so that a big one doesn't jump past what interrupts
-    keep going, such as sound). Without it, a program's launch or a file
-    copy took no guest time at all, and Mac OS counts a process's processor
-    time in whole ticks: the Mac OS 9 installer waits until its engine has
-    used a tick, which on a fast guest it could take forever to do. In real
-    time, guest time runs ahead of the host clock by what transfers took,
-    and catches up while the guest idles (running at 3/4 speed, unless sound
-    plays). While sound plays, though, guest time ahead would be sound
-    played ahead, which the host can't play: there a transfer takes host
-    time, all of it, as a real drive's DMA does while the processor goes
-    on. The guest waits in the driver's call until the transfer is over,
-    taking interrupts meanwhile, so the sound keeps the host clock's pace (a
-    movie streaming from disk used to run guest time 1.1 to 2.3 times as
-    fast, its sound dropped in pieces; docs/plan.md, Findings).
-- Ethernet (`src/net.c`): no chip is emulated. On New World Macs the
-  firmware supplies the hardware layer of Mac OS's Ethernet driver, as a
-  code fragment in the `ethernet` node's `lanLib,AAPL,MacOS,PowerPC`
-  property, which the ROM registers as the shared library lanLib; Open
-  Transport then loads "Ethernet (Built-In)", a DLPI driver around it.
-  Blue puts its own generated lanLib there (the interface follows Apple's
-  `bmac+` one, in later Mac OS ROM files), whose routines are host calls:
-  sending passes frames to libslirp; for receiving, its initialization
-  (which gets the node's RegEntryID) installs an interrupt handler for the
-  receive DMA channel in the node's interrupt set, and each frame from the
-  host pulses that channel's interrupt. The handler queues a secondary
-  interrupt handler, which hands the frames to the driver's receive
-  routine. (Without an interrupt set, a Driver Services timer polls
-  instead: every 2 ms while there has been traffic in the last second and
-  every 10 ms otherwise.) Mac OS Setup Assistant needs a network interface;
-  without one it quit with error type 2.
-- USB (`src/ohci.c`): an OpenHCI controller (an OPTi 82C861's PCI IDs, class
-  0c0310) with two empty ports, driven by the ROM's own OHCIUIM. While it
-  runs, frames are counted from guest time in 12 MHz bit times: each
-  advances the frame number, writes it to the HCCA in guest memory and
-  raises start-of-frame (and, every 32768, frame-number overflow). With
-  nothing connected, there are no transfers, so the lists aren't walked.
-  Mac OS keeps overflow enabled and start-of-frame only while it waits for
-  a frame to pass, so an idle host sleeps until the overflow (every 33 s)
-  rather than waking at every frame.
-  What it took for the ROM to use it: PCI configuration space
-  (`src/pci.c`), through Grackle's `CONFIG_ADDR`/`CONFIG_DATA` registers
-  and RTAS's `read-pci-config`/`write-pci-config`; an interrupt set for the
-  controller (`driver-ist`, without which the UIM gives up with
-  nrNotFoundErr; see interrupt sets below); and a ProductInfo flag (bit 26
-  at `+0x28`) for which the ADB Manager sets the hook that the USB keyboard
-  and mouse shims call (without it they call a null hook once the
-  controller is found).
-- Interrupt sets: Driver Services interrupt sets for devices (their
-  `driver-ist`, whose members drivers install handlers in) come from the
-  ROM's InterruptTreeNew, which builds them from every node with
-  `AAPL,interrupt-priorities`: parallel arrays of up to 3 interrupts each,
-  `AAPL,interrupts` (numbers, which the device names in its own
-  `AAPL,interrupts`; here the sources), `AAPL,interrupt-priorities` (68k
-  levels) and `AAPL,interrupt-vectors` (sources). Mac OS 9.2's ROM files
-  build them in DriverServicesLib instead, and only for nodes that also
-  have `AAPL,interrupt-index`, which their Trampoline makes (each
-  interrupt's slot in HWInfo's VectorLookupTable, whose slot n is source n
-  here: the source again). The display, the USB controller, the
-  sound chip and the Ethernet node have them (the Ethernet node only for
-  its receive DMA channel, the one Blue raises; lanLib takes its set's
-  last member, which is that channel's in the iMac's set of all three as
-  well, and Open Transport doesn't stall with that one either: docs/plan.md,
-  Findings), with
-  `AAPL,interrupt-index` when the ROM file's Trampoline makes it (the
-  display's always: earlier ROMs ignore it). Their handlers mask and
-  unmask the source but never clear a latched pulse in the controller, so
-  the kernel takes pulses itself when it delivers them, as the NanoKernel's
-  handler would: they stay in `PendingInts` until Mac OS has handled them
-  (cleared them in the controller, as Mac OS 8.5's sound driver does, or
-  masked their source) and calls PrioritizeInterrupts (which re-evaluates
-  them). Otherwise a DMA interrupt fired forever. One it hasn't handled
-  stays through one PrioritizeInterrupts more: Mac OS also calls it when it
-  lowers its 68k interrupt mask, and at the end of a dispatch that began
-  before the pulse came, and dropping the pulse there lost it (Unreal
-  Tournament's sound stopped and the game waited for it forever).
-- Host side: an SDL2 window loaded at run time (`src/display.c`; no build
-  dependency, headless without it; Blue.app's or the AppImage's own SDL2
-  first, then the system's, on macOS also in Homebrew's and MacPorts'
-  directories, which aren't searched for bare library names: `src/hostlib.c`;
-  redrawn only when the screen, the pointer or the status bar changes;
-  drawn at the display's full resolution, so high-density displays don't
-  blur it). The window has a thread of its own, the process's main thread
-  (where SDL wants windows, events and drawing on macOS), and the Mac runs
-  on another: up to 60 times a second (and when each of a 3D game's frames
-  is due) the Mac hands over a frame, the rows of the screen that changed
-  copied into the window's copy of the framebuffer, and goes on while the
-  window converts, uploads, draws and presents it (about a millisecond
-  later); the window's input reaches the Mac through a queue. The Mac
-  doesn't compare the whole framebuffer to find what changed: its pages
-  are watched for writes (in the JIT's view of guest memory they're
-  write-protected, and the first store to one, whichever way it comes, is
-  seen and lets the page go; see fastmem), so only the pages written since
-  the last frame are compared with the copy, a host page at a time (16 KB
-  on Apple silicon). A page written in most frames (a game's, a movie's) is
-  compared rather than watched, until it has stayed the same for 8 frames:
-  being seen written costs several times what comparing it does.
-  `BLUE_WINDOW_COMPARE=1` compares the whole screen instead. The rows that
-  changed are converted into the 32-bit format renderers take as it is
-  (ARGB8888: a byte swap at 32 bits per pixel, the 5-bit channels widened
-  at 16, the CLUT expanded to 32-bit colours at 8 and fewer), uploaded,
-  and drawn again in the scaled copy below (all of it when the mode or
-  colours change, and once a second if nothing has). A screen the window's
-  own size at its scale is drawn at exactly that (see The window's scale);
-  others are scaled to fill the window above the status bar, keeping their
-  shape: whole multiples exactly, other sizes by drawing at the multiple
-  above on the GPU and filtering that down, so every screen pixel comes
-  out the same size with edges blended over at most one window pixel.
-  `--integer-scale` uses whole multiples only (with a border if need be)).
-  The Mac's cursor goes where the host pointer is (the low-memory mouse
-  globals are set, as SheepShaver does), until Mac OS has had its cursor
-  hidden for 0.3 s, as games hide it: then the pointer is captured and its
-  motion goes to the ADB mouse, which is where InputSprocket and games read
-  it (Unreal Tournament's mouse didn't move otherwise), until the cursor
-  shows again. Control-Option (Ctrl+Alt) lets the pointer go, as does
-  switching away from the window; a click in the window captures it again
-  (the guest doesn't get that click), and so does the cursor showing and
-  hiding again. The window's title says so while it's captured.
-  F12 opens the menu (Dear ImGui's, from `third_party/imgui`, drawn over
-  the screen through the same run-time SDL2 by `src/ui.cpp`; SDL 2.0.18 or
-  later), and the guest is paused while it's open. In it: Resume (F12 and
-  Esc too); Restart (straight away: the Mac's own reset, so work not saved
-  in Mac OS is lost); Shut down, which presses the keyboard's power key, so
-  Mac OS asks "Are you sure you want to shut down your computer now?" and
-  shuts down properly if told to (applications ask to save, NVRAM and a
-  shared folder are written, and the run ends when the Mac turns itself
-  off); Turn off, the power switch, for a Mac that doesn't answer (straight
-  away; it keeps NVRAM, as closing the window does); Install Guest
-  Tools... (the offer, see Guest tools); a screenshot of the Mac's screen
-  (a PNG on the Desktop, or in the current directory without one, named
-  for when it was taken); fullscreen (at the desktop's resolution); the
-  window's scale (radio buttons: Auto, saying what it chose, and 1x to 4x;
-  see The window's scale); the
-  status bar; whether the pointer is captured while the Mac hides its
-  cursor; and what's in the floppy and CD-ROM drives, each with Eject and
-  Insert... (see Floppies and CDs). In real time guest time doesn't count
-  the pause, so the Mac's clock is that much behind afterwards.
-  The menu, the prompts (the guest tools' offer and news) and the status
-  bar look like Mac OS 8's Platinum, in the colours of Blue's site
-  (`site/style.css`), the same on macOS and Linux, in a window or
-  fullscreen: Platinum grey boxes in a black frame, bevelled (light top
-  and left edges, dark bottom and right), with a shadow and their title in
-  a striped title bar; bevelled, rounded push buttons, dark while pressed;
-  checkboxes whose check overhangs the box; radio buttons, round, with a
-  dot; etched lines between parts; and Bondi Blue for the checks, the
-  radio buttons' dots, the keyboard's focus ring and the processor's light
-  as it naps. A prompt has Blue's icon beside its text, as a Mac OS
-  alert has its icon, and its buttons below in Mac OS's order: the default
-  on the right, with Mac OS's thick ring around it, the other beside it,
-  and a third (Don't Ask Again) on the left. Return presses the default
-  button (Resume, in the menu), Esc the other (in the menu, Esc resumes);
-  Tab and the arrows move the focus ring, and Space presses the button it's
-  on. The text is ChicagoFLF (`third_party/fonts`: Robin Casady's
-  public-domain revival of Mac OS's Chicago), kept in the program
-  (`src/font_data.inc`, made by `tools/fonts.py`), so building needs
-  nothing more; it's drawn at 12 pixels to the em (24 on high-density
-  displays, rasterized at the display's density), Chicago's own grid, so
-  its strokes are whole pixels, as Mac OS's 12-point Chicago was.
-  The status bar (shown unless `--no-status-bar`; the menu toggles it) sits
-  below the screen, Platinum like a Mac OS 9 window's edge, so the window grows by its height rather than covering
-  anything (fullscreen, or maximized, the screen fitted to the window
-  shrinks instead). It has lights for the disks, CD-ROMs, the floppy drive
-  (if there's one) and network, lit
-  for a tenth of a second whenever they move data (green, amber while a
-  disk is written; a light is dimmed if there's no such device), each with
-  what it read and wrote over the last second (the network's what it
-  received and sent, in bits; the disks' in bytes; a CD-ROM only reads),
-  and one for the processor, green as bright as the share of the time the
-  guest isn't napping, and softly blue for the rest, while it naps (with
-  idle sleep). Beside that is its speed: millions of instructions a second of
-  the time actually spent running them, as a clock rate (the Mac thinks it
-  has a 266 MHz G3, which runs about one instruction a cycle), worked out
-  once a second from a random 1 in 32 runs (timing each costs too much),
-  and not shown while the guest naps (busy less than a tenth of the time)
-  or the menu pauses it.
-  In narrow windows (640 wide, say) the names are shortened and the text
-  made smaller to fit.
-  SDL2 sound output (`src/audio.c`; in real time, `--no-sound` turns it
-  off; a small queue is kept, its frames resampled to play up to 0.5%
-  faster or slower as it's fuller or emptier than its goal, so that the
-  guest's clock and the device's can't drift apart into growing delay or
-  gaps, and a stall of the host is made up within seconds),
-  PNG screenshots (`src/png.c`), NVRAM kept
-  in a file, real-time guest time with `--window`/`--realtime`, and
-  `blue disk create`, which lays out an empty HFS volume (`src/hfs.c`, which
-  also lays out the shared folder's, with B-trees of any size) the
-  way Disk Initialization does (`hfsck` from hfsutils accepts it).
-- Speed on an M1 Max: the boot to the Finder (about 3 billion instructions)
-  takes 1.1-1.8 s with the JIT, which runs the 68k emulator's code at about
-  2.5 billion PowerPC instructions per second (about 5 host instructions
-  and 1.2 cycles each; much of the rest is mispredicted indirect jumps,
-  which Apple's emulator makes by design); the interpreter manages about
-  200 million. The Mac OS 8.5 install takes under 25 s. On an M5 under
-  macOS, the same boot takes 0.8 s with the JIT and 11 s interpreted.
-  Memory copies stay in Mac OS's own code: BlockMove and its relatives
-  (InterfaceLib's, and the 68k emulator's for the `_BlockMove` trap) take
-  0.3-1.2% of guest instructions in the CD boots and a game's startup, and
-  1-2% of host time, mostly in copies too small to be worth a kernel exit
-  (docs/plan.md, Findings).
-
-## Virtual machine description
-
-What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
-
-- Model `iMac,1`, a 266 MHz PowerPC 750 on a 66.4 MHz bus, timebase 16.6 MHz:
-  a quarter of the bus clock, as the 750's is, and as Mac OS 9.1 and later
-  take it to be (their AbsoluteTime is converted with Gestalt's bus clock;
-  with a 66 MHz bus, their Microseconds ran 0.6% fast).
-- Grackle PCI host bridge; on it the display (device 1, framebuffer at
-  `0x82000000`), up to four disks (devices 2-5; a shared folder is one),
-  the USB controller (device 6, registers at `0x81000000`), the floppy
-  drive if there's one (device 7, `blue,floppy`) and Mac I/O
-  (device 16) at `0x81080000`:
-  Heathrow-style interrupt controller (`+0x10`), DMA channels (`+0x8000`,
-  0x100 bytes each), SCC (`+0x12000`), VIA1 with Cuda (`+0x16000`).
-  Interrupt sources use Heathrow numbers (DMA channel n is source n,
-  Ethernet 14, SCC A 15, SCC B 16, sound 17, VIA1 18, the display 22, as the
-  iMac's ATI chip, USB 28); levels: VIA1
-  1, the display, sound, Ethernet, USB and their DMA 2, SCC 4. Configuration space is at
-  `0xFEC00000` (`CONFIG_ADDR`) and `0xFEE00000` (`CONFIG_DATA`).
-- Sound: `davbus` at Mac I/O `+0x14000` (DMA channels 8 and 9), with a
-  `sound` child; DecoderInfo long 39 holds the chip's address.
-- Ethernet: `ethernet` at Mac I/O `+0x11000` (`bmac+`, DMA channels 2 and 3;
-  nothing answers at those addresses, lanLib being the driver's way to the
-  hardware), station address 52:54:00:12:34:56. Its lanLib is Blue's even
-  when the ROM file has one for `bmac+` (9.2.2's).
-- Mac I/O's floppy controller cell (`+0x15000`), for ROM files with parcels
-  only: reads as zeros, writes are ignored (the iMac has no floppy drive).
-- NVRAM, for ROM files with parcels only: `nvram` at Mac I/O `+0x60000`
-  (`device_type` and `compatible` `nvram`, `reg` 0x60000 0x20000, `#bytes`
-  0x2000, `AAPL,address`), as on Heathrow and Paddington Macs: 8 KB, byte k
-  at `+16k`.
-- Where Open Firmware booted from, for ROM files with parcels only:
-  `/chosen`'s `bootpath`, such as `/pci/blue,disk@2:8,\\:tbxi` (a disk's
-  node is at its PCI device number, the partition is its map entry, none
-  without a map), for the partition the ROM file came from, or else the
-  first partition with boot blocks. The disk
-  driver says, through DriverGestalt, which node ('nmrg'), unit ('intf'
-  'scsi', 'dvrf' with the PCI device number as target ID) and partition
-  ('ofpt') each drive is.
-- Open Firmware's settings, for ROM files with parcels when NVRAM is kept
-  or in real time: `/options` (`boot-device`, from NVRAM's `common`
-  partition, else the bootpath) and `/openprom` (`model` "OpenFirmware 3",
-  `supports-bootinfo`); in NVRAM, the `common` partition (CHRP: signature
-  0x70, 2 KB at offset 0), which Blue makes if those bytes are blank
-  (`src/ofnvram.c`). The disks' nodes are in command-line order, but for a
-  startup disk `boot-device` chose for a ROM file without parcels, which
-  goes first.
-- ADB/power-manager kind 0 in the universal flags, so the early ROM code uses
-  RTAS (tokens in `NKHWInfo`) for clock, NVRAM and power (`NKHWInfo`'s Mac OS
-  NVRAM offset, `0x1400`, is where PRAM goes; a ROM file with parcels uses the
-  Cuda's RTC and the `nvram` node instead, through its libraries). A flag in
-  ProductInfo (bit 19 at `+0x28`) has the ROM restart through RTAS
-  `system-reboot`; otherwise it restarts in place, jumping back to its start
-  with the devices still running, and hangs on the first interrupt. Bit 26
-  there is for USB (see above).
-- The ROM installs SCSI Manager 4.3 (no buses), as on real machines; the
-  Apple CD/DVD Driver extension needs `_SCSIAtomic` to exist.
-- The boot-info area (`0xFF800000`) holds the tables and the device tree.
-- Info records: NanoKernel 1's versions and lengths, or for ROM files with
-  parcels NanoKernel 2.28's (HWInfo 0x0108 with CascadeInfo, a table of no
-  cascaded interrupt controllers, ProcessorInfo 0x0112 with clock rates,
-  SystemInfo 0x0107), all in the one InfoRecord page.
-- Quiet writes: ConfigInfo maps the ROM write-through and read-only (PP 3),
-  which the NanoKernel takes to mean that stores to it are dropped rather
-  than raising an exception (and counted in NanoKernelInfo's
-  QuietWriteCount). Blue's kernel does the same; a run's summary says
-  `quiet writes: N` when there were any.
-- The ROM maps a few regions as single 4 KB pages (the kernel's and the
-  emulator's data, the info records). The pages next to them, up to 16 KB
-  boundaries, read as zeros rather than faulting, so that hosts with 16 KB
-  pages can protect guest memory per host page (see fastmem). Only stray
-  accesses could tell, and the map is the same on every host.
-
-## Next steps
-
-1. More JIT speed: what's left of a boot's host time outside generated
-   code is mostly the kernel's (docs/plan.md, Findings, "Where a boot's host
-   time goes" and what followed it): host calls, the disk and display
-   drivers (5-10%); Multiprocessing Services' calls; kernel calls made in
-   place, now 17 ns each with the context switch's copies vectorized; and
-   bringing devices up to date, which is guest-visible and stays where it
-   is (the exits it cost kernel calls are gone; for quick system calls,
-   answering in place saved too little to keep). In the JIT: code runs in
-   the interpreter until it's hot (3-7%; translating sooner costs as much
-   as it saves) and translating takes 1-4%. On x86-64 the front end still
-   limits a Zen 5 (about half its dispatch slots get nothing), now mostly
-   for the size of the code (docs/x86-jit-plan.md).
-2. A launcher: a settings window for the disks, CDs, RAM, ROM and shared
-   folder, remembered between launches, for Blue.app and the AppImages
-   opened from the desktop (which for now show a window saying how to start
-   Blue from the command line).
-3. Later: host ports forwarded to the guest (so it can serve); the shared
-   folder written back when Mac OS ejects the volume and offered again as
-   new media, so that changes cross during a run; Glide
-   (docs/glide-plan.md); and, when a program needs them, what OpenGL
-   leaves out (OpenGLUtility's tessellators and NURBS, antialiased
-   polygons, auxiliary buffers, color index: docs/opengl-plan.md).
-
-docs/future.md has ideas not planned yet: a modem, a serial port, infrared, 3D
-sound, sound input, AltiVec, printing, game controllers, and more CD
-formats.
-
-## Build and test
-
-Ready-made builds are at https://github.com/mcbridet/Blue/releases:
-`Blue-arm64.dmg` and `Blue-x86_64.dmg` (macOS 11 or later, on Apple
-silicon and Intel), `Blue-x86_64.AppImage` and `Blue-aarch64.AppImage` (Linux with glibc 2.35
-or later: Ubuntu 22.04, Debian 12, Fedora 36 and since), with `SHA256SUMS`
-(see Installing, below). To build it yourself:
-
-```
-git clone https://github.com/mcbridet/Blue
-cd Blue
-make            # build/blue (C11, and C++17 for the menu: Dear ImGui is in third_party/imgui)
-make test       # unit tests; the ROM test uses ./MOS.rom or $BLUE_TEST_ROM if present,
-                # the GPU test any OpenGL 3.3 there is (else it's skipped)
-BLUE_JIT_PROGRAMS=200000 build/blue-tests jit    # longer JIT-vs-interpreter fuzzing
-tools/jit-timing.sh     # times the JIT here (its benchmark, the CD boots there are) into a log
-```
-
-The guest's OpenGL is checked in the guest too, by a test application of
-Blue's own, "Blue GL Test" (`src/gltest.c`: its logic is C in Blue
-calling the guest's OpenGLLibrary and OpenGLUtility through the Code
-Fragment Manager's linking, as a game would). `BLUE_TOOLS_GL_TEST=1
-build/blue tools create FILE` puts it on the tools volume; with the OpenGL
-libraries in a disk image's Extensions folder and it in Startup Items
-(hfsutils' `hcopy -m` copies them), a run in instruction time shows its
-window with the scene `BLUE_GL_TEST_SCENE` names (`clear`: a clear, and a
-scissored one; `triangle`: in perspective, a floor cut by the near plane, a
-triangle and a quad crossing in depth, a flat-shaded fan; `lit`: a bump
-drawn from vertex and normal arrays, lit, fogged, and a quad drawn through
-the stencil; `lists`: quadrics made into display lists through
-OpenGLUtility, called lit and as lines; `pixels`: an image zoomed, glyphs
-by `glBitmap`, a copy by `glCopyPixels`; `fullscreen`: `triangle` drawn
-on the whole screen, switched to 640 x 480 by `aglSetFullScreen`; `font`:
-lines of text in two fonts by `aglUseFont`'s lists; `lines`: the polygon
-stipple, a logic op, stippled, wide, antialiased and textured lines and
-points; `accum`: a context of the generic renderer, its accumulation buffer
-blurring a turning bar) at the depth
-`BLUE_GL_TEST_DEPTH` sets (16 or 32), the same on every host (with the
-same time zone: the guest's clock is the host's local time). On Linux,
-`make test` draws scenes through the libraries and compares them with Mesa's
-own OpenGL (its compatibility profile, which still has `glBegin`):
-`BLUE_TEST_VERBOSE=1` says how far apart they are, and
-`BLUE_TEST_SAVE=DIR` saves them as PNGs; `BLUE_TEST_GLU=PATH` names
-Mesa's libGLU (`libGLU.so.1`), to compare OpenGLUtility's scene too.
-`tools/gltable.py` made `src/opengl_table.h`, the libraries' functions,
-from Apple's (Mac OS 9.2.2's) and the macOS SDK's OpenGL headers.
-
-CI (`.github/workflows/ci.yml`) builds and tests on Linux and macOS, each on
-x86_64 and AArch64, with warnings as errors; it also fuzzes the JIT with
-100,000 programs (`BLUE_TEST_JIT=1` makes a missing JIT a failure) and
-prints its synthetic benchmark (`BLUE_JIT_BENCH=1 build/blue-tests jit`:
-guest instructions a second for a few kernels, interpreted and
-translated), and on Linux the GPU backend
-is tested on Mesa's
-software OpenGL (llvmpipe; `BLUE_TEST_GPU=1` makes the test fail rather than
-skip without a context). Each run also packages Blue (see Packaging): on
-each Mac a Blue.app in its disk image (`Blue-arm64.dmg`, `Blue-x86_64.dmg`;
-its libraries built by `tools/macos-deps.sh`, cached until the script
-changes), and on each Linux runner an AppImage, built in an Ubuntu 22.04
-container; each is run (`--version`, which must find its own libraries),
-and the app must need no newer macOS than 11. Pushing a `v*` tag
-publishes the two disk images, `Blue-x86_64.AppImage`,
-`Blue-aarch64.AppImage` and `SHA256SUMS` as a GitHub release, once the tag
-is `src/version.h`'s version (`v2026.11.1` for `2026.11.1`: year, month,
-then the release within the month): the names have no
-version in them, so `releases/latest/download/Blue-arm64.dmg` and the like
-are always the newest.
-
-Blue's icons come from `art/`: `art/blue.svg`, the master (the stack on its
-tile), and `art/finder-icons.txt`, the Finder icons in Mac OS as pixel art
-in Mac OS's palettes. `tools/icons.py` makes the rest from them (with
-Python and headless Chrome, which building doesn't need: what it makes is
-committed): the app icon as PNGs (`art/png/blue-16.png` to
-`blue-1024.png`), the window's (`src/icon_data.inc`, 256 x 256, which SDL
-on macOS shows in the Dock too) and the Finder's (`src/finder_icons.inc`,
-previewed in `art/finder-icons.png`). On macOS the executable carries an
-Info.plist (`art/Info.plist`, with the version from `src/version.h` and the
-oldest macOS filled in by the Makefile: `build/Info.plist`, Blue.app's
-too), so the menu bar and the Dock say Blue; its bundle identifier is
-`io.github.mcbridet.Blue`, and Blue.app's icon is made from the PNGs by
-`iconutil`. On Linux the window's class and app ID are `blue`, which
-`art/blue.desktop` and the icons go with: the AppImages carry them, for
-AppImage integration tools; for a build of your own, copy the desktop
-entry to `~/.local/share/applications` and `art/png/blue-N.png` to
-`~/.local/share/icons/hicolor/NxN/apps/blue.png`.
-
-```
-build/blue rom info MOS.rom
-build/blue rom info 91.iso                      # the Mac OS ROM file in a disk's System Folder
-build/blue rom config MOS.rom                   # ConfigInfo and user address space
-build/blue rom parcels MOS91.rom                # a Mac OS 9.1 ROM file's parcels
-build/blue rom extract MOS.rom build/toolbox.rom
-build/blue rom trampoline MOS.rom build/trampoline.elf
-build/blue boot --rom MOS.rom --cdrom 85.iso --window   # interactive
-build/blue boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
-build/blue boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
-build/blue boot --rom MOS.rom --cdrom 85.iso --floppy disk1.img --floppy disk2.img --window   # a floppy drive
-build/blue boot --disk hd.img --window                     # with empty CD-ROM and floppy drives: drop images on the window
-build/blue boot --disk hd.img --cdrom "Game.cue" --window  # a CD with audio tracks
-build/blue disk toc "Game.cue"                             # its tracks, as its CD-ROM drive gives them
-build/blue disk create blank.img 1440K "Untitled"          # a blank floppy
-build/blue run-raw code.bin 1000                # BLUE_TRACE=1 logs every instruction
-```
-
-Without `--window` or `--realtime`, guest time is counted in instructions
-(one timebase tick each). `--seconds S` stops after S seconds of host time. With `--fixed-time <unix time>` the clock doesn't depend on the host
-either, so a run is exactly reproducible, including faults at a given
-instruction count. The boot reaches the Finder within about 3 billion
-instructions (15 s). `--input FILE` replays input at given instruction
-counts, for example:
-
-```
-3350000000 key 24                # Return (ADB key code, hex)
-3400000000 dblclick 751 52       # open the disk
-3500000000 motion 40 -10         # the mouse moved 40 right, 10 up (through the ADB mouse, as games read it)
-3600000000 screenshot after.png
-3700000000 clock 800             # guest time at 800 million instructions a second from here
-3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
-0 tools install                  # the answer to the offer to install the guest tools (or "later", or "never": Don't Ask Again): Mac OS then restarts
-5000000000 tools offer           # the offer, now (the menu's Install Guest Tools...)
-3900000000 floppy insert Disk 2.img
-3950000000 cdrom insert Game CD 2.iso
-4000000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)
-4100000000 print-clipboard       # prints the host's clipboard, with what Mac OS copied since
-```
-
-(`floppy insert` and `cdrom insert` take the rest of their line as the
-image's path, comments included; `floppy eject` and `cdrom eject` take one
-out: see Floppies and CDs.)
-
-`clipboard` and `print-clipboard` stand in for the host's clipboard (a
-scripted run leaves the window's alone), for Blue Enhancements to share
-(see Guest tools): the text is as if copied on the host with the window
-then brought to the front.
-
-`clock N` keeps a run reproducible while making guest time pass as on a
-guest processor of N MIPS, so that work paced by guest time (sound, timer
-tasks, a game's frame timing) is in real-time proportions: one timebase
-tick per instruction is 16.6 MIPS, which makes such work look 50 times
-bigger than it is. A scripted click's press and release are 3 million
-instructions apart, which at a high `clock` can be too short for the guest
-to notice; change the clock after the clicks that matter.
-
-Devices and interrupts are serviced every 20,000 instructions and at kernel
-exits, never at exits made only for debugging, so tracing and trap logging
-don't change what the guest does. (At exits they are updated only when that
-could change anything: when a VIA timer runs out or a USB frame starts with
-its interrupt enabled, while sound DMA moves, or after something touched
-them. Kernel calls made in place, without an exit, and device register
-accesses made in place update devices as their exits would. An access on
-the last instruction before a sync point still exits, and the loop then
-services that sync point.) Tracing and trap logging use the
-interpreter.
-
-Debugging `boot`: `--trace-from N --trace-reg 24` logs instructions with the
-68k PC (the emulator keeps it in `r24`), `--watch <addr>` logs every write
-the guest makes to a page (the kernel's own writes there, such as disk
-reads, go through unseen, so a watched run goes as any other), `--traps N
-[--traps-after M]` logs 68k Toolbox/OS traps, interpreted or recompiled
-(see Idle; with the driver name for `_Open`), `--log-hostcalls` logs the native drivers'
-requests (a CD-ROM drive's calls with their parameters in and out, and what it plays), `--dump-ram FILE` saves RAM at the end, `--max N` limits the run.
-`--trace-range LO:HI [--trace-insn WORD]` logs only instructions in an
-address range (optionally only one instruction word), with instruction
-counts and r3-r5/LR, cheaply enough for whole boots. `BLUE_LOG_SOUND=1`
-logs the sound chip's register accesses, and `BLUE_SOUND_WAV=FILE` records
-what it plays (also in instruction time; CD audio included).
-`BLUE_LOG_AUDIO=1` prints, every second while sound plays in real time,
-how the host's sound queue fared (its depth, how much faster or slower it
-played, chunks dropped, silence added) and what paces it (the frames the
-guest's sound DMA gave, how far guest time is ahead of the host clock, the
-disks' transfers and the guest time they took, how much the host's sleeps
-overran). `BLUE_WINDOW_PROFILE=1` prints, every second in a window, the
-frames the Mac handed the window and how much of the screen changed in
-them, and where showing them took the host's time: on the Mac's thread
-(which stops the Mac meanwhile: finding and copying the changes, taking
-the input) and on the window's (converting, uploading, drawing,
-presenting, events), in milliseconds a frame of the host clock and of the
-thread's processor time, the pages seen written a frame, and how long after
-the hand-over a frame was on the screen. `BLUE_WINDOW_COMPARE=1` finds the
-changes by comparing the whole screen, without watching the framebuffer;
-`BLUE_WINDOW_CHECK=1` compares the watched pages too, and says where a
-write went unseen. `BLUE_LOG_USB=1` logs the USB
-controller's register accesses (not the frame number, which drivers poll),
-`BLUE_LOG_PCI=1` configuration space accesses, `BLUE_LOG_LIBS=1` the file
-each run-time library (SDL2, libslirp) was loaded from.
-`--io-ram` backs unmodelled I/O pages with plain RAM. Under gdb, `handle
-SIGSEGV nostop noprint pass` lets the JIT's memory faults through; under lldb
-on macOS, `settings set platform.plugin.darwin.ignored-exceptions
-EXC_BAD_ACCESS` (before `run`) and `process handle -s false -n false -p true
-SIGBUS` (or set `BLUE_JIT_FASTMEM=0`).
-
-`tools/disasm.py` disassembles guest code (PowerPC or 68k, with Python's
-capstone) from a ROM file's image or a `--dump-ram` file, and names the code
-fragment an address is in: the image's PEF containers, the parcels' libraries
-and their copies in RAM, with their exports, entry points and imports.
-`tools/disasm.py MOS91.rom 0xFFCE2700`, `tools/disasm.py ram.bin MOS91.rom
-0x28D70`; `--list` shows what is where.
-
-`tools/heap.py ram.bin` walks the system heap and the current application's
-heap in a `--dump-ram` file block by block (reading headers, not the whole
-file) and reports blocks whose back link or size is broken, where a zone was
-written over; `--find ADDR` names the system heap block an address is in.
-
-### Installing
-
-**macOS** (11 or later): open `Blue-arm64.dmg` (Apple silicon) or
-`Blue-x86_64.dmg` (Intel) and drag Blue to Applications. Blue.app is
-signed ad hoc, not by a registered developer, and isn't notarized, so the
-first time macOS won't open it: right-click it and choose Open (macOS 14
-and earlier), or, once macOS has refused it, click Open Anyway in System
-Settings > Privacy & Security (macOS 15 and later). After that it opens
-from the Finder or Terminal. (`xattr -dr com.apple.quarantine
-/Applications/Blue.app` does the same from Terminal.) Opened from the
-Finder, Blue shows a small window: it's started from the command line for
-now (a launcher is coming: see Next steps), with the command for this copy
-of it and a button that copies it. In Terminal, Blue is
-`/Applications/Blue.app/Contents/MacOS/blue`, with the commands and
-options above; a link to it in your PATH works too (`ln -s
-/Applications/Blue.app/Contents/MacOS/blue /usr/local/bin/blue`).
-
-**Linux** (x86_64 or AArch64, glibc 2.35 or later): `chmod +x Blue-x86_64.AppImage` (or
-`Blue-aarch64.AppImage`), then run it as Blue itself:
-`./Blue-x86_64.AppImage boot --cdrom 85.iso --window`. It mounts itself with
-FUSE, for which it needs `fusermount` (the `fuse` or `fuse3` package, which
-most desktops have; not libfuse2); without FUSE, in a container say,
-`./Blue-x86_64.AppImage --appimage-extract-and-run boot ...` unpacks it into
-a temporary directory each time instead (or `--appimage-extract` once, then
-`squashfs-root/AppRun boot ...`). Opened from a file manager it shows the
-same window as the app on macOS. It holds Blue's desktop entry and icons,
-for AppImage integration tools (AppImageLauncher, Gear Lever).
-
-**What's in them:** Blue, and the libraries it loads at run time
-(`src/hostlib.c`): SDL2 (window, sound, input) and libslirp (networking),
-with GLib, which libslirp needs, and what GLib needs (on macOS its libintl,
-proxy-libintl, and PCRE2 built into it; on Linux PCRE), in Blue.app's
-`Contents/Frameworks` and the AppImage's `usr/lib`. Blue looks for each
-there first (`../Frameworks` or `../lib` from the executable's real
-directory), then where the system finds it, so `build/blue` takes the
-system's or Homebrew's; `blue --version` says which SDL2 and libslirp it
-found, and where, and `BLUE_LOG_LIBS=1` logs it as they're loaded. Nothing
-else is bundled: SDL2 loads X11 or Wayland, ALSA, PulseAudio or PipeWire
-and OpenGL from the system, as Blue does OpenGL and EGL, and glibc is the
-system's. The libraries' licences are in Blue.app's
-`Contents/Resources/Licenses` and the AppImage's `usr/share/doc/blue/Licenses`
-(beside Blue's `LICENSE` and `THIRD-PARTY-NOTICES.md`; also `LICENSE` in the
-disk image), with a `README.txt` giving each one's version and source. They
-stay separate, replaceable libraries, as the LGPL asks of GLib and
-libintl: put another build of one in its place, under the same name (in
-Blue.app, then sign it again: `codesign --force --deep -s - Blue.app`; an
-AppImage, `--appimage-extract` it, replace the file in
-`squashfs-root/usr/lib` and run `squashfs-root/AppRun`). Their sources, as
-released: on macOS, built from source by `tools/macos-deps.sh`, SDL2
-2.32.10 (https://github.com/libsdl-org/SDL/releases/tag/release-2.32.10),
-GLib 2.90.1 (https://download.gnome.org/sources/glib/2.90/), with PCRE2
-10.46 and proxy-libintl 0.5 from GLib's own `subprojects` wraps
-(https://github.com/PCRE2Project/pcre2/releases/tag/pcre2-10.46,
-https://github.com/frida/proxy-libintl/releases/tag/0.5), and libslirp
-4.9.7 (https://gitlab.freedesktop.org/slirp/libslirp/-/tags/v4.9.7); on
-Linux, SDL2 2.32.10 built by `tools/package-linux.sh`, and Ubuntu 22.04's
-packages of the rest (libslirp0, libglib2.0-0, libpcre3: their sources by
-`apt-get source`, or at https://launchpad.net/ubuntu/+source/, as
-`README.txt` gives them). Blue's own source is this repository, at the
-release's tag.
-
-**Their exact sources:** each release also carries
-`Blue-third-party-sources.tar.gz` (in its `SHA256SUMS` too), with the exact
-source of every library in its packages, as the release's builds used it:
-for Blue.app, the upstream tarballs its libraries are built from, Blue's
-patch to GLib and `tools/macos-deps.sh`, which builds them; for the
-AppImages, Ubuntu's source packages (`.dsc`, `.orig.tar.*`,
-`.debian.tar.*`) of the versions they carry, and SDL2's tarball. Its
-`README.txt` gives each library's version, licence and packages (see
-THIRD-PARTY-NOTICES.md).
-
-### Packaging
-
-The version is `src/version.h`'s (`BLUE_VERSION`), which `blue --version`
-and the usage show, and the Makefile puts in the Info.plist
-(`CFBundleShortVersionString`, `CFBundleVersion`); a release's tag must be
-it, with a `v`.
-
-```
-make app                         # build/Blue.app (macOS), with Homebrew's SDL2 and libslirp
-make dmg                         # build/Blue-arm64.dmg (or x86_64): Blue.app, a link to Applications, LICENSE
-tools/macos-deps.sh ~/blue-deps  # SDL2, GLib and libslirp from their sources, for macOS 11 (a few minutes)
-make app DEPS=~/blue-deps        # ... Blue.app with those, as released
-podman run --rm -v "$PWD:/src" -e BUILD=/tmp/appimage -e OUT=/src/build ubuntu:22.04 \
-        /src/tools/package-linux.sh --setup          # build/Blue-<arch>.AppImage, built in Ubuntu 22.04
-```
-
-On macOS the Makefile builds for `MACOSX_DEPLOYMENT_TARGET` (11.0 unless
-set; a build directory from before needs `make clean` once, or the linker
-warns of objects built for a newer macOS), and links the executable with
-an `LC_RPATH` of `@executable_path/../Frameworks`. `make app` (`DEPS`:
-`brew --prefix` unless given; `brew install sdl2 libslirp`) copies SDL2,
-libslirp and every library they load but the system's into
-`Contents/Frameworks`, as `@rpath/NAME` with an `LC_RPATH` of
-`@loader_path`, and their licences (from `DEPS/share/licenses`, which
-`tools/macos-deps.sh` writes, or the Homebrew kegs), sets
-`LSMinimumSystemVersion` to the newest minimum of the executable and the
-libraries (`otool -l`'s `LC_BUILD_VERSION`), and signs it ad hoc, the
-libraries first (`codesign --force -s -`), checking it with `codesign
---verify --deep --strict`. Homebrew's libraries need the macOS they were
-built for (26 or 27 on a Mac with macOS 27, so the app does too; `make app`
-says), and Homebrew's SDL2 is sdl2-compat, over SDL3, which then goes in
-too; `tools/macos-deps.sh` builds them for macOS 11 (`ARCH=x86_64` builds
-Intel's on Apple silicon, its checks run in Rosetta), as CI does.
-Without the hardened runtime, the JIT needs no entitlement. The disk image
-is named for the executable's architecture (`lipo -archs`): `make dmg
-BUILD=build/x86 CC='cc -arch x86_64' CXX='c++ -arch x86_64'
-DEPS=~/blue-deps-x86_64` makes Intel's on Apple silicon. `tools/package-linux.sh` builds Blue with GCC 12
-(Ubuntu 22.04's `gcc-12`), libstdc++ and libgcc linked in, so that glibc
-is all it needs of the system; with `--setup` it first installs what it
-needs and builds SDL2 2.32.10 into `/opt/sdl2`, its backends (X11, Wayland,
-ALSA, PulseAudio, PipeWire, KMS/DRM) all loaded at run time. It bundles
-SDL2, libslirp and what they load but glibc, and nothing outside a short
-list (to keep the system's graphics and sound stacks out), each with a run
-path of `$ORIGIN`, and puts them in a squashfs behind the AppImage
-project's static type2-runtime (release 20251108, checked by SHA-256).
-
-## QEMU reference
-
-Stock QEMU can't boot a 1.x ROM: its machines aren't models the ROM supports.
-`tools/qemu-ref/run.sh` puts the ROM on a small bootable disk and patches the
-g3beige device tree (`tools/qemu-ref/bw-g3.fs`) so the Trampoline accepts it.
-Needs `hfsutils` and `qemu-system-ppc`.
-
-```
-tools/qemu-ref/run.sh [MOS.rom]                  # QEMU_DISPLAY=none for headless
-tools/qemu-ref/qmon.py sample 10                 # PowerPC pc and 68k pc
-tools/qemu-ref/qmon.py screenshot shot.png
-tools/qemu-ref/qmon.py cmd 'x /16wx 0x5fffefc0'  # any monitor command
-tools/qemu-ref/snapshot.sh                       # needs gdb; state at 68k emulator entry
-```
-
-With this ROM the Trampoline and NanoKernel boot and the 68k emulator runs ROM
-code, then spins at 68k `0xFFC18316`. The Trampoline didn't resolve any
-interrupt sources from the patched tree, so every vector in `NKHWInfo` is
-`0x0800`, and the ROM's SCC setup loops forever when SCC B has no vector. It
-is still the reference for what the Trampoline and kernel produce: the
-snapshot gave Blue its info records, universal tables and low-memory setup.
-
-For Mac OS 9.1, QEMU's `mac99` runs Apple's real Trampoline and NanoKernel 2
-unpatched, to the Finder: `tools/qemu-ref/run91.sh [91.iso]` boots the CD,
-`mptrace.py` logs every Multiprocessing Services call with its results
-through QEMU's gdbstub (`rsp.py`, no gdb needed), `nk2dump.py` decodes the
-kernel's state and the device tree from a RAM dump, and `shots.py` takes
-screenshots. What they found is in `docs/nk2-reference.md`.
-
-## Assets
-
-ROMs and OS images are user-supplied and ignored by git: `MOS.rom` (the ROM
-above) and `85.iso` (retail Mac OS 8.5 CD, a bare bootable HFS volume);
-`MOS91.rom` and `91.iso` for Mac OS 9.1 (see above). The ROM files are only
-needed with `--rom` (and for the ROM test and tools): otherwise Blue takes
-the one in the startup disk's System Folder.
-
-## Layout
-
-```
-src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its page
-          flags, pages watched for writes),
-          ppc.c + ppc_exec.inc + ppc_fp.c (interpreter), jit.c (the JIT's
-          runtime), jit_a64.c + a64.h and jit_x86.c + x86.h (its AArch64
-          and x86-64 translators), nk.c (native kernel), mp.c (its Multiprocessing
-          Services, NanoKernel 2's), priv.c (supervisor mode: the skeleton key),
-          bootinfo.c + devtree.c (Trampoline replacement, device tree),
-          rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
-          dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
-          (configuration space), nvram.c (devices), ndrv.c (PEF fragment
-          generator: drivers, the guest tools),
-          video.c, disk.c (native drivers), floppy.c (floppy images),
-          drives.c (removable drives: where images go, the menu),
-          cdrom.c (the CD-ROM driver's calls), cdimage.c (CD images: cue
-          sheets, the table of contents), cdaudio.c (the drive's player),
-          net.c (Ethernet's lanLib,
-          libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
-          reader: the startup disk's ROM file), startup.c (which disk is
-          the startup disk), ofnvram.c (Open Firmware's variables in
-          NVRAM: boot-device), share.c (shared folder),
-          rsrc.c (resource forks), tools.c (guest tools), pippin.c (their
-          PippinPPC, for Pippin titles), install.c
-          (installing them from inside Mac OS), clip.c (the clipboard they
-          share with the host), rave.c (3D engine), opengl.c +
-          opengl_table.h (the guest's OpenGL libraries), glfront.c + gltex.c + gllight.c +
-          glarray.c + glattrib.c (their fixed-function front end: textures, lighting and the rest of each
-          vertex's work, client arrays, the attribute stacks), gltest.c (their test application),
-          surface.c + raster.c + gpu.c + gl.c (the 3D backend:
-          drawing, in software and with OpenGL, and presenting), display.c (SDL2
-          window, on the main thread, and what the Mac hands it), density.c (displays'
-          pixels per inch, for its scale), ui.cpp (its menu and prompts, with Dear ImGui),
-          chooser.c, chooser_mac.m (the host's file chooser, for the menu's Insert...), audio.c (SDL2 sound), png.c,
-          perf.c (host processor counters), env.c (settings' old names),
-          icon.c (the window's icon), font.c (its font), hostlib.c (where
-          SDL2 and libslirp are loaded from), welcome.c (the window shown
-          without a command), version.h, main.c
-tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
-          runs random programs on both engines and compares the results
-tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
-          devtree.py (device-tree copy dumper), disasm.py (disassembler),
-          heap.py (heap zones in a RAM dump, checked),
-          gltable.py (the OpenGL libraries' functions, from Apple's),
-          icons.py (the icons, from art/), fonts.py (the window's font,
-          from third_party/fonts/), package-macos.sh (Blue.app and its
-          disk image), macos-deps.sh (its libraries, from their sources),
-          package-linux.sh (the AppImage)
-art/      blue.svg (the icon's master), finder-icons.txt (the Finder
-          icons' pixel art), png/ (the icon at each size), Info.plist
-          (macOS: the executable's and Blue.app's), blue.desktop (Linux)
-docs/     x86-jit-plan.md (the x86-64 JIT), gpu-plan.md (the
-          3D engine's OpenGL backend), opengl-plan.md and
-          glide-plan.md (Mac OS 9's OpenGL, under way, and 3dfx Glide),
-          nk2-reference.md (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2
-          does)
-third_party/imgui/  Dear ImGui 1.93.0 (MIT; its core files only, as released)
-third_party/fonts/  ChicagoFLF 2.1 (public domain; its notice in README there)
-```
