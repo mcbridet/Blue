@@ -969,18 +969,48 @@ static void slow_loads(struct tx *t)
 	}
 }
 
-/* The host address of the EA in w1 into x10, if the n bytes there are accessible within one page */
+/* A branch within the instruction, to point at the code to come with land() */
+static uint32_t *fwd(struct tx *t, uint32_t branch)
+{
+	uint32_t *at = t->p;
+	emit(t, branch);
+	return at;
+}
+
+static void land(struct tx *t, uint32_t *at)
+{
+	if (at && !t->overflow)
+		patch(t, at, FIX_IMM19, t->p);
+}
+
+/* The page flags in `reg` allow the access (stores: and it's no code page, the interpreter's job) */
+static void block_flags(struct tx *t, bool load, unsigned reg)
+{
+	exit_if_bit(t, false, reg, load ? 0 : 1);               /* MEM_R / MEM_W */
+	if (!load)
+		exit_if_bit(t, true, reg, 3);                   /* MEM_CODE */
+}
+
+/*
+ * The host address of the EA in w1 into x10, if the n bytes there are
+ * accessible (as mem_ok() has it: running into the next page, that one too;
+ * not wrapping at 4 GB)
+ */
 static void block_access(struct tx *t, bool load, unsigned n)
 {
 	emit(t, a64_bitfield(0, A64_UBFM, 9, 1, MEM_PAGE_SHIFT, 31));
 	emit(t, a64_ldst_uxtw(0, true, 9, R_FLAGS, 9));
-	exit_if_bit(t, false, 9, load ? 0 : 1);                 /* MEM_R / MEM_W */
-	if (!load)
-		exit_if_bit(t, true, 9, 3);                     /* MEM_CODE: the interpreter's job */
+	block_flags(t, load, 9);
 	if (n > 1) {
 		ubfx(t, 10, 1, 0, MEM_PAGE_SHIFT);
 		emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 10, MEM_PAGE_SIZE - n));
-		exit_if(t, A64_HI);
+		uint32_t *within = fwd(t, a64_bcond(A64_LS, 0));
+		emit(t, a64_addsub_imm(0, 0, 1, 11, 1, n - 1));
+		exit_if(t, A64_HS);
+		emit(t, a64_bitfield(0, A64_UBFM, 11, 11, MEM_PAGE_SHIFT, 31));
+		emit(t, a64_ldst_uxtw(0, true, 11, R_FLAGS, 11));
+		block_flags(t, load, 11);
+		land(t, within);
 	}
 	emit(t, a64_add_uxtw(10, R_CBASE, 1));
 }
@@ -1169,20 +1199,6 @@ static void slow_ios(struct tx *t)
 
 #define FPSCR_XX_BIT 25
 #define FPSCR_FI_BIT 17
-
-/* A branch within the instruction, to point at the code to come with land() */
-static uint32_t *fwd(struct tx *t, uint32_t branch)
-{
-	uint32_t *at = t->p;
-	emit(t, branch);
-	return at;
-}
-
-static void land(struct tx *t, uint32_t *at)
-{
-	if (at && !t->overflow)
-		patch(t, at, FIX_IMM19, t->p);
-}
 
 static void logic_imm64(struct tx *t, enum a64_logic op, unsigned d, unsigned n, uint64_t imm)
 {

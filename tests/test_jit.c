@@ -178,8 +178,13 @@ static uint32_t gen_insn(unsigned k, unsigned n)
 		unsigned rt = (xo >= 535 && xo <= 759 && xo != 662 && xo != 534) ? pick(32) : rdst();
 		return x_form(rt, update ? (pick(4) ? 29 : 28) : 31, 30, xo, xo == 150);
 	}
-	if (c < 82)                                                     /* lmw, stmw */
-		return d_form(pick(2) ? 46 : 47, 20 + pick(12), 31, (uint32_t)(pick(256) * 4));
+	if (c < 82) {                                                   /* lmw, stmw */
+		unsigned rs = 20 + pick(12), n = 32 - rs;
+		uint32_t d = pick(256) * 4;
+		if (n > 1 && pick(4) == 0)                              /* running into the next page */
+			d = 0x1000 - (BASE_A & 0xFFF) - 4 * (1 + pick(n - 1));
+		return d_form(pick(2) ? 46 : 47, rs, 31, d);
+	}
 	if (c < 88) {                                                   /* floating point */
 		/* fadd fsub fmul fdiv fmadd fmsub fnmadd fnmsub fsqrt fres frsqrte fsel */
 		static const unsigned a_ops[] = { 21, 20, 25, 18, 29, 28, 31, 30, 21, 25, 29, 22, 24, 26, 23 };

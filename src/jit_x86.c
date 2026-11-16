@@ -1585,21 +1585,39 @@ static void slow_ios(struct tx *t)
 	}
 }
 
-/* The host address of the EA in eax into rdx, if the n bytes there are accessible within one page */
-static void block_access(struct tx *t, bool load, unsigned n)
+/* The page flags in ecx allow the access (stores: and it's no code page, the interpreter's job) */
+static void block_flags(struct tx *t, bool load)
 {
-	page_flags(t);
 	x86_test_ri(B, 0, T1, load ? MEM_R : MEM_W);
 	exit_if(t, X86_E);
 	if (!load) {
-		x86_test_ri(B, 0, T1, MEM_CODE);                /* the interpreter's job */
+		x86_test_ri(B, 0, T1, MEM_CODE);
 		exit_if(t, X86_NE);
 	}
+}
+
+/*
+ * The host address of the EA in eax into rdx, if the n bytes there are
+ * accessible (as mem_ok() has it: running into the next page, that one too;
+ * not wrapping at 4 GB)
+ */
+static void block_access(struct tx *t, bool load, unsigned n)
+{
+	page_flags(t);
+	block_flags(t, load);
 	if (n > 1) {
 		x86_mov_rr(B, 0, T1, T0);
 		x86_alu_ri(B, X86_AND, 0, T1, MEM_PAGE_SIZE - 1);
 		x86_alu_ri(B, X86_CMP, 0, T1, (int32_t)(MEM_PAGE_SIZE - n));
-		exit_if(t, X86_A);
+		uint8_t *within = fwd(t, X86_BE);
+		x86_mov_rr(B, 0, T1, T0);
+		x86_alu_ri(B, X86_ADD, 0, T1, (int32_t)n - 1);
+		exit_if(t, X86_B);
+		x86_shift_ri(B, X86_SHR, 0, T1, MEM_PAGE_SHIFT);
+		x86_alu_rm(B, X86_ADD, 1, T1, ST(pageflags));
+		x86_load(B, 1, false, T1, x86_m(T1, 0));
+		block_flags(t, load);
+		land(t, within);
 	}
 	x86_lea(B, 1, T2, x86_mx(T2, T0, 0, 0));
 }
