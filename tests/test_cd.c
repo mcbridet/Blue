@@ -1236,6 +1236,51 @@ static void test_nrg_mds_ccd(const uint8_t *vol)
 		cdimage_close(c);
 	}
 	cleanup();
+
+	/* CloneCD, two sessions (CD-Extra): audio, then the data in mode 2 after the gap between sessions */
+	FILE *f = create("extra.img");
+	put_samples(f, 1, 50 * CD_FRAMES, false);
+	put_samples(f, 2, 50 * CD_FRAMES, false);
+	for (uint32_t k = 0; k < DATA_SECTORS; k++) {
+		static const uint8_t sync[12] = { 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0 };
+		static const uint8_t sub[8] = { 0, 0, 8, 0, 0, 0, 8, 0 };
+		fwrite(sync, 1, 12, f);
+		put_be(f, 0, 3);
+		fputc(2, f);
+		fwrite(sub, 1, 8, f);
+		fwrite(vol + (size_t)k * CD_DATA, 1, CD_DATA, f);
+		for (int j = 0; j < 280; j++)
+			fputc(0, f);
+	}
+	fclose(f);
+	f = create("extra.ccd");
+	fputs("[CloneCD]\nVersion=3\n[Disc]\nTocEntries=8\nSessions=2\nDataTracksScrambled=0\n", f);
+	static const struct { int session, point, control, plba; } e[] = {
+		{ 1, 0xA0, 0, 4350 }, { 1, 0xA2, 0, 100 }, { 1, 1, 0, 0 }, { 1, 2, 0, 50 },
+		{ 2, 0xA0, 4, 4350 }, { 2, 0xA2, 4, 11500 + DATA_SECTORS }, { 2, 3, 4, 11500 },
+	};
+	for (unsigned k = 0; k < sizeof e / sizeof e[0]; k++)
+		fprintf(f, "[Entry %u]\nSession=%d\nPoint=0x%02x\nControl=0x%02x\nPLBA=%d\n", k, e[k].session, e[k].point,
+			e[k].control, e[k].plba);
+	fputs("[TRACK 1]\nMODE=0\nINDEX 1=0\n[TRACK 2]\nMODE=0\nINDEX 1=50\n[TRACK 3]\nMODE=2\nINDEX 1=11500\n", f);
+	fclose(f);
+	c = cdimage_open(path("extra.ccd"), why, sizeof why);
+	CHECK(c != NULL);
+	if (c) {
+		CHECK_EQ(c->tracks, 3);
+		CHECK_EQ(c->sessions, 2);
+		CHECK_EQ(c->track[1].end, 100);
+		CHECK_EQ(c->track[2].session, 2);
+		CHECK_EQ(c->track[2].mode, 2);
+		CHECK_EQ(c->track[2].start, 11500);
+		CHECK_EQ(c->leadout, 11500 + DATA_SECTORS);
+		CHECK_EQ(c->data, 2);
+		CHECK(audio_is(c, 60, 2, 10 * CD_FRAMES));
+		CHECK_EQ(cdimage_track_at(c, 5000), -1);
+		check_volume(c);
+		cdimage_close(c);
+	}
+	cleanup();
 }
 
 /* MAME's CHD: the fixtures, made by chdman from the disc's cue sheet */
