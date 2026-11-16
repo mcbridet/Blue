@@ -150,15 +150,6 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   program needs AltiVec, or vector-heavy work turns out too slow; try the
   program first.
 
-## 3dfx Glide
-
-Glide is 3dfx's own API for its Voodoo cards, which some Mac games of
-1997-2001 draw with (Unreal Tournament's Mac version has a Glide renderer
-beside its RAVE one, importing 54 functions from a library whose fragment
-is `3DfxGlideLib2.x`); a Glide library of Blue's own could hand the calls
-to the host and draw with the 3D backend ([3d.md](3d.md)). An old plan for
-it, `docs/glide-plan.md`, is in git history.
-
 ## Pictures on the clipboard
 
 - **Where Blue is:** the clipboard carries text only
@@ -202,19 +193,15 @@ it, `docs/glide-plan.md`, is in git history.
   driver of Blue's own in the Chooser (far more work).
 - **Size:** moderate: an LPD listener in the NAT, the job handling, the PPD.
 
-## A USB gamepad
+## Game controllers
 
 - **Where Blue is:** the host's pads are the Mac's keyboard and mouse, a
   Pippin title's AppleJack, and game controllers of their own in games
   that use InputSprocket ([input.md](input.md)).
 - **What's left:**
-  - A virtual USB gamepad (HID) on Blue's USB controller, which has no
-    devices yet, for games that read USB devices themselves rather than
-    through InputSprocket, and as a base for other USB devices. It needs
-    USB device emulation, and depends on what Mac OS 8.5-9.1's USB HID
-    support does with gamepads (to check).
   - Mappings of one's own for the keyboard and mouse, kept between runs
-    (with the launcher), and two AppleJacks for two-player Pippin titles.
+    (with the launcher).
+  - Two AppleJacks, for two-player Pippin titles.
   - The scroll wheel as scrolling (the guest tools could scroll the window
     under the pointer) rather than arrow keys.
-- **Size:** moderate for the USB gamepad; small for the rest.
+- **Size:** small.

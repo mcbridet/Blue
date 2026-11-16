@@ -49,5 +49,5 @@ test and debug it.
 
 - [roadmap.md](roadmap.md): the next steps.
 - [future.md](future.md): ideas further off: a modem, a serial port,
-  sound input, AltiVec, 3dfx Glide, pictures on the clipboard, printing
-  and a USB gamepad.
+  sound input, AltiVec, pictures on the clipboard, printing and a few
+  game controller extras.
