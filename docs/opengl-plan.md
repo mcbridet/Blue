@@ -1575,7 +1575,7 @@ replays the list on the host.
 backend keeps its own copy (a GPU texture or `raster_texture`), uploaded
 when first used after a change, as RAVE's are.
 
-**Cost model.** A kernel exit costs about 50 ns (README: device register
+**Cost model.** A kernel exit costs about 50 ns ([jit.md](jit.md#device-registers-in-place): device register
 accesses on an M5). A recording stub is a dozen instructions, a few
 nanoseconds once the JIT has translated it (the JIT runs the 68k
 emulator's code at about 2.5 billion PowerPC instructions a second). UT's

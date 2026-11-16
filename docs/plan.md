@@ -211,7 +211,7 @@ Done:
   beside itself first. The version is `src/version.h`'s (`--version`, the
   usage, the Info.plist; a release's tag must match it). Opened from the
   desktop with nothing to do, Blue shows a Platinum window with the
-  command line for it, until the launcher (README, Next steps). See
+  command line for it, until the launcher ([roadmap.md](roadmap.md)). See
   Findings, "Packaging".
 
 Where it stops:
@@ -289,8 +289,9 @@ scheduling around a sleep that doesn't happen; the system carries on.
 - **Hand back:** a short report (what changed, what was found, the new
   stopping point), and update this file: the task's **Status** line, and
   anything learned that later tasks need under **Findings** at the end.
-  Update the README's "Mac OS 9.1 (from its CD)" section in the README's
-  style when behaviour changes.
+  Update the documentation in its style when behaviour changes: the
+  README for what users see, and docs/ for the rest ([bring-up.md](bring-up.md)'s
+  "Mac OS 9.1 (from its CD)" section was the README's until November 2026).
 
 ## References
 
@@ -568,8 +569,9 @@ the kernel); 8 onwards as the boot progresses.
 - **Status:** ongoing. Run after every task that changes behaviour.
 - **Checks:** `make test`; the 8.5 CD to the Finder (above); 8.6 and
   9.0.4 if their images are available (copy writable disks first).
-- **Documentation:** the README's "Mac OS 9.1 (from its CD)" section and Next
-  steps; the site's Status window (`site/index.html`, "Mac OS 9.1–9.2.2"
+- **Documentation:** the "Mac OS 9.1 (from its CD)" section (README's
+  then, [bring-up.md](bring-up.md#mac-os-91-from-its-cd)'s now) and Next steps
+  ([roadmap.md](roadmap.md)); the site's Status window (`site/index.html`, "Mac OS 9.1–9.2.2"
   row) once 9.1 works.
 
 ### 10. Mac OS 9.2–9.2.2

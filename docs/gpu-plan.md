@@ -437,9 +437,11 @@ presented rectangle comes later (see Performance).
   on every push and a missing context fails instead of skipping. macOS
   runners run the GPU tests if they can open a context and skip them
   otherwise.
-- **`README.md`:** the 3D engine paragraph (drawn with OpenGL when
-  available, and when it isn't), `--no-gpu` and `BLUE_GPU`, Next steps,
-  Layout, Build and test.
+- **The documentation** (the README's then; now
+  [guest-tools.md](guest-tools.md#blue-3d-engine), [roadmap.md](roadmap.md),
+  [layout.md](layout.md) and [building.md](building.md)): the 3D engine
+  paragraph (drawn with OpenGL when available, and when it isn't),
+  `--no-gpu` and `BLUE_GPU`, Next steps, Layout, Build and test.
 
 ## Known differences from the software renderer
 
@@ -549,7 +551,8 @@ macOS.
    software renderer, runs at least as fast, survives Restart, and falls
    back cleanly with `BLUE_GPU_FAIL`.
 5. **CI and documentation.** Mesa in the Linux jobs with
-   `BLUE_TEST_GPU=1`; README and usage text.
+   `BLUE_TEST_GPU=1`; the documentation (then the README; now
+   [guest-tools.md](guest-tools.md#blue-3d-engine)) and usage text.
 6. **Performance**, measured against the baseline (below).
 
 Rough size: `gpu.c` around 1,500 lines including the ABI declarations and

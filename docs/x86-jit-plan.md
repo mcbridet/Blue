@@ -982,7 +982,8 @@ statistics (the JIT's own line aside).
    - Device registers in place (the mmio stub).
    - `code_store()` for stores to code pages.
    - String instructions through the interpreter, as on AArch64.
-   - README (the JIT section: hosts, x86 specifics, Rosetta), [plan.md](plan.md)
+   - The JIT's documentation (then the README's JIT section, now
+     [jit.md](jit.md): hosts, x86 specifics, Rosetta), [plan.md](plan.md)
      Findings.
 
    Kernel and device exit counts as AArch64's.
@@ -1076,7 +1077,7 @@ statistics (the JIT's own line aside).
 ## Open questions
 
 1. **File layout**: `jit.c` as the shared runtime (keeping the public
-   interface and the name the README uses), and `jit_a64.c`/`jit_x86.c`
+   interface and the name the documentation uses: [jit.md](jit.md)), and `jit_a64.c`/`jit_x86.c`
    as translators. Or keep `jit.c` as the AArch64 translator and put the
    runtime in a new file?
 2. **NaNs in `ppc_fp.c`**: make them PowerPC's on every host in milestone
@@ -1087,7 +1088,8 @@ statistics (the JIT's own line aside).
    - `nk.c` (its "no JIT" line gives way to the JIT's reason);
    - `tests/test_jit.c`;
    - `.github/workflows/ci.yml`;
-   - README and [plan.md](plan.md);
+   - the documentation (then the README; now [jit.md](jit.md)) and
+     [plan.md](plan.md);
    - `mem.c` (milestone 5's guard below the view).
 
    Any objection?
@@ -1111,6 +1113,6 @@ Rough, with tests:
 | Floating point, settle stubs | 1,100 |
 | Kernel calls, `sc`, mmio, code stores, match hook, profiler | 400 |
 | Tests (encoder table, benchmark, `BLUE_TEST_JIT`) | 600 |
-| CI, Makefile, README, [plan.md](plan.md) | 150 |
+| CI, Makefile, the documentation (then the README), plan.md | 150 |
 
 About 5,500 lines, nearly all new. Milestone 1 is about half of that.

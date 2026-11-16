@@ -114,7 +114,7 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   pace but records silence, and the sound node declares output hardware
   only (`hardware-types` 2), because Mac OS 9's AWACS input component
   ('sind' 'awgc') has a bug in its close routine that corrupts the system
-  heap at startup (README, Mac OS 9). Declaring input again brings that
+  heap at startup ([bring-up.md](bring-up.md#mac-os-9), Mac OS 9). Declaring input again brings that
   back, so that comes first. Options: declare input only for systems
   without the bug (8.5 and 8.6 use another sound stack; check which have
   it), make the bug harmless (a RAM patch of the component, with the
@@ -256,7 +256,7 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   HFS partitions, a bare HFS or HFS+ volume, or ISO 9660, which an
   installed system mounts with ISO 9660 File Access) or a cue sheet with
   `.bin`, WAVE or AIFF tracks, whose audio the CD-ROM drive plays and reads
-  as Apple's CD-ROM driver does (README, "CDs: audio and cue sheets").
+  as Apple's CD-ROM driver does ([drives.md](drives.md#cds-audio-and-cue-sheets)).
   Hybrid Mac/PC discs usually carry a partition map too and should work
   (not yet tried).
 - **Formats missing:**
