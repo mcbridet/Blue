@@ -471,7 +471,7 @@ def make_site(tmp):
             '<div style="font-size:150px;font-weight:700;line-height:1;letter-spacing:-2px;'
             'text-shadow:0 4px 0 rgba(11,46,56,.35)">Blue</div>'
             '<div style="margin-top:28px;font-size:40px;line-height:1.25;color:#eafaff">'
-            'Classic Mac OS<br>on a native kernel</div></div></div>')
+            'A blazing-fast, feature-rich<br>Mac OS 8, 9 &amp; Pippin runtime</div></div></div>')
     out = os.path.join(ROOT, 'site', 'og-image.png')
     render(page(card), 1200, 630, out, tmp)
     print('icons:', os.path.relpath(out, ROOT))
