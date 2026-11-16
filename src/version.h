@@ -9,7 +9,7 @@
 #ifndef BLUE_VERSION_H
 #define BLUE_VERSION_H
 
-#define BLUE_VERSION "2026.11.1"
+#define BLUE_VERSION "2026.11.2"
 #define BLUE_ABOUT "Blue " BLUE_VERSION " \u00B7 GPL-2.0-only \u00B7 no warranty \u00B7 https://github.com/mcbridet/Blue"
 
 #endif
