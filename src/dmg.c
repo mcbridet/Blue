@@ -291,16 +291,10 @@ static long xz(const uint8_t *in, size_t n, uint8_t *out, size_t cap)
 			return -1;      /* (a filter other than LZMA2 alone) */
 		uint8_t prop = in[j];
 		i += hs;
-		CLzma2Dec dec;
-		Lzma2Dec_CONSTRUCT(&dec);
-		if (Lzma2Dec_Allocate(&dec, prop, &alloc) != SZ_OK)
-			return -1;
-		Lzma2Dec_Init(&dec);
+		/* (each block's dictionary starts afresh: it decodes into the output, which is its dictionary) */
 		SizeT made = cap - o, used = n - i;
 		ELzmaStatus status;
-		SRes res = Lzma2Dec_DecodeToBuf(&dec, out + o, &made, in + i, &used, LZMA_FINISH_ANY, &status);
-		Lzma2Dec_Free(&dec, &alloc);
-		if (res != SZ_OK)
+		if (Lzma2Decode(out + o, &made, in + i, &used, prop, LZMA_FINISH_ANY, &status, &alloc) != SZ_OK)
 			return -1;
 		o += made;
 		i += used;
