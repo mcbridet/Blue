@@ -18,7 +18,7 @@
 		if (trap_taken(RD(i), g[RA(i)], SIMM(i))) {
 			if (IN_PLACE && (i & 0xFFFF0000u) == 0x0FFF0000u && c->tb + done * c->tb_step < c->kcall_until) {
 				c->pc = pc;
-				if (c->kcall(c, i & 0xFFFF)) {
+				if (c->kcall(c, i & 0xFFFF, done)) {
 					UNRETIRED();
 					npc = c->pc;
 					break;

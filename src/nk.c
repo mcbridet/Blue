@@ -2581,11 +2581,52 @@ static const char *device_stop(const struct machine *m)
  */
 static void in_place(struct machine *m, bool on);
 
+/*
+ * A store to the info records (see kdp_sync()) the way the main loop makes
+ * it at its exit: with the page writable, the change pulled into the
+ * kernel's copy, and the devices then to be brought up to date (that exit
+ * marks them dirty, and brings them up to date only at a sync point, which
+ * the run doesn't reach here). Not with a software interrupt, task switch
+ * or preemption waiting, which the loop would see to after it; nor for
+ * other forms of store (multiple, FP, string) or one running into the next
+ * page, which exit.
+ */
+static int info_store(struct machine *m, struct ppc_cpu *cpu)
+{
+	struct mmio_access a;
+	uint32_t ea = cpu->fault_addr;
+	if (m->mp.swi || m->mp.yield || m->preempt || !mmio_decode_insn(cpu->exit_insn, &a) || !a.store ||
+	    (ea ^ (ea + a.size - 1)) >> MEM_PAGE_SHIFT)
+		return PPC_MMIO_NO;
+	uint32_t v = cpu->gpr[a.rt];
+	if (a.reverse)
+		v = a.size == 4 ? __builtin_bswap32(v) : __builtin_bswap16((uint16_t)v);
+	if (a.size == 1)
+		mem_w8(&m->mem, ea, (uint8_t)v);
+	else if (a.size == 2)
+		mem_w16(&m->mem, ea, (uint16_t)v);
+	else
+		mem_w32(&m->mem, ea, v);
+	if (a.update)
+		cpu->gpr[a.ra] = ea;
+	cpu->pc += 4;
+	cpu->icount++;
+	cpu->tb += cpu->tb_step;
+	kdp_pull(m);
+	m->dev_dirty = true;
+	in_place(m, m->in_place_on);                    /* (as for the run the loop would start next) */
+	return PPC_MMIO_DONE;
+}
+
 static int device_hook(void *ctx, struct ppc_cpu *cpu)
 {
 	struct machine *m = ctx;
 	struct mmio_access a;
-	if (cpu->icount + 1 >= m->mmio_until || !mmio_decode(&m->bus, cpu, &a))
+	if (cpu->icount + 1 >= m->mmio_until)
+		return PPC_MMIO_NO;
+	if (cpu->fault_write && cpu->fault_addr >> MEM_PAGE_SHIFT == m->ci.la_info_record >> MEM_PAGE_SHIFT)
+		return info_store(m, cpu);
+	if (!mmio_decode(&m->bus, cpu, &a))
 		return PPC_MMIO_NO;
 	/*
 	 * A read that changes nothing, with the devices not due to change by
@@ -2648,59 +2689,181 @@ static uint32_t trap_table(const struct machine *m)
 }
 
 /*
- * The register copies below vectorize on AArch64; x86 has no byte swap for
- * vectors without SSSE3, and GCC keeps them loops there, at twice the
- * instructions of a straight run (as clang has them)
+ * The context block holds GPRs in the low words of big-endian doublewords
+ * and FPRs as big-endian doublewords. On AArch64 they're copied four GPRs
+ * or two FPRs at a time (NEON: byte-reversed lanes; a GPR's doubleword is
+ * written back whole, its high word as it was), a third of the
+ * instructions; on x86-64 with AVX2 (x86-64-v3, as the JIT needs) four of
+ * either. x86's baseline has no byte swap for vectors (SSSE3's PSHUFB),
+ * and GCC keeps the copies loops there, at twice the instructions of a
+ * straight run (as clang has them).
  */
+#if defined(__aarch64__)
+#include <arm_neon.h>
+
+static void put_gprs(uint8_t *p, const uint32_t *g)
+{
+	for (unsigned r = 0; r < 32; r += 4) {
+		uint32x4x2_t d = vld2q_u32((const uint32_t *)(const void *)(p + 8 * r));
+		d.val[1] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(vld1q_u32(g + r))));
+		vst2q_u32((uint32_t *)(void *)(p + 8 * r), d);
+	}
+}
+
+static void get_gprs(uint32_t *g, const uint8_t *p)
+{
+	for (unsigned r = 0; r < 32; r += 4) {
+		uint32x4x2_t d = vld2q_u32((const uint32_t *)(const void *)(p + 8 * r));
+		vst1q_u32(g + r, vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(d.val[1]))));
+	}
+}
+
+static void put_fprs(uint8_t *p, const uint64_t *f)
+{
+	for (unsigned r = 0; r < 32; r += 2)
+		vst1q_u8(p + 8 * r, vrev64q_u8(vreinterpretq_u8_u64(vld1q_u64(f + r))));
+}
+
+static void get_fprs(uint64_t *f, const uint8_t *p)
+{
+	for (unsigned r = 0; r < 32; r += 2)
+		vst1q_u64(f + r, vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 8 * r))));
+}
+#else
 #if defined(__x86_64__)
 #define UNROLL_SWAPS _Pragma("GCC unroll 32")
 #else
 #define UNROLL_SWAPS
 #endif
 
+static void put_gprs(uint8_t *p, const uint32_t *g)
+{
+	UNROLL_SWAPS
+	for (int r = 0; r < 32; r++)
+		put_be32(p + 8 * r + 4, g[r]);
+}
+
+static void get_gprs(uint32_t *g, const uint8_t *p)
+{
+	UNROLL_SWAPS
+	for (int r = 0; r < 32; r++)
+		g[r] = be32(p + 8 * r + 4);
+}
+
+static void put_fprs(uint8_t *p, const uint64_t *f)
+{
+	UNROLL_SWAPS
+	for (int r = 0; r < 32; r++)
+		put_be64(p + 8 * r, f[r]);
+}
+
+static void get_fprs(uint64_t *f, const uint8_t *p)
+{
+	UNROLL_SWAPS
+	for (int r = 0; r < 32; r++)
+		f[r] = be64(p + 8 * r);
+}
+
+#if defined(__x86_64__)
+#include <immintrin.h>
+
+#define SWAP32 _mm256_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12, \
+				3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12)
+#define SWAP64 _mm256_setr_epi8(7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8, \
+				7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8)
+
+__attribute__((target("avx2"))) static void put_gprs_avx2(uint8_t *p, const uint32_t *g)
+{
+	for (unsigned r = 0; r < 32; r += 4) {
+		__m128i v = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(const void *)(g + r)),
+					     _mm256_castsi256_si128(SWAP32));
+		__m256i d = _mm256_slli_epi64(_mm256_cvtepu32_epi64(v), 32);    /* (each doubleword's second word) */
+		__m256i *at = (__m256i *)(void *)(p + 8 * r);
+		_mm256_storeu_si256(at, _mm256_blend_epi32(_mm256_loadu_si256(at), d, 0xAA));
+	}
+}
+
+__attribute__((target("avx2"))) static void get_gprs_avx2(uint32_t *g, const uint8_t *p)
+{
+	const __m256i odd = _mm256_setr_epi32(1, 3, 5, 7, 1, 3, 5, 7);
+	for (unsigned r = 0; r < 32; r += 4) {
+		__m256i d = _mm256_permutevar8x32_epi32(_mm256_loadu_si256((const __m256i *)(const void *)(p + 8 * r)), odd);
+		_mm_storeu_si128((__m128i *)(void *)(g + r),
+				 _mm_shuffle_epi8(_mm256_castsi256_si128(d), _mm256_castsi256_si128(SWAP32)));
+	}
+}
+
+__attribute__((target("avx2"))) static void put_fprs_avx2(uint8_t *p, const uint64_t *f)
+{
+	for (unsigned r = 0; r < 32; r += 4)
+		_mm256_storeu_si256((__m256i *)(void *)(p + 8 * r),
+				    _mm256_shuffle_epi8(_mm256_loadu_si256((const __m256i *)(const void *)(f + r)), SWAP64));
+}
+
+__attribute__((target("avx2"))) static void get_fprs_avx2(uint64_t *f, const uint8_t *p)
+{
+	for (unsigned r = 0; r < 32; r += 4)
+		_mm256_storeu_si256((__m256i *)(void *)(f + r),
+				    _mm256_shuffle_epi8(_mm256_loadu_si256((const __m256i *)(const void *)(p + 8 * r)), SWAP64));
+}
+
+static bool have_avx2(void)
+{
+	static int have = -1;
+	if (have < 0)
+		have = __builtin_cpu_supports("avx2") != 0;
+	return have;
+}
+#endif
+#endif
+
 static void save_context(struct machine *m, uint32_t cb, uint32_t pc)
 {
-	struct mem *mem = &m->mem;
 	const struct ppc_cpu *cpu = &m->cpu;
+	uint8_t *p = mem_ptr(&m->mem, cb);      /* (one base pointer for all) */
 
-	mem_w32(mem, cb + CB_INTER_FLAGS, m->flags);
-	mem_w32(mem, cb + CB_INTER_ENABLES, m->enables);
-	mem_w32(mem, cb + CB_PC, pc);
-	mem_w32(mem, cb + CB_LR, cpu->lr);
-	mem_w32(mem, cb + CB_CR, cpu->cr);
-	mem_w32(mem, cb + CB_XER, cpu->xer);
-	mem_w32(mem, cb + CB_CTR, cpu->ctr);
-	mem_w32(mem, cb + CB_FPSCR, cpu->fpscr);
-	uint8_t *p = mem_ptr(mem, cb);          /* (one base pointer: the loops vectorize) */
-	UNROLL_SWAPS
-	for (int r = 0; r < 32; r++)
-		put_be32(p + CB_GPR + 8 * r + 4, cpu->gpr[r]);
-	UNROLL_SWAPS
-	for (int r = 0; r < 32; r++)
-		put_be64(p + CB_FPR + 8 * r, cpu->fpr[r]);
+	put_be32(p + CB_INTER_FLAGS, m->flags);
+	put_be32(p + CB_INTER_ENABLES, m->enables);
+	put_be32(p + CB_PC, pc);
+	put_be32(p + CB_LR, cpu->lr);
+	put_be32(p + CB_CR, cpu->cr);
+	put_be32(p + CB_XER, cpu->xer);
+	put_be32(p + CB_CTR, cpu->ctr);
+	put_be32(p + CB_FPSCR, cpu->fpscr);
+#if defined(__x86_64__)
+	if (have_avx2()) {
+		put_gprs_avx2(p + CB_GPR, cpu->gpr);
+		put_fprs_avx2(p + CB_FPR, cpu->fpr);
+		return;
+	}
+#endif
+	put_gprs(p + CB_GPR, cpu->gpr);
+	put_fprs(p + CB_FPR, cpu->fpr);
 }
 
 static void load_context(struct machine *m, uint32_t cb)
 {
-	const struct mem *mem = &m->mem;
 	struct ppc_cpu *cpu = &m->cpu;
+	const uint8_t *p = mem_ptr(&m->mem, cb);
 
-	m->flags = mem_r32(mem, cb + CB_INTER_FLAGS);
-	m->enables = mem_r32(mem, cb + CB_INTER_ENABLES);
-	cpu->pc = mem_r32(mem, cb + CB_PC);
-	cpu->lr = mem_r32(mem, cb + CB_LR);
-	cpu->cr = mem_r32(mem, cb + CB_CR);
-	cpu->xer = mem_r32(mem, cb + CB_XER);
-	cpu->ctr = mem_r32(mem, cb + CB_CTR);
-	ppc_fp_set_fpscr(cpu, mem_r32(mem, cb + CB_FPSCR));     /* (as by mtfsf) */
-	const uint8_t *p = mem_ptr(mem, cb);
-	UNROLL_SWAPS
-	for (int r = 0; r < 32; r++)
-		cpu->gpr[r] = be32(p + CB_GPR + 8 * r + 4);
-	UNROLL_SWAPS
-	for (int r = 0; r < 32; r++)
-		cpu->fpr[r] = be64(p + CB_FPR + 8 * r);
+	m->flags = be32(p + CB_INTER_FLAGS);
+	m->enables = be32(p + CB_INTER_ENABLES);
+	cpu->pc = be32(p + CB_PC);
+	cpu->lr = be32(p + CB_LR);
+	cpu->cr = be32(p + CB_CR);
+	cpu->xer = be32(p + CB_XER);
+	cpu->ctr = be32(p + CB_CTR);
+	ppc_fp_set_fpscr(cpu, be32(p + CB_FPSCR));      /* (as by mtfsf) */
 	cpu->resv_valid = false;
+#if defined(__x86_64__)
+	if (have_avx2()) {
+		get_gprs_avx2(cpu->gpr, p + CB_GPR);
+		get_fprs_avx2(cpu->fpr, p + CB_FPR);
+		return;
+	}
+#endif
+	get_gprs(cpu->gpr, p + CB_GPR);
+	get_fprs(cpu->fpr, p + CB_FPR);
 }
 
 /* Saves the running context (to resume at resume_pc) and runs the one at `to`. */
@@ -3835,10 +3998,20 @@ static const char *kernel_call(struct machine *m, unsigned n)
  * their common cases, RunAlternateContext with no interrupt pending, and
  * ReturnFromException resuming (verdict 0) or ending the alternate
  * context (32-255), which can't fail; anything else exits.
+ *
+ * With the devices to be brought up to date (after an exit that may have
+ * touched them, such as the idle hook's, or at a sync point), the exit
+ * would do that first, at this instruction; so that's done here, at the
+ * instruction count and time base the exit would have (`done` added),
+ * and the call goes on in place if that changed no interrupt and nothing
+ * else is waiting for the main loop; otherwise it exits, the devices now
+ * up to date, as the exit would have had them (and not due again: their
+ * next event is later). Not while a DMA channel or sound moves (the next
+ * device event is then now: the exit would bring them up to date again).
  */
-static bool kcall_in_place(struct ppc_cpu *cpu, unsigned n)
+static bool kcall_common(struct machine *m, unsigned n)
 {
-	struct machine *m = (struct machine *)((char *)cpu - offsetof(struct machine, cpu));
+	struct ppc_cpu *cpu = &m->cpu;
 	uint32_t r3 = cpu->gpr[3];
 	bool common;
 	if (n == 1)
@@ -3854,13 +4027,43 @@ static bool kcall_in_place(struct ppc_cpu *cpu, unsigned n)
 	return true;
 }
 
+__attribute__((noinline)) static bool kcall_dirty(struct machine *m, unsigned n, uint64_t done)
+{
+	struct ppc_cpu *cpu = &m->cpu;
+	if (m->dbdma.poll || awacs_moving(&m->awacs))
+		return false;
+	uint64_t icount = cpu->icount, tb = cpu->tb;
+	cpu->icount += done;
+	cpu->tb += done * cpu->tb_step;
+	update_device_time(m);
+	bool changed = update_interrupts(m, false);
+	m->dev_dirty = false;
+	m->dev_next_tb = device_next_tb(m);
+	bool other = changed || m->preempt || device_stop(m) || m->mp.swi || m->mp.yield ||
+		     (m->mp_kernel && blue_interruptible(m) && mp_due(&m->mp, cpu->tb));
+	cpu->icount = icount;
+	cpu->tb = tb;
+	if (other)
+		return false;
+	in_place(m, m->in_place_on);                    /* (as for the run the loop would start next) */
+	return kcall_common(m, n);
+}
+
+static bool kcall_in_place(struct ppc_cpu *cpu, unsigned n, uint64_t done)
+{
+	struct machine *m = (struct machine *)((char *)cpu - offsetof(struct machine, cpu));
+	return m->dev_dirty ? kcall_dirty(m, n, done) : kcall_common(m, n);
+}
+
 /*
  * What the engines may do in place (see ppc.h) in the main loop's runs
  * (`on`): what changes nothing else the kernel would do at the exit, so
- * not once devices are to be updated or Multiprocessing Services' tick is
- * due, nor with a task switch, a software interrupt or a preemption
- * waiting, nor with `clock` (each exit sets the time base then). Kernel
- * calls only while the blue task runs (the others' stop the run).
+ * not once devices are due to change by themselves or Multiprocessing
+ * Services' tick is due, nor with a task switch, a software interrupt or
+ * a preemption waiting, nor with `clock` (each exit sets the time base
+ * then). Kernel calls only while the blue task runs (the others' stop the
+ * run); with the devices to be brought up to date, kernel calls only
+ * (kcall_in_place() does that first).
  */
 static void in_place(struct machine *m, bool on)
 {
@@ -3868,12 +4071,12 @@ static void in_place(struct machine *m, bool on)
 	const struct mp_object *task = m->mp_kernel ? mp_lookup(&m->mp, m->mp.current, MP_TASK) : NULL;
 	m->in_place_on = on;
 	cpu->sc_until = cpu->kcall_until = 0;
-	if (!on || m->clock_mips || m->dev_dirty || m->mp.swi || m->mp.yield || m->preempt)
+	if (!on || m->clock_mips || m->mp.swi || m->mp.yield || m->preempt)
 		return;
-	uint64_t until = m->dev_next_tb;
+	uint64_t until = m->dev_dirty ? UINT64_MAX : m->dev_next_tb;
 	if (m->mp_kernel && m->mp.next_tb < until)
 		until = m->mp.next_tb;
-	if (task) {
+	if (task && !m->dev_dirty) {
 		cpu->sc_until = until;
 		cpu->sc_blue = blue_running(m) ? NK2_FLAG_BLUE : 0;
 		cpu->sc_word = task->task.label;

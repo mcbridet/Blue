@@ -243,13 +243,15 @@ static unsigned fuzz_insns;     /* the program's */
  * The kernel's calls in place for random programs: odd ones decline;
  * others move registers about, change the FPSCR, store and load data, and
  * go on somewhere in the program, as a context switch would (past kernel
- * calls there, which would retire nothing forever).
+ * calls there, which would retire nothing forever). Both engines must say
+ * the same instruction count (`done` added: r9).
  */
-static bool fuzz_kcall(struct ppc_cpu *c, unsigned n)
+static bool fuzz_kcall(struct ppc_cpu *c, unsigned n, uint64_t done)
 {
 	uint32_t *g = c->gpr;
 	if (n & 1)
 		return false;
+	g[9] = (uint32_t)(c->icount + done);
 	uint32_t to = CODE + 4 * ((g[5]++ + n) % (fuzz_insns + 1));
 	while ((mem_r32(c->mem, to) & 0xFFFF0000u) == 0x0FFF0000u || mem_r32(c->mem, to) == 0x44000002u)
 		to += 4;
@@ -1044,8 +1046,9 @@ static void test_quick_sc(void)
  */
 static struct { uint32_t gpr[32], cr, lr, pc; unsigned made; } kc;
 
-static bool switch_kcall(struct ppc_cpu *c, unsigned n)
+static bool switch_kcall(struct ppc_cpu *c, unsigned n, uint64_t done)
 {
+	(void)done;
 	if (n == 1 && !(c->gpr[4] & c->cr)) {
 		memcpy(kc.gpr, c->gpr, sizeof kc.gpr);
 		kc.cr = c->cr;

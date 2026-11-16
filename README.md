@@ -1078,13 +1078,18 @@ software (on 8.6, an M5 Mac).
     block (`kcall` in `src/ppc.h`), which makes the call in its common
     cases (no interrupt pending; verdict 0 or 32-255) with the same code
     as at an exit, then goes on through the block table. The kernel allows
-    it before each run only while an exit would do nothing more (no
-    devices to update, Multiprocessing Services tick due, task switch,
-    software interrupt or preemption waiting: `in_place()` in
-    `src/nk.c`), and as at an exit the call retires nothing, so runs are
-    the same instruction for instruction. Kernel exits in that 9.1 run
-    went from 11.7 to 1.5 million (8.5: 2.8 to 1.1), host time from 1.50
-    to 1.32 s (8.5: 1.03 to 1.02 s).
+    it before each run only while an exit would do nothing more
+    (Multiprocessing Services tick due, task switch, software interrupt or
+    preemption waiting: `in_place()` in `src/nk.c`); with the devices to
+    be brought up to date (after an exit that may have touched them), the
+    call does that first, at the instruction count and time base that
+    exit would have had, and goes on unless an interrupt changed or the
+    loop has more to do. As at an exit the call retires nothing, so runs
+    are the same instruction for instruction. Kernel exits in that 9.1 run
+    went from 11.7 to 1.5 million (8.5: 2.8 million to 153,000), host time
+    from 1.50 to 1.32 s (8.5: 1.03 to 1.02 s). The context switch copies
+    registers in vectors (NEON; AVX2 where the processor has it): a call
+    in place costs about 17 ns.
   - Device registers in place: loads and stores to device registers (1.6
     million in 4 billion instructions of the 8.5 CD boot: the Time Manager
     programming and reading VIA timer 2, its interrupt flags, and the USB
@@ -1114,7 +1119,11 @@ software (on 8.6, an M5 Mac).
     the access (interrupts, the next device event), which would find
     everything as it was: about 12 ns less, for most of 8.5's accesses.
     `BLUE_DEVICE_EXITS=1` has every access exit as before, for
-    comparisons.
+    comparisons. Stores to the NanoKernel's info records, which the
+    kernel keeps read-only to see them (the 68k emulator's, mostly), go
+    the same way: the hook makes them as the exit would (`info_store()`),
+    and generated code offers it stores that fault on a page that isn't
+    writable too.
   - Registers: CR, LR, r1, r3, r4, r24, r27 and r29 (the hottest across the
     68k emulator and native code) live in host registers while generated
     code runs; others are cached within a block and written back at exits
@@ -1633,13 +1642,14 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 
 1. More JIT speed: what's left of a boot's host time outside generated
    code is mostly the kernel's (plan.md, Findings, "Where a boot's host
-   time goes"): kernel calls made in place cost 23 ns each, nearly all of
-   it the context switch's register copies (13% of the 9.1 CD boot);
-   host calls, the disk and display drivers (5-10%); and the 8.5 CD's
-   idle-hook exits, which keep the 68k emulator's next mode switch from
-   being made in place (about 5%). In the JIT: code runs in the
-   interpreter until it's hot (3-7%; translating sooner costs as much as
-   it saves) and translating takes 1-4%. On x86-64 the front end still
+   time goes" and what followed it): host calls, the disk and display
+   drivers (5-10%); Multiprocessing Services' calls; kernel calls made in
+   place, now 17 ns each with the context switch's copies vectorized; and
+   bringing devices up to date, which is guest-visible and stays where it
+   is (the exits it cost kernel calls are gone; for quick system calls,
+   answering in place saved too little to keep). In the JIT: code runs in
+   the interpreter until it's hot (3-7%; translating sooner costs as much
+   as it saves) and translating takes 1-4%. On x86-64 the front end still
    limits a Zen 5 (about half its dispatch slots get nothing), now mostly
    for the size of the code (docs/x86-jit-plan.md).
 2. Later: host ports forwarded to the guest (so it can serve); the shared
@@ -1787,10 +1797,10 @@ exits, never at exits made only for debugging, so tracing and trap logging
 don't change what the guest does. (At exits they are updated only when that
 could change anything: when a VIA timer runs out or a USB frame starts with
 its interrupt enabled, while sound DMA moves, or after something touched
-them. Kernel calls made in place, without an exit, only happen while an
-exit would do none of that; device register accesses made in place update
-devices as their exits would. An access on the last instruction before a
-sync point still exits, and the loop then services that sync point.) Tracing and trap logging use the
+them. Kernel calls made in place, without an exit, and device register
+accesses made in place update devices as their exits would. An access on
+the last instruction before a sync point still exits, and the loop then
+services that sync point.) Tracing and trap logging use the
 interpreter.
 
 Debugging `boot`: `--trace-from N --trace-reg 24` logs instructions with the
