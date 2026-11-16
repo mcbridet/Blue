@@ -80,6 +80,36 @@ macOS and Linux hosts, AArch64 and x86-64
 
 [docs/architecture.md](docs/architecture.md) tells the whole story.
 
+### How Blue compares
+
+SheepShaver and QEMU are the long-standing ways to run classic Mac OS on
+today's computers, and Apple's own Classic environment once ran Mac OS 9
+inside Mac OS X. Blue owes a lot to the first two (see
+[Acknowledgements](#acknowledgements)). Here's how it stands beside all three:
+
+| | Blue | SheepShaver | QEMU | Classic, in Mac OS X |
+|---|---|---|---|---|
+| **Mac OS** | 8.5 to 9.2.2 | 7.5.3 to 9.0.4 | 9.0 to 9.2.2, and Mac OS X 10.0 to 10.5 | 9.1 to 9.2.2 |
+| **Runs on** | macOS 11 and later, and Linux: Apple silicon, ARM64 and x86-64 | macOS, Linux and Windows | macOS, Linux and Windows | PowerPC Macs, with Mac OS X 10.0 to 10.4 |
+| **How** | Apple's code, unmodified, on a native kernel in place of the NanoKernel | Apple's code on a patched ROM, with a kernel of its own | A whole Power Mac emulated, firmware and all | Mac OS 9 as a program in Mac OS X, on a real PowerPC |
+| **Speed** | A JIT on every host: about 18 times a Power Mac G3/300 in MacBench 5's processor test, on an Apple M5 | A JIT on Intel and AMD; none on Apple silicon | A JIT, with every device and the memory management unit emulated | The PowerPC's own, up to a Power Mac G5 |
+| **What you need** | A Mac OS CD image | A Mac OS CD image, and a ROM file found elsewhere | A Mac OS CD image | Mac OS 9 installed beside Mac OS X |
+| **3D** | QuickDraw 3D, RAVE (as an ATI Rage 128) and OpenGL, drawn on your GPU | Software only | Software only | Programs that draw straight to the screen or the hardware often fail |
+| **Restart and Startup Disk** | Both work | Restarting can freeze or crash it; Startup Disk doesn't work | Neither works | Mac OS X's own |
+| **Screen** | Follows the window's size, scaled to suit your display | A fixed size, set in its settings | Set in Mac OS's Monitors control panel | Mac OS 9's windows among Mac OS X's |
+| **Sound** | Yes, with CD audio | Yes, with CD audio | Only in separate experimental builds | Yes |
+| **Disk images** | Dropped on the window or inserted from the menu: CD images in most formats, compressed `.dmg` and Disk Copy images, floppies | Uncompressed images, and one at a time dropped in as a CD | Raw and QEMU's own formats, changed from a menu | Mac OS X's |
+| **A shared folder** | A folder of yours as a disk, its changes written back when Mac OS shuts down | A folder as a live disk, though programs can't run from it | Separate experimental drivers | Mac OS X's disks, directly |
+| **Pippin titles** | Yes | No | No | No |
+
+Each of them does things Blue doesn't:
+- **SheepShaver** runs System 7.5 to Mac OS 8.1, given an Old World ROM.
+- **QEMU** runs Mac OS X, emulates a G4 with AltiVec, and passes USB
+  devices through.
+- **Classic** put Mac OS 9 programs side by side with Mac OS X's.
+
+Blue's own gaps are listed under [What isn't there](#what-isnt-there).
+
 ## Download and install
 
 | Platform | Download |

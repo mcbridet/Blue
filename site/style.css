@@ -436,6 +436,53 @@ code {
   .notes { padding: 0 12px 8px 38px; color: #333; }
 }
 
+/* Comparison: a Finder list view with Blue's column picked out */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.doc.compare-intro { padding-bottom: 18px; }
+.doc.compare-outro { padding-top: 18px; }
+.compare-wrap { overflow-x: auto; border-block: 1px solid #000; }
+.compare {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.compare thead th {
+  padding: 2px 8px;
+  background: var(--plat);
+  border-right: 1px solid #888;
+  border-bottom: 1px solid #000;
+  box-shadow: inset 1px 1px #fff, inset -1px -1px var(--plat-mid);
+  font: 12px/1.5 var(--chrome);
+  text-align: left;
+}
+.compare thead th:last-child { border-right: 0; }
+.compare thead th.blue { background: var(--accent); color: #fff; box-shadow: inset 1px 1px #36b4cf, inset -1px -1px var(--highlight); }
+.compare tbody th {
+  width: 14%;
+  padding: 6px 8px;
+  background: #f0f0f0;
+  font: 13px/1.3 var(--chrome);
+  text-align: left;
+  vertical-align: top;
+}
+.compare td { width: 21.5%; padding: 6px 10px; vertical-align: top; }
+.compare tbody tr + tr > * { border-top: 1px solid #e6e6e6; }
+.compare td.blue { background: var(--accent-light); }
+.compare code { font-size: 12px; }
+.compare .nw { white-space: nowrap; }
+.compare thead th:first-child, .compare tbody th { position: sticky; left: 0; z-index: 1; }
+
 /* Get started */
 
 .downloads {
