@@ -57,8 +57,8 @@ from that disk, in a window on your desktop.
   (over Metal on Apple silicon) or in software.
 - **The rest of a Mac:** sound and CD audio, networking through your
   connection, a folder of yours as a disk, the clipboard shared both ways,
-  and disk, CD (`.iso`, `.toast`, `.cue`/`.bin`) and floppy images you drop
-  on the window.
+  and disk, CD (`.iso`, `.toast`, `.cue`/`.bin`, `.nrg`, `.mds`, `.ccd`,
+  `.chd`, `.dmg`) and floppy images you drop on the window.
 - **Guest tools,** offered once the Finder is up: the screen follows the
   window's size, the clipboard is shared, and the 3D engine, OpenGL and a
   library for Bandai Pippin titles are installed.
@@ -177,12 +177,13 @@ commands below, `blue` stands for Blue's command:
 ### What you need
 
 - **A Mac OS CD image,** of version 8.5 to 9.2.2 (see
-  [Compatibility](#mac-os-versions)): an `.iso`, `.toast`, `.cdr` or `.img`
-  file, or a `.cue` sheet with its `.bin` files. Blue includes no Apple
-  software, and needs no separate ROM file: it uses the "Mac OS ROM" file
-  on the CD. To make an image of a CD you own, use Disk Utility on a Mac
-  (File > New Image > Image from the disc, in the "DVD/CD master" format,
-  which makes a `.cdr`), or `dd` on Linux.
+  [Compatibility](#mac-os-versions)): an `.iso`, `.toast`, `.cdr`, `.img`
+  or `.dmg` file, or a `.cue` sheet with its `.bin` files (or another kind
+  of CD image: see [Images Blue takes](#disks-cds-and-floppies)). Blue
+  includes no Apple software, and needs no separate ROM file: it uses the
+  "Mac OS ROM" file on the CD. To make an image of a CD you own, use Disk
+  Utility on a Mac (File > New Image > Image from the disc, in the "DVD/CD
+  master" format, which makes a `.cdr`), or `dd` on Linux.
 - **About 2 GB of free space** for the Mac's disk.
 
 ### 1. Make a disk
@@ -438,7 +439,7 @@ one of them), and a floppy drive:
 
 | Option | Gives the Mac |
 |---|---|
-| `--disk FILE` | A disk. Mac OS can write to it if you can write to the file. |
+| `--disk FILE` | A disk. Mac OS can write to it if you can write to the file (and it isn't a compressed image). |
 | `--cdrom FILE` | A CD-ROM drive, with that disc in it (read-only). |
 | `--floppy FILE` | The floppy drive, with that disk in it. |
 
@@ -472,19 +473,36 @@ in while the Mac is running is never the startup disk.
 **Images Blue takes:**
 
 - **CDs:** `.iso`, `.toast`, `.cdr` and `.img` files (raw images of HFS or
-  ISO 9660 discs), and cue sheets: a `.cue` file with its `.bin`, WAVE or
-  AIFF tracks. Audio CDs and games' soundtracks need the cue sheet: give
-  Blue the `.cue` file, not the `.bin`. `blue disk toc FILE` lists a
-  disc's tracks. Compressed images and `.dmg` files aren't taken: on a
-  Mac, `hdiutil convert image.dmg -format UDTO -o image` makes a raw
-  `.cdr` from a `.dmg`.
+  ISO 9660 discs); compressed Mac images (below); and images with tracks,
+  for audio CDs and games' soundtracks:
+  - cue sheets: a `.cue` file with its `.bin`, WAVE, AIFF, FLAC, MP3 or Ogg
+    Vorbis tracks (audio at 44.1 kHz, the compressed kinds decoded as they
+    play);
+  - Nero's `.nrg`, Alcohol 120%'s `.mds` (with its `.mdf`), CloneCD's `.ccd`
+    (with its `.img` and `.sub`), and MAME's `.chd`.
+
+  Give Blue the `.cue`, `.mds` or `.ccd` file; if you give it the `.bin`,
+  `.mdf` or `.img` instead, it finds the other beside it. `blue disk toc
+  FILE` lists a disc's tracks.
+- **Compressed Mac images:** `.dmg` files (UDIF: zlib, bzip2, ADC, LZFSE
+  or LZMA, and the early ones Disk Copy 6.3 made, which macOS calls
+  corrupt) and Disk Copy 6's `.img` (NDIF), whose resource fork must have
+  come with it: in MacBinary (`.bin`), an AppleDouble `._` file beside
+  it, or on a Mac's own disk. They're read-only, and unpacked a piece at a
+  time as Mac OS reads them. They go in a CD-ROM drive, or in the floppy
+  drive if they're of a floppy's size, or attach as a locked `--disk`.
 - **Floppies:** raw images of 400K, 720K, 800K, 1440K and 2880K disks
-  (`.img`, `.dsk`, `.ima`, `.flp`), and Disk Copy 4.2 images (`.image`).
-  Convert other kinds first, with Disk Copy in Mac OS or a tool on your
-  computer. `blue disk create blank.img 1440K "Untitled"` makes a blank,
-  formatted floppy.
+  (`.img`, `.dsk`, `.ima`, `.flp`), Disk Copy 4.2 images (`.image`), and
+  compressed images of those sizes (read-only). Convert other kinds first,
+  with Disk Copy in Mac OS or a tool on your computer. `blue disk create
+  blank.img 1440K "Untitled"` makes a blank, formatted floppy.
 - **Disks:** raw disk images, with an Apple partition map or a bare
-  volume, as `blue disk create` makes.
+  volume, as `blue disk create` makes (or a GUID partition table, whose
+  HFS+ partitions Mac OS sees), and compressed ones, read-only.
+
+Blue tells these apart by what's in them, not by their names, and says
+what an image is when it can't use it (encrypted, a ZIP or 7-Zip archive,
+an audio file at another rate, a DVD's image, and so on).
 
 Mac OS writes to a disk as soon as it mounts it. To keep a floppy or disk
 image as it is, lock it in the Finder, or make the file read-only: Mac OS
@@ -610,7 +628,7 @@ The options of `blue boot`:
 
 | Option | What it does |
 |---|---|
-| `--disk FILE` | Attaches a disk image, writable if the file is. |
+| `--disk FILE` | Attaches a disk image, writable if the file is (a compressed one is read-only). |
 | `--cdrom FILE` | Attaches a CD image, read-only, in a CD-ROM drive. |
 | `--cdrom-drive` | Adds an empty CD-ROM drive. (A window, or real time, has one anyway, unless four drives are taken.) |
 | `--floppy FILE` | Puts a floppy image in the floppy drive; give it again for each disk of a set, up to 16. |
@@ -754,8 +772,8 @@ window shows the command to use. See
   CDs and other programs' CDs can't start the Mac.
 - Blue says it's a Pippin disc: Pippin titles run inside Mac OS, so start
   Blue with your Mac OS disk as well (see [Pippin titles](#pippin-titles)).
-- Blue refuses the image: it's compressed, a `.dmg`, or a `.bin` without
-  its `.cue`. See [Images Blue takes](#disks-cds-and-floppies).
+- Blue refuses the image: it says what it is (an archive, an encrypted
+  `.dmg`, a `.bin` without its `.cue`, ...). See [Images Blue takes](#disks-cds-and-floppies).
 - Attach CDs with `--cdrom`, not `--disk`: the Mac OS 8.5 CD won't start
   from a drive it can write to.
 - If you used `--rom`, leave it out: Blue then uses the CD's own ROM file,
@@ -784,8 +802,8 @@ Choose another Scale in Blue's menu (F12), or start with `--scale`. See
 Sound plays only in the window, in real time (not with `--headless` or
 `--no-sound`). Check Mac
 OS's own volume and mute, in the Monitors & Sound or Sound control panel.
-For a CD's music, attach the `.cue` file of a cue sheet image: a plain
-`.iso` has no audio tracks.
+For a CD's music, attach an image with tracks (a `.cue`, `.nrg`, `.mds`,
+`.ccd` or `.chd`): a plain `.iso` has no audio tracks.
 
 ### The network doesn't work
 

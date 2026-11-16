@@ -43,7 +43,7 @@ test and debug it.
   findings along the way.
 - [future.md](future.md): ideas not planned yet: a modem, a serial port,
   infrared, 3D sound, sound input, AltiVec, printing, game controllers and
-  more CD formats.
+  the CD formats still missing.
 - [opengl-plan.md](opengl-plan.md): Blue's OpenGL for Mac OS 9 games.
 - [gpu-plan.md](gpu-plan.md): the 3D engine's OpenGL backend.
 - [glide-plan.md](glide-plan.md): 3dfx Glide.

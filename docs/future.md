@@ -252,32 +252,27 @@ only, as with Ethernet, with input-script commands for reproducible tests.
 
 ## More CD formats
 
-- **Where Blue is:** a CD image is a plain one (an Apple partition map with
-  HFS partitions, a bare HFS or HFS+ volume, or ISO 9660, which an
-  installed system mounts with ISO 9660 File Access) or a cue sheet with
-  `.bin`, WAVE or AIFF tracks, whose audio the CD-ROM drive plays and reads
-  as Apple's CD-ROM driver does ([drives.md](drives.md#cds-audio-and-cue-sheets)).
-  Hybrid Mac/PC discs usually carry a partition map too and should work
-  (not yet tried).
-- **Formats missing:**
-  - Other track layouts: `.nrg`, `.mdf`/`.mds`, `.ccd`/`.img`/`.sub` and
-    `.chd`: readers giving the same table of contents as the cue sheets'
-    (`src/cdimage.c`); cue sheets with compressed audio (FLAC, MP3, Ogg),
-    decoded as read.
-  - Compressed images: UDIF `.dmg` (zlib, bzip2, ADC or LZFSE chunks,
-    read-only, decompressed as read) and Disk Copy 6 NDIF `.img` (whose map
-    is in the resource fork, so only where the fork survived, or from
-    MacBinary). Meanwhile, macOS's `hdiutil convert` makes a plain image,
-    except of early UDIF images (Disk Copy 6.3 to Mac OS X 10.1) whose block
-    table is a `blkx` resource in a resource fork appended to the data fork,
-    with each partition's chunk offsets relative to its own data offset:
-    `hdiutil` and 7-Zip both call those corrupt. One such (Apple Hardware
-    Test 1.2.2, ADC chunks) was converted with a 100-line script.
+- **Where Blue is:** CD images plain, compressed (UDIF, Disk Copy 6) or
+  with tracks (cue sheets with `.bin`, WAVE, AIFF, FLAC, MP3 or Ogg Vorbis
+  tracks; Nero, Alcohol 120%, CloneCD, CHD), whose audio the CD-ROM drive
+  plays and reads as Apple's CD-ROM driver does; compressed images in the
+  floppy drive and as locked disks too ([drives.md](drives.md#cd-images),
+  [Compressed images](drives.md#compressed-images)). Hybrid Mac/PC discs
+  usually carry a partition map too and should work (not yet tried).
+- **Formats still missing:** KenCode-compressed NDIF (Disk Copy 6.0's
+  first compression); DART floppy images; sparse images and bundles
+  (`.sparseimage`, `.sparsebundle`); a CHD that needs its parent;
+  Alcohol's `.mdx`; DiscJuggler (`.cdi`), BlindWrite, and cdrdao's `.toc`
+  on its own (its `.cue`, when there is one beside it, Blue reads); audio
+  at other rates than 44.1 kHz (resampled as read), and Opus.
+- **Not yet tried:** a real early UDIF (Apple Hardware Test 1.2.2's, ADC
+  chunks: one made the same way mounts), and real Alcohol and CloneCD
+  images (those checked were made from a cue sheet by a script following
+  the formats).
 - **CD audio, what's left:** recording from the CD (the codec's input DMA
   records silence even with the CD selected); de-emphasis for tracks
   flagged with pre-emphasis (played as stored); CD-Text (titles); a check
   of Mac OS 9's Audio CD Access and its AIFF tracks, and of games that play
   their soundtracks from the CD (AppleCD Audio Player, the Control Strip's
   CD module, Audio CD Access and QuickTime's import were tried on 8.5).
-- **Size:** small to moderate: each format is a self-contained reader behind
-  the CD-ROM drive.
+- **Size:** small for each format left: a reader behind the drives.

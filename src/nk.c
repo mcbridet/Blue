@@ -1001,7 +1001,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 			printf("disk %u: a CD-ROM drive, empty\n", k);
 		for (unsigned p = 0; p < d->partitions && (d->media || !d->removable); p++) {
 			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, d->path,
-			       d->removable ? " (a CD: read-only, ejectable)" : d->backend && !d->cdrom ? " (shared folder)" :
+			       d->removable ? " (a CD: read-only, ejectable)" :
+			       d->backend && !d->cdrom && !d->packed ? " (shared folder)" :
 			       d->read_only ? " (read-only)" : "",
 			       (unsigned long long)(d->part[p].size >> 20),
 			       (unsigned long long)d->part[p].offset, d->part[p].name[0] ? ", partition " : "",

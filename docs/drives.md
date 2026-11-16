@@ -1,7 +1,7 @@
 # Disks, CDs and floppies
 
 How Blue's drives work: the disk driver, the removable drives (floppy
-and CD-ROM), CD images with audio, and floppy images. How to use them is
+and CD-ROM), CD images with audio, compressed images, and floppy images. How to use them is
 in the [README](../README.md#disks-cds-and-floppies); the shared folder,
 which is a drive too, is in [shared-folder.md](shared-folder.md).
 
@@ -14,9 +14,12 @@ whose blocks come from `src/share.c` rather than a file; and a floppy
 drive (`--floppy`): the floppy and CD-ROM drives' discs come and go
 (see [Removable drives](#removable-drives)). CD-ROM drives answer as Apple's CD-ROM driver
 (`src/cdrom.c`: the table of contents, audio, icons), their discs
-plain images or cue sheets (`src/cdimage.c`).
-An Apple partition map gives one drive per HFS partition; otherwise the
-file is one volume. (When there's a map entry at offset 512, entries are
+plain images, images with tracks (`src/cdimage.c`, `src/cdformats.c`) or
+compressed Mac images (`src/dmg.c`); see [CD images](#cd-images) and
+[Compressed images](#compressed-images).
+An Apple partition map gives one drive per HFS partition (a GUID
+partition table, as images made on today's Macs have, one per HFS+
+partition); otherwise the file is one volume. (When there's a map entry at offset 512, entries are
 512 bytes apart and count 512-byte blocks even if the driver descriptor
 gives larger ones, as on CDs with 2048-byte blocks.) A timer posts
 disk-inserted events until each volume has been mounted (the driver
@@ -107,11 +110,12 @@ disc comes out once none of its volumes is in use. A CD put in while Mac OS runs
 the startup disk (it's shown to Mac OS once applications run); one in at
 startup may be, as before, and Mac OS won't eject the startup disk ("The
 startup disk cannot be removed from the desktop"). CD images are raw (an
-`.iso`, `.toast`, `.cdr` or `.img`, with or without a partition map) or cue
-sheets (below); compressed ones and UDIF `.dmg` (`hdiutil convert -format
-UDTO` makes a raw `.cdr`) are refused, saying what they are, and so is a
-`.bin` of raw sectors given without its `.cue` (when it starts with a data
-track; one that starts with audio can't be told from a plain image). Ejectable drives change what Mac OS does all along (it looks at
+`.iso`, `.toast`, `.cdr` or `.img`, with or without a partition map),
+compressed (`.dmg`, Disk Copy 6) or have tracks (cue sheets, `.nrg`,
+`.mds`, `.ccd`, `.chd`: see [CD images](#cd-images)); archives and other
+kinds are refused, saying what they are, and so is a `.bin` of raw sectors
+given without its `.cue` and with none beside it (when it starts with a
+data track; one that starts with audio can't be told from a plain image). Ejectable drives change what Mac OS does all along (it looks at
 the drives' flags as it runs), so CD-ROM drives are ejectable only where
 discs can be swapped: in a window or real time, with `--cdrom-drive`, or
 with an input script that swaps CDs (`cdrom` commands); other
@@ -136,17 +140,19 @@ disc's own volume icon, if it has one, goes before them), and Get Info says
 "Blue CD-ROM drive".
 
 Images with audio come as cue sheets (`.cue`, with `.bin` files, as most
-CD rips are): tracks in raw 2352-byte sectors (audio; mode 1 or mode 2
-data), in 2048- or 2336-byte data sectors, or in WAVE or AIFF files (44.1
-kHz, 16-bit stereo); `BINARY` and `MOTOROLA` files, one for the disc or one
-a track; `INDEX 00` pregaps in the file and `PREGAP`/`POSTGAP` silence that
-isn't; several sessions (`REM SESSION`, as on CD-Extra discs); `CATALOG` and
-`ISRC`. The disc's own addresses are worked out as a drive has them (track 1
-at 00:02:00). `blue disk toc FILE` lists what the drive will say:
+CD rips are), or in the other layouts of [CD images](#cd-images): tracks in
+raw 2352-byte sectors (audio; mode 1 or mode 2 data), in 2048- or 2336-byte
+data sectors, or in audio files (WAVE or AIFF at 44.1 kHz, 16-bit stereo;
+FLAC, MP3 or Ogg Vorbis at 44.1 kHz, decoded as they're read); `BINARY` and
+`MOTOROLA` files, one for the disc or one a track; `INDEX 00` pregaps in the
+file and `PREGAP`/`POSTGAP` silence that isn't; several sessions (`REM
+SESSION`, as on CD-Extra discs); `CATALOG` and `ISRC`. The disc's own
+addresses are worked out as a drive has them (track 1 at 00:02:00). `blue
+disk toc FILE` lists what the drive will say:
 
 ```
 $ build/blue disk toc "Quake [1996].cue"
-Quake [1996].cue: 11 tracks, 1 session, lead-out at 61:47:11 (LBA 277886)
+Quake [1996].cue: a cue sheet, 11 tracks, 1 session, lead-out at 61:47:11 (LBA 277886)
    1  mode 1  00:02:00  LBA      0  02:47:20  (Mac OS sees its data)
    2  audio   02:51:20  LBA  12695  05:08:38  (pregap 00:02:00)
    3  audio   07:59:65  LBA  35840  02:25:60  (pregap 00:00:07)
@@ -180,7 +186,99 @@ On an installed 8.5, the Control Strip's CD module plays a disc that's in at
 startup by itself (its AutoPlay); for one put in later it keeps the table of
 contents it read at startup (none) and doesn't, while AppleCD Audio Player
 plays either. AppleCD Audio Player numbers a mixed disc's audio tracks from
-1 (on the Quake CD, its Track 1 is the disc's track 2).
+1 (on the Quake CD, its Track 1 is the disc's track 2). AppleCD Player (in
+the 8.5 CD's CD Extras) plays an audio CD as soon as it opens, from the
+first CD-ROM drive (it opens `.AppleCD`, the first driver of that name).
+
+## CD images
+
+Each kind of image is told by its contents (`cdimage_detect()`), not its
+name: CHD's and Alcohol's magic numbers, Nero's trailer, CloneCD's and a
+cue sheet's text (a `.cue` by its name too), UDIF's `koly` trailer and
+NDIF's resource fork (`src/dmg.c`); anything else is a plain image. Given
+the data of an image whose table of contents is in a file beside it (a
+`.bin` of a cue sheet, an Alcohol `.mdf`, a CloneCD `.img` or `.sub`, a
+cdrdao `.toc` with a `.cue`), Blue opens that file instead, so dropping
+either works. Each layout gives the same table of contents, sectors and
+sound as the cue sheet of the same disc, and `blue disk toc` says what
+kind it read:
+
+- **Cue sheets** (`src/cdimage.c`): as above. An audio file's kind is
+  what's in it, whatever its `FILE` line says: WAVE and AIFF as they are;
+  FLAC, MP3 and Ogg Vorbis decoded as they're read (`src/audiodec.c`:
+  dr_flac, dr_mp3 with a seek table of a point a second, stb_vorbis),
+  reading on from where the last read stopped, seeking only when the drive
+  jumps; mono is played on both channels. Their lengths are what the files
+  say (an MP3's LAME header trims the encoder's delay and padding), so a
+  track of a lossy rip may be a sector longer than the CD's.
+- **Nero** (`.nrg`, `src/cdformats.c`): the chunks the trailer points to
+  (`NER5`, 64-bit; `NERO`, 32-bit): disc-at-once sessions (`CUEX`/`CUES`
+  cue points for the addresses, `DAOX`/`DAOI` for where each track's
+  pregap, start and end are in the file and its kind of sector, with or
+  without subchannel), and track-at-once ones (`ETN2`/`ETNF`). Audio is
+  little-endian, as in a `.bin`.
+- **Alcohol 120%** (`.mds`, version 1, with its `.mdf`, little-endian
+  structures): each session's track entries (start, file offset, sector
+  size, with or without the 96 bytes of subchannel after each), their
+  extra blocks (pregap and length) and the lead-out's entry; the file each
+  names (`*.mdf`: the `.mds`'s name). A DVD's image or the later version
+  (`.mdx`) is refused.
+- **CloneCD** (`.ccd`, with its `.img` and `.sub`): the TOC entries
+  (each track's start, its control bits; each session's lead-out) and the
+  `[TRACK]` sections' indexes; the `.img` holds every track from its
+  pregap on, in order, 2352 bytes a sector. The `.sub` isn't read.
+- **CHD** (`.chd`, MAME's, through libchdr: v5's `cdlz`, `cdzl`, `cdfl`
+  and `cdzs` codecs, and the older versions): the tracks' metadata
+  (`CHT2`, or `CHTR`), each track's frames padded to a multiple of four in
+  the file, a pregap stored when its type starts with `V`; audio is
+  big-endian there. Four hunks are kept. A CHD that needs its parent, a
+  GD-ROM's, or a hard disk's is refused.
+
+Checked with the PC Quake CD's cue/bin (copies): made into FLAC, MP3 and Ogg
+Vorbis cue sheets (ffmpeg), Nero, Alcohol (with and without subchannel) and
+CloneCD images (a script of the formats' layouts; MAME's chdman reads the
+Nero one), and a CHD (chdman): every sector of every lossless one the same
+as the cue sheet's, the whole disc read in 1.5 to 2.6 s; the same with an
+HFS data track in place of its ISO 9660 one, in a second CD-ROM drive
+beside the 8.5 CD as the startup disk: Mac OS mounts it, AppleCD Player
+plays track 2, and what the sound chip plays is the same, sample for
+sample, from each lossless image (and, scaled by the volume, track 2's
+samples), 25 dB and 18 dB from it for the MP3 and Ogg Vorbis ones (their
+encoders' loss).
+
+## Compressed images
+
+UDIF (`.dmg`) and Disk Copy 6's NDIF (`.img`) images are read as they're
+compressed, a chunk at a time (`src/dmg.c`, with the last four chunks
+unpacked kept; hdiutil's chunks are 1 MB at most), read-only: in a CD-ROM
+drive (a disc of one data track), in the floppy drive if unpacked they're
+of a floppy's size, or as a `--disk`, which is then locked. A dropped image
+goes to the floppy drive or a CD-ROM drive by its size unpacked.
+
+- **UDIF:** the `koly` trailer gives the block table, in an XML property
+  list (`blkx`, each partition a `mish` table in base64) or, in early
+  images (Disk Copy 6.3 to Mac OS X 10.1), in `blkx` resources of a
+  resource fork appended to the data fork, each partition's chunks counted
+  from its own data offset (hdiutil and 7-Zip call those corrupt). Chunks:
+  raw, zeros, ADC, zlib (miniz), bzip2, LZFSE and xz (LZMA2, the LZMA
+  SDK's decoder; Apple's chunks are xz streams of LZMA2 alone). A UDIF in
+  MacBinary is read too. Encrypted and segmented images are refused.
+- **NDIF:** the `bcem` resource of its resource fork (versions 10 to 12:
+  the image's blocks, then chunks of raw, zero and ADC data in the data
+  fork). The fork comes from MacBinary, AppleSingle, an AppleDouble file
+  beside it (`._NAME`, or `.AppleDouble/NAME`) or macOS's named fork; without
+  it the data fork alone is a raw image (which a read-only NDIF's is).
+  KenCode chunks are refused.
+
+Checked: hdiutil's UDZO, UDBZ, ULFO, ULMO and UDCO images of an HFS volume
+unpacked to what hdiutil's own conversion makes; `Unreal Tournament.dmg`
+(a UDIF of raw and zero chunks) to the same bytes as the `.iso` made from
+it; an early UDIF of an Apple partition map's disk (ADC chunks, three
+partitions with their own data offsets, which hdiutil calls corrupt), an
+NDIF with its AppleDouble file, and each of these in a second CD-ROM drive
+beside the 8.5 CD, mounted by Mac OS (Unreal Tournament's volume too); a
+400K image in the floppy drive (locked) and an early UDIF as a `--disk`,
+mounted.
 
 ## Floppies
 
@@ -190,10 +288,12 @@ header, the blocks, then the 400K and 800K disks' tags; also in
 MacBinary), whose checksums Blue keeps right as Mac OS writes (they're
 worked out again a second after the last write, and when the disk is
 ejected or flushed). They're told apart by their contents and size, not
-their names. Compressed images and archives (Disk Copy 6's NDIF, DART,
-UDIF `.dmg`, StuffIt, zip, gzip, BinHex) aren't taken: Blue says what
-they are, or that their size is no floppy's. Convert them to a raw or Disk
-Copy 4.2 image first (with Disk Copy in Mac OS, or a tool on the host). An
+their names. Compressed UDIF (`.dmg`) and Disk Copy 6 (NDIF) images of
+those sizes go in read-only, unpacked as they're read (see [Compressed
+images](#compressed-images)); DART images and archives (StuffIt, zip,
+gzip, BinHex, ...) aren't taken: Blue says what they are, or that their
+size is no floppy's. Convert them to a raw or Disk Copy 4.2 image first
+(with Disk Copy in Mac OS, or a tool on the host). An
 image is read-only (Mac OS shows it locked) if its file can't be written,
 or is locked in the Finder; lock an image to keep it as it was, as Mac OS
 writes to a writable disk as soon as it mounts it (its volume information,
