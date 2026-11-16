@@ -50,4 +50,4 @@ test and debug it.
 **What's next**
 
 - [roadmap.md](roadmap.md): the next steps.
-- [future.md](future.md): ideas further off: sound input and printing.
+- [future.md](future.md): ideas further off: sound input.
