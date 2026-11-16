@@ -81,7 +81,8 @@ jobs:
         run: BLUE_JIT_BENCH=1 build/blue-tests jit
 
       # Blue.app's libraries, built from their sources for MACOSX_DEPLOYMENT_TARGET (Homebrew's
-      # need the macOS they were built on), kept between runs until tools/macos-deps.sh changes
+      # need the macOS they were built on), kept between runs until tools/macos-deps.sh changes,
+      # with those sources (share/sources)
       - name: Cache Blue.app's libraries
         if: runner.os == 'macOS'
         id: deps
@@ -124,23 +125,67 @@ jobs:
           archive: false
           if-no-files-found: error
 
+      # The exact sources of the libraries in it, as tools/macos-deps.sh keeps them (in ~/blue-deps,
+      # so cached with them), checked by SHA-256
+      - name: The disk image's sources
+        if: runner.os == 'macOS'
+        run: |
+          dmg=$(ls build/Blue-*.dmg)
+          tools/package-macos.sh sources build/Blue.app "$HOME/blue-deps" "$(basename "$dmg")" dist/sources
+          cat dist/sources/SOURCES
+
       # The AppImage, built in Ubuntu 22.04 (glibc 2.35) so that it runs on most distributions since;
-      # then run here (Ubuntu 24.04), its own libraries loaded
+      # then run here (Ubuntu 24.04), its own libraries loaded. With the exact sources of the libraries
+      # in it: SDL2's tarball, and Ubuntu's source packages of the versions bundled (apt-get source)
       - name: AppImage
         if: runner.os == 'Linux'
         run: |
-          docker run --rm -v "$PWD:/src" -e BUILD=/tmp/appimage -e OUT=/src/dist ubuntu:22.04 \
-            /src/tools/package-linux.sh --setup
+          docker run --rm -v "$PWD:/src" -e BUILD=/tmp/appimage -e OUT=/src/dist -e SOURCES=/src/dist/sources \
+            ubuntu:22.04 /src/tools/package-linux.sh --setup
           image=$(ls dist/Blue-*.AppImage)
           "$image" --appimage-extract-and-run --version | tee version.txt
           grep -q 'SDL2 .*/usr/lib/libSDL2-2.0.so.0$' version.txt
           grep -q 'libslirp .*/usr/lib/libslirp.so.0$' version.txt
+          cat dist/sources/SOURCES
 
       - name: Upload the AppImage
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
           path: dist/Blue-*.AppImage
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload the sources
+        uses: actions/upload-artifact@v7
+        with:
+          name: sources-${{ matrix.target }}
+          path: dist/sources
+          if-no-files-found: error
+
+  # Blue-third-party-sources.tar.gz: the packages' sources, each file once, with a README (every run, so
+  # that a release's is no surprise)
+  sources:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: sources-*
+          path: sources
+
+      - name: Blue-third-party-sources.tar.gz
+        run: |
+          tools/third-party-sources.sh dist/Blue-third-party-sources.tar.gz sources/*
+          tar -tvzf dist/Blue-third-party-sources.tar.gz
+          tar -xzOf dist/Blue-third-party-sources.tar.gz Blue-third-party-sources/README.txt
+
+      - name: Upload it
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/Blue-third-party-sources.tar.gz
           archive: false
           if-no-files-found: error
 
@@ -162,11 +207,12 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, version]
+    needs: [build, version, sources]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      # (the disk images, the AppImages and Blue-third-party-sources.tar.gz)
       - uses: actions/download-artifact@v8
         with:
           pattern: Blue*
@@ -182,7 +228,8 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           ls -la
-          set -- Blue-arm64.dmg Blue-x86_64.dmg Blue-x86_64.AppImage Blue-aarch64.AppImage
+          set -- Blue-arm64.dmg Blue-x86_64.dmg Blue-x86_64.AppImage Blue-aarch64.AppImage \
+            Blue-third-party-sources.tar.gz
           sha256sum "$@" > SHA256SUMS
           cat SHA256SUMS
           if gh release view "$TAG" > /dev/null 2>&1; then

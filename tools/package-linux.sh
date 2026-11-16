@@ -18,6 +18,13 @@
 # and curl. BUILD (build/appimage) is where Blue is built, OUT (build) where
 # the AppImage goes. The AppImage runs on the AppImage project's type2-runtime
 # (static: it needs no libfuse, only fusermount, or --appimage-extract-and-run).
+#
+# With SOURCES set to a directory, the exact sources of the libraries it
+# bundles go there too, with SOURCES/SOURCES (a line for each file of each
+# library) for tools/third-party-sources.sh: SDL2's tarball as --setup keeps
+# it (SDL2_DIR/share/sources) and this script, and the Debian source packages
+# of the system's (.dsc, .orig.tar.*, .debian.tar.*) by apt-get source, of the
+# versions installed, which needs deb-src in apt's sources (--setup adds it).
 set -eu
 
 SDL2_VERSION=2.32.10
@@ -43,6 +50,11 @@ die() {
 setup() {
 	[ "$(id -u)" = 0 ] || die "--setup installs packages: run it as root, in a container"
 	export DEBIAN_FRONTEND=noninteractive
+	# (the sources of Ubuntu's packages too, for SOURCES)
+	if [ -n "${SOURCES:-}" ]; then
+		sed -i 's/^# *deb-src /deb-src /' /etc/apt/sources.list
+		grep -q '^deb-src ' /etc/apt/sources.list || die "no deb-src lines to enable in /etc/apt/sources.list"
+	fi
 	apt-get update -q
 	apt-get install -y -q --no-install-recommends build-essential gcc-12 g++-12 cmake ninja-build pkg-config curl \
 		ca-certificates patchelf squashfs-tools file libslirp0 libglib2.0-0 \
@@ -62,10 +74,11 @@ setup() {
 		"$work/cmake.log" || true
 	cmake --build "$work/build"
 	cmake --install "$work/build" > /dev/null
-	mkdir -p /opt/sdl2/share/licenses/SDL2
+	mkdir -p /opt/sdl2/share/licenses/SDL2 /opt/sdl2/share/sources
 	cp "$work/SDL2-$SDL2_VERSION/LICENSE.txt" /opt/sdl2/share/licenses/SDL2/
 	echo "SDL2 $SDL2_VERSION https://github.com/libsdl-org/SDL/releases/tag/release-$SDL2_VERSION" \
 		> /opt/sdl2/share/licenses/SDL2/SOURCE
+	cp "$work/sdl2.tar.gz" "/opt/sdl2/share/sources/SDL2-$SDL2_VERSION.tar.gz"
 	rm -rf "$work"
 }
 
@@ -100,6 +113,60 @@ find_lib() {
 
 needed() {
 	readelf -d "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'
+}
+
+# The exact sources of what's bundled, into SOURCES: a line of SOURCES/SOURCES is the AppImage, the
+# library's file in it, the library, its version, its licence (SPDX), a file of its source and its origin
+source_of() {
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "Blue-$arch.AppImage" "usr/lib/$1" "$2" "$3" "$4" "$5" "$6" \
+		>> "$SOURCES/SOURCES"
+}
+bundler="Blue's tools/package-linux.sh, which bundled it (its run path \$ORIGIN, by patchelf)"
+
+# SDL2's: its tarball as --setup keeps it, and this script, which built it
+sdl2_sources() {
+	tarball=$SDL2_DIR/share/sources/SDL2-$2.tar.gz
+	[ -f "$tarball" ] || die "$tarball: SDL2's source isn't there (--setup keeps it)"
+	if [ "$2" = "$SDL2_VERSION" ]; then
+		echo "$SDL2_SHA256  $tarball" | sha256sum -c - > /dev/null || die "$tarball isn't the file expected"
+	fi
+	cp "$tarball" "$root/tools/package-linux.sh" "$SOURCES/"
+	source_of "$1" SDL2 "$2" Zlib "SDL2-$2.tar.gz" \
+		"https://github.com/libsdl-org/SDL/releases/download/release-$2/SDL2-$2.tar.gz"
+	source_of "$1" SDL2 "$2" Zlib package-linux.sh "Blue's tools/package-linux.sh, which built it (--setup) and bundled it"
+}
+
+# A Debian source package's library, and its licence (SPDX)
+about_source() {
+	case $1 in
+	glib2.0) echo "GLib:LGPL-2.1-or-later" ;;
+	libslirp) echo "libslirp:BSD-3-Clause" ;;
+	pcre3) echo "PCRE:BSD-3-Clause" ;;
+	pcre2) echo "PCRE2:BSD-3-Clause WITH PCRE2-exception" ;;
+	*) return 1 ;;
+	esac
+}
+
+# A system library's (NAME PACKAGE SOURCE-PACKAGE VERSION): its Debian source package, of the version
+# installed, by apt-get source (which checks each file against apt's signed indexes); Launchpad's
+# address for each file on Ubuntu (kept there for good, where mirrors drop old versions), else apt's
+debian_sources() {
+	about=$(about_source "$3") || die "$3: which library, under what licence? (package-linux.sh's about_source)"
+	lib="${about%%:*} ($release's source package $3, for $2)"
+	(cd "$SOURCES" && apt-get source -q --print-uris "$3=$4" < /dev/null) |
+		sed -n "s/^'\([^']*\)' \([^ ]*\) .*/\1 \2/p" > "$BUILD/uris"
+	[ -s "$BUILD/uris" ] || die "apt-get source $3=$4: not found (deb-src in apt's sources? --setup adds it)"
+	(cd "$SOURCES" && apt-get source -q --download-only "$3=$4" < /dev/null > /dev/null) ||
+		die "apt-get source $3=$4 failed"
+	while read -r uri file; do
+		[ -f "$SOURCES/$file" ] || die "apt-get source $3=$4: no $file"
+		case $release in
+		Ubuntu*) uri=https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/$3/$4/$file ;;
+		esac
+		source_of "$1" "$lib" "$4" "${about#*:}" "$file" "$uri"
+	done < "$BUILD/uris"
+	cp "$root/tools/package-linux.sh" "$SOURCES/"
+	source_of "$1" "$lib" "$4" "${about#*:}" package-linux.sh "$bundler"
 }
 
 # (GCC 12 or later, or clang, for __builtin_shufflevector: Ubuntu 22.04's cc is GCC 11)
@@ -168,16 +235,25 @@ cp "$root/LICENSE" "$root/THIRD-PARTY-NOTICES.md" "$root/README.md" "$doc/"
 	echo "loads at run time, so each can be replaced by another build of it with the same name"
 	echo "(extract the AppImage with --appimage-extract, replace it in squashfs-root/usr/lib,"
 	echo "and run squashfs-root/AppRun). Their licences are in the folders here, named for each;"
-	echo "the source of each is at the address given."
+	echo "the source of each is at the address given, and Blue's releases carry the exact sources"
+	echo "they were built from, in Blue-third-party-sources.tar.gz"
+	echo "(https://github.com/mcbridet/Blue/releases)."
 	echo
 } > "$doc/Licenses/README.txt"
 distro=$(sed -n 's/^PRETTY_NAME="*\([^"]*\)"*$/\1/p' /etc/os-release 2> /dev/null)
+if [ -n "${SOURCES:-}" ]; then
+	mkdir -p "$SOURCES"
+	: > "$SOURCES/SOURCES"
+	# shellcheck disable=SC1091,SC2153
+	release=$(. /etc/os-release && echo "$NAME $VERSION_ID")
+fi
 while read -r name from; do
 	if [ -n "${SDL2_DIR:-}" ] && [ "$from" = "$SDL2_DIR/lib/$name" ]; then
 		cp -R "$SDL2_DIR/share/licenses/"* "$doc/Licenses/"
 		read -r pkg ver src < "$SDL2_DIR/share/licenses/SDL2/SOURCE"
 		rm "$doc/Licenses/SDL2/SOURCE"
 		echo "$name: $pkg $ver, $src" >> "$doc/Licenses/README.txt"
+		[ -z "${SOURCES:-}" ] || sdl2_sources "$name" "$ver"
 		continue
 	fi
 	pkg=$(dpkg -S "*/$(basename "$(realpath "$from")")" 2> /dev/null | head -1 | cut -d: -f1) ||
@@ -191,12 +267,14 @@ while read -r name from; do
 		done
 	ver=$(dpkg-query -W -f '${Version}' "$pkg")
 	srcpkg=$(dpkg-query -W -f '${source:Package}' "$pkg")
+	srcver=$(dpkg-query -W -f '${source:Version}' "$pkg")
 	case $distro in
-	Ubuntu*) src=https://launchpad.net/ubuntu/+source/$srcpkg/$ver ;;
-	Debian*) src=https://snapshot.debian.org/package/$srcpkg/$ver/ ;;
-	*) src="apt-get source $srcpkg=$ver" ;;
+	Ubuntu*) src=https://launchpad.net/ubuntu/+source/$srcpkg/$srcver ;;
+	Debian*) src=https://snapshot.debian.org/package/$srcpkg/$srcver/ ;;
+	*) src="apt-get source $srcpkg=$srcver" ;;
 	esac
 	echo "$name: $pkg $ver, from ${distro:-the system}'s $srcpkg ($src)" >> "$doc/Licenses/README.txt"
+	[ -z "${SOURCES:-}" ] || debian_sources "$name" "$pkg" "$srcpkg" "$srcver"
 done < "$list"
 echo >> "$doc/Licenses/README.txt"
 echo "Blue's own licence is ../LICENSE (GPL-2.0-only); what's built into it, ../THIRD-PARTY-NOTICES.md." \

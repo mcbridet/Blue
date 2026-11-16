@@ -122,3 +122,37 @@ A Blue.app made with Homebrew's libraries (`make app`) carries Homebrew's
 instead: SDL2 as sdl2-compat with SDL3 (zlib), and gettext's libintl
 (LGPL-2.1-or-later, https://www.gnu.org/software/gettext/) and PCRE2 as
 libraries of their own.
+
+### Their exact sources: `Blue-third-party-sources.tar.gz`
+
+Every release carries `Blue-third-party-sources.tar.gz` beside the disk
+images and AppImages (and in its `SHA256SUMS`): the exact corresponding
+source of each library above, as the CI jobs that built the release's
+packages used it. Each job keeps the sources of the libraries its package
+carries (`tools/package-macos.sh sources`; `tools/package-linux.sh` with
+`SOURCES`), and `tools/third-party-sources.sh` puts them in one archive,
+each file once:
+
+- **For Blue.app** (both disk images): the upstream tarballs
+  `tools/macos-deps.sh` builds from, each checked by its SHA-256: SDL2
+  2.32.10, GLib 2.90.1 and libslirp 4.9.7, and PCRE2 10.46 (with its Meson
+  build files from WrapDB) and proxy-libintl 0.5 as GLib's own
+  `subprojects` wraps fetch them (the wraps give their SHA-256); Blue's one
+  change to GLib, as a patch (`glib-2.90.1-blue.patch`: its `meson.build`
+  without the check for `pipe2()`, which macOS 11 lacks); and the scripts
+  that built them and bundled them (`macos-deps.sh`, with every configure
+  option, and `package-macos.sh`). `macos-deps.sh` builds them again from
+  these files (the archive's `README.txt` says how). The cached build in CI
+  keeps them in its `share/sources`.
+- **For the AppImages:** Ubuntu 22.04's source packages (`.dsc`,
+  `.orig.tar.*`, `.debian.tar.*`, by `apt-get source`, which checks them
+  against Ubuntu's signed indexes) of exactly the versions bundled: glib2.0
+  (for libglib2.0-0), libslirp (libslirp0) and pcre3 (libpcre3); SDL2
+  2.32.10's tarball; and `package-linux.sh`, which builds SDL2 and bundles
+  them all (Ubuntu's libraries unchanged but for their run path). glibc,
+  which provides libintl on Linux, is the system's, not bundled.
+
+The archive's `README.txt` names each library, its version and licence, the
+packages it's in (and as which file), and each source file with where it
+came from; its `SHA256SUMS` sums them. Each project's own address is in the
+table above.

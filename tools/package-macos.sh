@@ -12,6 +12,12 @@
 #       needs; ad-hoc signed, the libraries first.
 #   tools/package-macos.sh dmg APP OUT.dmg
 #       A disk image with the app, a link to Applications, and Blue's LICENSE.
+#   tools/package-macos.sh sources APP DEPS PACKAGE OUT
+#       The exact sources of the libraries in APP's Contents/Frameworks, as
+#       tools/macos-deps.sh keeps them in DEPS/share/sources (checked against
+#       its SHA256SUMS), into the directory OUT, with OUT/SOURCES: a line for
+#       each file of each library, PACKAGE (the disk image's name) first, for
+#       tools/third-party-sources.sh.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -139,7 +145,9 @@ app() {
 		echo "Blue.app's Contents/Frameworks holds these libraries, each a separate dylib that Blue"
 		echo "loads at run time, so each can be replaced by another build of it with the same name"
 		echo "(then sign the app again: codesign --force --deep -s - Blue.app). Their licences are"
-		echo "in the folders here, named for each; the source of each is at the address given."
+		echo "in the folders here, named for each; the source of each is at the address given, and"
+		echo "Blue's releases carry the exact sources they were built from, in"
+		echo "Blue-third-party-sources.tar.gz (https://github.com/mcbridet/Blue/releases)."
 		echo
 	} > "$about"
 	while read -r name from; do
@@ -198,10 +206,41 @@ dmg() {
 	echo "$2: $(du -h "$2" | cut -f1)"
 }
 
-[ $# -ge 1 ] || die "usage: $0 app|dmg ..."
+sources() {
+	[ $# -eq 4 ] || die "usage: $0 sources APP DEPS PACKAGE OUT"
+	app=$1 from=${2%/}/share/sources package=$3 out=$4
+	[ -f "$from/SOURCES" ] ||
+		die "no sources in $from: tools/macos-deps.sh keeps them there (Homebrew's libraries have none)"
+	mkdir -p "$out"
+	: > "$out/SOURCES"
+	tab=$(printf '\t')
+	lines=$(mktemp)
+	cp "$root/tools/package-macos.sh" "$out/"
+	for f in "$app"/Contents/Frameworks/*.dylib; do
+		name=$(basename "$f")
+		grep "^$name$tab" "$from/SOURCES" > "$lines" || die "$name: no sources in $from/SOURCES"
+		while IFS=$tab read -r _ lib version licence file origin; do
+			(cd "$from" && awk -v f="$file" '$2 == f' SHA256SUMS | shasum -a 256 -c - > /dev/null 2>&1) ||
+				die "$from/$file: missing, or not the file it was (SHA256SUMS)"
+			cp "$from/$file" "$out/"
+			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$package" "Blue.app/Contents/Frameworks/$name" \
+				"$lib" "$version" "$licence" "$file" "$origin" >> "$out/SOURCES"
+		done < "$lines"
+		# (and what this script did to it)
+		cut -f2-4 "$lines" | sort -u | while IFS=$tab read -r lib version licence; do
+			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$package" "Blue.app/Contents/Frameworks/$name" \
+				"$lib" "$version" "$licence" package-macos.sh \
+				"Blue's tools/package-macos.sh, which bundled it (install names @rpath, signed ad hoc)"
+		done >> "$out/SOURCES"
+	done
+	rm -f "$lines"
+	echo "$out: $(cut -f6 "$out/SOURCES" | sort -u | tr '\n' ' ')"
+}
+
+[ $# -ge 1 ] || die "usage: $0 app|dmg|sources ..."
 cmd=$1
 shift
 case $cmd in
-app | dmg) "$cmd" "$@" ;;
-*) die "usage: $0 app|dmg ..." ;;
+app | dmg | sources) "$cmd" "$@" ;;
+*) die "usage: $0 app|dmg|sources ..." ;;
 esac
