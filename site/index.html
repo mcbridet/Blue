@@ -265,7 +265,6 @@
               <tr><th scope="row">Runs on</th><td class="blue yes">macOS 11 and later, and Linux: Apple silicon, ARM64 and <span class="nw">x86-64</span></td><td class="yes">macOS, Linux and Windows</td><td class="yes">macOS, Linux and Windows</td><td>PowerPC Macs, with Mac OS X <span class="nw">10.0–10.4</span></td></tr>
               <tr><th scope="row">How</th><td class="blue">Apple’s code, unmodified, on a native kernel in place of the NanoKernel</td><td>Apple’s code on a patched ROM, with a kernel of its own</td><td>A whole Power Mac emulated, firmware and all</td><td>Mac OS 9 as a program in Mac OS X, on a real PowerPC</td></tr>
               <tr><th scope="row">Speed</th><td class="blue yes">A JIT on every host: about 18 times a Power Mac G3/300 in MacBench 5’s processor test, on an Apple M5</td><td>A JIT on Intel and AMD; none on Apple silicon</td><td>A JIT, with every device and the memory management unit emulated</td><td class="yes">The PowerPC’s own, up to a Power Mac G5</td></tr>
-              <tr><th scope="row">AltiVec</th><td class="blue">Not yet</td><td class="yes">Yes, as a G4 (7400)</td><td class="yes">Yes, as a G4</td><td class="yes">On G4 and G5 Macs</td></tr>
               <tr><th scope="row">What you need</th><td class="blue yes">A Mac OS CD or disk image</td><td>A Mac OS CD or disk image, and a ROM file found elsewhere</td><td class="yes">A Mac OS CD or disk image</td><td>Mac OS 9 installed beside Mac OS X</td></tr>
               <tr><th scope="row">3D</th><td class="blue yes">QuickDraw 3D, RAVE (as an ATI Rage 128) and OpenGL, drawn on your GPU</td><td>Software only</td><td>Software only</td><td>Programs that draw straight to the screen or the hardware often fail</td></tr>
               <tr><th scope="row">Restart and Startup Disk</th><td class="blue yes">Both work</td><td>Restarting can freeze or crash it; Startup Disk doesn’t work</td><td>Neither works</td><td>Mac OS X’s own</td></tr>
@@ -275,7 +274,6 @@
               <tr><th scope="row">Disk images</th><td class="blue yes">Dropped on the window or inserted from the menu: CD images in most formats, compressed <code>.dmg</code> and Disk Copy images, floppies</td><td>Uncompressed images, and one at a time dropped in as a CD</td><td>Raw and QEMU’s own formats, changed from a menu</td><td>Mac OS X’s</td></tr>
               <tr><th scope="row">Shared folders</th><td class="blue yes">A folder of yours as a disk, its changes written back when Mac OS shuts down or puts it away, and offered again with yours</td><td class="yes">A folder as a live disk, though programs can’t run from it</td><td>Separate experimental drivers</td><td class="yes">Mac OS X’s disks, directly</td></tr>
               <tr><th scope="row">Networking</th><td class="blue yes">TCP/IP through its NAT; no port forwarding yet</td><td class="yes">TCP/IP through its NAT, with port forwarding; AppleTalk with extra setup, on some hosts</td><td class="yes">TCP/IP through its NAT, with port forwarding; AppleTalk through bridged networking, run as root</td><td class="yes">Mac OS X’s, AppleTalk included</td></tr>
-              <tr><th scope="row">USB devices</th><td class="blue">Not yet</td><td>No</td><td class="yes">Passed through from the host</td><td>Through Mac OS X</td></tr>
               <tr><th scope="row">Game controllers</th><td class="blue yes">Gamepads, as keys or through InputSprocket</td><td>No</td><td class="yes">A USB gamepad, passed through</td><td>Unreliable</td></tr>
               <tr><th scope="row">Pippin titles</th><td class="blue yes">Yes</td><td>No</td><td>No</td><td>No</td></tr>
             </tbody>
@@ -296,7 +294,7 @@
       <button class="box shade" type="button" aria-expanded="true" aria-label="Collapse window"></button>
     </div>
     <div class="window-content">
-      <div class="finder-header"><span>14 items</span></div>
+      <div class="finder-header"><span>13 items</span></div>
       <div class="window-body list">
         <div class="list-head" aria-hidden="true"><span class="sorted">Name</span><span>Notes</span></div>
         <div class="row">
@@ -313,7 +311,7 @@
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-mouse"/></svg>Keyboard &amp; Mouse</span>
-          <span class="notes">Over ADB. The right button Control-clicks, and the scroll wheel presses the arrow keys.</span>
+          <span class="notes">Over ADB, with the right button as Control-click. Scroll wheel emulation: the wheel and trackpad scrolling press the arrow keys.</span>
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-pad"/></svg>Game controllers</span>
@@ -351,10 +349,6 @@
           <span class="name"><svg aria-hidden="true"><use href="#i-chip"/></svg>CPU</span>
           <span class="notes">PowerPC G3 (750) equivalent. JIT on Apple silicon, ARM64 (AArch64) Linux and x86_64 (Intel from 2013, AMD from 2015; older processors interpret). Fast start speeds through startup timeouts. Supports napping.</span>
         </div>
-        <div class="row unsupported">
-          <span class="name"><svg aria-hidden="true"><use href="#i-chip"/></svg>AltiVec</span>
-          <span class="notes">Not yet.</span>
-        </div>
       </div>
     </div>
   </section>
@@ -387,7 +381,7 @@
 # Linux (or Blue-aarch64.AppImage)
 ./Blue-x86_64.AppImage disk create hd.img 2G "Macintosh HD"
 ./Blue-x86_64.AppImage boot --disk hd.img --cdrom 85.iso --nvram blue.nvram</pre>
-          <p>In the installer’s Options, turn off “Update Apple Hard Disk Drivers”. A 9.2.2 CD that restores an image with Apple Software Restore instead needs the new disk chosen as its destination.</p>
+          <p>Open Mac OS Install on the CD and follow it. A 9.2.2 CD that restores an image with Apple Software Restore instead needs the new disk chosen as its destination.</p>
 
           <h3>Start up</h3>
 <pre class="code"># macOS

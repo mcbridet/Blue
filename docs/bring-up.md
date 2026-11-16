@@ -30,10 +30,12 @@ build/blue boot --disk hd.img --cdrom 85.iso --nvram blue.nvram
 ```
 
 Run "Mac OS Install" from the CD (about 30 billion instructions, about a
-minute). In its Options, turn off "Update Apple Hard Disk Drivers": Drive
-Setup only knows Apple's own ATA/SCSI drives and quits on ours. Then boot the
-installed system with just `--disk hd.img`. Drives are tried in command-line
-order. In the window, the GUI/Super key is Command and Alt is Option.
+minute) and leave its options as they are: the hard disk driver updater
+finds no drive of Apple's to update and leaves the disk alone (see
+[findings.md](findings.md), "The installers' hard disk driver updater").
+Then boot the installed system with just `--disk hd.img`. Drives are tried
+in command-line order. In the window, the GUI/Super key is Command and Alt
+is Option.
 
 ### The startup disk and its ROM file
 
@@ -101,8 +103,8 @@ too, startup stopped there with a bus error.
 Mac OS 9.0 installs and boots too, on the same ROM file and NanoKernel
 interface. The "Mac OS 9" volume of Apple's 9.0.4 CD (9.0, with the 9.0.4
 update alongside) starts up from the CD; its installer puts 9.0 on an empty
-disk image in under a minute in real time (turn off "Update Apple Hard Disk
-Drivers" again), and the installed system starts up to the Setup Assistant.
+disk image in under a minute in real time, and the installed system starts
+up to the Setup Assistant.
 The 9.0.4 update on the same CD installs too, and 9.0.4 boots to the Finder
 in under 3 s in real time, with fast start (see [architecture.md](architecture.md#time)). Without it, that's
 13 s, or 5 s with AppleTalk inactive (Chooser): with AppleTalk active on
@@ -258,10 +260,9 @@ quitting). The end-of-run statistics count the chip's reads and writes.
 9.1 installs onto a disk image with its own installer, as 9.0 does
 (`build/blue disk create hd91.img 2G "Macintosh HD"`, then the CD and the
 disk; Mac OS Install from the CD's window: Continue, Select with Macintosh
-HD as the destination, Continue, Continue, Agree, then Options... to turn
-off "Update Apple Hard Disk Drivers", and Start). A scripted run installed
-it (268 MB written) by instruction 40 billion; the installed system starts
-up from the disk alone (`rom: "Macintosh HD:System Folder:Mac OS ROM"`) to
+HD as the destination, Continue, Continue, Agree, and Start). A scripted
+run installed it (268 MB written) by instruction 36 billion; the installed
+system starts up from the disk alone (`rom: "Macintosh HD:System Folder:Mac OS ROM"`) to
 the Finder with the Mac OS Setup Assistant, and takes the guest tools (see
 [guest-tools.md](guest-tools.md)). By then the screen has gone to sleep, as Energy Saver puts
 it after a while without input, and the first click or key press only
