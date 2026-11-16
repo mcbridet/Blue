@@ -59,13 +59,13 @@ unless one was given: Blue adds an empty one of each (as `--floppy-drive`
 and `--cdrom-drive` do), so a disc can go in whatever Mac OS started with.
 The CD-ROM drive is one of the four disks: with four already, there's none
 (Blue says so, `drives: no CD-ROM drive: all 4 drives are taken`).
-Instruction-time runs without a window have only the drives given, as
-before, so they stay reproducible.
+Instruction-time runs without a window (`--headless`) have only the
+drives given, as before, so they stay reproducible.
 
 ```
-build/blue boot --disk hd.img --window
-build/blue boot --disk hd.img --cdrom "Game CD 1.iso" --window
-build/blue boot --disk hd.img --floppy "Install 1.image" --floppy "Install 2.image" --window
+build/blue boot --disk hd.img
+build/blue boot --disk hd.img --cdrom "Game CD 1.iso"
+build/blue boot --disk hd.img --floppy "Install 1.image" --floppy "Install 2.image"
 ```
 
 The window's menu (F12) shows what's in each drive, with Eject and
@@ -173,7 +173,7 @@ To play a music CD's or a game's soundtrack, start Mac OS with the cue
 sheet, or drop it on the window:
 
 ```
-build/blue boot --disk hd.img --cdrom "Quake [1996].cue" --window    # then AppleCD Audio Player, in the Apple menu
+build/blue boot --disk hd.img --cdrom "Quake [1996].cue"    # then AppleCD Audio Player, in the Apple menu
 ```
 
 On an installed 8.5, the Control Strip's CD module plays a disc that's in at

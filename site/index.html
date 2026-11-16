@@ -323,17 +323,17 @@
           <h3>Install Mac OS</h3>
 <pre class="code"># macOS
 /Applications/Blue.app/Contents/MacOS/blue disk create hd.img 2G "Macintosh HD"
-/Applications/Blue.app/Contents/MacOS/blue boot --disk hd.img --cdrom 85.iso --window --nvram blue.nvram
+/Applications/Blue.app/Contents/MacOS/blue boot --disk hd.img --cdrom 85.iso --nvram blue.nvram
 # Linux (or Blue-aarch64.AppImage)
 ./Blue-x86_64.AppImage disk create hd.img 2G "Macintosh HD"
-./Blue-x86_64.AppImage boot --disk hd.img --cdrom 85.iso --window --nvram blue.nvram</pre>
+./Blue-x86_64.AppImage boot --disk hd.img --cdrom 85.iso --nvram blue.nvram</pre>
           <p>In the installer’s Options, turn off “Update Apple Hard Disk Drivers”. A 9.2.2 CD that restores an image with Apple Software Restore instead needs the new disk chosen as its destination.</p>
 
           <h3>Start up</h3>
 <pre class="code"># macOS
-/Applications/Blue.app/Contents/MacOS/blue boot --disk hd.img --window --nvram blue.nvram
+/Applications/Blue.app/Contents/MacOS/blue boot --disk hd.img --nvram blue.nvram
 # Linux
-./Blue-x86_64.AppImage boot --disk hd.img --window --nvram blue.nvram</pre>
+./Blue-x86_64.AppImage boot --disk hd.img --nvram blue.nvram</pre>
           <p>Once the Finder is up, Blue offers to install its guest tools (the screen follows the window, the clipboard is shared, the 3D engine and OpenGL), then restarts Mac OS. To put in a CD or floppy, drop its image on the window, or use Insert… in Blue’s menu (F12); <code>--share DIR</code> shows a folder of yours as a disk in Mac OS.</p>
         </div>
       </div>

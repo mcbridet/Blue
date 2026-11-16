@@ -199,14 +199,14 @@ there.
 ### 2. Install Mac OS
 
 ```sh
-blue boot --disk hd.img --cdrom macos.iso --window --nvram blue.nvram
+blue boot --disk hd.img --cdrom macos.iso --nvram blue.nvram
 ```
 
-This starts the Mac in a window, with the new disk and the CD attached:
+This starts the Mac in a window, running in real time, with the new disk
+and the CD attached:
 
 - `--disk hd.img` attaches the disk image, which Mac OS can write to.
 - `--cdrom macos.iso` puts the CD image in a CD-ROM drive.
-- `--window` shows the Mac in a window, running in real time.
 - `--nvram blue.nvram` keeps the Mac's settings in a file (see
   [below](#keeping-your-settings)).
 
@@ -235,7 +235,7 @@ menu. Blue quits when the Mac turns itself off.
 ### 3. Start up from the disk
 
 ```sh
-blue boot --disk hd.img --window --nvram blue.nvram
+blue boot --disk hd.img --nvram blue.nvram
 ```
 
 The disk now has a System Folder, so the Mac starts up from it. The first
@@ -493,7 +493,7 @@ then shows the disk as locked.
 ### The shared folder
 
 ```sh
-blue boot --disk hd.img --share ~/Mac --window --nvram blue.nvram
+blue boot --disk hd.img --share ~/Mac --nvram blue.nvram
 ```
 
 `--share FOLDER` shows a folder on your computer to Mac OS as a disk of
@@ -575,7 +575,7 @@ Blue's commands:
 
 | Command | What it does |
 |---|---|
-| `blue boot [OPTIONS]` | Starts the Mac (see the options below). |
+| `blue boot [OPTIONS]` | Starts the Mac in a window (see the options below). |
 | `blue disk create FILE SIZE [NAME]` | Makes a disk image holding an empty HFS volume. `SIZE` is in bytes, or with `K`, `M` or `G`: 1M or more, or a floppy's size (400K, 720K, 800K or 1440K). The name is Macintosh HD, or Untitled for a floppy, unless you give one. |
 | `blue disk toc FILE` | Lists a CD image's tracks, as its CD-ROM drive gives them to Mac OS. |
 | `blue tools create FILE` | Makes a disk of the guest tools, to install them by hand (attach it with `--cdrom`). |
@@ -596,9 +596,9 @@ The options of `blue boot`:
 |---|---|
 | `--disk FILE` | Attaches a disk image, writable if the file is. |
 | `--cdrom FILE` | Attaches a CD image, read-only, in a CD-ROM drive. |
-| `--cdrom-drive` | Adds an empty CD-ROM drive. (A window, or `--realtime`, has one anyway, unless four drives are taken.) |
+| `--cdrom-drive` | Adds an empty CD-ROM drive. (A window, or real time, has one anyway, unless four drives are taken.) |
 | `--floppy FILE` | Puts a floppy image in the floppy drive; give it again for each disk of a set, up to 16. |
-| `--floppy-drive` | Adds an empty floppy drive. (A window, or `--realtime`, has one anyway.) |
+| `--floppy-drive` | Adds an empty floppy drive. (A window, or real time, has one anyway.) |
 | `--share FOLDER` | Shows a folder on your computer as a disk (one folder). |
 | `--nvram FILE` | Keeps the Mac's NVRAM (settings, the startup disk) in this file. |
 | `--ram MB` | The Mac's memory, from 8 to 1024 MB (128 unless you say). |
@@ -608,9 +608,13 @@ Up to four drives in all can be disks, CD-ROM drives or the shared folder.
 
 **The window**
 
+The Mac runs in a window, in real time, until Mac OS shuts down or you
+quit Blue. With no display to open a window on (over SSH, in a container
+or CI), `blue boot` says so and stops: run it with `--headless`.
+
 | Option | What it does |
 |---|---|
-| `--window` | Shows the Mac in a window, in real time, until you close it or the Mac turns off. |
+| `--headless` | Runs without a window, counting time in instructions (see below), until `--max`. |
 | `--scale auto\|1\|2\|3\|4` | How many of the display's pixels make one of the Mac's (Auto unless you say). |
 | `--integer-scale` | Scales the screen by whole numbers only: crisp, with a border if need be. |
 | `--no-status-bar` | Starts without the status bar. |
@@ -622,13 +626,13 @@ Up to four drives in all can be disks, CD-ROM drives or the shared folder.
 
 | Option | What it does |
 |---|---|
-| `--realtime` | Runs in real time without a window. |
-| `--instruction-time` | With `--window`, counts time in instructions, as without a window. |
+| `--realtime` | With `--headless`, runs in real time. |
+| `--instruction-time` | Counts time in instructions in the window too. |
 | `--no-idle` | Keeps running flat out while Mac OS is idle, rather than resting. |
 | `--no-fast-start` | Doesn't hurry through the timeouts of startup. |
 | `--interp` | Interprets the PowerPC code, without the JIT. |
 | `--seconds S` | Stops after `S` seconds of your computer's time. |
-| `--max N` | Stops after `N` instructions (without a window, 500 million unless you say). |
+| `--max N` | Stops after `N` instructions (with `--headless`, 500 million unless you say). |
 | `--fixed-time T` | Starts the Mac's clock at Unix time `T` rather than now. |
 
 **Testing and debugging**
@@ -644,9 +648,11 @@ Up to four drives in all can be disks, CD-ROM drives or the shared folder.
 | `--log-hostcalls` | Logs the requests Blue's drivers handle. |
 | `--io-ram` | Treats unknown device addresses as plain memory. |
 
-Without `--window` or `--realtime`, a run counts time in instructions, so
-it's the same every time: see [docs/debugging.md](docs/debugging.md),
-which also lists the `BLUE_*` environment variables.
+With `--headless` (and without `--realtime`), a run counts time in
+instructions, so it's the same every time (`blue boot --headless --cdrom
+macos.iso --max 4000000000 --screenshot finder.png` boots a CD to its Finder
+and saves the screen): see [docs/debugging.md](docs/debugging.md), which also
+lists the `BLUE_*` environment variables.
 
 ## Compatibility and limits
 
@@ -756,15 +762,16 @@ Choose another Scale in Blue's menu (F12), or start with `--scale`. See
 
 ### There's no sound
 
-Sound plays only with `--window` (and not with `--no-sound`). Check Mac
+Sound plays only in the window, in real time (not with `--headless` or
+`--no-sound`). Check Mac
 OS's own volume and mute, in the Monitors & Sound or Sound control panel.
 For a CD's music, attach the `.cue` file of a cue sheet image: a plain
 `.iso` has no audio tracks.
 
 ### The network doesn't work
 
-- The network runs only with `--window` or `--realtime`, and not with
-  `--no-net`.
+- The network runs only in real time (not with `--headless` unless
+  `--realtime` is given too), and not with `--no-net`.
 - In your own build, Blue needs libslirp: `blue --version` says whether
   it found it.
 - On Mac OS 8.5, make TCP/IP active (see [Networking](#networking)).
@@ -788,6 +795,13 @@ Otherwise an idle Mac costs only a few percent of one core.
 On your Desktop, as `blue` followed by the date and time (in the folder
 Blue was started from, if there's no Desktop). `--screenshot FILE.png`
 saves one when a run ends.
+
+### Blue says no window can be opened
+
+`blue boot` shows the Mac in a window, which needs a display: over SSH,
+in a container or in CI there's none. Run it with `--headless` to start
+the Mac without a window (counting time in instructions, until `--max`;
+add `--realtime` for real time).
 
 ### F12 doesn't open the menu
 

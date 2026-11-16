@@ -218,7 +218,7 @@ Done:
 Where it stops:
 
 ```
-build/blue boot --cdrom 91.iso --max 20000000000
+build/blue boot --headless --cdrom 91.iso --max 20000000000
 stopped: instruction limit reached (system context)
 ```
 
@@ -239,7 +239,7 @@ after 16 s of guest time (1.3 s on the host; it was 41 s before the
 startup disk was found at once), against 13.8 s for the 8.5 CD: what's
 left is mostly AppleTalk on Ethernet (5 s) and the CD's transfers.
 
-The 9.2.2 CD (`build/blue boot --cdrom 922.iso --max 4000000000`) has the
+The 9.2.2 CD (`build/blue boot --headless --cdrom 922.iso --max 4000000000`) has the
 Finder up by instruction 1.5 billion, with the CD's Read Me open in
 SimpleText (as under QEMU), and idles there; two runs are identical. In
 real time with fast start the Finder is up after 13.4-13.7 s of guest time
@@ -265,13 +265,13 @@ scheduling around a sleep that doesn't happen; the system carries on.
 - **Don't change 8.5–9.0.4.** Everything new is for NanoKernel 2 ROMs only,
   behind `m->mp_kernel` (true for ROM files with parcels). Before handing
   back, check that the 8.5 CD still reaches the Finder:
-  `build/blue boot --rom MOS.rom --cdrom 85.iso --max 4000000000 --screenshot
-  /tmp/85.png` (only the menu-bar clock may differ between runs).
-- **Stay reproducible.** Runs in instruction time (no `--window` or
+  `build/blue boot --headless --rom MOS.rom --cdrom 85.iso --max 4000000000
+  --screenshot /tmp/85.png` (only the menu-bar clock may differ between runs).
+- **Stay reproducible.** Runs in instruction time (`--headless`, without
   `--realtime`) must stay exactly reproducible: guest tasks run on the one
   host thread, scheduled at instruction counts and guest timebase values,
   never by host time.
-- **The 9.1 check:** `build/blue boot --cdrom 91.iso --max
+- **The 9.1 check:** `build/blue boot --headless --cdrom 91.iso --max
   20000000000` (a few seconds). Add `BLUE_LOG_MP=1` for the calls, and
   `--screenshot f.png` once something may be on screen. Report the new
   stopping point (the last lines of output).
@@ -2374,7 +2374,7 @@ Facts later tasks need, added as they are found.
   compared the framebuffer with a copy of what was last shown, row by row,
   converted the changed rows into a locked SDL texture, drew and presented,
   and polled SDL's events, the Mac stopped meanwhile. Now:
-  - **Threads.** `display_main()` (from `main.c`, with `--window`) runs
+  - **Threads.** `display_main()` (from `main.c`, for a window) runs
     `nk_boot()` on a thread of its own, with the main thread's stack size,
     and the main thread runs the window, as SDL wants on macOS: it opens
     and closes it when the machine asks (`display_open()`,
@@ -3557,3 +3557,15 @@ Facts later tasks need, added as they are found.
   installs handlers (they become SDL_QUIT) only where it finds SIG_DFL,
   so Blue's own, installed first, keep them quitting at once (a
   background job's SIGINT is SIG_IGN, and stays so).
+- **A window by default** (`blue boot`): the window is what people run,
+  so `boot` opens one, in real time, and `--headless` runs without
+  (instruction time unless `--realtime`, 500 million instructions unless
+  `--max`); `--window` is still taken, and does nothing. With no display
+  (SSH, a container, CI: `SDL_VIDEODRIVER=none` stands in for one here)
+  the run stops with "boot: no window can be opened (SDL's reason): run
+  with --headless to start Mac OS without one" and exit status 1, rather
+  than going on without the window, which would be real time with
+  nothing to see (`display_failure()` says why `display_open()` failed;
+  display.c no longer prints it). Reproducible runs, the reference boots
+  among them, are `build/blue boot --headless ...`: the same logs and
+  screenshots as before.

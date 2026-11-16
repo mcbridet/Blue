@@ -331,6 +331,13 @@ static struct {
 	bool closed;                    /* display_close() was answered */
 } host = { .lock = PTHREAD_MUTEX_INITIALIZER };
 
+static char failure[256] = "not known";         /* why display_open() opened no window */
+
+const char *display_failure(void)
+{
+	return failure;
+}
+
 /*
  * SIGINT and SIGTERM end a window's run at once, as they always have: SDL
  * would make them SDL_QUIT, which now asks the user first, so the window
@@ -1620,7 +1627,7 @@ static struct display *open_window(const char *title, unsigned width, unsigned h
 		return NULL;
 	d->kq = -1;
 	if (!load_sdl(&d->sdl)) {
-		fprintf(stderr, "display: SDL2 is not available; running without a window\n");
+		snprintf(failure, sizeof failure, "SDL2 isn't there");
 		goto fail;
 	}
 	/* sdl2-compat (SDL2 on SDL3) makes a window's units pixels on Wayland, unless told
@@ -1635,7 +1642,7 @@ static struct display *open_window(const char *title, unsigned width, unsigned h
 	d->sdl.SetHintWithPriority("SDL_APP_NAME", "Blue", SDL_HINT_NORMAL);
 	catch_signals(true);
 	if (d->sdl.Init(SDL_INIT_VIDEO) != 0) {
-		fprintf(stderr, "display: %s\n", d->sdl.GetError());
+		snprintf(failure, sizeof failure, "%s", d->sdl.GetError());
 		catch_signals(false);
 		goto fail;
 	}
@@ -1657,7 +1664,7 @@ static struct display *open_window(const char *title, unsigned width, unsigned h
 		d->renderer = d->sdl.CreateRenderer(d->window, -1, 0);
 	}
 	if (!d->renderer || !set_screen_size(d, width, height)) {
-		fprintf(stderr, "display: %s\n", d->sdl.GetError());
+		snprintf(failure, sizeof failure, "%s", d->sdl.GetError());
 		destroy_window(d);
 		return NULL;
 	}
@@ -1821,7 +1828,7 @@ struct display *display_open(const char *title, unsigned width, unsigned height,
 	pthread_mutex_lock(&host.lock);
 	if (!host.running) {
 		pthread_mutex_unlock(&host.lock);
-		fprintf(stderr, "display: no thread runs the window; running without one\n");
+		snprintf(failure, sizeof failure, "no thread runs the window");
 		return NULL;
 	}
 	host.title = title;

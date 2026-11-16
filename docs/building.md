@@ -145,7 +145,7 @@ options in the [README](../README.md#command-line-reference); a link to it in yo
 
 **Linux** (x86_64 or AArch64, glibc 2.35 or later): `chmod +x Blue-x86_64.AppImage` (or
 `Blue-aarch64.AppImage`), then run it as Blue itself:
-`./Blue-x86_64.AppImage boot --cdrom 85.iso --window`. It mounts itself with
+`./Blue-x86_64.AppImage boot --cdrom 85.iso`. It mounts itself with
 FUSE, for which it needs `fusermount` (the `fuse` or `fuse3` package, which
 most desktops have; not libfuse2); without FUSE, in a container say,
 `./Blue-x86_64.AppImage --appimage-extract-and-run boot ...` unpacks it into

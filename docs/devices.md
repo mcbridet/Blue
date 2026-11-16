@@ -131,7 +131,7 @@ gaps, and a stall of the host is made up within seconds).
 
 ## Networking
 
-In real time (`--window`, `--realtime`), the guest's built-in Ethernet is
+In real time (the window, or `--headless --realtime`), the guest's built-in Ethernet is
 connected to the host's network through libslirp, the user-mode NAT QEMU
 uses (Blue.app and the AppImages carry it; a build of your own loads it
 at run time if it's installed, so it isn't a build dependency;

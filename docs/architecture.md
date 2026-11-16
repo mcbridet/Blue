@@ -135,9 +135,9 @@ Ethernet driver's lanLib in [devices.md](devices.md#networking).
 
 ## Time
 
-Guest time either follows the host clock (real time: `--window` or
-`--realtime`) or is counted in instructions, one timebase tick each
-(instruction time: the default without a window), which makes a run the
+Guest time either follows the host clock (real time: the window, or
+`--headless --realtime`) or is counted in instructions, one timebase tick each
+(instruction time: `--headless`'s default), which makes a run the
 same every time; see [debugging.md](debugging.md#instruction-time-and-real-time).
 In real time, Blue sleeps while Mac OS is idle, and hurries through the
 timeouts of startup:

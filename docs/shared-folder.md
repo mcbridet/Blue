@@ -12,7 +12,7 @@ Finder, installers, programs run from it), and what Mac OS changes on it
 goes back to the folder when Mac OS shuts down.
 
 ```
-build/blue boot --disk hd.img --share ~/Mac --window --nvram blue.nvram
+build/blue boot --disk hd.img --share ~/Mac --nvram blue.nvram
 ```
 
 The volume (`src/share.c`) is made when Blue starts: its catalog and the

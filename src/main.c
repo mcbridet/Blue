@@ -36,38 +36,41 @@ static int usage(void)
 		"  rom trampoline <file> <out>  write the NewWorld Trampoline (ELF)\n"
 		"                               (the file may be a disk or CD image: then the Mac OS\n"
 		"                               ROM file in its System Folder, as boot would use it)\n"
-		"  boot [options]               start Mac OS under the native kernel, from the Mac OS\n"
-		"                               ROM file in the startup disk's System Folder (the one\n"
-		"                               NVRAM's boot-device names, else the first drive with\n"
-		"                               one, as a New World Mac's firmware does)\n"
+		"  boot [options]               start Mac OS under the native kernel, in a window\n"
+		"                               (keyboard and mouse go to the guest), in real time\n"
+		"                               until Mac OS shuts down or Blue quits, from the Mac\n"
+		"                               OS ROM file in the startup disk's System Folder (the\n"
+		"                               one NVRAM's boot-device names, else the first drive\n"
+		"                               with one, as a New World Mac's firmware does). Once\n"
+		"                               the Finder is up, offers to install the guest tools\n"
+		"                               on the startup disk if they're missing or from\n"
+		"                               another version of Blue (then Mac OS restarts, as\n"
+		"                               Special > Restart does)\n"
 		"      --rom <file>             use this Mac OS ROM file or 4 MB ROM image instead\n"
 		"      --ram <MB>               RAM size (default 128)\n"
-		"      --window                 show the screen in a window (keyboard and mouse go to\n"
-		"                               the guest); runs in real time until closed. Once the\n"
-		"                               Finder is up, offers to install the guest tools on the\n"
-		"                               startup disk if they're missing or from another\n"
-		"                               version of Blue\n"
-		"                               (then Mac OS restarts, as Special > Restart does)\n"
-		"      --realtime               guest time follows the host clock\n"
-		"      --instruction-time       with --window: guest time counts instructions, as\n"
-		"                               without a window (scripted runs are reproducible)\n"
+		"      --headless               no window: guest time counts instructions (runs are\n"
+		"                               reproducible) unless --realtime, until --max\n"
+		"      --realtime               with --headless: guest time follows the host clock\n"
+		"      --instruction-time       in the window too, guest time counts instructions\n"
+		"                               (scripted runs are reproducible)\n"
+		"      --window                 (the default; still accepted)\n"
 		"      --no-idle                in real time, don't sleep while the guest is idle\n"
 		"      --no-fast-start          in real time, don't run guest time faster until the\n"
 		"                               Finder is up\n");
 	fprintf(stderr,
-		"      --no-sound               with --window: don't play the guest's sound (only\n"
-		"                               played in real time)\n"
-		"      --scale auto|1|2|3|4     with --window: the display's pixels to a screen pixel,\n"
+		"      --no-sound               don't play the guest's sound (only played in the\n"
+		"                               window, in real time)\n"
+		"      --scale auto|1|2|3|4     the window's: the display's pixels to a screen pixel,\n"
 		"                               a whole number (auto, the default: Mac OS at about 80\n"
 		"                               pixels per inch, as on a 1999 Mac; F12's menu changes\n"
 		"                               it); with the guest tools, a resized window asks Mac\n"
 		"                               OS for its size in pixels over this\n"
-		"      --integer-scale          with --window: scale a screen that isn't the window's\n"
-		"                               own size (without the guest tools, or a resolution\n"
-		"                               chosen in Mac OS) by whole numbers only (crisp\n"
-		"                               pixels; may leave a border)\n"
-		"      --no-status-bar          with --window: start without the status bar (its\n"
-		"                               lights and the processor's speed; F12's menu shows it)\n"
+		"      --integer-scale          the window scales a screen that isn't its own size\n"
+		"                               (without the guest tools, or a resolution chosen in\n"
+		"                               Mac OS) by whole numbers only (crisp pixels; may\n"
+		"                               leave a border)\n"
+		"      --no-status-bar          start without the window's status bar (its lights\n"
+		"                               and the processor's speed; F12's menu shows it)\n"
 		"      --no-net                 in real time, no network behind the guest's Ethernet\n"
 		"                               (with: NAT to the host's, DHCP on 10.0.2.0/24)\n"
 		"      --no-gpu                 the guest tools' 3D engine draws in software (in real\n"
@@ -84,7 +87,8 @@ static int usage(void)
 		"                               cdrom eject,\n"
 		"                               tools install|later|never (the answer to that offer;\n"
 		"                               never: Don't Ask Again), tools offer (the offer, now)\n"
-		"      --max <n>                stop after n PowerPC instructions (default 500000000)\n");
+		"      --max <n>                stop after n PowerPC instructions (with --headless,\n"
+		"                               500000000 unless given)\n");
 	fprintf(stderr,
 		"      --io-ram                 back touched I/O pages with plain RAM and keep going\n"
 		"      --trace                  log every instruction to stderr\n"
@@ -332,7 +336,7 @@ static int cmd_boot(int argc, char **argv)
 		.max_insns = 500000000ull,
 		.trace_reg = -1,
 	};
-	bool max_given = false, instruction_time = false;
+	bool max_given = false, instruction_time = false, headless = false;
 	const char *rom_path = NULL, *share_dir = NULL;
 	for (int k = 0; k < argc; k++) {
 		if (strcmp(argv[k], "--rom") == 0 && k + 1 < argc) {
@@ -355,7 +359,9 @@ static int cmd_boot(int argc, char **argv)
 			opt.trace = true;
 			opt.trace_from = strtoull(argv[++k], NULL, 0);
 		} else if (strcmp(argv[k], "--window") == 0) {
-			opt.window = opt.realtime = true;
+			/* (the default) */
+		} else if (strcmp(argv[k], "--headless") == 0) {
+			headless = true;
 		} else if (strcmp(argv[k], "--input") == 0 && k + 1 < argc) {
 			opt.input_script = argv[++k];
 		} else if (strcmp(argv[k], "--fixed-time") == 0 && k + 1 < argc) {
@@ -453,6 +459,9 @@ static int cmd_boot(int argc, char **argv)
 		}
 	}
 
+	/* a window, in real time, unless --headless (instruction time there, unless --realtime) */
+	if (!headless)
+		opt.window = opt.realtime = true;
 	if (instruction_time)
 		opt.realtime = false;
 	if (opt.window && !max_given)

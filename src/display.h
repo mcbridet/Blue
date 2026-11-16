@@ -63,8 +63,9 @@ struct display_event {
 };
 
 /*
- * Returns NULL (with a message on stderr) if no window can be opened (or
- * display_main() isn't running the main thread). The screen is shown at a
+ * Returns NULL if no window can be opened (no display, SDL2 missing, or
+ * display_main() isn't running the main thread: display_failure() says
+ * why). The screen is shown at a
  * scale, `scale` whole pixels of the display to each of its pixels
  * (DISPLAY_SCALE_AUTO: Auto, display_auto_scale() for the display the
  * window is on; the menu changes it): the window takes the screen's size
@@ -77,6 +78,7 @@ struct display_event {
 #define DISPLAY_SCALE_MAX 4
 #define DISPLAY_SCALE_OWN (DISPLAY_SCALE_MAX + 1)       /* the display's own: a screen pixel to a unit, as the menu's */
 struct display *display_open(const char *title, unsigned width, unsigned height, bool integer, unsigned scale);
+const char *display_failure(void);
 void display_close(struct display *d);
 
 /*

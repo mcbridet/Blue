@@ -14,7 +14,7 @@
 
 #define WIDTH 600u
 #define HEIGHT 360u
-#define EXAMPLE " boot --cdrom \"Mac OS 9.iso\" --window"
+#define EXAMPLE " boot --cdrom \"Mac OS 9.iso\""
 
 void welcome_quote(const char *word, char *out, size_t size)
 {

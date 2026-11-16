@@ -4449,13 +4449,16 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 	if (opt->window) {
 		m.display = display_open("Blue", video_width(&m.video), video_height(&m.video), opt->integer_scale,
 					 opt->scale);
-		if (!m.display)         /* (the driver has the hardware cursor, but says it hasn't) */
-			m.hw_cursor = m.video.hw_cursor = false;
-		if (m.display && !opt->no_status_bar)
+		if (!m.display) {       /* (not on without it: that would be real time with nothing to see) */
+			fprintf(stderr, "boot: no window can be opened (%s): run with --headless to start Mac OS "
+				"without one\n", display_failure());
+			return 1;
+		}
+		if (!opt->no_status_bar)
 			display_status_bar(m.display, true);
-		if (m.display && opt->realtime && !opt->no_sound)
+		if (opt->realtime && !opt->no_sound)
 			m.audio = audio_open();         /* (in instruction time, sound would be too fast or slow) */
-		if (m.display && opt->realtime && !m.scripted) {
+		if (opt->realtime && !m.scripted) {
 			char *text = display_clipboard(m.display);
 			m.clip.enabled = true;
 			clip_host_text(&m.clip, text);

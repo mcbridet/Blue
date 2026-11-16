@@ -219,7 +219,7 @@ made smaller to fit.
 ## The rest of the host side
 
 The host side also has PNG screenshots (`src/png.c`), NVRAM kept
-in a file, real-time guest time with `--window`/`--realtime`, and
+in a file, real-time guest time (the window's, or `--headless --realtime`), and
 `blue disk create`, which lays out an empty HFS volume (`src/hfs.c`, which
 also lays out the shared folder's, with B-trees of any size) the
 way Disk Initialization does (`hfsck` from hfsutils accepts it).

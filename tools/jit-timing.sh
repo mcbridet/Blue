@@ -48,23 +48,23 @@ boot() {        # name, then boot's arguments
 		[ "$prev" = --max ] && max=$a
 		prev=$a
 	done
-	if ! build/blue boot "$@" --max 1 > /dev/null 2>&1; then
+	if ! build/blue boot --headless "$@" --max 1 > /dev/null 2>&1; then
 		echo "$name: not here (or doesn't start)"
 		return
 	fi
 	for k in $(seq "$runs"); do
-		t=$({ time build/blue boot "$@" --fixed-time 1000000000 > build/jit-timing.out 2>&1; } 2>&1)
+		t=$({ time build/blue boot --headless "$@" --fixed-time 1000000000 > build/jit-timing.out 2>&1; } 2>&1)
 		times+=("${t%% *}")
 	done
 	local jit=$(grep -E '^(jit|no JIT)' build/jit-timing.out | head -2)
 	local sorted=$(printf '%s\n' "${times[@]}" | sort -n | tr '\n' ' ')
-	t=$({ time build/blue boot "$@" --interp --fixed-time 1000000000 > /dev/null 2>&1; } 2>&1)
+	t=$({ time build/blue boot --headless "$@" --interp --fixed-time 1000000000 > /dev/null 2>&1; } 2>&1)
 	echo "$name: JIT ${sorted}s (sorted wall times), interpreted ${t%% *}s"
 	echo "$jit" | sed 's/^/  /'
 	if [ "$(uname -s)" = Linux ]; then
-		BLUE_PERF=1 build/blue boot "$@" --fixed-time 1000000000 2>&1 | grep -E '^(perf total|BLUE_PERF)' | sed 's/^/  /'
+		BLUE_PERF=1 build/blue boot --headless "$@" --fixed-time 1000000000 2>&1 | grep -E '^(perf total|BLUE_PERF)' | sed 's/^/  /'
 	else
-		/usr/bin/time -l build/blue boot "$@" --fixed-time 1000000000 2>&1 > /dev/null |
+		/usr/bin/time -l build/blue boot --headless "$@" --fixed-time 1000000000 2>&1 > /dev/null |
 			awk -v n="$max" '/instructions retired/ { i = $1 } /cycles elapsed/ { c = $1 }
 				END { if (i && n) printf "  host (whole process): %.2f instructions, %.2f cycles per guest instruction\n", i / n, c / n }'
 	fi

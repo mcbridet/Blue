@@ -53,7 +53,7 @@ tools: installed Blue OpenGL Library, Blue OpenGL Memory and Blue OpenGL Utility
 ```
 
 Nothing is offered when the startup disk is a CD, an image attached
-read-only, or a locked volume, nor without a window: an input script can
+read-only, or a locked volume, nor without a window (`--headless`): an input script can
 answer instead (`tools install`, `tools later`, `tools never`), and that
 turns the check on; `tools install` restarts Mac OS too, and
 instruction-time runs stay reproducible. The startup disk is the partition
@@ -137,8 +137,8 @@ the new text. An application that puts its copy in the scrap only when
 switched out (from a private scrap, at a suspend) reaches the host once
 another Mac application comes to the front. Scripted runs have a
 stand-in for the host's clipboard (`clipboard` and `print-clipboard`,
-see [debugging.md](debugging.md#input-scripts)); other runs without a window, or in instruction
-time, leave the clipboard alone.
+see [debugging.md](debugging.md#input-scripts)); other runs without a window (`--headless`), or in
+instruction time, leave the clipboard alone.
 
 ## Blue 3D Engine
 
@@ -155,7 +155,7 @@ depth-sorted transparency (`kQATag_ZSortedHint`). The host side
 the guest goes on recording the next, the GPU or a software rasterizer
 draws it:
 
-- In real time (`--window`, `--realtime`) the host's GPU draws, if it has
+- In real time (the window, or `--headless --realtime`) the host's GPU draws, if it has
   hardware OpenGL 3.3 (`src/gpu.c`): in an off-screen context of its own
   (CGL on macOS, EGL without a window system elsewhere; `src/gl.c`,
   loaded at run time, so not a build dependency), on a thread of its own,
