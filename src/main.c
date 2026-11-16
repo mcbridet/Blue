@@ -46,11 +46,19 @@ static int usage(void)
 		"                               without a window (scripted runs are reproducible)\n"
 		"      --no-idle                in real time, don't sleep while the guest is idle\n"
 		"      --no-fast-start          in real time, don't run guest time faster until the\n"
-		"                               Finder is up\n"
+		"                               Finder is up\n");
+	fprintf(stderr,
 		"      --no-sound               with --window: don't play the guest's sound (only\n"
 		"                               played in real time)\n"
-		"      --integer-scale          with --window: scale the screen by whole numbers only\n"
-		"                               (crisp pixels; may leave a border)\n"
+		"      --scale auto|1|2|3|4     with --window: the display's pixels to a screen pixel,\n"
+		"                               a whole number (auto, the default: Mac OS at about 80\n"
+		"                               pixels per inch, as on a 1999 Mac; F12's menu changes\n"
+		"                               it); with the guest tools, a resized window asks Mac\n"
+		"                               OS for its size in pixels over this\n"
+		"      --integer-scale          with --window: scale a screen that isn't the window's\n"
+		"                               own size (without the guest tools, or a resolution\n"
+		"                               chosen in Mac OS) by whole numbers only (crisp\n"
+		"                               pixels; may leave a border)\n"
 		"      --no-status-bar          with --window: start without the status bar (its\n"
 		"                               lights and the processor's speed; F12's menu shows it)\n"
 		"      --no-net                 in real time, no network behind the guest's Ethernet\n"
@@ -354,6 +362,16 @@ static int cmd_boot(int argc, char **argv)
 			opt.no_sound = true;
 		} else if (strcmp(argv[k], "--integer-scale") == 0) {
 			opt.integer_scale = true;
+		} else if (strcmp(argv[k], "--scale") == 0 && k + 1 < argc) {
+			const char *s = argv[++k];
+			if (strcmp(s, "auto") == 0) {
+				opt.scale = DISPLAY_SCALE_AUTO;
+			} else if (s[0] >= '1' && s[0] <= '0' + DISPLAY_SCALE_MAX && !s[1]) {
+				opt.scale = (unsigned)(s[0] - '0');
+			} else {
+				fprintf(stderr, "--scale wants auto, 1, 2, 3 or 4\n");
+				return 2;
+			}
 		} else if (strcmp(argv[k], "--no-status-bar") == 0) {
 			opt.no_status_bar = true;
 		} else if (strcmp(argv[k], "--no-net") == 0) {

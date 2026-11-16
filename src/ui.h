@@ -38,6 +38,7 @@ struct ui_renderer {
 enum ui_key { UI_KEY_TAB, UI_KEY_LEFT, UI_KEY_RIGHT, UI_KEY_UP, UI_KEY_DOWN, UI_KEY_SPACE, UI_KEY_ENTER };
 
 #define UI_DRIVES 5                     /* drives with removable media: the floppy drive, CD-ROM drives */
+#define UI_SCALES 5                     /* the window's scales: Auto, 1x to 4x */
 
 /* What the user chose in the menu (or a prompt's buttons) */
 enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI_FULLSCREEN, UI_STATUS_BAR,
@@ -47,7 +48,9 @@ enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI
 		 UI_EJECT,                      /* (+ the drive's number in the menu's list) */
 		 UI_EJECT_LAST = UI_EJECT + UI_DRIVES - 1,
 		 UI_INSERT,                     /* (likewise: an image chosen with the host's file chooser) */
-		 UI_INSERT_LAST = UI_INSERT + UI_DRIVES - 1 };
+		 UI_INSERT_LAST = UI_INSERT + UI_DRIVES - 1,
+		 UI_SCALE,                      /* (+ the scale chosen: 0 Auto, else display pixels to a screen pixel) */
+		 UI_SCALE_LAST = UI_SCALE + UI_SCALES - 1 };
 
 /* What becomes of the mouse after the menu */
 enum ui_mouse {
@@ -104,6 +107,8 @@ struct ui_state {
 	/* the menu's Install Guest Tools... (`tools`), and why it's disabled (or NULL) */
 	bool tools;
 	const char *tools_why_not;
+	/* the window's scale chosen (0: Auto), and Auto's (display pixels to a screen pixel) */
+	unsigned scale, scale_auto;
 };
 
 #define UI_STATUS_BAR_HEIGHT 24         /* in the window's units */

@@ -189,6 +189,18 @@ Done:
   program and drawn on Chicago's own pixel grid. The same Dear ImGui menu
   on macOS and Linux (no GTK, no native menus). See Findings, "The
   window's look".
+- **The window's scale** (screen-scale; `src/display.c`, `src/density.c`,
+  `src/ui.cpp`): each Mac pixel is a whole number of the display's pixels,
+  1 to 4. Auto, the default, picks the one that brings Mac OS nearest to 80
+  pixels per inch, from the display's physical size (CoreGraphics on
+  macOS; SDL 2's figure or the kernel's EDID on Linux), else the display's
+  own scale; `--scale` and the menu (Scale: Auto (3x), 1x to 4x, radio
+  buttons) set it. With Blue Enhancements a resized window asks for its
+  pixels over the scale, and that screen is drawn at exactly the scale;
+  without, the window opens at the screen's size times the scale, within
+  the display, and a new scale resizes it. `--integer-scale` now only keeps
+  the window from filtering a screen that isn't its own. See Findings, "The
+  window's scale".
 
 Where it stops:
 
@@ -2596,6 +2608,85 @@ Facts later tasks need, added as they are found.
     with the status bar, 15 s of two 25 s runs each, alternating): drawing
     0.085-0.093 ms a draw before, 0.090-0.094 after; presenting 0.23-0.25
     ms both.
+- **The window's scale** (screen-scale; macOS 27, M5, with a 49-inch 5120
+  x 1440 display at 1x and the built-in 13-inch at 2x, made to look like
+  1710 x 1112; Homebrew's sdl2-compat over SDL 3):
+  - **Densities.** CoreGraphics on this Mac: the 49-inch 1193.1 x 338.7 mm
+    (`CGDisplayScreenSize`) and 5120 x 1440 pixels, 109 pixels per inch
+    (Auto: 1x); the built-in 290.5 x 188.9 mm and 3420 x 2224 pixels in its
+    scaled mode (`CGDisplayModeGetPixelWidth`: the backing store's, which
+    is what the window draws into, not the panel's 2560), 299 (4x). SDL's
+    display bounds on macOS are CoreGraphics' (`CGDisplayBounds`), so the
+    display is found by the middle of its bounds
+    (`CGGetDisplaysWithPoint`). A display without an EDID size gets 72
+    dots per inch of its points from CoreGraphics: its own scale again, as
+    Auto's fallback would give. sdl2-compat's `SDL_GetDisplayDPI` is made
+    up (96 times the content scale and the pixel density), so on Linux
+    SDL's figure is taken only from SDL 2 itself (sdl2-compat says it's
+    2.x.50 or later in `SDL_GetVersion`); otherwise the kernel's EDID
+    (`/sys/class/drm/card*-*/edid`, its first detailed timing's
+    millimetres, else its centimetres), of the only display connected or
+    the one of the window's display's size, for local X11 and Wayland only.
+    On the user's Threadripper (Linux, a 3840 x 1600 display on DP-3) it
+    reads 880 x 367 mm: 110.8 pixels per inch (1x).
+  - **Auto's rule:** the scale nearest in proportion to 80 pixels per
+    inch, s rather than s + 1 up to 80 sqrt(s (s + 1)): 1x to 113, 2x to
+    196, 3x to 277, 4x above. Nearest by difference would put a 27-inch
+    1440p display (109) at 2x (54.5 is nearer 80), where 1x is meant.
+    Plausible sizes: pixels square to 10% (turned displays allowed for), a
+    diagonal of 10 to 150 inches (a television giving 16 x 9 cm for its
+    shape is 7 inches), 20 to 1000 pixels per inch.
+  - **The screen asked for** is the window's pixels (above the status
+    bar) over the scale, rounded down; the driver rounds that
+    (`video_fit_size()`, `video_request_size()`'s rule as before): the
+    width down to a multiple of 8, at least 512 x 384, and smaller keeping
+    its shape until 16 MB holds it at 32 bits (a 4K window at 1x: 2584 x
+    1464, filled). A screen that is the window's own (what's left over under
+    8 x the scale across and the scale down) is drawn at exactly the scale;
+    any other is filled as before, so while the window is dragged, or
+    without Enhancements once resized by hand, it's scaled. The window
+    knows whether the screen follows it (`display_follow()`, from the
+    helper's running): a new scale, or density, then asks for a screen;
+    otherwise the window takes the screen's size at it.
+  - **The window's frame:** `SDL_GetWindowBordersSize` fails on macOS
+    (sdl2-compat, SDL 3), hidden or shown, so a window's room is its
+    display's usable part less a title bar of 32 units, macOS 27's (a
+    window 1377 high has a frame 1409 high). Without it a 3x window of an
+    800 x 600 screen on the 1440-high display came out 1879 x 1377: macOS
+    cut its height, not its width. Now 1804 x 1377 (the screen at 2.25x,
+    filled, its shape kept), the status bar's 24 taken from the screen's
+    part when it comes. The window is made hidden, sized, centred on its
+    display and then shown, rather than shown and resized.
+  - **Checked** with window captures by ID, a scratch build stepping the
+    window's thread (resizing the window with the event SDL sends for a
+    user's resize, choosing in the menu, moving the window): the installed
+    8.5 (a clone of base85t, its tools current), Auto 1x on the 49-inch: a
+    2400 x 1224 window asked for 2400 x 1200; 2x then 1200 x 600, 3x 800 x
+    400, each drawn at exactly that (every 2 x 2 or 3 x 3 block of the
+    capture one colour, but the frame's line over the first row);
+    `--scale 2` opened the window at 1600 x 1224 for 800 x 600, and Auto
+    chosen in the menu (paused) asked for 1600 x 1200 once resumed; the
+    menu's Scale row (Auto (1x), 2x chosen). The 8.5 CD (no Enhancements)
+    with `--scale 3`: the window 1804 x 1377 within the display; 1x 800 x
+    624, 2x 1600 x 1224, resized by hand filled, 3x within the display
+    again; with `--integer-scale` that 3x window opened at 2x (1600 x
+    1224) and, resized by hand to 1000 x 700, showed the screen at 1x with
+    a border. Moved onto the built-in display: 299 pixels per inch, Auto 4x,
+    so 512 x 384 (the driver's smallest) at 4x in a window of 1024 x 792
+    points, the menu at density 2 with Auto (4x); 3x 680 x 512; back on
+    the 49-inch (3x chosen) 512 x 384 at 3x.
+  - **Not checked:** a 5K iMac's and a 4K display's own figures (Auto's
+    choice for their densities is in the tests), Linux at run time (built
+    with gcc 16 `-Werror`, the tests passed, and the EDID read on the
+    Threadripper; no window), Wayland's and X11's SDL 2 figures, a display
+    without an EDID size, fullscreen.
+  - **Cost** (`BLUE_WINDOW_PROFILE`, the installed 8.5 idle at the Finder
+    at 1x, 10 s of three 20 s runs each, alternating): drawing 0.037-0.100
+    ms a draw (medians) both, presenting 0.09-0.25 ms both, events
+    0.001-0.003 ms a frame both (the same build gave either). The
+    display's density is looked at as the window moves or changes size or
+    display, and once a second (1.5-10 µs: sdl2-compat's
+    `SDL_GetWindowDisplayIndex` is most of it).
 - **Mac OS 9.2.2: the CD** (Task 10): MacOS9Lives' "Mac OS 9.2.2
   Universal" (`922.iso`, volume MacOS9Lives in the partition "Toast 5.2 HFS
   Optimizer"), for Macs Apple's 9.2.2 doesn't support. Its ROM file is

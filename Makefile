@@ -9,7 +9,7 @@ IMGUI_FLAGS := -std=c++17 -fno-exceptions -fno-rtti -DIMGUI_DISABLE_OBSOLETE_FUN
 LDFLAGS ?= -g
 BUILD := build
 
-LIB_SRC := src/adb.c src/audio.c src/awacs.c src/bootinfo.c src/raster.c src/rave.c src/cdaudio.c src/cdimage.c src/cdrom.c src/chooser.c src/clip.c src/clock.c src/cuda.c src/dbdma.c src/devtree.c src/display.c src/disk.c src/drives.c src/env.c src/floppy.c src/font.c src/gl.c src/glarray.c src/glattrib.c src/gleval.c src/glfront.c src/gllight.c src/gllist.c src/glpixel.c src/glselect.c src/gltest.c src/gltex.c src/glu.c src/gpu.c src/hfs.c src/hfsread.c src/icon.c src/install.c src/jit.c src/jit_a64.c src/jit_x86.c src/lzss.c src/macio.c src/mem.c src/mmio.c src/mp.c src/ndrv.c src/net.c src/nk.c src/nvram.c src/ofnvram.c src/ohci.c src/opengl.c src/parcels.c src/pci.c src/perf.c src/pippin.c src/png.c src/ppc.c src/ppc_fp.c src/priv.c src/rom.c src/rsrc.c src/rtas.c src/scc.c src/share.c src/startup.c src/surface.c src/tools.c src/via.c src/video.c
+LIB_SRC := src/adb.c src/audio.c src/awacs.c src/bootinfo.c src/raster.c src/rave.c src/cdaudio.c src/cdimage.c src/cdrom.c src/chooser.c src/clip.c src/clock.c src/cuda.c src/dbdma.c src/density.c src/devtree.c src/display.c src/disk.c src/drives.c src/env.c src/floppy.c src/font.c src/gl.c src/glarray.c src/glattrib.c src/gleval.c src/glfront.c src/gllight.c src/gllist.c src/glpixel.c src/glselect.c src/gltest.c src/gltex.c src/glu.c src/gpu.c src/hfs.c src/hfsread.c src/icon.c src/install.c src/jit.c src/jit_a64.c src/jit_x86.c src/lzss.c src/macio.c src/mem.c src/mmio.c src/mp.c src/ndrv.c src/net.c src/nk.c src/nvram.c src/ofnvram.c src/ohci.c src/opengl.c src/parcels.c src/pci.c src/perf.c src/pippin.c src/png.c src/ppc.c src/ppc_fp.c src/priv.c src/rom.c src/rsrc.c src/rtas.c src/scc.c src/share.c src/startup.c src/surface.c src/tools.c src/via.c src/video.c
 IMGUI_SRC := third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
 LIB_OBJ := $(LIB_SRC:src/%.c=$(BUILD)/%.o) $(BUILD)/ui.o $(IMGUI_SRC:third_party/imgui/%.cpp=$(BUILD)/imgui/%.o)
 TEST_SRC := $(wildcard tests/*.c)
@@ -17,14 +17,14 @@ TEST_OBJ := $(TEST_SRC:tests/%.c=$(BUILD)/tests/%.o)
 
 all: $(BUILD)/blue
 
-# On macOS, an Info.plist in the executable names the program Blue (in the menu bar and the Dock), and the file
-# chooser is AppKit's (src/chooser_mac.m)
+# On macOS, an Info.plist in the executable names the program Blue (in the menu bar and the Dock), the file
+# chooser is AppKit's (src/chooser_mac.m), and displays' physical sizes are CoreGraphics' (src/density.c)
 ifeq ($(shell uname -s),Darwin)
 INFO_PLIST := art/Info.plist
 INFO_PLIST_FLAGS := -Wl,-sectcreate,__TEXT,__info_plist,$(INFO_PLIST)
 OBJCFLAGS ?= -O2 -g
 LIB_OBJ += $(BUILD)/chooser_mac.o
-HOST_LIBS := -framework AppKit
+HOST_LIBS := -framework AppKit -framework CoreGraphics
 endif
 
 $(BUILD)/blue: $(BUILD)/main.o $(LIB_OBJ) $(INFO_PLIST)

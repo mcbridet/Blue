@@ -510,6 +510,7 @@ struct machine {
 	unsigned want_w, want_h;        /* screen size the window asks for (0: none) */
 	uint64_t want_ns;               /* host time it last changed (0: from a script, at once) */
 	struct display *display;        /* host window, if open */
+	bool window_follows;            /* ... told the screen follows its size (display_follow()) */
 	bool hw_cursor;                 /* ... and the display driver offers Mac OS a hardware cursor for it */
 	uint8_t shown_clut[256][3];     /* the CLUT the window was last handed */
 	uint64_t shown_ns;              /* ... and when it last had something new */
@@ -1989,6 +1990,11 @@ static void display_frame(struct machine *m, uint64_t now)
 		.image = c->images,
 	};
 	display_cursor(m->display, &pointer);
+	bool follows = m->helper.running && !m->scripted;       /* (see follow_window()) */
+	if (follows != m->window_follows) {
+		m->window_follows = follows;
+		display_follow(m->display, follows);
+	}
 	struct display_frame *f = display_frame_begin(m->display, w, h, bpp, rb);
 	if (f) {
 		bool all = !f->kept || now - m->shown_ns >= 1000000000u ||
@@ -2357,7 +2363,9 @@ static void script_run(struct machine *m, struct script *s)
 
 /*
  * The screen follows the window's size when the guest tools' helper runs
- * (it switches modes when it next looks); otherwise the window scales it.
+ * (it switches modes when it next looks): the window asks for its size in
+ * the display's pixels over its scale (display.h), and is told whether the
+ * screen follows, for a new scale. Otherwise the window scales the screen.
  * A size is asked for once the window has kept it for a moment: while it's
  * being dragged, the window scales the screen (a mode switch, with the
  * Finder laying out the desktop again, is no quick thing). Each size is
@@ -4235,6 +4243,7 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	m->want_h = old.want_h;
 	m->want_ns = old.want_ns;
 	m->display = old.display;
+	m->window_follows = old.window_follows;
 	m->hw_cursor = old.hw_cursor;
 	m->gpu = old.gpu;
 	m->quit = old.quit;
@@ -4353,7 +4362,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 	if (opt->realtime && !opt->no_fast_start)
 		fast_start_begin(&m);
 	if (opt->window) {
-		m.display = display_open("Blue", video_width(&m.video), video_height(&m.video), opt->integer_scale);
+		m.display = display_open("Blue", video_width(&m.video), video_height(&m.video), opt->integer_scale,
+					 opt->scale);
 		if (!m.display)         /* (the driver has the hardware cursor, but says it hasn't) */
 			m.hw_cursor = m.video.hw_cursor = false;
 		if (m.display && !opt->no_status_bar)
