@@ -103,12 +103,22 @@ facts needed for compatibility; none of their code is in Blue:
 
 Built from source, Blue loads these from the system at run time. The app
 and the AppImages carry them as separate, replaceable libraries, with their
-licence texts (in Blue.app, `Contents/Resources/Licenses/`):
+licence texts and each one's version and source (in Blue.app,
+`Contents/Resources/Licenses/`; in an AppImage, `usr/share/doc/blue/Licenses/`):
 
-| Library | Licence | Source |
-|---|---|---|
-| SDL2 | zlib | https://github.com/libsdl-org/SDL |
-| libslirp | BSD-3-Clause | https://gitlab.freedesktop.org/slirp/libslirp |
-| GLib | LGPL-2.1-or-later | https://gitlab.gnome.org/GNOME/glib |
-| gettext's libintl | LGPL-2.1-or-later | https://www.gnu.org/software/gettext/ |
-| PCRE2 | BSD-3-Clause (with the PCRE2 exception) | https://github.com/PCRE2Project/pcre2 |
+| Library | Licence | In | Source |
+|---|---|---|---|
+| SDL2 | zlib | both | https://github.com/libsdl-org/SDL |
+| libslirp | BSD-3-Clause | both | https://gitlab.freedesktop.org/slirp/libslirp |
+| GLib | LGPL-2.1-or-later | both | https://gitlab.gnome.org/GNOME/glib |
+| proxy-libintl (GLib's libintl) | LGPL-2.0-or-later | Blue.app | https://github.com/frida/proxy-libintl |
+| PCRE2 (built into GLib) | BSD-3-Clause (with the PCRE2 exception) | Blue.app | https://github.com/PCRE2Project/pcre2 |
+| PCRE (GLib's) | BSD-3-Clause | the AppImages | https://www.pcre.org (Ubuntu 22.04's libpcre3) |
+
+The released Blue.app's are built from their sources by
+`tools/macos-deps.sh`; the AppImages' GLib, libslirp and PCRE are Ubuntu
+22.04's packages, their SDL2 built from source by `tools/package-linux.sh`.
+A Blue.app made with Homebrew's libraries (`make app`) carries Homebrew's
+instead: SDL2 as sdl2-compat with SDL3 (zlib), and gettext's libintl
+(LGPL-2.1-or-later, https://www.gnu.org/software/gettext/) and PCRE2 as
+libraries of their own.

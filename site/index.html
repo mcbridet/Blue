@@ -313,21 +313,28 @@
 
           <h3>Download</h3>
           <div class="downloads">
-            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/blue-macos-aarch64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>macOS<small>Apple silicon</small></span></a>
-            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/blue-macos-x86_64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>macOS<small>Intel (x86_64)</small></span></a>
-            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/blue-linux-aarch64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Linux<small>AArch64</small></span></a>
-            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/blue-linux-x86_64.tar.gz"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Linux<small>x86_64</small></span></a>
+            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/Blue-arm64.dmg"><svg aria-hidden="true"><use href="#i-box"/></svg><span>macOS<small>Apple silicon</small></span></a>
+            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/Blue-x86_64.dmg"><svg aria-hidden="true"><use href="#i-box"/></svg><span>macOS<small>Intel (x86_64)</small></span></a>
+            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/Blue-x86_64.AppImage"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Linux<small>x86_64</small></span></a>
+            <a class="button dl" href="https://github.com/__REPO__/releases/latest/download/Blue-aarch64.AppImage"><svg aria-hidden="true"><use href="#i-box"/></svg><span>Linux<small>AArch64</small></span></a>
           </div>
-          <p class="fineprint">Or build it with <code>make</code>. SDL2 (window and sound) and libslirp (networking) are used if they’re installed. The JIT runs on AArch64 and on x86_64 processors with x86-64-v3 (Intel’s Haswell and AMD’s Excavator on), on macOS and Linux alike; older x86_64 processors interpret.</p>
+          <p class="fineprint">macOS 11 or later: drag Blue to Applications. It isn’t notarized: the first time, right-click it and choose Open, or on macOS 15 and later click Open Anyway in System Settings › Privacy &amp; Security. Linux: <code>chmod +x</code> the AppImage; without FUSE, add <code>--appimage-extract-and-run</code>. Blue runs from the command line for now; a launcher is coming. Or build it with <code>make</code> (then it’s <code>build/blue</code>). The JIT runs on AArch64 and on x86_64 processors with x86-64-v3 (Intel’s Haswell and AMD’s Excavator on); older x86_64 processors interpret.</p>
 
           <h3>Install Mac OS</h3>
-<pre class="code">./blue disk create hd.img 2G "Macintosh HD"
-./blue boot --disk hd.img --cdrom 85.iso --window --nvram blue.nvram</pre>
+<pre class="code"># macOS
+/Applications/Blue.app/Contents/MacOS/blue disk create hd.img 2G "Macintosh HD"
+/Applications/Blue.app/Contents/MacOS/blue boot --disk hd.img --cdrom 85.iso --window --nvram blue.nvram
+# Linux (or Blue-aarch64.AppImage)
+./Blue-x86_64.AppImage disk create hd.img 2G "Macintosh HD"
+./Blue-x86_64.AppImage boot --disk hd.img --cdrom 85.iso --window --nvram blue.nvram</pre>
           <p>In the installer’s Options, turn off “Update Apple Hard Disk Drivers”. A 9.2.2 CD that restores an image with Apple Software Restore instead needs the new disk chosen as its destination.</p>
 
           <h3>Start up</h3>
-<pre class="code">./blue boot --disk hd.img --window --nvram blue.nvram</pre>
-          <p>In the window, once the Finder is up, Blue offers to install its guest tools: guest enhancements that make the screen follow the window and share the clipboard, the 3D engine, and OpenGL. Add <code>--cdrom-drive</code> or <code>--floppy-drive</code> for an empty drive, and drop a CD or floppy image on the window to put it in; <code>--share DIR</code> shows a folder of yours as a disk in Mac OS. The <a href="https://github.com/__REPO__#readme">README</a> has the rest.</p>
+<pre class="code"># macOS
+/Applications/Blue.app/Contents/MacOS/blue boot --disk hd.img --window --nvram blue.nvram
+# Linux
+./Blue-x86_64.AppImage boot --disk hd.img --window --nvram blue.nvram</pre>
+          <p>Once the Finder is up, Blue offers to install its guest tools (the screen follows the window, the clipboard is shared, the 3D engine and OpenGL), then restarts Mac OS. To put in a CD or floppy, drop its image on the window, or use Insert… in Blue’s menu (F12); <code>--share DIR</code> shows a folder of yours as a disk in Mac OS.</p>
         </div>
       </div>
     </div>

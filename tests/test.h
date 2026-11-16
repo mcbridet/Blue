@@ -60,5 +60,6 @@ void test_mp(void);
 void test_nvram(void);
 void test_startup(void);
 void test_priv(void);
+void test_welcome(void);
 
 #endif

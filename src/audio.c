@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "be.h"
+#include "hostlib.h"
 
 /* The parts of the SDL2 audio ABI we use (stable across SDL 2.x). */
 #define SDL_INIT_AUDIO 0x00000010u
@@ -70,12 +71,7 @@ struct audio {
 
 static bool load(struct sdl_audio *s)
 {
-	/* (bare names aren't looked for in Homebrew's or MacPorts' directories on macOS) */
-	static const char *const names[] = { "libSDL2-2.0.so.0", "libSDL2.so", "libSDL2-2.0.dylib",
-					     "/opt/homebrew/lib/libSDL2-2.0.dylib", "/opt/local/lib/libSDL2-2.0.dylib",
-					     "SDL2.framework/SDL2" };
-	for (size_t k = 0; k < sizeof names / sizeof names[0] && !s->lib; k++)
-		s->lib = dlopen(names[k], RTLD_NOW | RTLD_LOCAL);
+	s->lib = hostlib_open(HOSTLIB_SDL2);
 	if (!s->lib)
 		return false;
 #define SYM(field, name) \

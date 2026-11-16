@@ -18,7 +18,7 @@ jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -40,7 +40,7 @@ jobs:
     env:
       CFLAGS: -O3 -g -Werror
       CXXFLAGS: -O3 -g -Werror
-      # Without this, macOS binaries only run on the runner's macOS version or later
+      # The oldest macOS Blue.app runs on, on either architecture (its libraries are built for it too)
       MACOSX_DEPLOYMENT_TARGET: '11.0'
     steps:
       - uses: actions/checkout@v7
@@ -80,42 +80,100 @@ jobs:
         continue-on-error: true
         run: BLUE_JIT_BENCH=1 build/blue-tests jit
 
-      # A tarball keeps the executable bit, which artifact zips drop. On Linux it has the
-      # desktop entry and icons too, laid out as under ~/.local/share
-      - name: Package
-        run: |
-          dir=blue-${{ matrix.target }}
-          mkdir "$dir"
-          cp build/blue README.md "$dir/"
-          if [ "$(uname -s)" = Linux ]; then
-            mkdir -p "$dir/share/applications"
-            cp art/blue.desktop "$dir/share/applications/"
-            for n in 16 24 32 48 64 128 256 512; do
-              mkdir -p "$dir/share/icons/hicolor/${n}x${n}/apps"
-              cp "art/png/blue-$n.png" "$dir/share/icons/hicolor/${n}x${n}/apps/blue.png"
-            done
-          fi
-          tar -czf "$dir.tar.gz" "$dir"
-
-      - uses: actions/upload-artifact@v7
+      # Blue.app's libraries, built from their sources for MACOSX_DEPLOYMENT_TARGET (Homebrew's
+      # need the macOS they were built on), kept between runs until tools/macos-deps.sh changes
+      - name: Cache Blue.app's libraries
+        if: runner.os == 'macOS'
+        id: deps
+        uses: actions/cache@v6
         with:
-          path: blue-${{ matrix.target }}.tar.gz
+          path: ~/blue-deps
+          key: blue-deps-${{ matrix.target }}-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('tools/macos-deps.sh') }}
+
+      - name: Build Blue.app's libraries
+        if: runner.os == 'macOS' && steps.deps.outputs.cache-hit != 'true'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet meson ninja
+          export PATH="$RUNNER_TEMP/venv/bin:$PATH"
+          command -v pkg-config || brew install pkgconf
+          tools/macos-deps.sh ~/blue-deps
+
+      # Blue.app for this architecture, in Blue-arm64.dmg or Blue-x86_64.dmg: its own libraries, not the
+      # system's (--version says where they came from), none needing a newer macOS (Homebrew's, say)
+      - name: Blue.app and its disk image
+        if: runner.os == 'macOS'
+        run: |
+          make dmg DEPS="$HOME/blue-deps"
+          plutil -p build/Blue.app/Contents/Info.plist
+          test "$(plutil -extract LSMinimumSystemVersion raw build/Blue.app/Contents/Info.plist)" = "$MACOSX_DEPLOYMENT_TARGET"
+          dmg=$(ls build/Blue-*.dmg)
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" "$dmg"
+          ls -la "$RUNNER_TEMP/dmg"
+          codesign --verify --deep --strict "$RUNNER_TEMP/dmg/Blue.app"
+          "$RUNNER_TEMP/dmg/Blue.app/Contents/MacOS/blue" --version | tee version.txt
+          hdiutil detach "$RUNNER_TEMP/dmg"
+          grep -q 'SDL2 .*/Blue.app/Contents/Frameworks/libSDL2-2.0.0.dylib$' version.txt
+          grep -q 'libslirp .*/Blue.app/Contents/Frameworks/libslirp.0.dylib$' version.txt
+
+      - name: Upload the disk image
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          path: build/Blue-*.dmg
           archive: false
           if-no-files-found: error
 
+      # The AppImage, built in Ubuntu 22.04 (glibc 2.35) so that it runs on most distributions since;
+      # then run here (Ubuntu 24.04), its own libraries loaded
+      - name: AppImage
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/src" -e BUILD=/tmp/appimage -e OUT=/src/dist ubuntu:22.04 \
+            /src/tools/package-linux.sh --setup
+          image=$(ls dist/Blue-*.AppImage)
+          "$image" --appimage-extract-and-run --version | tee version.txt
+          grep -q 'SDL2 .*/usr/lib/libSDL2-2.0.so.0$' version.txt
+          grep -q 'libslirp .*/usr/lib/libslirp.so.0$' version.txt
+
+      - name: Upload the AppImage
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/Blue-*.AppImage
+          archive: false
+          if-no-files-found: error
+
+  # A release's tag is the version in src/version.h, with a v
+  version:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tag and version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^#define BLUE_VERSION "\(.*\)"/\1/p' src/version.h)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::the tag $TAG isn't src/version.h's version, $version (tag v$version, or change it)"
+            exit 1
+          fi
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, version]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: blue-*
+          pattern: Blue*
           path: dist
           merge-multiple: true
 
+      # (unversioned names, so that releases/latest/download/<name> links keep working)
       - name: Publish release
         working-directory: dist
         env:
@@ -123,9 +181,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          sha256sum blue-*.tar.gz > SHA256SUMS
+          ls -la
+          set -- Blue-arm64.dmg Blue-x86_64.dmg Blue-x86_64.AppImage Blue-aarch64.AppImage
+          sha256sum "$@" > SHA256SUMS
+          cat SHA256SUMS
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" blue-*.tar.gz SHA256SUMS --clobber
+            gh release upload "$TAG" "$@" SHA256SUMS --clobber
           else
-            gh release create "$TAG" blue-*.tar.gz SHA256SUMS --title "$TAG" --generate-notes --verify-tag
+            gh release create "$TAG" "$@" SHA256SUMS --title "$TAG" --generate-notes --verify-tag
           fi

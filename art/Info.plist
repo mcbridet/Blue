@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Blue's Info.plist, in the executable and in Blue.app: the Makefile fills in
+     @VERSION@ from src/version.h and @MACOS@ (MACOSX_DEPLOYMENT_TARGET) -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
@@ -10,10 +12,18 @@
 	<string>io.github.mcbridet.Blue</string>
 	<key>CFBundleExecutable</key>
 	<string>blue</string>
+	<key>CFBundleIconFile</key>
+	<string>Blue</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>@MACOS@</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>

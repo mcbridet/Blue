@@ -16,6 +16,7 @@
 
 #include "chooser.h"
 #include "density.h"
+#include "hostlib.h"
 #include "icon.h"
 #include "ui.h"
 
@@ -444,12 +445,7 @@ static struct ui *open_menu(struct display *d)
 
 static bool load_sdl(struct sdl *s)
 {
-	/* (bare names aren't looked for in Homebrew's or MacPorts' directories on macOS) */
-	static const char *const names[] = { "libSDL2-2.0.so.0", "libSDL2.so", "libSDL2-2.0.dylib",
-					     "/opt/homebrew/lib/libSDL2-2.0.dylib", "/opt/local/lib/libSDL2-2.0.dylib",
-					     "SDL2.framework/SDL2" };
-	for (size_t k = 0; k < sizeof names / sizeof names[0] && !s->lib; k++)
-		s->lib = dlopen(names[k], RTLD_NOW | RTLD_LOCAL);
+	s->lib = hostlib_open(HOSTLIB_SDL2);
 	if (!s->lib)
 		return false;
 
@@ -727,7 +723,8 @@ static bool check_display(struct display *d)
 	d->density = density;
 	d->ppi = k >= 0 ? display_ppi(d, k, &b, density) : 0;
 	d->scale_auto = display_auto_scale(d->ppi, density);
-	d->scale = d->scale_chosen ? d->scale_chosen : d->scale_auto;
+	d->scale = d->scale_chosen == DISPLAY_SCALE_OWN ? display_auto_scale(0, density) :
+		   d->scale_chosen ? d->scale_chosen : d->scale_auto;
 	if (d->scale_auto != was_auto || fabs(d->ppi - was_ppi) >= 0.5) {
 		if (d->ppi > 0)
 			printf("display: %.0f pixels per inch: Auto's scale is %u\n", d->ppi, d->scale_auto);
@@ -1592,7 +1589,7 @@ static struct display *open_window(const char *title, unsigned width, unsigned h
 		goto fail;
 	}
 	d->integer = integer;
-	d->scale_chosen = scale <= DISPLAY_SCALE_MAX ? scale : DISPLAY_SCALE_AUTO;
+	d->scale_chosen = scale <= DISPLAY_SCALE_OWN ? scale : DISPLAY_SCALE_AUTO;
 	d->display = -1;
 	SDL_version v = { 0, 0, 0 };
 	d->sdl.GetVersion(&v);

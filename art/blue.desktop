@@ -1,7 +1,7 @@
 # Blue's entry for Linux desktops, which gives its window (class and app ID
 # "blue") its icon. To install: this file in ~/.local/share/applications,
-# the icons (art/png/blue-N.png) as ~/.local/share/icons/hicolor/NxN/apps/blue.png
-# (the release archives have them laid out so: copy their share/ to ~/.local/).
+# the icons (art/png/blue-N.png) as ~/.local/share/icons/hicolor/NxN/apps/blue.png.
+# The AppImages carry them (without NoDisplay), for AppImage integration tools.
 [Desktop Entry]
 Type=Application
 Name=Blue

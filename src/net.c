@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include "be.h"
+#include "hostlib.h"
 
 /* ---- lanLib -------------------------------------------------------------------- */
 
@@ -489,11 +490,7 @@ bool net_start(struct net *n)
 	if (!b)
 		return false;
 	b->net = n;
-	/* (bare names aren't looked for in Homebrew's or MacPorts' directories on macOS) */
-	static const char *const names[] = { "libslirp.so.0", "libslirp.dylib", "/opt/homebrew/lib/libslirp.dylib",
-					     "/opt/local/lib/libslirp.dylib" };
-	for (size_t k = 0; k < sizeof names / sizeof names[0] && !b->lib; k++)
-		b->lib = dlopen(names[k], RTLD_NOW | RTLD_LOCAL);
+	b->lib = hostlib_open(HOSTLIB_SLIRP);
 	if (b->lib) {
 		*(void **)&b->slirp_new = dlsym(b->lib, "slirp_new");
 		*(void **)&b->slirp_input = dlsym(b->lib, "slirp_input");

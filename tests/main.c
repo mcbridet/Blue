@@ -47,6 +47,7 @@ int main(int argc, char **argv)
 		{ "nvram", test_nvram },
 		{ "startup", test_startup },
 		{ "priv", test_priv },
+		{ "welcome", test_welcome },
 	};
 
 	env_renamed("blue-tests");

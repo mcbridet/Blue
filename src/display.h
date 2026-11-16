@@ -72,6 +72,7 @@ struct display_event {
  */
 #define DISPLAY_SCALE_AUTO 0
 #define DISPLAY_SCALE_MAX 4
+#define DISPLAY_SCALE_OWN (DISPLAY_SCALE_MAX + 1)       /* the display's own: a screen pixel to a unit, as the menu's */
 struct display *display_open(const char *title, unsigned width, unsigned height, bool integer, unsigned scale);
 void display_close(struct display *d);
 

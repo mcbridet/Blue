@@ -201,6 +201,18 @@ Done:
   the display, and a new scale resizes it. `--integer-scale` now only keeps
   the window from filtering a screen that isn't its own. See Findings, "The
   window's scale".
+- **Packaging** (packaging; `src/version.h`, `src/hostlib.c`,
+  `src/welcome.c`, `tools/package-macos.sh`, `tools/macos-deps.sh`,
+  `tools/package-linux.sh`): releases are `Blue-arm64.dmg` and
+  `Blue-x86_64.dmg` (a Blue.app each, macOS 11 or later, signed ad hoc)
+  and `Blue-x86_64.AppImage`, `Blue-aarch64.AppImage` (built in Ubuntu 22.04:
+  glibc 2.35), carrying SDL2 and libslirp with GLib and what it needs,
+  separate and replaceable, with their licences. Blue loads them from
+  beside itself first. The version is `src/version.h`'s (`--version`, the
+  usage, the Info.plist; a release's tag must match it). Opened from the
+  desktop with nothing to do, Blue shows a Platinum window with the
+  command line for it, until the launcher (README, Next steps). See
+  Findings, "Packaging".
 
 Where it stops:
 
@@ -3446,3 +3458,48 @@ Facts later tasks need, added as they are found.
   boot then read 924 fewer blocks and ended elsewhere than its
   references). Use hfsutils only on APFS clones (`cp -c`), made read-only
   (`chmod a-w`) when only reading: libhfs then mounts read-only.
+- **Packaging** (packaging; macOS 27 on an M-series Mac, Ubuntu 22.04 and
+  Debian 12 arm64 in podman):
+  - **Homebrew's libraries need the macOS they were built on**
+    (`LC_BUILD_VERSION` minos: 26.0 for sdl2-compat, SDL3, gettext's
+    libintl and PCRE2, 27.0 for GLib and libslirp here), so an app made
+    with them does too (`make app` raises `LSMinimumSystemVersion` to the
+    newest and says so). `tools/macos-deps.sh` builds SDL2 2.32.10, GLib
+    2.90.1 and libslirp 4.9.7 for macOS 11 in about a minute each way on
+    an M-series Mac (cached in CI). Homebrew's SDL2 is sdl2-compat, which
+    opens SDL3 as `@loader_path/libSDL3.dylib`, so that goes in too.
+  - **An SDK newer than the target hides missing functions**: GLib's
+    `cc.has_function('pipe2')` declares its own prototype and finds
+    `pipe2` in macOS 27's SDK, then calls it (weakly linked: NULL, a crash,
+    before macOS 27). The deps are built with
+    `-Werror=unguarded-availability-new`, and GLib's check for pipe2 is
+    taken out (it uses pipe() then).
+  - **dlopen and @rpath**: the bundled dylibs are `@rpath/NAME` with an
+    `LC_RPATH` of `@loader_path` each, so they find each other wherever
+    the app is (moved, renamed, run through a symbolic link); the
+    executable's `@executable_path/../Frameworks` is there for the same.
+    Blue opens them by full path, found from `_NSGetExecutablePath` or
+    `/proc/self/exe` with links resolved.
+  - **Ubuntu 22.04's GCC 11 lacks `__builtin_shufflevector`** (raster.c),
+    so the AppImage's Blue is built with `gcc-12`, with libstdc++ and
+    libgcc linked in: glibc (2.35) is all it needs. GCC 12 also warns of
+    `id` maybe used uninitialized in `mp_tick()` (inlined `fire()`), a
+    false alarm GCC 13 and clang don't raise. Ubuntu 22.04's GLib 2.72
+    uses PCRE 8.39 (`libpcre.so.3`), not PCRE2, and gettext's functions
+    are glibc's: the AppImage carries SDL2, libslirp, GLib and PCRE.
+  - **The AppImage runtime**: the AppImage project's static type2-runtime
+    needs no libfuse2, only `fusermount`; without FUSE (a container) it
+    says so, and `--appimage-extract-and-run` works anywhere. Bundled
+    libraries get a run path of `$ORIGIN` (no `LD_LIBRARY_PATH`, which
+    would reach the host's zenity and kdialog too).
+  - **Opened from the desktop**: a Finder launch has launchd (pid 1) as
+    its parent and no terminal on stdin, stdout or stderr; an AppImage
+    has `APPIMAGE` set. Only then does Blue without a command show its
+    window: a script or tool running `blue` with its output redirected
+    still gets the usage. A prompt is drawn as the machine hands frames
+    over, and Dear ImGui sizes a box in its first frame without showing
+    it, so the window hands over the same frame a few times after each
+    change. Its box is in the window's units, so the window opens at
+    `DISPLAY_SCALE_OWN` (the display's own scale: a screen pixel to a
+    unit, the window 600 x 360 units on any display) rather than Auto, and
+    follows the window's size with a desktop of that size.

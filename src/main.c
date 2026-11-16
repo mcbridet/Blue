@@ -2,12 +2,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "cdimage.h"
 #include "disk.h"
 #include "display.h"
 #include "env.h"
 #include "hfsread.h"
+#include "hostlib.h"
 #include "mem.h"
 #include "nk.h"
 #include "ppc.h"
@@ -16,12 +18,17 @@
 #include "share.h"
 #include "startup.h"
 #include "tools.h"
+#include "version.h"
+#include "welcome.h"
 
 static int usage(void)
 {
 	fprintf(stderr,
+		BLUE_ABOUT "\n"
+		"\n"
 		"usage: blue <command> [args]\n"
 		"\n"
+		"  --version                    Blue's version, and the SDL2 and libslirp it finds\n"
 		"  rom info <file>              describe a Mac OS ROM file or 4 MB ROM image\n"
 		"  rom config <file>            show the NanoKernel ConfigInfo and memory map\n"
 		"  rom parcels <file>           list the parcels of a Mac OS 9.1-or-later ROM file\n"
@@ -599,12 +606,47 @@ static int cmd_disk(int argc, char **argv)
 	return disk_create(argv[1], size, argc > 3 ? argv[3] : floppy ? "Untitled" : "Macintosh HD") ? 1 : 0;
 }
 
+static int version(void)
+{
+	printf(BLUE_ABOUT "\n");
+	for (int k = 0; k < HOSTLIBS; k++) {
+		char about[1200];
+		hostlib_about((enum hostlib)k, about, sizeof about);
+		printf("%s\n", about);
+	}
+	return 0;
+}
+
+/* Opened from the desktop (Blue.app or the AppImage double-clicked), not run in a terminal or by a script */
+static bool from_desktop(void)
+{
+	if (isatty(STDIN_FILENO) || isatty(STDOUT_FILENO) || isatty(STDERR_FILENO))
+		return false;
+#ifdef __APPLE__
+	return getppid() == 1;          /* (launchd starts what the Finder opens) */
+#else
+	return getenv("APPIMAGE") != NULL;
+#endif
+}
+
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);       /* progress shows up even when redirected */
 	env_renamed("blue");
-	if (argc < 2)
+#ifdef __APPLE__
+	if (argc == 2 && strncmp(argv[1], "-psn_", 5) == 0)    /* (the Finder's, from older macOS) */
+		argc = 1;
+#endif
+	if (argc < 2) {
+		if (from_desktop()) {
+			int rc = welcome();
+			if (rc >= 0)
+				return rc;
+		}
 		return usage();
+	}
+	if (strcmp(argv[1], "--version") == 0)
+		return version();
 	if (strcmp(argv[1], "rom") == 0 && argc >= 3)
 		return cmd_rom(argc - 2, argv + 2);
 	if (strcmp(argv[1], "disk") == 0)

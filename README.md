@@ -57,9 +57,12 @@
 
 | Platform | Download |
 |---|---|
-| macOS, Apple silicon and Intel | [Blue.dmg](https://github.com/mcbridet/Blue/releases/latest/download/Blue.dmg) |
+| macOS, Apple silicon | [Blue-arm64.dmg](https://github.com/mcbridet/Blue/releases/latest/download/Blue-arm64.dmg) |
+| macOS, Intel | [Blue-x86_64.dmg](https://github.com/mcbridet/Blue/releases/latest/download/Blue-x86_64.dmg) |
 | Linux x86-64 | [Blue-x86_64.AppImage](https://github.com/mcbridet/Blue/releases/latest/download/Blue-x86_64.AppImage) |
 | Linux AArch64 | [Blue-aarch64.AppImage](https://github.com/mcbridet/Blue/releases/latest/download/Blue-aarch64.AppImage) |
+
+macOS 11 or later. To open the app the first time, and run the AppImages: [Installing](#installing).
 
 Or build it from source: `git clone https://github.com/mcbridet/Blue` and
 `make` (see [Build and test](#build-and-test)).
@@ -1673,8 +1676,9 @@ software (on 8.6, an M5 Mac).
   before the pulse came, and dropping the pulse there lost it (Unreal
   Tournament's sound stopped and the game waited for it forever).
 - Host side: an SDL2 window loaded at run time (`src/display.c`; no build
-  dependency, headless without it; on macOS also found in Homebrew's and
-  MacPorts' directories, which aren't searched for bare library names;
+  dependency, headless without it; Blue.app's or the AppImage's own SDL2
+  first, then the system's, on macOS also in Homebrew's and MacPorts'
+  directories, which aren't searched for bare library names: `src/hostlib.c`;
   redrawn only when the screen, the pointer or the status bar changes;
   drawn at the display's full resolution, so high-density displays don't
   blur it). The window has a thread of its own, the process's main thread
@@ -1883,7 +1887,11 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    as it saves) and translating takes 1-4%. On x86-64 the front end still
    limits a Zen 5 (about half its dispatch slots get nothing), now mostly
    for the size of the code (docs/x86-jit-plan.md).
-2. Later: host ports forwarded to the guest (so it can serve); the shared
+2. A launcher: a settings window for the disks, CDs, RAM, ROM and shared
+   folder, remembered between launches, for Blue.app and the AppImages
+   opened from the desktop (which for now show a window saying how to start
+   Blue from the command line).
+3. Later: host ports forwarded to the guest (so it can serve); the shared
    folder written back when Mac OS ejects the volume and offered again as
    new media, so that changes cross during a run; Glide
    (docs/glide-plan.md); and, when a program needs them, what OpenGL
@@ -1896,11 +1904,11 @@ formats.
 
 ## Build and test
 
-Ready-made builds are at https://github.com/mcbridet/Blue/releases, one
-archive for each of macOS and Linux on AArch64 and x86_64
-(`blue-<target>.tar.gz`: `blue-macos-aarch64`, `blue-macos-x86_64`,
-`blue-linux-aarch64`, `blue-linux-x86_64`), with `blue` in it and this file.
-To build it yourself:
+Ready-made builds are at https://github.com/mcbridet/Blue/releases:
+`Blue-arm64.dmg` and `Blue-x86_64.dmg` (macOS 11 or later, on Apple
+silicon and Intel), `Blue-x86_64.AppImage` and `Blue-aarch64.AppImage` (Linux with glibc 2.35
+or later: Ubuntu 22.04, Debian 12, Fedora 36 and since), with `SHA256SUMS`
+(see Installing, below). To build it yourself:
 
 ```
 git clone https://github.com/mcbridet/Blue
@@ -1949,8 +1957,17 @@ guest instructions a second for a few kernels, interpreted and
 translated), and on Linux the GPU backend
 is tested on Mesa's
 software OpenGL (llvmpipe; `BLUE_TEST_GPU=1` makes the test fail rather than
-skip without a context). Each run uploads a `blue-<os>-<arch>.tar.gz`, and
-pushing a `v*` tag publishes them as a GitHub release.
+skip without a context). Each run also packages Blue (see Packaging): on
+each Mac a Blue.app in its disk image (`Blue-arm64.dmg`, `Blue-x86_64.dmg`;
+its libraries built by `tools/macos-deps.sh`, cached until the script
+changes), and on each Linux runner an AppImage, built in an Ubuntu 22.04
+container; each is run (`--version`, which must find its own libraries),
+and the app must need no newer macOS than 11. Pushing a `v*` tag
+publishes the two disk images, `Blue-x86_64.AppImage`,
+`Blue-aarch64.AppImage` and `SHA256SUMS` as a GitHub release, once the tag
+is `src/version.h`'s version (`v0.1.0` for `0.1.0`): the names have no
+version in them, so `releases/latest/download/Blue-arm64.dmg` and the like
+are always the newest.
 
 Blue's icons come from `art/`: `art/blue.svg`, the master (the stack on its
 tile), and `art/finder-icons.txt`, the Finder icons in Mac OS as pixel art
@@ -1960,11 +1977,15 @@ committed): the app icon as PNGs (`art/png/blue-16.png` to
 `blue-1024.png`), the window's (`src/icon_data.inc`, 256 x 256, which SDL
 on macOS shows in the Dock too) and the Finder's (`src/finder_icons.inc`,
 previewed in `art/finder-icons.png`). On macOS the executable carries an
-Info.plist (`art/Info.plist`), so the menu bar and the Dock say Blue; its
-bundle identifier is `io.github.mcbridet.Blue`. On Linux the window's
-class and app ID are `blue`, which `art/blue.desktop` and the icons go
-with: CI's Linux archives have them under `share/`
-(`cp -R share ~/.local/`).
+Info.plist (`art/Info.plist`, with the version from `src/version.h` and the
+oldest macOS filled in by the Makefile: `build/Info.plist`, Blue.app's
+too), so the menu bar and the Dock say Blue; its bundle identifier is
+`io.github.mcbridet.Blue`, and Blue.app's icon is made from the PNGs by
+`iconutil`. On Linux the window's class and app ID are `blue`, which
+`art/blue.desktop` and the icons go with: the AppImages carry them, for
+AppImage integration tools; for a build of your own, copy the desktop
+entry to `~/.local/share/applications` and `art/png/blue-N.png` to
+`~/.local/share/icons/hicolor/NxN/apps/blue.png`.
 
 ```
 build/blue rom info MOS.rom
@@ -2063,7 +2084,8 @@ changes by comparing the whole screen, without watching the framebuffer;
 `BLUE_WINDOW_CHECK=1` compares the watched pages too, and says where a
 write went unseen. `BLUE_LOG_USB=1` logs the USB
 controller's register accesses (not the frame number, which drivers poll),
-`BLUE_LOG_PCI=1` configuration space accesses.
+`BLUE_LOG_PCI=1` configuration space accesses, `BLUE_LOG_LIBS=1` the file
+each run-time library (SDL2, libslirp) was loaded from.
 `--io-ram` backs unmodelled I/O pages with plain RAM. Under gdb, `handle
 SIGSEGV nostop noprint pass` lets the JIT's memory faults through; under lldb
 on macOS, `settings set platform.plugin.darwin.ignored-exceptions
@@ -2081,6 +2103,113 @@ and their copies in RAM, with their exports, entry points and imports.
 heap in a `--dump-ram` file block by block (reading headers, not the whole
 file) and reports blocks whose back link or size is broken, where a zone was
 written over; `--find ADDR` names the system heap block an address is in.
+
+### Installing
+
+**macOS** (11 or later): open `Blue-arm64.dmg` (Apple silicon) or
+`Blue-x86_64.dmg` (Intel) and drag Blue to Applications. Blue.app is
+signed ad hoc, not by a registered developer, and isn't notarized, so the
+first time macOS won't open it: right-click it and choose Open (macOS 14
+and earlier), or, once macOS has refused it, click Open Anyway in System
+Settings > Privacy & Security (macOS 15 and later). After that it opens
+from the Finder or Terminal. (`xattr -dr com.apple.quarantine
+/Applications/Blue.app` does the same from Terminal.) Opened from the
+Finder, Blue shows a small window: it's started from the command line for
+now (a launcher is coming: see Next steps), with the command for this copy
+of it and a button that copies it. In Terminal, Blue is
+`/Applications/Blue.app/Contents/MacOS/blue`, with the commands and
+options above; a link to it in your PATH works too (`ln -s
+/Applications/Blue.app/Contents/MacOS/blue /usr/local/bin/blue`).
+
+**Linux** (x86_64 or AArch64, glibc 2.35 or later): `chmod +x Blue-x86_64.AppImage` (or
+`Blue-aarch64.AppImage`), then run it as Blue itself:
+`./Blue-x86_64.AppImage boot --cdrom 85.iso --window`. It mounts itself with
+FUSE, for which it needs `fusermount` (the `fuse` or `fuse3` package, which
+most desktops have; not libfuse2); without FUSE, in a container say,
+`./Blue-x86_64.AppImage --appimage-extract-and-run boot ...` unpacks it into
+a temporary directory each time instead (or `--appimage-extract` once, then
+`squashfs-root/AppRun boot ...`). Opened from a file manager it shows the
+same window as the app on macOS. It holds Blue's desktop entry and icons,
+for AppImage integration tools (AppImageLauncher, Gear Lever).
+
+**What's in them:** Blue, and the libraries it loads at run time
+(`src/hostlib.c`): SDL2 (window, sound, input) and libslirp (networking),
+with GLib, which libslirp needs, and what GLib needs (on macOS its libintl,
+proxy-libintl, and PCRE2 built into it; on Linux PCRE), in Blue.app's
+`Contents/Frameworks` and the AppImage's `usr/lib`. Blue looks for each
+there first (`../Frameworks` or `../lib` from the executable's real
+directory), then where the system finds it, so `build/blue` takes the
+system's or Homebrew's; `blue --version` says which SDL2 and libslirp it
+found, and where, and `BLUE_LOG_LIBS=1` logs it as they're loaded. Nothing
+else is bundled: SDL2 loads X11 or Wayland, ALSA, PulseAudio or PipeWire
+and OpenGL from the system, as Blue does OpenGL and EGL, and glibc is the
+system's. The libraries' licences are in Blue.app's
+`Contents/Resources/Licenses` and the AppImage's `usr/share/doc/blue/Licenses`
+(beside Blue's `LICENSE` and `THIRD-PARTY-NOTICES.md`; also `LICENSE` in the
+disk image), with a `README.txt` giving each one's version and source. They
+stay separate, replaceable libraries, as the LGPL asks of GLib and
+libintl: put another build of one in its place, under the same name (in
+Blue.app, then sign it again: `codesign --force --deep -s - Blue.app`; an
+AppImage, `--appimage-extract` it, replace the file in
+`squashfs-root/usr/lib` and run `squashfs-root/AppRun`). Their sources, as
+released: on macOS, built from source by `tools/macos-deps.sh`, SDL2
+2.32.10 (https://github.com/libsdl-org/SDL/releases/tag/release-2.32.10),
+GLib 2.90.1 (https://download.gnome.org/sources/glib/2.90/), with PCRE2
+10.46 and proxy-libintl 0.5 from GLib's own `subprojects` wraps
+(https://github.com/PCRE2Project/pcre2/releases/tag/pcre2-10.46,
+https://github.com/frida/proxy-libintl/releases/tag/0.5), and libslirp
+4.9.7 (https://gitlab.freedesktop.org/slirp/libslirp/-/tags/v4.9.7); on
+Linux, SDL2 2.32.10 built by `tools/package-linux.sh`, and Ubuntu 22.04's
+packages of the rest (libslirp0, libglib2.0-0, libpcre3: their sources by
+`apt-get source`, or at https://launchpad.net/ubuntu/+source/, as
+`README.txt` gives them). Blue's own source is this repository, at the
+release's tag.
+
+### Packaging
+
+The version is `src/version.h`'s (`BLUE_VERSION`), which `blue --version`
+and the usage show, and the Makefile puts in the Info.plist
+(`CFBundleShortVersionString`, `CFBundleVersion`); a release's tag must be
+it, with a `v`.
+
+```
+make app                         # build/Blue.app (macOS), with Homebrew's SDL2 and libslirp
+make dmg                         # build/Blue-arm64.dmg (or x86_64): Blue.app, a link to Applications, LICENSE
+tools/macos-deps.sh ~/blue-deps  # SDL2, GLib and libslirp from their sources, for macOS 11 (a few minutes)
+make app DEPS=~/blue-deps        # ... Blue.app with those, as released
+podman run --rm -v "$PWD:/src" -e BUILD=/tmp/appimage -e OUT=/src/build ubuntu:22.04 \
+        /src/tools/package-linux.sh --setup          # build/Blue-<arch>.AppImage, built in Ubuntu 22.04
+```
+
+On macOS the Makefile builds for `MACOSX_DEPLOYMENT_TARGET` (11.0 unless
+set; a build directory from before needs `make clean` once, or the linker
+warns of objects built for a newer macOS), and links the executable with
+an `LC_RPATH` of `@executable_path/../Frameworks`. `make app` (`DEPS`:
+`brew --prefix` unless given; `brew install sdl2 libslirp`) copies SDL2,
+libslirp and every library they load but the system's into
+`Contents/Frameworks`, as `@rpath/NAME` with an `LC_RPATH` of
+`@loader_path`, and their licences (from `DEPS/share/licenses`, which
+`tools/macos-deps.sh` writes, or the Homebrew kegs), sets
+`LSMinimumSystemVersion` to the newest minimum of the executable and the
+libraries (`otool -l`'s `LC_BUILD_VERSION`), and signs it ad hoc, the
+libraries first (`codesign --force -s -`), checking it with `codesign
+--verify --deep --strict`. Homebrew's libraries need the macOS they were
+built for (26 or 27 on a Mac with macOS 27, so the app does too; `make app`
+says), and Homebrew's SDL2 is sdl2-compat, over SDL3, which then goes in
+too; `tools/macos-deps.sh` builds them for macOS 11 (`ARCH=x86_64` builds
+Intel's on Apple silicon, its checks run in Rosetta), as CI does.
+Without the hardened runtime, the JIT needs no entitlement. The disk image
+is named for the executable's architecture (`lipo -archs`): `make dmg
+BUILD=build/x86 CC='cc -arch x86_64' CXX='c++ -arch x86_64'
+DEPS=~/blue-deps-x86_64` makes Intel's on Apple silicon. `tools/package-linux.sh` builds Blue with GCC 12
+(Ubuntu 22.04's `gcc-12`), libstdc++ and libgcc linked in, so that glibc
+is all it needs of the system; with `--setup` it first installs what it
+needs and builds SDL2 2.32.10 into `/opt/sdl2`, its backends (X11, Wayland,
+ALSA, PulseAudio, PipeWire, KMS/DRM) all loaded at run time. It bundles
+SDL2, libslirp and what they load but glibc, and nothing outside a short
+list (to keep the system's graphics and sound stacks out), each with a run
+path of `$ORIGIN`, and puts them in a squashfs behind the AppImage
+project's static type2-runtime (release 20251108, checked by SHA-256).
 
 ## QEMU reference
 
@@ -2155,7 +2284,9 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           pixels per inch, for its scale), ui.cpp (its menu and prompts, with Dear ImGui),
           chooser.c, chooser_mac.m (the host's file chooser, for the menu's Insert...), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), env.c (settings' old names),
-          icon.c (the window's icon), font.c (its font), main.c
+          icon.c (the window's icon), font.c (its font), hostlib.c (where
+          SDL2 and libslirp are loaded from), welcome.c (the window shown
+          without a command), version.h, main.c
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
@@ -2163,10 +2294,12 @@ tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
           heap.py (heap zones in a RAM dump, checked),
           gltable.py (the OpenGL libraries' functions, from Apple's),
           icons.py (the icons, from art/), fonts.py (the window's font,
-          from third_party/fonts/)
+          from third_party/fonts/), package-macos.sh (Blue.app and its
+          disk image), macos-deps.sh (its libraries, from their sources),
+          package-linux.sh (the AppImage)
 art/      blue.svg (the icon's master), finder-icons.txt (the Finder
           icons' pixel art), png/ (the icon at each size), Info.plist
-          (macOS), blue.desktop (Linux)
+          (macOS: the executable's and Blue.app's), blue.desktop (Linux)
 docs/     x86-jit-plan.md (the x86-64 JIT), gpu-plan.md (the
           3D engine's OpenGL backend), opengl-plan.md and
           glide-plan.md (Mac OS 9's OpenGL, under way, and 3dfx Glide),
