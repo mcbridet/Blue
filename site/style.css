@@ -267,33 +267,36 @@ code {
 }
 .splash-logo { width: 76px; height: 76px; overflow: visible; }
 
-/* The logo's slabs drop into place, bottom first, and the stack gives under each one's weight */
+/* The logo's slabs drop into place, bottom first, each before the last has landed, and the stack gives
+   under each one's weight like a spring */
 @media (prefers-reduced-motion: no-preference) {
   .splash-logo .stack {
     transform-box: view-box;
     transform-origin: 16px 31px;
-    animation: stack-give 1.6s both;
+    animation: stack-give 1s cubic-bezier(.3, 0, .2, 1) both;
   }
-  .splash-logo .slab { animation: slab-drop .42s cubic-bezier(.55, 0, 1, .45) both; }
-  .splash-logo .slab:nth-child(1) { --from: -26px; animation-delay: .2s; }
-  .splash-logo .slab:nth-child(2) { --from: -22px; animation-delay: .55s; }
-  .splash-logo .slab:nth-child(3) { --from: -18px; animation-delay: .9s; }
+  .splash-logo .slab { animation: slab-drop .3s cubic-bezier(.32, 0, .67, 0) both; }
+  .splash-logo .slab:nth-child(1) { --from: -22px; animation-delay: .08s; }
+  .splash-logo .slab:nth-child(2) { --from: -19px; animation-delay: .24s; }
+  .splash-logo .slab:nth-child(3) { --from: -16px; animation-delay: .4s; }
 }
 @keyframes slab-drop {
   from { transform: translateY(var(--from)); opacity: 0; }
-  35% { opacity: 1; }
+  25% { opacity: 1; }
   to { transform: none; opacity: 1; }
 }
-/* Landings at .62 s, .97 s and 1.32 s: 39%, 61% and 83% */
+/* Landings at .38 s, .54 s and .7 s: 38%, 54% and 70% */
 @keyframes stack-give {
-  0%, 39% { transform: none; }
-  42% { transform: translateY(.4px) scaleY(.98); }
-  47%, 61% { transform: none; }
-  64% { transform: translateY(.9px) scaleY(.96); }
-  70% { transform: translateY(-.15px); }
-  74%, 83% { transform: none; }
-  87% { transform: translateY(1.8px) scaleY(.92); }
-  94% { transform: translateY(-.35px) scaleY(1.01); }
+  0%, 38% { transform: none; }
+  42% { transform: translateY(.35px) scaleY(.985); }
+  48% { transform: translateY(-.05px); }
+  54% { transform: none; }
+  58.5% { transform: translateY(.8px) scaleY(.97); }
+  64% { transform: translateY(-.12px) scaleY(1.004); }
+  70% { transform: none; }
+  75% { transform: translateY(1.6px) scaleY(.935); }
+  84% { transform: translateY(-.35px) scaleY(1.01); }
+  92% { transform: translateY(.08px) scaleY(.998); }
   100% { transform: none; }
 }
 .splash-welcome { margin: 14px 0 0; font: 16px var(--chrome); color: #333; }
