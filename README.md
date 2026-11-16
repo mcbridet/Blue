@@ -86,6 +86,34 @@ memory and devices reset as on a real Mac (NVRAM is kept, and so are guest
 time and the instruction count, which input scripts and `--max` go by).
 Shut Down quits.
 
+The Startup Disk control panel of Mac OS 9.1 and later chooses the startup
+disk, as on an iMac: it sets Open Firmware's `boot-device`, which Mac OS
+keeps in NVRAM (as `boot-device=/pci@80000000/blue,disk@3@3:8,\\:tbxi`:
+the disk's PCI device number, its SCSI target, the partition), and a
+restart, or the next launch with the same `--nvram` file, starts the ROM
+file in that disk's System Folder, whichever system it is:
+
+```
+build/blue boot --disk hd91.img --disk hd922.img --cdrom 922.iso --cdrom 85.iso --window --nvram blue.nvram
+rom: "MacOS9Lives:System Folder:Mac OS ROM" from hd922.img (Mac OS ROM 10.2f1, 2796822 bytes), which boot-device names
+```
+
+If that disk isn't attached (or has no ROM file there now), Blue starts up
+from the first drive as before, and says why; `--rom FILE` overrides it.
+For this, a ROM file with parcels (9.1 and later) gets Open Firmware's
+settings in the device tree (`/options` with `boot-device`, `/openprom`
+with `supports-bootinfo`, without which StartLib doesn't set it) and their
+NVRAM partition (`common`, which Blue makes in NVRAM's first 2 KB the first
+time; Mac OS's PRAM stays at `0x1400`), when NVRAM is kept (`--nvram`) or
+in real time: Mac OS reads them at startup, so instruction-time runs
+without `--nvram` are as they were. Mac OS 8.5 and 8.6's Startup Disk
+lists only the current startup disk (it asks drives what to put in PRAM,
+which Blue's don't answer), and their ROM files' Start Manager starts up
+from the first drive with a System Folder: when `boot-device` (set by 9.x)
+names such a disk, Blue puts that drive first, so it is (choosing the 8.5
+CD in 9.1's Startup Disk starts 8.5 from it). From those systems, start
+with `--rom` or without the disk to go back.
+
 Mac OS 8.5 also starts up with the ROM file from its own System Folder
 (the data fork of "Mac OS ROM", release 0x44F3), from the CD or from a
 system installed from it. That ROM has the DAV audio component's 'thng'
@@ -1478,6 +1506,14 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
   driver says, through DriverGestalt, which node ('nmrg'), unit ('intf'
   'scsi', 'dvrf' with the PCI device number as target ID) and partition
   ('ofpt') each drive is.
+- Open Firmware's settings, for ROM files with parcels when NVRAM is kept
+  or in real time: `/options` (`boot-device`, from NVRAM's `common`
+  partition, else the bootpath) and `/openprom` (`model` "OpenFirmware 3",
+  `supports-bootinfo`); in NVRAM, the `common` partition (CHRP: signature
+  0x70, 2 KB at offset 0), which Blue makes if those bytes are blank
+  (`src/ofnvram.c`). The disks' nodes are in command-line order, but for a
+  startup disk `boot-device` chose for a ROM file without parcels, which
+  goes first.
 - ADB/power-manager kind 0 in the universal flags, so the early ROM code uses
   RTAS (tokens in `NKHWInfo`) for clock, NVRAM and power (`NKHWInfo`'s Mac OS
   NVRAM offset, `0x1400`, is where PRAM goes; a ROM file with parcels uses the
@@ -1520,9 +1556,8 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    written (by protecting them) rather than comparing it with a copy each
    frame, which is most of what showing a 32-bit screen still costs (plan.md,
    Findings, "Showing the screen").
-3. Known problems: startup-disk
-   selection (the Startup Disk control panel); whether Open Transport's
-   stall with a full interrupt set for the Ethernet node is still there.
+3. Known problems: whether Open Transport's stall with a full interrupt
+   set for the Ethernet node is still there.
 4. Later: host ports forwarded to the guest (so it can serve); the shared
    folder written back when Mac OS ejects the volume and offered again as
    new media, so that changes cross during a run; Glide
@@ -1768,7 +1803,9 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           sheets, the table of contents), cdaudio.c (the drive's player),
           net.c (Ethernet's lanLib,
           libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
-          reader: the startup disk's ROM file), share.c (shared folder),
+          reader: the startup disk's ROM file), startup.c (which disk is
+          the startup disk), ofnvram.c (Open Firmware's variables in
+          NVRAM: boot-device), share.c (shared folder),
           rsrc.c (resource forks), tools.c (guest tools), install.c
           (installing them from inside Mac OS), clip.c (the clipboard they
           share with the host), rave.c (3D engine), opengl.c +

@@ -97,6 +97,9 @@ struct bootinfo_machine {
 	/* With parcels: where Open Firmware booted from, a disk and its partition's map entry (0: no map) */
 	bool boot;
 	unsigned boot_disk, boot_map_entry;
+	bool settings;                  /* ... with Open Firmware's settings (/options, /openprom), */
+	const char *boot_device;        /* ... boot-device among them, from NVRAM (NULL: unset) */
+	unsigned first_disk;            /* the disk whose node comes first (the others in order): Mac OS drives them so */
 };
 
 struct bootinfo {

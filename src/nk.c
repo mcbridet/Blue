@@ -26,6 +26,7 @@
 #include "ndrv.h"
 #include "net.h"
 #include "nvram.h"
+#include "ofnvram.h"
 #include "ohci.h"
 #include "pci.h"
 #include "perf.h"
@@ -35,6 +36,7 @@
 #include "rave.h"
 #include "rtas.h"
 #include "scc.h"
+#include "startup.h"
 #include "tools.h"
 #include "via.h"
 #include "video.h"
@@ -463,6 +465,7 @@ struct machine {
 	struct ppc_cpu cpu;
 	struct bootinfo bootinfo;
 	struct rtas rtas;
+	const uint8_t *kept_nvram;      /* NVRAM as it was before a restart (else it's the --nvram file's) */
 	struct nvram nvram;             /* RTAS's NVRAM as a device (ROM files with parcels; see nvram.h) */
 	struct mmio_bus bus;
 	struct macio macio;
@@ -1026,6 +1029,28 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		if (m->disk[k].removable)
 			m->drives.cd[m->drives.cds++] = &m->disk[k];
 
+	/*
+	 * NVRAM, before the tree. ROM files with parcels get Open Firmware's
+	 * variables there too (boot-device, which the Startup Disk control panel
+	 * sets: see ofnvram.h), in a partition Blue makes the first time, and
+	 * its settings in the tree: when NVRAM is kept (--nvram) or someone can
+	 * choose (real time). Mac OS reads them at startup, so other runs (in
+	 * instruction time, without --nvram) are as they were without.
+	 */
+	rtas_init(&m->rtas);
+	if (m->kept_nvram) {
+		memcpy(m->rtas.nvram, m->kept_nvram, sizeof m->rtas.nvram);
+	} else if (opt->nvram && rtas_nvram_load(&m->rtas, opt->nvram) < 0) {
+		fprintf(stderr, "%s: not a %u-byte NVRAM image\n", opt->nvram, RTAS_NVRAM_SIZE);
+		return -1;
+	}
+	bool settings = parcels && (opt->nvram || opt->realtime);
+	char boot_device[OFNVRAM_VALUE_MAX];
+	if (settings)
+		ofnvram_format(m->rtas.nvram, RTAS_NVRAM_SIZE);
+	bool have_boot_device = settings && ofnvram_get(m->rtas.nvram, RTAS_NVRAM_SIZE, "boot-device", boot_device,
+							sizeof boot_device);
+
 	static const uint8_t mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };   /* (locally administered) */
 	net_init(&m->net, &m->mem, mac, TIMEBASE_HZ);
 	m->net.log = getenv("BLUE_LOG_NET") != NULL;
@@ -1055,6 +1080,10 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		.boot = boot,
 		.boot_disk = boot_disk,
 		.boot_map_entry = boot_map_entry,
+		.settings = settings,
+		.boot_device = have_boot_device ? boot_device : NULL,
+		/* (a ROM file before 9.1's has its Start Manager take the first drive that works: the chosen one) */
+		.first_disk = !parcels && opt->rom_from_disk && opt->rom_chosen ? opt->rom_disk : 0,
 	};
 	memcpy(hw.mac, mac, 6);
 	for (unsigned k = 0; k < m->disks; k++) {
@@ -1069,13 +1098,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		printf("rom: %u parcels, %u device-tree properties from them (tree %u KB)\n", hw.parcels->count,
 		       m->bootinfo.parcel_props, m->bootinfo.device_tree_size >> 10);
 	bootinfo_level_masks(m->level_mask);
-	rtas_init(&m->rtas);
 	m->clock = (struct guest_clock){ opt->fixed_time, &m->cpu.tb, TIMEBASE_HZ };
 	m->rtas.clock = &m->clock;
-	if (opt->nvram && rtas_nvram_load(&m->rtas, opt->nvram) < 0) {
-		fprintf(stderr, "%s: not a %u-byte NVRAM image\n", opt->nvram, RTAS_NVRAM_SIZE);
-		return -1;
-	}
 
 	/* Devices (HAL side of the I/O the ROM was told about) */
 	macio_init(&m->macio);
@@ -3829,13 +3853,56 @@ static void stop_machine(struct machine *m)
 }
 
 /*
+ * A restart starts up from the disk Open Firmware's boot-device names (the
+ * Startup Disk control panel's choice: see startup.h) if that's another one
+ * and it's there, with its own ROM file; otherwise from where it did. Not
+ * with --rom.
+ */
+static void restart_from(struct machine *m, struct nk_boot_options *opt, const struct machine *old)
+{
+	static struct rom roms[2];
+	static int current = -1;        /* (which of them is m->rom: its own ROM file came from main.c) */
+	unsigned drive, entry;
+	if (!opt->rom_from_disk || !startup_choice(old->rtas.nvram, RTAS_NVRAM_SIZE, &drive, &entry))
+		return;
+	const struct disk *now = &old->disk[opt->rom_disk];
+	if (drive == opt->rom_disk && opt->rom_part < now->partitions && now->part[opt->rom_part].map_entry == entry)
+		return;
+	const char *paths[NK_MAX_DISKS] = { NULL };
+	for (unsigned k = 0; k < opt->disks && k < NK_MAX_DISKS; k++)
+		paths[k] = !old->disk[k].removable ? opt->disk[k] : m->cd_path[k][0] ? m->cd_path[k] : NULL;
+	struct rom *rom = &roms[current == 0];
+	struct startup start;
+	char note[HFSREAD_PATH_MAX + 512], version[64];
+	int found = startup_rom(paths, opt->disks, old->rtas.nvram, RTAS_NVRAM_SIZE, rom, &start, note, sizeof note);
+	if (!found && !start.chosen)
+		rom_free(rom);
+	if (found || !start.chosen) {
+		printf("rom: %s: starting up from where it did\n", note[0] ? note : "boot-device");
+		return;
+	}
+	if (rom_file_version(rom, version, sizeof version))
+		printf("rom: %s (Mac OS ROM %s, %zu bytes), which boot-device names\n", start.from, version, rom->file_size);
+	else
+		printf("rom: %s (Toolbox release 0x%04X, %zu bytes), which boot-device names\n", start.from,
+		       rom_release(rom), rom->file_size);
+	if (current >= 0)
+		rom_free(&roms[current]);
+	current = current == 0;
+	m->rom = rom;
+	opt->rom_disk = start.drive;
+	opt->rom_part = start.part;
+	opt->rom_chosen = true;
+}
+
+/*
  * The guest asked to restart (RTAS system-reboot, or Cuda's reset): start
  * over from the ROM with memory and devices reset, as a real Mac does,
  * keeping what survives a restart there (NVRAM) and what the host side
  * counts across it: guest time, the instruction count (which input scripts
  * and --max go by), statistics, and the window and sound output.
  */
-static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
+static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 {
 	static struct machine old;
 
@@ -3895,11 +3962,12 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 		snprintf(m->cd_path[k], sizeof m->cd_path[k], "%s", !old.disk[k].removable ? old.cd_path[k] :
 			 old.disk[k].media ? old.disk[k].media_path : "");
 	memcpy(m->exceptions, old.exceptions, sizeof m->exceptions);
+	m->kept_nvram = old.rtas.nvram;
+	restart_from(m, opt, &old);
 	if (start_machine(m, opt))
 		return -1;
 	m->install.check.apple_kept = old.install.check.apple_kept;
 	tools_startup(m, opt);
-	memcpy(m->rtas.nvram, old.rtas.nvram, sizeof m->rtas.nvram);
 	m->cpu.icount = old.cpu.icount;
 	m->cpu.tb = old.cpu.tb;
 	if (m->realtime)        /* (the guest reads the clock again: the lead guest time had is moot) */
@@ -3922,9 +3990,10 @@ static struct gpu *open_gpu(const struct nk_boot_options *opt)
 	return gpu_open(forced);
 }
 
-int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
+int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 {
 	static struct machine m;
+	struct nk_boot_options run = *options, *opt = &run;    /* (a restart may change where the ROM file comes from) */
 
 	memset(&m, 0, sizeof m);
 	m.rom = rom;

@@ -529,6 +529,13 @@ the kernel); 8 onwards as the boot progresses.
   Folder:Mac OS ROM" from 91.iso, ...`); the run is otherwise as with
   `--rom MOS91.rom`. `rom info 91.iso` (and the other `rom` commands) read
   a disk image's the same way. `tests/test_hfsread.c` covers the reader.
+  The Startup Disk control panel's choice (startup-disk): Mac OS 9.1 and
+  later set Open Firmware's boot-device, which Blue reads from NVRAM at
+  launch and at each restart (`src/startup.c`, `src/ofnvram.c`), and starts
+  the ROM file of the disk and partition it names (see Findings, "The
+  Startup Disk control panel"). `tests/test_startup.c` covers the NVRAM
+  partition and variables, the paths, and which drive starts;
+  `tests/test_nvram.c` the tree's `/options`, `/openprom` and disk order.
 
 ### 12. Shared folder
 
@@ -2364,6 +2371,50 @@ Facts later tasks need, added as they are found.
   188), and the volume is unmounted cleanly (HFS, attributes 0x0100). The
   installed disk starts up alone, with its own ROM file, to the Finder and
   the Mac OS Setup Assistant (Command-Q, then Quit at 541 197).
+- **The Startup Disk control panel** (startup-disk; 9.1 installed and
+  the restored 9.2.2, with CDs): Startup Disk 9.x lists the volumes with a
+  System Folder (Blue's disks and CDs, 8.5's CD too) and on a choice calls
+  StartLib's SetSelectedStartupDevice (MOS91.rom's StartLib, code offset
+  0x21A8): the drive's DriverGestalt ('boot' fails, 'nmrg', 'dvrf',
+  'intf' 'scsi', 'ofpt'), a path built from them, then
+  WriteSelectedStartupDevice: /options' `boot-device` set (created if need
+  be) with RegistryPropertySetMod's kRegPropertyValueIsSavedToNVRAM (0x20),
+  and /chosen's AAPL,boot-device-driveNumber and -interfaceType. Before
+  that it checks Gestalt 'nreg' and /openprom's `supports-bootinfo` (code
+  0xF0C): without /openprom it took another path whose length came out
+  uninitialized (NewPtr of 167 MB: -108), and without /options it couldn't
+  set the property. With both, setting it failed with -116: the Name
+  Registry writes such properties at once through the ROM's 68k code
+  (10.2f1 `0xFFC476D8`, 6.1f9 `0xFFC48A90`), which finds the CHRP
+  partition with signature 0x70 named "common" (NVRAMServicesLib's
+  NVRAMFindPartition walks 16-byte headers from offset 0, each checked
+  with its checksum; Blue's blank NVRAM ended the walk with -116) and
+  rewrites its "name=value" strings. Mac OS's PRAM stays at `0x1400`
+  (NVRAMServicesLib doesn't find "APL,MacOS75" and falls back there), and
+  NVRAM's first 2 KB were unused in every NVRAM file here, so Blue makes an
+  empty "common" there (`ofnvram_format()`). Mac OS then wrote
+  `boot-device=/pci@80000000/blue,disk@3@3:,\\:tbxi` (after an empty first
+  string; its reader skips one), `disk@3@3:8` for the 9.2.2 CD's map entry
+  8, the same numbering as Blue's bootpath. Blue reads it at launch (from
+  `--nvram`) and at each restart (the NVRAM in memory), maps the PCI device
+  to a drive, and starts the ROM file of that partition's blessed folder
+  (`hfsread_system_file_in()`), else the first drive's as before; the tree
+  has /options (`boot-device` from NVRAM, else the bootpath, so the panel
+  shows the current choice) and /openprom. Checked: 9.1 → the 9.2.2 disk
+  and back (from 9.2.2's panel), the next launch on the chosen disk, the
+  9.2.2 CD among a disk and two CDs; an absent disk falls back with a
+  note, `--rom` ignores it. The tree's nodes and the partition change what
+  9.1 and 9.2.2 do at startup (9.2.2's CD read NVRAM 352 times instead of
+  320, other counts moved; the screens the same but for the caret's
+  blink), so they're there only when NVRAM is kept or in real time, and
+  the CD checks are unchanged. 8.5's ROM image has no such code; its
+  Startup Disk (7.x) lists only the current startup disk (DriverGestalt
+  'boot', for PRAM's DefaultStartup, which Blue's driver doesn't answer).
+  Choosing the 8.5 CD in 9.1's panel loaded 8.5's ROM file, whose Start
+  Manager took the first drive with a System Folder (9.1's: "This startup
+  disk will not work on this Macintosh model"); Mac OS numbers drives in
+  the tree's order, so the chosen disk's node now goes first for ROM files
+  without parcels, and 8.5 starts from the CD.
 - **Scripting the 9.2.2 restore** (instruction time): scripted clicks and
   double-clicks didn't select the desktop's icons (main too); typing a name
   in the Finder does (`MacO`, then Command-O opens the CD's window; `apple
