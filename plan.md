@@ -738,17 +738,26 @@ the kernel); 8 onwards as the boot progresses.
   as Apple's specification and engine have it) and
   `GL_EXT_texture_lod_bias` (per unit, clamped to 10, the deepest level,
   as 9.2.2 gave no maximum; in software added to triangles' and lines'
-  levels of detail, on the GPU `texture()`'s bias).
-  Six more scenes against Mesa (logic ops and the LOD bias exactly; the
-  rest where llvmpipe's stipple counter, smooth coverage and line texturing
-  depart),
+  levels of detail, on the GPU `texture()`'s bias). Then
+  `GL_TEXTURE_MIN_LOD` and `_MAX_LOD` applied (in software clamping the
+  level of detail, on the GPU a sampler's), and `GL_EXT_texture_env_combine`
+  as Apple's engine takes it (five functions, four sources, the operands,
+  scales of 1, 2 and 4; each unit's combine a stage of the backend's),
+  offered in ATI's list as a Rage 128's had it, not in the generic one's.
+  Quake III's demo and UT, run again, take up none of the three (their
+  calls logged): new instruction-time references for both, and on
+  milestone 8's runs the code costs 0.06% more host instructions in Quake
+  III, none measurable in UT (a first build cost 0.2%: new fields in the
+  middle of the state put the per-pixel loads out of AArch64's reach; they
+  are at the ends now).
+  Nine more scenes against Mesa (logic ops, the LOD bias and range
+  exactly, combine within 2; the rest where llvmpipe's stipple counter,
+  smooth coverage and line texturing depart),
   two in the test application (the same on macOS and Linux, the GPU
   within 1). RAVE's pixels, the boots and, built with the library's old
   data, the games' instruction-time runs are main's (but for Quake III's
   16-bit frame's dither). Not done: GLU's tessellators and NURBS,
-  antialiased polygons, auxiliary buffers, color index, textures' minimum
-  and maximum levels of detail (kept, not applied),
-  `GL_EXT_texture_env_combine`. Milestone 7, performance: measured
+  antialiased polygons, auxiliary buffers, color index. Milestone 7, performance: measured
   first (`BLUE_GL_PROFILE`: where each frame's host time goes), in real
   time on an M5 at 640 x 480. On the GPU, Quake III's demo and UT run at
   60 frames a second with 7-10 ms of each frame to spare (the guest 3-5
@@ -874,9 +883,7 @@ the kernel); 8 onwards as the boot progresses.
   tessellators and NURBS renderers keep their objects and properties but
   draw nothing (until a program needs them); antialiased polygons
   (`GL_POLYGON_SMOOTH` is kept, not drawn), auxiliary buffers and color
-  index aren't offered; `GL_TEXTURE_MIN_LOD` and `GL_TEXTURE_MAX_LOD` are
-  kept but not applied; `GL_EXT_texture_env_combine`, which a Rage 128's
-  list had, isn't offered. (`raster.c`'s pixels on edges two
+  index aren't offered. (`raster.c`'s pixels on edges two
   triangles share: fixed, see Findings, "Shared edges in the software
   rasterizer".)
 
@@ -1040,6 +1047,22 @@ Facts later tasks need, added as they are found.
   strings' order, a shorter one). The engine keeps `glTexEnv`'s LOD bias as
   given, per unit, but answers no `GL_MAX_TEXTURE_LOD_BIAS_EXT`
   (`GL_INVALID_ENUM`); its specular vector is the specification's formula.
+  Its `glTexEnv` takes `GL_EXT_texture_env_combine`'s values only (no
+  `GL_SUBTRACT_ARB`, no other unit's texture as a source), and answers a
+  scale other than 1, 2 or 4 with `GL_INVALID_ENUM` (the extension:
+  `GL_INVALID_VALUE`).
+- **Where new state goes in `raster_state` and `gl_state`** (OpenGL,
+  after milestone 8): adding 16 bytes to each texture unit's
+  `struct raster_unit` (which comes early in `raster_state`) cost Quake
+  III's run 0.15% more host instructions, with no new work per pixel: the
+  fields the row loops read moved past where AArch64's paired and
+  unscaled loads reach from the state's start (252 and 255 bytes), so
+  each loop variant loaded them in more instructions (`otool -tv`: `ldp`
+  and `ldur` became two `ldr`s, and a spill appeared). The same in
+  `gl_state` (24 KB) for its per-unit environment. New state that isn't
+  read per pixel or per vertex goes at the end of those structures, and a
+  host instruction count (`time -l`, one rasterizer thread, on runs that
+  are otherwise identical) shows it.
 - **Mesa's line stipple and smooth points and lines** (OpenGL, milestone
   8; Mesa 25.2's llvmpipe): a strip's stipple counter goes on from segment
   to segment by their lengths, not by the fragments drawn (OpenGL 1.2's

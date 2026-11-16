@@ -23,8 +23,7 @@ by OpenGL's rules, dithering, the accumulation buffer) are built; Quake
 III Arena's demo plays. S3TC and paletted textures are left out: Apple's
 Mac OS 9.2.2 doesn't offer them for a Rage 128. What's left is under "Not
 done" in milestone 8: OpenGLUtility's tessellators and NURBS, antialiased
-polygons, auxiliary buffers, color index, textures' minimum and maximum
-levels of detail, `GL_EXT_texture_env_combine` (and the imaging subset's
+polygons, auxiliary buffers, color index (and the imaging subset's
 convolution, histogram and minmax, not planned). The user chose OpenGL
 before Glide, and accepted the proposed decisions below for now
 (replacing the libraries, recording in guest memory, fixed function in C
@@ -159,12 +158,41 @@ Milestone 8:
   GL_EXT_texture_env_add GL_EXT_abgr GL_EXT_bgra GL_EXT_texture_env_combine
   GL_EXT_texture_lod_bias GL_SGIS_texture_edge_clamp`; see "What Mac OS 9
   ships"). Blue's ATI list, what Blue does of the engine's in its order,
-  now has both.
+  now has both (and `GL_EXT_texture_env_combine`, below).
+- **`GL_TEXTURE_MIN_LOD` and `GL_TEXTURE_MAX_LOD`** (OpenGL 1.2's; kept
+  and queried before, not drawn by): the level of detail, biased, is
+  clamped to them before the level is chosen and before deciding whether
+  it's magnified, in software for triangles, lines and points (where the
+  coordinates don't change the level of detail is below any, so a minimum
+  takes it there), on the GPU by a sampler of the unit's own with them
+  (those without keep the shared ones). `GL_TEXTURE_BASE_LEVEL` and
+  `GL_TEXTURE_MAX_LEVEL` were drawn by already (the levels drawn are from
+  the base to the maximum, complete by 1.2's rules). Changing either LOD
+  now counts as changing the texture (it didn't: the state drawn by stayed
+  as it was).
+- **`GL_EXT_texture_env_combine`**, as 9.2.2's engine takes it
+  (disassembled): `GL_TEXTURE_ENV_MODE` `GL_COMBINE_EXT`; for r, g and b
+  and for a, the functions `GL_REPLACE`, `GL_MODULATE`, `GL_ADD`,
+  `GL_ADD_SIGNED_EXT` and `GL_INTERPOLATE_EXT`; three sources each,
+  `GL_TEXTURE` (the unit's), `GL_CONSTANT_EXT` (its environment color),
+  `GL_PRIMARY_COLOR_EXT` and `GL_PREVIOUS_EXT`; operands `GL_SRC_COLOR`,
+  `GL_ONE_MINUS_SRC_COLOR`, `GL_SRC_ALPHA` and `GL_ONE_MINUS_SRC_ALPHA`
+  (alpha's: the last two); `GL_RGB_SCALE_EXT` and `GL_ALPHA_SCALE` of 1, 2
+  or 4. Anything else is `GL_INVALID_ENUM`, scales too (as Apple's engine
+  has it; the extension says `GL_INVALID_VALUE` for those). Each unit's
+  combine is a stage of the backend's, as the built-in modes are: the
+  functions its operations, the sources and operands its arguments (an
+  operand's alpha and one-minus its flags), the scales its shifts, then
+  clamped; the texels of each base format are already the extension's
+  colors (alpha (0, 0, 0, A), luminance (L, L, L, 1) and so on).
+  `glGetTexEnv`, the texture bits' push and pop. Offered in ATI's list,
+  where a Rage 128's had it; not in the generic renderer's, as Apple's
+  didn't list it (its functions work there too).
 - **The library's data:** the generic renderer's strings moved it, so its
-  version is 5, then 6 with Apple's version and extensions for it, and 7
-  with the two extensions in ATI's list: one installed by an older Blue is
-  left alone, with the message to update it.
-- **Checked against Mesa** (`tests/test_opengl.c`, on Linux): six more
+  version is 5, then 6 with Apple's version and extensions for it, 7 with
+  the two extensions in ATI's list and 8 with the combine: one installed
+  by an older Blue is left alone, with the message to update it.
+- **Checked against Mesa** (`tests/test_opengl.c`, on Linux): nine more
   scenes, as milestone 4's table (pixels differing by more than 2 out of
   6,912, and the most any differs by), and one not against Mesa (its
   framebuffer objects have no accumulation buffer):
@@ -178,6 +206,9 @@ Milestone 8:
   | texlines (textured lines 1 and 3 wide, nearest and minified linear; points 6 across) | 0 (2) | 51 (20) | the linear line's mix: half a texel a pixel |
   | accum (two images averaged, scaled, moved; cleared and returned within scissor boxes, through a color mask) | 0 (0) | | |
   | lodbias (a texture whose levels are each a color, on squares biased up and down, past the last level, under 0, a magnified quad biased into minifying, unit 1's bias) | 0 (0) | 0 (0) | |
+  | lodrange (the same texture's levels of detail clamped from above and below, biased too, where the coordinates don't change, a magnified quad clamped into minifying; base and maximum levels) | 0 (0) | 0 (0) | |
+  | combine (unit 0's combine: each function for r, g, b and for a, each source and operand, the scales; textures of each base format; the built-in modulate after) | 0 (2) | 0 (2) | |
+  | combine2 (unit 1's combine with unit 0's result, the primary color and its constant; built-in modes on either unit with combine on the other; unit 0 off) | 0 (1) | 0 (1) | |
 
   `tests/test_raster.c`: lines and points as llvmpipe draws them (first
   and last pixels, counts), the stipple's counter, coverage summing to the
@@ -197,7 +228,10 @@ Milestone 8:
   levels it picks in software for triangles, lines and points
   (`test_raster.c`) and on the GPU, either unit or both (`test_gpu.c`:
   exactly `raster.c`'s); ATI's and the generic renderer's strings exactly
-  (`test_opengl.c`).
+  (`test_opengl.c`). For the LOD range and the combine: the levels picked
+  in software (triangles, lines, points; clamped from above and below,
+  biased) and on the GPU (exactly); combine's defaults, values got back,
+  what's refused, the stage it makes, push and pop (`test_glfront.c`).
 - **The test application:** scenes `lines` (a smooth-shaded quad through a
   polygon stipple and a quad over it by XOR, stippled lines, fans of lines
   from a display list aliased and antialiased, points aliased and
@@ -235,16 +269,37 @@ Milestone 8:
   (waiting for the backend 2.81 and 2.97, presenting 0.19 and 0.23: the
   dither), UT 22.66 and 21.94 (11.48 and 11.22), as the host's load rose
   through the runs.
+- **The games again, with the specular vector, the LOD bias and combine
+  offered** (as a Rage 128's 9.2.2 had them): neither takes them up.
+  Through `BLUE_LOG_GL` (every call and record, counted by function and,
+  for `glTexEnv*`, `glTexParameter*` and `glLightModel*`, by parameter),
+  Quake III's demo reads the strings once and calls the same 61 functions
+  as before, its texture parameters the filters, wraps and a border color
+  and its environment the mode; UT reads `GL_EXTENSIONS` 11 times and calls
+  the same 40, the filters and one `GL_MODULATE`. No LOD bias, combine,
+  minimum or maximum LOD or specular vector. The library's data moved
+  again (version 8), so in instruction time they play out otherwise, the
+  new references (macOS, 17 and 60 billion instructions, software and the
+  GPU alike): Quake III's demo 304,338 calls and 4,469 frames, UT's match
+  24,076 calls and 1,383 frames; their screenshots look right, the GPU's
+  as far from software's as before (Quake III's frame: 26,110 pixels, as
+  milestone 8's 26,207, mipmap levels per pixel rather than per
+  triangle). Built with milestone 8's library data, the code gives
+  milestone 8's runs exactly, and its cost on them, by the host's
+  instructions retired (one rasterizer thread): Quake III 1,087.57 billion
+  against 1,086.71-1,086.97 (+0.06%, the bias and clamp in each triangle's
+  setup), UT 990.58 against 990.23-991.34. A first build cost 0.15-0.23%
+  more: the units' new fields had moved the per-pixel state further into
+  `raster_state`, past where AArch64's paired loads reach from it, so each
+  row-loop variant loaded it in more instructions; the new state is at the
+  end of `raster_state` and `gl_state` now (`struct raster_lod`), and the
+  row loops are the same instructions as milestone 8's.
 - **Not done:** OpenGLUtility's tessellators and NURBS (their objects and
   properties only: until a program needs them); antialiased polygons
   (`GL_POLYGON_SMOOTH` is kept but not drawn); auxiliary buffers (the
   generic renderer had 4; Blue's pixel formats refuse `AGL_AUX_BUFFERS`);
-  color index (no index pixel formats); `GL_TEXTURE_MIN_LOD` and
-  `GL_TEXTURE_MAX_LOD` (OpenGL 1.2's: kept and queried, not applied when
-  drawing; found while adding the LOD bias); `GL_EXT_texture_env_combine`
-  (a Rage 128's list had it; Blue's stages could draw it, but `glTexEnv`
-  doesn't take `GL_COMBINE_EXT`, so it isn't offered); the imaging
-  subset's convolution, histogram and minmax (not planned).
+  color index (no index pixel formats); the imaging subset's convolution,
+  histogram and minmax (not planned).
 
 Milestone 7:
 
