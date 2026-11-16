@@ -323,7 +323,7 @@ static void make_udif(const char *name, const uint8_t *vol, bool early)
 		char *xml = (char *)data + at, b64[2][3000];
 		base64(m[0], n[0], b64[0]);
 		base64(m[1], n[1], b64[1]);
-		tail = (size_t)sprintf(xml, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n"
+		tail = (size_t)snprintf(xml, 8192, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n"
 				      "\t<key>resource-fork</key>\n\t<dict>\n\t\t<key>blkx</key>\n\t\t<array>\n"
 				      "\t\t\t<dict>\n\t\t\t\t<key>Data</key>\n\t\t\t\t<data>\n\t%s\n\t\t\t\t</data>\n"
 				      "\t\t\t\t<key>Name</key>\n\t\t\t\t<string>one</string>\n\t\t\t</dict>\n"
