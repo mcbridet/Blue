@@ -118,7 +118,8 @@ enum { OPTION_SWAP_RECT, OPTION_BUFFER_RECT, OPTION_SWAP_LIMIT, OPTION_COLORMAP_
 /*
  * As Apple's ATI renderer (see docs/opengl-plan.md, Identity); and as its
  * generic software renderer, for pixel formats only it offered (those with
- * an accumulation buffer), Blue drawing them the same way
+ * an accumulation buffer), Blue drawing them the same way but saying what
+ * Apple's said
  */
 #define RENDERER_ID 0x00021000u
 #define GENERIC_ID 0x00020200u
@@ -126,9 +127,23 @@ enum { OPTION_SWAP_RECT, OPTION_BUFFER_RECT, OPTION_SWAP_LIMIT, OPTION_COLORMAP_
 #define TEXTURE_MEMORY (32u << 20)
 static const char vendor[] = "ATI Technologies Inc.";
 static const char renderer[] = "Rage 128 OpenGL Engine";
+static const char version[] = "1.2 Blue";
+/*
+ * The generic renderer's strings, as Mac OS 9.2.2's: its gldGetString()'s
+ * vendor, renderer and version as they are, and the extensions its engine
+ * made of its list (the engine's own seven, then each of the renderer's it
+ * knows, each followed by a space). Two are what Blue doesn't do
+ * (GL_APPLE_specular_vector, GL_EXT_texture_lod_bias), as on Apple's.
+ */
 static const char generic_vendor[] = "Apple";
 static const char generic_renderer[] = "Generic";
-static const char version[] = "1.2 Blue";
+static const char generic_version[] = "1.1";
+static const char generic_extensions[] = "GL_APPLE_specular_vector GL_APPLE_transform_hint GL_APPLE_packed_pixel "
+					 "GL_ARB_transpose_matrix GL_EXT_clip_volume_hint GL_EXT_rescale_normal "
+					 "GL_NV_texgen_reflection GL_ARB_texture_env_add GL_EXT_blend_color "
+					 "GL_EXT_blend_minmax GL_EXT_blend_subtract GL_EXT_texture_env_add "
+					 "GL_EXT_texture_lod_bias GL_EXT_abgr GL_EXT_bgra GL_SGIS_texture_edge_clamp "
+					 "GL_ARB_multitexture ";
 /* (Mac OS 9.2.2's engine's, in its order, but only those Blue does) */
 static const char extensions[] = "GL_APPLE_transform_hint GL_APPLE_packed_pixel GL_ARB_transpose_matrix "
 				 "GL_EXT_clip_volume_hint GL_EXT_rescale_normal GL_NV_texgen_reflection "
@@ -136,7 +151,7 @@ static const char extensions[] = "GL_APPLE_transform_hint GL_APPLE_packed_pixel 
 				 "GL_EXT_blend_subtract GL_EXT_compiled_vertex_array GL_EXT_texture_env_add "
 				 "GL_EXT_abgr GL_EXT_bgra GL_SGIS_texture_edge_clamp";
 /* aglErrorString()'s, as Apple's */
-static const char *const agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE] = {
+static const char agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE][32] = {
 	"invalid pixel format attribute", "invalid renderer property", "invalid pixel format",
 	"invalid renderer info", "invalid context", "invalid drawable", "invalid graphics device",
 	"invalid context state", "invalid numerical value", "invalid share context", "invalid enumerant",
@@ -156,7 +171,7 @@ static const char *const agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE] = {
  * calls write into (see "callouts").
  */
 #define DATA_MAGIC 0x7379474Cu          /* 'syGL' */
-#define DATA_VERSION 5u
+#define DATA_VERSION 6u
 enum { D_MAGIC = 0, D_VERSION = 4, D_CURRENT = OPENGL_DATA_CURRENT, D_RECORD = OPENGL_DATA_RECORD,
        D_RECORD_END = D_RECORD + 4, D_STRINGS = 20 };
 #define FORMATS 16
@@ -182,10 +197,18 @@ enum { PF_MAGIC = 0, PF_NEXT = 4, PF_FLAGS = 8, PF_DEPTH = 12, PF_STENCIL = 16, 
 #define PF_POLICY_MASK 0x1C0u           /* (minimum 0x40, maximum 0x80, closest 0x100) */
 #define PF_GENERIC 0x200u               /* (the generic renderer's) */
 
+#define NO_ERROR_STRING "no error"
+#define UNKNOWN_ERROR_STRING "no such error code"
+/* (room for the data's fixed part and every string put there) */
+#define DATA_SIZE (D_STRINGS + sizeof vendor + sizeof renderer + sizeof version + sizeof extensions + \
+		   sizeof generic_vendor + sizeof generic_renderer + sizeof generic_version + \
+		   sizeof generic_extensions + sizeof agl_errors + sizeof NO_ERROR_STRING + sizeof UNKNOWN_ERROR_STRING)
+
 static struct {
-	uint8_t data[1024];
+	uint8_t data[DATA_SIZE];
 	size_t len;
-	uint32_t vendor, renderer, generic_vendor, generic_renderer, version, extensions;
+	uint32_t vendor, renderer, version, extensions, generic_vendor, generic_renderer, generic_version,
+		 generic_extensions;
 	uint32_t agl_error[AGL_ERRORS - AGL_BAD_ATTRIBUTE], no_error, unknown_error;
 	uint32_t contexts, formats, renderer_infos, record, scratch, end;      /* the zero-filled parts */
 } lib;
@@ -208,12 +231,14 @@ static void make_data(void)
 	lib.len = D_STRINGS;
 	lib.vendor = put_string(vendor);
 	lib.renderer = put_string(renderer);
-	lib.generic_vendor = put_string(generic_vendor);
-	lib.generic_renderer = put_string(generic_renderer);
 	lib.version = put_string(version);
 	lib.extensions = put_string(extensions);
-	lib.no_error = put_string("no error");
-	lib.unknown_error = put_string("no such error code");
+	lib.generic_vendor = put_string(generic_vendor);
+	lib.generic_renderer = put_string(generic_renderer);
+	lib.generic_version = put_string(generic_version);
+	lib.generic_extensions = put_string(generic_extensions);
+	lib.no_error = put_string(NO_ERROR_STRING);
+	lib.unknown_error = put_string(UNKNOWN_ERROR_STRING);
 	for (unsigned k = 0; k < AGL_ERRORS - AGL_BAD_ATTRIBUTE; k++)
 		lib.agl_error[k] = put_string(agl_errors[k]);
 	lib.contexts = (uint32_t)(lib.len + 15) & ~15u;
@@ -1877,8 +1902,8 @@ static uint32_t gl_call(struct opengl *o, struct opengl_context *x, unsigned fn,
 		switch (a[0].u) {
 		case GL_VENDOR: return base + (x->format & PF_GENERIC ? lib.generic_vendor : lib.vendor);
 		case GL_RENDERER: return base + (x->format & PF_GENERIC ? lib.generic_renderer : lib.renderer);
-		case GL_VERSION: return base + lib.version;
-		case GL_EXTENSIONS: return base + lib.extensions;
+		case GL_VERSION: return base + (x->format & PF_GENERIC ? lib.generic_version : lib.version);
+		case GL_EXTENSIONS: return base + (x->format & PF_GENERIC ? lib.generic_extensions : lib.extensions);
 		default:
 			glf_error(st, GL_INVALID_ENUM);
 			return 0;

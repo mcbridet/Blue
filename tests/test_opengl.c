@@ -340,13 +340,22 @@ static void test_agl(void)
 	CHECK_EQ(mem_r32(&mem, OUT), 16);
 	CHECK_EQ(CALL(aglDescribePixelFormat, apf, AGL_ACCUM_ALPHA_SIZE, OUT), 1);
 	CHECK_EQ(mem_r32(&mem, OUT), 16);
-	/* (its contexts: the generic renderer's strings, OpenGL's version and extensions as ATI's) */
+	/*
+	 * (its contexts: the generic renderer's strings, as Mac OS 9.2.2's engine gave them: the renderer's
+	 * version, the engine's extensions and then the renderer's, each followed by a space)
+	 */
 	uint32_t actx = CALL(aglCreateContext, apf, 0);
 	CHECK(actx != 0);
 	CHECK_EQ(CALL(aglSetCurrentContext, actx), 1);
 	CHECK(!strcmp((const char *)mem_ptr(&mem, CALL(glGetString, 0x1F00)), "Apple"));
 	CHECK(!strcmp((const char *)mem_ptr(&mem, CALL(glGetString, 0x1F01)), "Generic"));
-	CHECK(!strcmp((const char *)mem_ptr(&mem, CALL(glGetString, 0x1F02)), "1.2 Blue"));
+	CHECK(!strcmp((const char *)mem_ptr(&mem, CALL(glGetString, 0x1F02)), "1.1"));
+	CHECK(!strcmp((const char *)mem_ptr(&mem, CALL(glGetString, 0x1F03)),
+		      "GL_APPLE_specular_vector GL_APPLE_transform_hint GL_APPLE_packed_pixel GL_ARB_transpose_matrix "
+		      "GL_EXT_clip_volume_hint GL_EXT_rescale_normal GL_NV_texgen_reflection GL_ARB_texture_env_add "
+		      "GL_EXT_blend_color GL_EXT_blend_minmax GL_EXT_blend_subtract GL_EXT_texture_env_add "
+		      "GL_EXT_texture_lod_bias GL_EXT_abgr GL_EXT_bgra GL_SGIS_texture_edge_clamp GL_ARB_multitexture "));
+	CHECK_EQ(CALL0(glGetError), 0);
 	CALL(glGetIntegerv, 0x0D5A, OUT);                       /* GL_ACCUM_BLUE_BITS */
 	CHECK_EQ(mem_r32(&mem, OUT), 16);
 	CALL(glGetIntegerv, 0x0D5B, OUT);                       /* GL_ACCUM_ALPHA_BITS */
@@ -382,10 +391,14 @@ static void test_agl(void)
 	CHECK_EQ(mem_r32(&mem, data + OPENGL_DATA_CURRENT), ctx);  /* glc_cc */
 	CHECK_EQ(CALL0(aglGetCurrentContext), ctx);
 
-	/* strings, errors, the viewport the drawable's size */
+	/* strings (ATI's renderer's: Blue's version, what Blue does of the engine's extensions), errors, the viewport */
 	const char *renderer = (const char *)mem_ptr(&mem, CALL(glGetString, 0x1F01));
 	CHECK(!strcmp(renderer, "Rage 128 OpenGL Engine"));
 	CHECK(!strcmp((const char *)mem_ptr(&mem, CALL(glGetString, 0x1F00)), "ATI Technologies Inc."));
+	CHECK(!strcmp((const char *)mem_ptr(&mem, CALL(glGetString, 0x1F02)), "1.2 Blue"));
+	const char *ext = (const char *)mem_ptr(&mem, CALL(glGetString, 0x1F03));
+	CHECK(!strncmp(ext, "GL_APPLE_transform_hint ", 24) && strstr(ext, " GL_ARB_multitexture ") &&
+	      !strstr(ext, "GL_APPLE_specular_vector") && !strstr(ext, "GL_EXT_texture_lod_bias"));
 	CALL(glGetIntegerv, GL_VIEWPORT, OUT);
 	CHECK(mem_r32(&mem, OUT + 8) == 32 && mem_r32(&mem, OUT + 12) == 24);
 	CALL(glClear, 0x8000);
