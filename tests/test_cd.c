@@ -1292,7 +1292,7 @@ static void test_compressed_audio(void)
 		{ "tone.flac", 30 * CD_FRAMES, true, false, 0 }, { "tone-mono.flac", 30 * CD_FRAMES, true, true, 0 },
 		{ "tone.mp3", 30 * CD_FRAMES, false, false, 20 }, { "tone.ogg", 17664, false, false, 25 },
 	};
-	char why[256], cue[1200];
+	char why[256], cue[PATH_MAX + 100];
 	for (size_t k = 0; k < sizeof files / sizeof files[0]; k++) {
 		snprintf(cue, sizeof cue, "FILE \"%s\" %s\nTRACK 01 AUDIO\nINDEX 01 00:00:00\n", FIXTURE(files[k].file),
 			 k == 2 ? "MP3" : "WAVE");
