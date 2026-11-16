@@ -693,11 +693,11 @@ void disk_driver_call(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz)
 #define FORMAT_CURRENT 0x40u            /* ... the disk in the drive has this format */
 #define FORMAT_HIGH_DENSITY 0x10u
 /*
- * DriverGestalt 'ejec': a CD stays in at a restart and at shutdown, as on
- * an iMac. Both bits: 8.5's, 8.6's and 9.1's ShutDown Managers test the
- * first at a restart (as Apple's headers name them), 9.2.2's (its ROM's
- * and its System's) the second. The floppy drive doesn't answer, so Mac OS
- * ejects its disk then, as from a Mac's floppy drive.
+ * DriverGestalt 'ejec': a CD or a floppy stays in at a restart and at
+ * shutdown (as a CD does on an iMac), and is mounted again after a restart.
+ * Both bits: 8.5's, 8.6's and 9.1's ShutDown Managers test the first at a
+ * restart (as Apple's headers name them), 9.2.2's (its ROM's and its
+ * System's) the second.
  */
 #define RESTART_DONT_EJECT 1u
 #define SHUT_DOWN_DONT_EJECT 2u
@@ -1186,6 +1186,8 @@ static int32_t floppy_status(struct disk *d, uint32_t pb, uint32_t toc)
 		uint32_t sel = mem_r32(m, p);
 		if (sel == os_type("devt")) {
 			mem_w32(m, p + 4, os_type("flop"));
+		} else if (sel == os_type("ejec")) {
+			mem_w32(m, p + 4, RESTART_DONT_EJECT | SHUT_DOWN_DONT_EJECT);
 		} else if (sel == os_type("minf")) {
 			mem_w32(m, p + 4, blocks);
 			mem_w32(m, p + 8, 512);

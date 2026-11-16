@@ -2052,8 +2052,8 @@ Facts later tasks need, added as they are found.
   a Put Back, Blue's OpenGL isn't offered again in that run (the disk
   looks just like a 9.2.2 whose tools came before Blue's OpenGL did), so
   the restart doesn't bring the opposite offer straight back. CDs stay in
-  their drives through the restart, on 8.5, 8.6, 9.1 and 9.2.2 (see "A
-  restart or shutdown keeps CDs in").
+  their drives through the restart, on 8.5, 8.6, 9.1 and 9.2.2, and so do
+  floppies (see "A restart or shutdown keeps CDs and floppies in").
 - **RAVE finds engines per program:** QuickDraw 3D RAVE looks through the
   Extensions folder when a program loads it, so programs opened after the
   3D engine is installed find it without a restart, even after an earlier
@@ -2113,8 +2113,9 @@ Facts later tasks need, added as they are found.
   'flus' (it then sends DriverConfigure 'flus' at FlushVol: the DC42
   checksums' moment), the format list (Status 6) and Control 23 on mount
   and for Erase Disk (Format, then Verify, then it writes a new volume),
-  and 'ejec' at a restart or shutdown (which the drive doesn't answer, so
-  Mac OS ejects the disk then: see "A restart or shutdown keeps CDs in").
+  and 'ejec' at a restart or shutdown (which the drive answers as the
+  CD-ROM drives do, so the disk stays in: see "A restart or shutdown
+  keeps CDs and floppies in").
   Disk Copy
   6.3.1 can't make floppies on it (the 8.5 CD's "Make Disk Tools
   floppies" says it needs a drive that can make 720K/1440K disks, without
@@ -2138,7 +2139,7 @@ Facts later tasks need, added as they are found.
   20, 21, 22, 23 at mount), all declined as before, so a CD keeps its
   look: the generic disk's icon or the disc's own, the same in at startup
   or put in later.
-- **A restart or shutdown keeps CDs in** (DriverGestalt 'ejec'): a
+- **A restart or shutdown keeps CDs and floppies in** (DriverGestalt 'ejec'): a
   restart (Special > Restart, the Restart Apple event the guest tools'
   installer sends) or a shutdown runs the ShutDown Manager's queue. Two of
   its procedures, ROM code, go through the volume queue: one for
@@ -2165,11 +2166,20 @@ Facts later tasks need, added as they are found.
   asked on Info-Mac whether it was normal that "the disc is not ejected
   before a restart or after closing the computer, like it used to be".
   Fixed drives answer the same (their driver refused Control 7 anyway).
-  The floppy drive no longer answers, so Mac OS ejects a floppy at a
-  restart and at shutdown on every version, as from a Mac's own floppy
-  drive (Inside Macintosh's Shutdown Manager ejects every volume's disk;
-  before, 8.x kept the floppy in at a restart and 9.2.2 didn't); the next
-  of several `--floppy` images goes in, as at any eject. Checked headless
+  For a while the floppy drive didn't answer, so Mac OS ejected a floppy
+  at every restart and shutdown, as from a Mac's own floppy drive (Inside
+  Macintosh's Shutdown Manager ejects every volume's disk), and the next
+  of several `--floppy` images went in; before that it answered
+  kRestartDontEject alone (8.x kept the floppy in at a restart, 9.2.2
+  didn't). It now answers both bits too, so a floppy stays in and is
+  mounted again after a restart, and nothing of the `--floppy` queue goes
+  in (a disk set's installer that restarts finds its disk still there).
+  Checked headless with two `--floppy` images: Special > Restart on an
+  installed 8.5, 8.6, 9.1 and 9.2.2 (Mac OS asked the floppy drive
+  'ejec', made no Control 7, and the first disk was mounted again after
+  the restart, the second not in); Command-E on 8.5 and 9.2.2 (ejected,
+  the second disk in a second later), then Special > Shut Down (it stayed
+  in). Checked headless
   with ejectable drives (a `cdrom` command in the script, never reached):
   the tools' install on 9.2.2 (MacOS9Lives, `91.iso` in a CD-ROM drive),
   an installed 8.5, 8.6 and 9.1 (`922.iso`); Special > Restart on 9.2.2

@@ -543,31 +543,52 @@ static bool shutdown_keeps(int32_t err, uint32_t answer, bool restart, bool mac_
 	return !err && (answer & asked);
 }
 
-/* A restart or shutdown: Mac OS asks each drive (as drive 0) whether to leave its disc in, else ejects it */
+/*
+ * A restart or shutdown: Mac OS asks each drive (as drive 0) whether to
+ * leave its disc in, else ejects it (Control 7). A CD or a floppy stays in
+ * (and the next of several floppies doesn't go in); Cmd-E and Put Away,
+ * which eject without asking, still take it out.
+ */
 static void test_shutdown(struct mem *mem)
 {
-	char one[256];
+	char one[256], flop[256], why[400];
 	make_image(one, sizeof one, 4u << 20, "Disc One");
+	make_image(flop, sizeof flop, 1440 * K, "Floppy");
 	static struct disk drive[3];
 	CHECK_EQ(disk_open_cdrom(&drive[0], mem, one), 0);     /* swappable */
 	CHECK_EQ(disk_open(&drive[1], mem, one, true, true), 0);        /* fixed */
 	disk_open_floppy(&drive[2], mem);
+	memcpy(mem_ptr(mem, 0x910), "\6Finder", 7);             /* (applications run: the floppy is shown) */
+	volumes(mem, 0, 0);
 	for (unsigned k = 0; k < 3; k++) {
 		struct disk *d = &drive[k];
 		load_driver(d, mem);
 		mem_w32(mem, 0x308 + 2, 0);
 		mem_w32(mem, 0x308 + 6, 0);
 		CHECK_EQ(io(d, mem, NDRV_INITIALIZE, 0, 0), 0);
+		const uint16_t num = d->part[0].drive_num;
+		if (d->floppy) {
+			CHECK_EQ(disk_insert(d, flop, why, sizeof why), 0);
+			CHECK_EQ(timer(d, mem, 1000), 1);
+		}
 		for (unsigned v = 0; v < 4; v++) {
 			mem_w32(mem, PB + 32, 0);
 			int32_t err = gestalt(d, mem, 0, "ejec");
 			bool restart = v & 1, mac_os_922 = v & 2;
-			/* a CD stays in its drive, at a restart and at shutdown, whatever the Mac OS; a floppy comes out */
-			CHECK(shutdown_keeps(err, mem_r32(mem, PB + 32), restart, mac_os_922) == !d->floppy);
+			bool keeps = shutdown_keeps(err, mem_r32(mem, PB + 32), restart, mac_os_922);
+			CHECK(keeps);           /* (whatever the Mac OS) */
+			if (!keeps)
+				io(d, mem, NDRV_CONTROL, 7, num);
+		}
+		CHECK(!d->removable || (d->media && d->ejects == 0));
+		if (d->removable) {
+			CHECK_EQ(io(d, mem, NDRV_CONTROL, 7, num), 0);
+			CHECK(!d->media && d->ejects == 1);
 		}
 		disk_close(d);
 	}
 	unlink(one);
+	unlink(flop);
 }
 
 /* Where images go, and what the menu shows */

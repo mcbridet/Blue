@@ -552,8 +552,9 @@ CD-ROM drives answer as CD-ROM drives (see CDs: audio and cue sheets
 below), and the swappable ones say their disc is ejectable. As in an iMac,
 a disc stays in its drive through a restart (Special > Restart, the guest
 tools' Install and Restart, the menu's Restart) and when Mac OS shuts
-down, and is mounted again after the restart; Mac OS itself ejects a
-floppy when it restarts or shuts down (see Floppies). A CD-ROM drive gives
+down, and is mounted again after the restart; so does a floppy (see
+Floppies), and the next of several `--floppy` images doesn't go in then.
+A CD-ROM drive gives
 Mac OS a drive for each HFS partition of the disc in it at startup (one if
 it's empty); a disc put in later with more shows its first ones, and a
 disc comes out once none of its volumes is in use. A CD put in while Mac OS runs is never
@@ -667,9 +668,11 @@ device 7, much as a USB floppy drive is on a real iMac, and needs nothing
 installed in Mac OS. It answers as a floppy drive
 (DriverGestalt 'devt' 'flop', a floppy disk's icon and the drive's, in
 color, the 'where' of Get Info, the format list) and says its disk is
-ejectable. Mac OS ejects the disk when it restarts or shuts down, as from a
-Mac's own floppy drive (the next of several `--floppy` images then goes
-in). A floppy is never the
+ejectable. As the CD-ROM drives do, it tells Mac OS to leave the disk in
+when it restarts or shuts down (DriverGestalt 'ejec'), and the disk is
+mounted again after a restart (checked on 8.5, 8.6, 9.1 and 9.2.2):
+Command-E, Put Away and the Trash eject it (and the next of several
+`--floppy` images goes in), a restart doesn't. A floppy is never the
 startup disk: the drive is empty as far as Mac OS knows until applications
 run (see plan.md, Findings), and Blue doesn't look for a ROM file on it.
 Transfers take guest time at the disks' rate. The status bar's floppy light
@@ -791,8 +794,8 @@ the installer goes in again once it has. Once everything is in place,
 Mac OS restarts as Special > Restart does (Blue's installer sends the
 Process Manager the Restart Apple event): programs are asked to quit, and
 can ask to save their work first, or stop the restart (the tools are in
-place then, and load at the next restart). CDs stay in their drives
-through the restart (see Floppies and CDs). Afterwards the tools load as
+place then, and load at the next restart). CDs and floppies stay in their
+drives through the restart (see Floppies and CDs). Afterwards the tools load as
 any extension does: Blue Enhancements runs, programs find the 3D engine
 and Blue's OpenGL, and nothing is offered. If anything goes wrong, Mac
 OS doesn't restart, and the box says what. This works on Mac OS 8.5, 8.6,

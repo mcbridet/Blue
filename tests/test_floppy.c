@@ -352,7 +352,8 @@ static void test_driver(void)
 	/* answers as a floppy drive */
 	CHECK_EQ(gestalt(&d, &mem, drive, "devt"), 0);
 	CHECK_EQ(mem_r32(&mem, PB + 32), be32("flop"));
-	CHECK_EQ(gestalt(&d, &mem, drive, "ejec"), -18);        /* (Mac OS ejects its disk at a restart) */
+	CHECK_EQ(gestalt(&d, &mem, drive, "ejec"), 0);
+	CHECK_EQ(mem_r32(&mem, PB + 32), 3);                    /* (a restart or shutdown keeps its disk in) */
 	CHECK_EQ(gestalt(&d, &mem, drive, "minf"), 0);
 	CHECK_EQ(mem_r16(&mem, PB + 40), 0xFFFF);               /* no media */
 	CHECK_EQ(gestalt(&d, &mem, drive, "vmop"), 0);
