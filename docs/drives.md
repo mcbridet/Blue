@@ -51,9 +51,10 @@ came on floppies or on several CDs. Mac OS ejects a disc as on any Mac: Put
 Away or dragging it to the Trash, Eject in the Finder's Special menu, an
 installer's own eject, an Initialize dialog's Eject. The drive is then
 empty, and Blue says so (`cdrom: Mac OS ejected ut.iso`). To put an image
-in, drop it on the window: one of a floppy's size (2880K or less) goes in
-the floppy drive, any other in a CD-ROM drive, the first that's empty (else
-one whose disc Mac OS isn't using). Mac OS learns of a disc going in as
+in, drop it on the window: one of a floppy's size (2880K or less; a
+compressed image's unpacked) goes in the floppy drive, any other (and any
+image with tracks, a cue sheet or its like) in a CD-ROM drive, the first
+that's empty (else one whose disc Mac OS isn't using). Mac OS learns of a disc going in as
 from a real drive, by a disk-inserted event, so whatever application is in
 front and waiting for one (an installer, Disk Copy) gets it, and mounts it.
 
