@@ -30,7 +30,8 @@ static int fail(char *err, size_t errlen, const char *fmt, ...)
 
 /* What each tool's code calls (installed copies keep these numbers, see tools.h) */
 static const uint32_t tool_hostcall[TOOLS_FILES] = { HOSTCALL_TOOLS_HELPER, HOSTCALL_TOOLS_RAVE, HOSTCALL_TOOLS_GL,
-						     HOSTCALL_TOOLS_GLM, HOSTCALL_TOOLS_GLU, HOSTCALL_TOOLS_PIPPIN };
+						     HOSTCALL_TOOLS_GLM, HOSTCALL_TOOLS_GLU, HOSTCALL_TOOLS_PIPPIN,
+						     HOSTCALL_TOOLS_ISP };
 
 /* Apple's OpenGL libraries (see install.h), and the folders the check knows */
 static const char *const apple_names[INSTALL_APPLE_GL] = { "OpenGLLibrary", "OpenGLMemory", "OpenGLUtility" };
@@ -231,7 +232,8 @@ bool install_needed(const struct install_check *ck)
 static const char *tool_name(unsigned t)
 {
 	static const char *const names[TOOLS_FILES] = { "Blue Enhancements", "Blue 3D Engine", "Blue OpenGL Library",
-							"Blue OpenGL Memory", "Blue OpenGL Utility", "Blue Pippin Library" };
+							"Blue OpenGL Memory", "Blue OpenGL Utility", "Blue Pippin Library",
+							"Blue Game Controllers" };
 	return names[t];
 }
 

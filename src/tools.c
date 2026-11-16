@@ -11,6 +11,7 @@
 #include "gltest.h"
 #include "hfs.h"
 #include "opengl.h"
+#include "isp.h"
 #include "pippin.h"
 #include "rave.h"
 #include "rsrc.h"
@@ -533,6 +534,7 @@ static void icon_resources(struct rsrc *r, unsigned icon)
 
 static int gl_files(struct hfs_file files[TOOLS_GL_FILES]);
 static int pippin_file(struct hfs_file *file);
+static int isp_file(struct hfs_file *file);
 
 int tools_files(struct hfs_file files[TOOLS_FILES])
 {
@@ -571,7 +573,7 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 		engine, engine_rsrc, (uint32_t)engine_len, (uint32_t)engine_rsrc_len };
 	if (gl_files(files + TOOLS_GL_FIRST))
 		return -1;
-	return pippin_file(&files[TOOLS_PIPPIN]);
+	return pippin_file(&files[TOOLS_PIPPIN]) || isp_file(&files[TOOLS_ISP]) ? -1 : 0;
 }
 
 /* The Pippin library (pippin.h), under the fragment name of the Pippin's */
@@ -589,6 +591,24 @@ static int pippin_file(struct hfs_file *file)
 		return -1;
 	*file = (struct hfs_file){ "Blue Pippin Library", FOURCC('s', 'h', 'l', 'b'), FOURCC('s', 'y', 'P', 'P'),
 				   HAS_CUSTOM_ICON, 40, 260, frag, rsrc, (uint32_t)len, (uint32_t)rsrc_len };
+	return 0;
+}
+
+/* The InputSprocket driver (isp.h): InputSprocket loads the shared libraries of creator 'insp' in Extensions */
+static int isp_file(struct hfs_file *file)
+{
+	static uint8_t frag[ISP_LIBRARY_MAX], rsrc[4096];
+	struct ndrv_layout layout;
+	size_t len = isp_build(frag, sizeof frag, &layout);
+	uint8_t cfrg[128];
+	size_t cfrg_len = make_cfrg(cfrg, CFRG_LIBRARY, 0, "Blue Game Controllers", 0);
+	struct rsrc res[1 + ICON_RESOURCES] = { { FOURCC('c', 'f', 'r', 'g'), 0, cfrg, (uint32_t)cfrg_len } };
+	icon_resources(res + 1, FINDER_ICON_GAMEPAD);
+	size_t rsrc_len = rsrc_build(res, 1 + ICON_RESOURCES, rsrc, sizeof rsrc);
+	if (!len || !rsrc_len)
+		return -1;
+	*file = (struct hfs_file){ "Blue Game Controllers", FOURCC('s', 'h', 'l', 'b'), FOURCC('i', 'n', 's', 'p'),
+				   HAS_CUSTOM_ICON, 240, 60, frag, rsrc, (uint32_t)len, (uint32_t)rsrc_len };
 	return 0;
 }
 
@@ -637,7 +657,7 @@ static int gl_test_file(struct hfs_file *file)
 	if (!len || !rsrc_len)
 		return -1;
 	*file = (struct hfs_file){ "Blue GL Test", FOURCC('A', 'P', 'P', 'L'), FOURCC('s', 'y', 'G', 'T'), 0, 240,
-				   60, frag, rsrc, (uint32_t)len, (uint32_t)rsrc_len };
+				   160, frag, rsrc, (uint32_t)len, (uint32_t)rsrc_len };
 	return 0;
 }
 

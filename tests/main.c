@@ -35,6 +35,7 @@ int main(int argc, char **argv)
 		{ "tools", test_tools },
 		{ "pippin", test_pippin },
 		{ "pad", test_pad },
+		{ "isp", test_isp },
 		{ "clip", test_clip },
 		{ "raster", test_raster },
 		{ "rave", test_rave },

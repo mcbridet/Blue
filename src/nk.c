@@ -34,6 +34,7 @@
 #include "ppc_fp.h"
 #include "priv.h"
 #include "opengl.h"
+#include "isp.h"
 #include "pad.h"
 #include "pippin.h"
 #include "rave.h"
@@ -567,6 +568,8 @@ struct machine {
 		char name[32];
 		uint8_t map[4 * PAD_AJ_SWITCHES];       /* ... the AppleJack's mapping, as last seen */
 	} pippin;
+	struct isp isp;                 /* games reading them through InputSprocket (isp.h) */
+	bool isp_used, isp_front;       /* ... one does, in front, last seen */
 	bool realtime;                  /* guest time follows the host clock */
 	bool idle_sleep;                /* ... and the host sleeps while the guest idles */
 	uint64_t start_ns;              /* host time at boot */
@@ -977,6 +980,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	mem_map(&m->mem, FB_BASE, FB_SIZE, MEM_RW);
 	video_init(&m->video, &m->mem, FB_BASE, FB_SIZE, TIMEBASE_HZ);
 	helper_init(&m->helper);
+	isp_init(&m->isp, TIMEBASE_HZ);
+	m->isp.log = getenv("BLUE_LOG_PADS") != NULL;
 	clip_guest_reset(&m->clip);
 	rave_init(&m->rave, &m->mem);
 	m->rave.gpu = m->gpu;
@@ -1753,13 +1758,24 @@ static bool pippin_front(const struct machine *m)
 				      (m->helper.front[0] == m->pippin.psn[0] && m->helper.front[1] == m->pippin.psn[1]));
 }
 
+/* Whether a game reads them through InputSprocket, in front (as pippin_front()); `name` its name */
+static bool isp_front(const struct machine *m, const char **name)
+{
+	uint32_t psn[2];
+	return isp_in_use(&m->isp, psn, name) &&
+	       (!m->helper.running || !m->helper.front_known || (m->helper.front[0] == psn[0] && m->helper.front[1] == psn[1]));
+}
+
 /* The mapping, and whether presses count, before the pads change */
 static void pads_ready(struct machine *m)
 {
 	struct pad *p = &m->pad;
 	p->quiet = m->paused || m->prompting;
 	p->mapping = m->pads_off ? PAD_MAP_OFF : PAD_MAP_DEFAULT;
-	if (!m->pads_off && pippin_front(m) && mem_ok(&m->mem, m->pippin.aj, PAD_AJ_SIZE, MEM_R) &&
+	bool isp = isp_front(m, NULL);
+	for (unsigned k = 0; k < PAD_MAX; k++)
+		p->slot[k].taken = isp ? isp_taken(&m->isp, k) : 0;
+	if (!m->pads_off && !isp && pippin_front(m) && mem_ok(&m->mem, m->pippin.aj, PAD_AJ_SIZE, MEM_R) &&
 	    pad_pipp(mem_ptr(&m->mem, m->pippin.aj), PAD_AJ_SIZE, p->pippin))
 		p->mapping = PAD_MAP_PIPPIN;
 }
@@ -1784,8 +1800,11 @@ static void pads_state(struct machine *m)
 			snprintf(s.names + n, sizeof s.names - n, "%s%s", s.count++ ? ", " : "", m->pad.slot[k].name);
 	}
 	s.on = !m->pads_off;
+	const char *game;
 	if (m->pads_off)
 		snprintf(s.mapping, sizeof s.mapping, "off: they do nothing in Mac OS");
+	else if (isp_front(m, &game))
+		snprintf(s.mapping, sizeof s.mapping, "%s's, through InputSprocket (the rest by Blue's mapping)", game);
 	else if (pippin_front(m))
 		snprintf(s.mapping, sizeof s.mapping, "as the Pippin's AppleJack, by %s's mapping", m->pippin.name);
 	else
@@ -1846,10 +1865,35 @@ static void pippin_call(struct machine *m, struct ndrv_call *c)
 	ndrv_finish(c, 0);
 }
 
+/* Whether a game has begun or stopped reading them through InputSprocket, or come to the front or gone */
+static void isp_watch(struct machine *m)
+{
+	const char *game = NULL;
+	bool used = isp_in_use(&m->isp, NULL, &game);
+	if (used != m->isp_used) {
+		m->isp_used = used;
+		m->helper.front_known = false;
+		if (used)
+			printf("isp: %s reads the pads through InputSprocket\n", game);
+		else
+			printf("isp: no game reads the pads through InputSprocket\n");
+	}
+	bool front = isp_front(m, &game);
+	if (front != m->isp_front) {
+		m->isp_front = front;
+		if (used)
+			printf("isp: %s %s\n", game, front ? "is in front: the pads' controls it uses are its own, the rest "
+			       "the keyboard and mouse" : "isn't in front: the pads are the keyboard and mouse");
+		pads_state(m);
+	}
+	fflush(stdout);
+}
+
 /* At each sync point: the right stick moves the mouse, and a Pippin title's mapping is watched */
 static void pads_sync(struct machine *m)
 {
-	m->helper.want_front = m->pippin.attached;
+	isp_watch(m);
+	m->helper.want_front = m->pippin.attached || m->isp_used;
 	if (m->pippin.attached) {
 		pippin_watch(m);
 		if (pippin_front(m) != m->pippin.front) {
@@ -3931,6 +3975,10 @@ static const char *host_call(struct machine *m, uint32_t selector)
 	case HOSTCALL_TOOLS_PIPPIN:
 		pippin_call(m, &c);
 		break;
+	case HOSTCALL_TOOLS_ISP:
+		isp_call(&m->isp, &c, &m->pad);
+		isp_watch(m);
+		break;
 	case HOSTCALL_LANLIB:
 		net_call(&m->net, &c);
 		break;
@@ -5173,6 +5221,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		printf("\nopengl: %lu calls, %lu contexts, %lu frames", m.opengl.calls, m.opengl.contexts, m.opengl.frames);
 	if (m.opengl.gpu_frames)
 		printf(" (%lu drawn with %s)", m.opengl.gpu_frames, gpu_renderer(m.gpu));
+	if (m.isp.calls)
+		printf("\nisp: %lu driver calls, %lu data pushed", m.isp.calls, m.isp.pushes);
 	if (m.awacs.codec_writes)
 		printf("\nsound: %lu codec writes, %u Hz, %lu frames played, %lu recorded",
 		       m.awacs.codec_writes, awacs_rate(&m.awacs), m.awacs.frames_played, m.awacs.frames_recorded);

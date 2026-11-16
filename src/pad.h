@@ -21,8 +21,11 @@
  *                    triggers its left and right fire buttons; Back, Guide
  *                    and Start its three system buttons (left, middle,
  *                    right); and the right stick its trackball, the mouse
- *   off              nothing (InputSprocket reads the pads instead)
+ *   off              nothing
  *
+ * A game that reads a pad through InputSprocket (isp.h) takes the controls
+ * it uses: they do nothing here, while the rest keep their mapping (so
+ * that Start is Esc, for the game's menus).
  * What a control does is decided as it goes down, and undone as it comes
  * up, whatever the mapping is by then; keys and the mouse button held by
  * several controls go up when the last lets go.
@@ -47,6 +50,7 @@ enum pad_axis { PAD_LEFT_X, PAD_LEFT_Y, PAD_RIGHT_X, PAD_RIGHT_Y, PAD_LEFT_TRIGG
 
 /* A control: a button, or what the left stick and the triggers make buttons of */
 enum { PAD_STICK_UP = PAD_BUTTONS, PAD_STICK_DOWN, PAD_STICK_LEFT, PAD_STICK_RIGHT, PAD_LT, PAD_RT, PAD_CONTROLS };
+#define PAD_TAKEN_RIGHT_STICK (1u << PAD_CONTROLS)      /* (pad_slot.taken: the right stick, the mouse) */
 
 /*
  * The AppleJack's driver's data, AJGlobalData (Apple's Pippin Technical
@@ -107,6 +111,7 @@ struct pad_slot {
 	char name[PAD_NAME];
 	int16_t axis[PAD_AXES];
 	uint32_t down;                  /* controls down (bit k: control k) */
+	uint32_t taken;                 /* ... and those a game reads itself (set before each change), which do nothing */
 	struct pad_switch held[PAD_CONTROLS];   /* ... and what each does meanwhile */
 };
 
@@ -138,6 +143,9 @@ void pad_axis(struct pad *p, unsigned slot, unsigned axis, int value);     /* (-
 /* The right stick moves the mouse as time passes: `now` on a clock of `hz` */
 void pad_tick(struct pad *p, uint64_t now, uint64_t hz);
 #define PAD_MOUSE_SPEED 900             /* the mouse's counts a second, the stick all the way over */
+
+/* ... the mouse's speed, in counts a second (a Fixed), a stick's axis at `value` makes (0 in its dead zone) */
+int32_t pad_stick_speed(int value);
 
 /* The AppleJack's switches down (bit n: switch n), on any pad */
 uint32_t pad_applejack(const struct pad *p);

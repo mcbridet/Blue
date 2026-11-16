@@ -331,6 +331,36 @@ static void test_mouse(void)
 	CHECK(saw(""));
 }
 
+/* Controls a game reads itself (through InputSprocket) do nothing; the rest keep the mapping */
+static void test_taken(void)
+{
+	struct pad p;
+	start(&p);
+	p.slot[0].taken = 1u << PAD_A | 1u << PAD_STICK_UP | PAD_TAKEN_RIGHT_STICK;
+	pad_button(&p, 0, PAD_A, true);
+	pad_button(&p, 0, PAD_START, true);
+	pad_axis(&p, 0, PAD_LEFT_Y, -32768);
+	pad_axis(&p, 0, PAD_LEFT_X, 32767);
+	CHECK(saw("+35 +3C"));                                  /* Esc, the right arrow */
+	pad_tick(&p, 1000, 1000);
+	pad_axis(&p, 0, PAD_RIGHT_X, 32767);
+	pad_tick(&p, 2000, 1000);
+	CHECK_EQ(out.dx, 0);
+	p.slot[0].taken = 0;                                    /* (what went down while taken comes up as nothing) */
+	pad_button(&p, 0, PAD_A, false);
+	pad_button(&p, 0, PAD_START, false);
+	CHECK(saw("-35"));
+	pad_tick(&p, 2100, 1000);
+	CHECK_EQ(out.dx, PAD_MOUSE_SPEED / 10);
+
+	/* the right stick's speed, as a Fixed */
+	CHECK_EQ(pad_stick_speed(32767), PAD_MOUSE_SPEED * 65536);
+	CHECK_EQ(pad_stick_speed(-32768), -PAD_MOUSE_SPEED * 65536);
+	CHECK_EQ(pad_stick_speed(5000), 0);
+	int32_t half = pad_stick_speed(5000 + (32767 - 5000) / 2);      /* (half way past the dead zone: a quarter) */
+	CHECK(half > PAD_MOUSE_SPEED * 65536 / 4 / 1000 * 999 && half <= PAD_MOUSE_SPEED * 65536 / 4);
+}
+
 /* The Mac restarted: what was held is forgotten, not let go */
 static void test_forget(void)
 {
@@ -353,5 +383,6 @@ void test_pad(void)
 	test_default();
 	test_applejack();
 	test_mouse();
+	test_taken();
 	test_forget();
 }

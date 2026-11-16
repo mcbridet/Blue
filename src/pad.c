@@ -258,10 +258,10 @@ static void act(struct pad *p, const struct pad_switch *a, bool down)
 }
 
 /* What a control does as it goes down, by the mapping now */
-static struct pad_switch action(const struct pad *p, unsigned c)
+static struct pad_switch action(const struct pad *p, const struct pad_slot *s, unsigned c)
 {
 	struct pad_switch a = { PAD_DO_NOTHING, 0, 0, 0 };
-	if (p->quiet || p->mapping == PAD_MAP_OFF)
+	if (p->quiet || p->mapping == PAD_MAP_OFF || (s->taken >> c & 1))
 		return a;
 	if (p->mapping == PAD_MAP_DEFAULT)
 		return default_map[c];
@@ -281,7 +281,7 @@ static void control(struct pad *p, unsigned slot, unsigned c, bool down)
 		return;
 	if (down) {
 		s->down |= bit;
-		s->held[c] = action(p, c);
+		s->held[c] = action(p, s, c);
 		act(p, &s->held[c], true);
 	} else {
 		s->down &= ~bit;
@@ -392,6 +392,11 @@ static int64_t speed(int v)
 	return (v < 0 ? -1 : 1) * PAD_MOUSE_SPEED * n * n;
 }
 
+int32_t pad_stick_speed(int value)
+{
+	return (int32_t)(speed(value) * 65536 / ((int64_t)LIVE * LIVE));
+}
+
 void pad_tick(struct pad *p, uint64_t now, uint64_t hz)
 {
 	uint64_t last = p->tick;
@@ -403,7 +408,7 @@ void pad_tick(struct pad *p, uint64_t now, uint64_t hz)
 	uint64_t t = now - last < hz / 10 ? now - last : hz / 10;      /* (a long gap isn't a long movement) */
 	int64_t vx = 0, vy = 0;
 	for (unsigned k = 0; k < PAD_MAX; k++) {
-		if (!p->slot[k].connected)
+		if (!p->slot[k].connected || (p->slot[k].taken & PAD_TAKEN_RIGHT_STICK))
 			continue;
 		vx += speed(p->slot[k].axis[PAD_RIGHT_X]);
 		vy += speed(p->slot[k].axis[PAD_RIGHT_Y]);

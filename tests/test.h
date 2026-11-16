@@ -47,6 +47,7 @@ void test_share(void);
 void test_tools(void);
 void test_pippin(void);
 void test_pad(void);
+void test_isp(void);
 void test_clip(void);
 void test_raster(void);
 void test_rave(void);

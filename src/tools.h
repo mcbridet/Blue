@@ -19,6 +19,9 @@
  *                       for Pippin titles that link to it; its code is its
  *                       own, calling Mac OS (its host calls only tell Blue
  *                       of the title's AppleJack, for game controllers).
+ *   Blue Game           an InputSprocket driver (isp.h): the host's game
+ *     Controllers       controllers, for games that read them through Apple
+ *                       Game Sprockets' InputSprocket.
  */
 #ifndef BLUE_TOOLS_H
 #define BLUE_TOOLS_H
@@ -39,10 +42,14 @@
 #define HOSTCALL_TOOLS_GLU 0x106u       /* OpenGLUtility */
 #define HOSTCALL_TOOLS_GL_TEST 0x107u   /* the OpenGL test application (gltest.h) */
 #define HOSTCALL_TOOLS_PIPPIN 0x108u    /* the Pippin library's (pippin.h) */
+#define HOSTCALL_TOOLS_ISP 0x109u       /* the InputSprocket driver's (isp.h) */
 #define TOOLS_VOLUME_SIZE (2u << 20)
 
 /* The tools' files, in the volume's order */
-enum { TOOLS_ENHANCEMENTS, TOOLS_3D_ENGINE, TOOLS_GL_LIBRARY, TOOLS_GL_MEMORY, TOOLS_GL_UTILITY, TOOLS_PIPPIN, TOOLS_FILES };
+enum {
+	TOOLS_ENHANCEMENTS, TOOLS_3D_ENGINE, TOOLS_GL_LIBRARY, TOOLS_GL_MEMORY, TOOLS_GL_UTILITY, TOOLS_PIPPIN, TOOLS_ISP,
+	TOOLS_FILES
+};
 #define TOOLS_GL_FIRST TOOLS_GL_LIBRARY
 #define TOOLS_GL_FILES 3
 
