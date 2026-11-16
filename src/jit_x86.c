@@ -2640,6 +2640,37 @@ static int insn31(struct tx *t, uint32_t i)
 		zero_block(t, ra, rb);
 		return EMITTED;
 
+	case 20:                                                        /* lwarx */
+		if (rd_ == rb || (ra && rd_ == ra)) {
+			call_step(t, i);
+			return EMITTED;
+		}
+		load_store(t, 2, true, false, false, true, false, LS_GPR, rd_, ra, rb, 0);
+		effective_address(t, false, true, ra, rb, 0);
+		st32(t, T0, OFF(resv_addr));
+		x86_store_imm(B, 1, x86_m(R_CPU, OFF(resv_valid)), 1);
+		return EMITTED;
+	case 150: {                                                     /* stwcx. (the interpreter if the reservation fails) */
+		if (!(i & 1)) {
+			call_step(t, i);
+			return EMITTED;
+		}
+		effective_address(t, false, true, ra, rb, 0);
+		x86_alu_rm(B, X86_CMP, 0, T0, x86_m(R_CPU, OFF(resv_addr)));
+		exit_if(t, X86_NE);
+		x86_test_mi(B, 1, x86_m(R_CPU, OFF(resv_valid)), 1);
+		exit_if(t, X86_E);
+		load_store(t, 2, false, false, false, true, false, LS_GPR, rd_, ra, rb, 0);
+		x86_store_imm(B, 1, x86_m(R_CPU, OFF(resv_valid)), 0);
+		x86_mov_rr(B, 0, T0, rd(t, G_XER));                     /* CR0: EQ, SO */
+		x86_shift_ri(B, X86_SHR, 0, T0, 31);
+		x86_alu_ri(B, X86_OR, 0, T0, CR_EQ);
+		x86_shift_ri(B, X86_SHL, 0, T0, 28);
+		unsigned cr = rw(t, G_CR);
+		x86_alu_ri(B, X86_AND, 0, cr, 0x0FFFFFFF);
+		x86_alu_rr(B, X86_OR, 0, cr, T0);
+		return EMITTED;
+	}
 	case 23: case 55:   load_store(t, 2, true, false, xo == 55, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;
 	case 87: case 119:  load_store(t, 0, true, false, xo == 119, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;
 	case 279: case 311: load_store(t, 1, true, false, xo == 311, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;

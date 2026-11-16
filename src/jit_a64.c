@@ -2506,6 +2506,39 @@ static int insn31(struct tx *t, uint32_t i)
 		return EMITTED;
 	}
 
+	case 20: {                                                      /* lwarx */
+		if (rd_ == rb || (ra && rd_ == ra)) {
+			call_step(t, i);
+			return EMITTED;
+		}
+		load_store(t, 2, true, false, false, true, LS_GPR, rd_, ra, rb, 0);
+		unsigned base = rd0(t, ra), b = rd(t, rb);
+		emit(t, a64_addsub(0, 0, 0, 9, base, b, A64_LSL, 0));
+		st32(t, 9, OFF(resv_addr));
+		emit(t, a64_movw(0, A64_MOVZ, 9, 1, 0));
+		emit(t, a64_ldst_imm(0, false, 9, R_CPU, OFF(resv_valid)));
+		return EMITTED;
+	}
+	case 150: {                                                     /* stwcx. (the interpreter if the reservation fails) */
+		if (!(i & 1)) {
+			call_step(t, i);
+			return EMITTED;
+		}
+		unsigned base = rd0(t, ra), b = rd(t, rb);
+		emit(t, a64_addsub(0, 0, 0, 10, base, b, A64_LSL, 0));
+		ld32(t, 11, OFF(resv_addr));
+		emit(t, a64_ldst_imm(0, true, 9, R_CPU, OFF(resv_valid)));
+		emit(t, a64_addsub(0, 1, 1, A64_ZR, 10, 11, A64_LSL, 0));
+		exit_if(t, A64_NE);
+		exit_if_zero(t, false, 9);
+		load_store(t, 2, false, false, false, true, LS_GPR, rd_, ra, rb, 0);
+		emit(t, a64_ldst_imm(0, false, A64_ZR, R_CPU, OFF(resv_valid)));
+		unsigned xer = rd(t, G_XER), cr = rw(t, G_CR);
+		emit(t, a64_movw(0, A64_MOVZ, 9, CR_EQ, 0));            /* CR0: EQ, SO */
+		emit(t, a64_logic(0, A64_ORR, 0, 9, 9, xer, A64_LSR, 31));
+		bfi(t, cr, 9, 28, 4);
+		return EMITTED;
+	}
 	case 23: case 55:   load_store(t, 2, true, false, xo == 55, true, LS_GPR, rd_, ra, rb, 0); return EMITTED;
 	case 87: case 119:  load_store(t, 0, true, false, xo == 119, true, LS_GPR, rd_, ra, rb, 0); return EMITTED;
 	case 279: case 311: load_store(t, 1, true, false, xo == 311, true, LS_GPR, rd_, ra, rb, 0); return EMITTED;
