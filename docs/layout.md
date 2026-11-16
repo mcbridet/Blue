@@ -17,8 +17,11 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           generator: drivers, the guest tools),
           video.c, disk.c (native drivers), floppy.c (floppy images),
           drives.c (removable drives: where images go, the menu),
-          cdrom.c (the CD-ROM driver's calls), cdimage.c (CD images: cue
-          sheets, the table of contents), cdaudio.c (the drive's player),
+          cdrom.c (the CD-ROM driver's calls), cdimage.c (CD images: what
+          kind each is, cue sheets, the table of contents), cdformats.c
+          (Nero, Alcohol, CloneCD and CHD images), audiodec.c (FLAC, MP3
+          and Ogg Vorbis tracks), dmg.c (compressed Mac images: UDIF and
+          NDIF), cdaudio.c (the drive's player),
           net.c (Ethernet's lanLib,
           libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
           reader: the startup disk's ROM file), startup.c (which disk is
@@ -60,16 +63,19 @@ art/      blue.svg (the icon's master), finder-icons.txt (the Finder
           icons' pixel art), png/ (the icon at each size), Info.plist
           (macOS: the executable's and Blue.app's), blue.desktop (Linux)
 docs/     the documentation (README.md lists it): how Blue works,
-          building, debugging, the plans (plan.md, future.md, roadmap.md,
-          x86-jit-plan.md, gpu-plan.md, opengl-plan.md, glide-plan.md),
-          nk2-reference.md (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2
-          does), images/ (the README's screenshots)
+          building, debugging, findings.md (what was found along the way),
+          roadmap.md and future.md (what's next), nk2-reference.md (Mac OS
+          9.1 under QEMU: what Apple's NanoKernel 2 does), images/ (the
+          README's screenshots)
 site/     the website (index.html, style.css, main.js, its icons)
 .github/  workflows/ci.yml (build, test, package, the sources archive,
           and release),
           workflows/pages.yml (publishes site/)
 third_party/imgui/  Dear ImGui 1.93.0 (MIT; its core files only, as released)
 third_party/fonts/  ChicagoFLF 2.1 (public domain; its notice in README there)
+third_party/libchdr/, bzip2/, lzfse/, lzma/, dr_libs/, stb/  image formats'
+          libraries (CHD, bzip2, LZFSE, LZMA2, MP3, Ogg Vorbis; README there)
+tests/fixtures/  small images the tests read (README there: how each was made)
 ```
 
 ## Files you supply

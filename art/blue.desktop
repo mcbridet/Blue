@@ -6,7 +6,7 @@
 Type=Application
 Name=Blue
 GenericName=Classic Mac OS
-Comment=Classic Mac OS on a native kernel
+Comment=A blazing-fast, feature-rich Mac OS 8, 9 & Pippin runtime
 Exec=blue
 Icon=blue
 Terminal=false

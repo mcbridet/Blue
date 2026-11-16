@@ -1,0 +1,30 @@
+Libraries in Blue's source (each built into Blue; their licences are in
+THIRD-PARTY-NOTICES.md and beside them here). Dear ImGui and the font have
+their own notes (imgui/imgui-version.txt, fonts/README). The others read
+CD and disk images (src/cdformats.c, src/audiodec.c, src/dmg.c), unchanged
+from upstream; only the files Blue builds or includes are kept:
+
+- libchdr/: libchdr, commit 47d794151b2b64f6aba60304e6480f4f5a2bc24b
+  (https://github.com/rtissera/libchdr, BSD-3-Clause): MAME's CHD format.
+  Kept: LICENSE.txt, README.md, include/ (with dr_libs/dr_flac.h, dr_flac
+  0.13.4: public domain or MIT-0), src/*.c and src/*.h (not the C++ FLAC
+  backend), and the libraries it carries in deps/: the LZMA SDK 26.02's
+  LZMA decoder (public domain), miniz 3.1.2 (miniz.c, miniz.h: MIT; its
+  inflater also reads UDIF's zlib chunks) and zstd 1.5.7's single-file
+  decoder (zstddeclib.c, zstd.h, zstd_errors.h; BSD-3-Clause, with zstd's
+  LICENSE from its 1.5.7 release).
+- bzip2/: bzip2 1.0.8 (https://sourceware.org/bzip2/, its BSD-style
+  licence): the library (blocksort.c, bzlib.c, bzlib.h, bzlib_private.h,
+  compress.c, crctable.c, decompress.c, huffman.c, randtable.c), LICENSE,
+  README. Built with BZ_NO_STDIO (Blue supplies bz_internal_error()).
+- lzfse/: lzfse, commit e634ca58b4821d9f3d560cdc6df5dec02ffc93fd
+  (https://github.com/lzfse/lzfse, BSD-3-Clause): the decoder's files and
+  LICENSE.
+- lzma/: the LZMA SDK 26.02 (https://www.7-zip.org/sdk.html, public
+  domain): the LZMA and LZMA2 decoders (LzmaDec, Lzma2Dec) and the headers
+  they need, for UDIF's xz chunks; lzma-sdk.txt, its notes and licence.
+- dr_libs/: dr_mp3.h 0.7.5, commit f12e197fd462e4c22873fbd70d11b1d2f2c1dc3c
+  (https://github.com/mackron/dr_libs, public domain or MIT-0). dr_mp3.c is
+  Blue's: it builds dr_mp3's implementation.
+- stb/: stb_vorbis.c 1.24, commit 9600522de53973336fa033a289858a4354cbb04c
+  (https://github.com/nothings/stb, public domain or MIT).

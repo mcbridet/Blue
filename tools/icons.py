@@ -14,8 +14,8 @@ finder  The Finder icons of the guest tools and their volume in Mac OS,
         pixel art in art/finder-icons.txt, to src/finder_icons.inc (each
         icon's ICN#, icl8, icl4, ics#, ics8 and ics4 resources) and a
         preview, art/finder-icons.png.
-site    The master's stack as site/favicon.svg and site/index.html's logo
-        (#i-logo), and site/og-image.png (1200 x 630).
+site    The master's stack as site/favicon.svg and site/index.html's splash
+        logo (inline, a group for each slab), and site/og-image.png (1200 x 630).
 
 CHROME names the browser (else Chrome, Chrome Canary or Chromium where they
 usually are, or on the PATH).
@@ -441,11 +441,24 @@ def stack_svg():
             '\n  </defs>\n  <g stroke="#0b2e38" stroke-linejoin="round">\n' + indent(paths, '    ') + '\n  </g>\n</svg>\n')
 
 
-def stack_symbol():
-    """... as index.html's #i-logo"""
+def stack_slabs(paths):
+    """The stack's paths in a list for each slab, bottom first: each slab's starts with its top face"""
+    slabs = []
+    for line in (line.strip() for line in paths.split('\n') if line.strip()):
+        if '-top)' in line or not slabs:
+            slabs.append([])
+        slabs[-1].append(line)
+    return slabs
+
+
+def splash_logo():
+    """... as index.html's splash logo, inline, each slab in a group of its own so they can drop into place"""
     defs, paths = stack_parts()
-    return ('<symbol id="i-logo" viewBox="0 0 32 32">\n    <defs>\n' + indent(defs, '      ') + '\n    </defs>\n'
-            '    <g stroke="#0b2e38" stroke-linejoin="round">\n' + indent(paths, '      ') + '\n    </g>\n  </symbol>')
+    slabs = ''.join('\n            <g class="slab">\n' + '\n'.join('              ' + p for p in slab) + '\n            </g>'
+                    for slab in stack_slabs(paths))
+    return ('<svg class="splash-logo" viewBox="0 0 32 32" aria-hidden="true">\n          <defs>\n' + indent(defs, '            ') +
+            '\n          </defs>\n          <g class="stack" stroke="#0b2e38" stroke-linejoin="round">' + slabs +
+            '\n          </g>\n        </svg>')
 
 
 def make_site(tmp):
@@ -456,11 +469,12 @@ def make_site(tmp):
     index = os.path.join(ROOT, 'site', 'index.html')
     with open(index) as f:
         html = f.read()
-    html, n = re.subn(r'<symbol id="i-logo".*?</symbol>', lambda m: stack_symbol(), html, count=1, flags=re.S)
-    assert n == 1, 'index.html: no #i-logo'
+    html = re.sub(r'\n  <symbol id="i-logo".*?</symbol>', '', html, count=1, flags=re.S)
+    html, n = re.subn(r'<svg class="splash-logo".*?</svg>', lambda m: splash_logo(), html, count=1, flags=re.S)
+    assert n == 1, 'index.html: no splash logo'
     with open(index, 'w') as f:
         f.write(html)
-    print('icons:', os.path.relpath(index, ROOT), '(#i-logo)')
+    print('icons:', os.path.relpath(index, ROOT), '(the splash logo)')
     svg = master()
     card = ('<div style="width:1200px;height:630px;position:relative;overflow:hidden;'
             'background:#0095b6 linear-gradient(160deg,#36b4cf 0%,#0095b6 55%,#007894 100%);'
@@ -471,7 +485,7 @@ def make_site(tmp):
             '<div style="font-size:150px;font-weight:700;line-height:1;letter-spacing:-2px;'
             'text-shadow:0 4px 0 rgba(11,46,56,.35)">Blue</div>'
             '<div style="margin-top:28px;font-size:40px;line-height:1.25;color:#eafaff">'
-            'Classic Mac OS<br>on a native kernel</div></div></div>')
+            'A blazing-fast, feature-rich<br>Mac OS 8, 9 &amp; Pippin runtime</div></div></div>')
     out = os.path.join(ROOT, 'site', 'og-image.png')
     render(page(card), 1200, 630, out, tmp)
     print('icons:', os.path.relpath(out, ROOT))

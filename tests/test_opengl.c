@@ -1738,7 +1738,7 @@ static const struct op scene_glu[] = {
  * may go to the triangle on either side; a fragment's alpha at the alpha
  * test's reference is decided by each's rounding too, and in "lighting" the
  * back face (lit by the attenuated light) is a few levels apart in places
- * (milestone 4's scenes otherwise differ by 2 at most). In "smooth", Mesa
+ * (the scenes "lighting" to "clip" otherwise differ by 2 at most). In "smooth", Mesa
  * corrects colors for perspective and ours are linear in screen space (see
  * glfront.h), most of all on the floor that goes from the near plane to the
  * far distance; and in "clamp", GL_CLAMP past the texture's edges is Mesa's

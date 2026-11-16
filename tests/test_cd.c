@@ -6,6 +6,7 @@
  * and pacing by guest time; and its sound through the codec's analog input.
  */
 #include <fcntl.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,7 +28,7 @@
 #define GUEST_HZ 16600000u              /* Blue's timebase */
 
 static char dir[1024];
-static char made[16][1100];
+static char made[64][1100];
 static unsigned nmade;
 
 static const char *path(const char *name)
@@ -39,7 +40,7 @@ static const char *path(const char *name)
 
 static FILE *create(const char *name)
 {
-	if (nmade < 16)
+	if (nmade < 64)
 		snprintf(made[nmade++], sizeof made[0], "%s", path(name));
 	return fopen(path(name), "wb");
 }
@@ -930,5 +931,516 @@ void test_cdaudio(void)
 		test_through_codec(c);
 	}
 	cdimage_close(c);
+	end();
+}
+
+/* ---- other formats: the same disc in each ------------------------------------------ */
+
+/*
+ * The disc: test_single_bin()'s, its last sector whole (as the CHD fixtures
+ * have it, tests/fixtures/README): the data track at 0-399, 150 sectors of
+ * silence (track 2's pregap), track 2 at 550-649, track 3 at 650-699.
+ */
+#define DISC_END 700u
+static const uint32_t disc_pregap[3] = { 0, 400, 650 }, disc_start[3] = { 0, 550, 650 };
+static const uint32_t disc_end[3] = { 400, 650, DISC_END };
+
+#define FIXTURE(name) fixture_path(name)
+
+/* (as a full path: cue sheets in the test folder name them) */
+static const char *fixture_path(const char *name)
+{
+	static char p[1100], full[PATH_MAX];
+	const char *slash = strrchr(__FILE__, '/');
+	snprintf(p, sizeof p, "%.*sfixtures/%s", slash ? (int)(slash - __FILE__ + 1) : 0, __FILE__, name);
+	return realpath(p, full) ? full : p;
+}
+
+/* A sector of the disc, raw: a mode 1 sector (sync, header, data, zeros), silence, or audio */
+static void disc_sector(const uint8_t *vol, uint32_t lba, uint8_t *s)
+{
+	memset(s, 0, CD_SECTOR);
+	if (lba < DATA_SECTORS) {
+		uint8_t m, sec, fr;
+		memset(s + 1, 0xFF, 10);
+		cd_msf(lba, &m, &sec, &fr);
+		s[12] = cd_bcd(m), s[13] = cd_bcd(sec), s[14] = cd_bcd(fr), s[15] = 1;
+		memcpy(s + 16, vol + (size_t)lba * CD_DATA, CD_DATA);
+	} else if (lba >= 550 && lba < DISC_END) {
+		unsigned n = lba < 650 ? 2 : 3;
+		uint32_t frame = (lba - (n == 2 ? 550 : 650)) * CD_FRAMES;
+		for (unsigned k = 0; k < CD_FRAMES; k++) {
+			int16_t l, r;
+			pattern(n, frame + k, &l, &r);
+			s[4 * k] = (uint8_t)l, s[4 * k + 1] = (uint8_t)((uint16_t)l >> 8);
+			s[4 * k + 2] = (uint8_t)r, s[4 * k + 3] = (uint8_t)((uint16_t)r >> 8);
+		}
+	}
+}
+
+/* Sectors `from`-`to` of the disc into a file, `stride` bytes each (2048: the data alone; more: zeros after) */
+static void put_disc(FILE *f, const uint8_t *vol, uint32_t from, uint32_t to, unsigned stride)
+{
+	uint8_t s[CD_MAX_STRIDE] = { 0 };
+	for (uint32_t lba = from; lba < to; lba++) {
+		disc_sector(vol, lba, s);
+		if (stride == CD_DATA)
+			fwrite(s + 16, 1, CD_DATA, f);
+		else
+			fwrite(s, 1, stride, f);
+	}
+}
+
+/* An image of the disc reads as the disc: its table of contents, every sector, its volume */
+static void check_disc(const char *name, bool whole)
+{
+	char why[256] = "";
+	struct cdimage *c = cdimage_open(path(name), why, sizeof why);
+	if (!c) {
+		fprintf(stderr, "cdformats: %s: %s\n", name, why);
+		CHECK(!"the image opens");
+		return;
+	}
+	uint8_t *vol = hfs_volume(), s[CD_SECTOR], want[CD_SECTOR];
+	CHECK_EQ(c->tracks, 3);
+	CHECK_EQ(c->sessions, 1);
+	CHECK_EQ(c->leadout, DISC_END);
+	CHECK_EQ(c->data, 0);
+	for (unsigned k = 0; k < 3 && k < c->tracks; k++) {
+		CHECK_EQ(c->track[k].number, k + 1);
+		CHECK_EQ(c->track[k].mode, k ? 0 : 1);
+		CHECK_EQ(c->track[k].control & CD_CONTROL_DATA, k ? 0 : CD_CONTROL_DATA);
+		CHECK_EQ(c->track[k].pregap, disc_pregap[k]);
+		CHECK_EQ(c->track[k].start, disc_start[k]);
+		CHECK_EQ(c->track[k].end, disc_end[k]);
+	}
+	unsigned wrong = 0;
+	for (uint32_t lba = 0; vol && lba < DISC_END + 2; lba++) {
+		if (lba < DISC_END)
+			disc_sector(vol, lba, want);
+		else
+			memset(want, 0, sizeof want);
+		/* (a data sector the image keeps the data of alone: as made up around it, sync, header, data, zeros) */
+		if (cdimage_read_raw(c, lba, 1, s) || (memcmp(s, want, CD_SECTOR) && (whole || lba >= DATA_SECTORS)))
+			wrong++;
+		else if (memcmp(s + 16, want + 16, CD_DATA))
+			wrong++;
+	}
+	CHECK_EQ(wrong, 0);
+	check_volume(c);
+	free(vol);
+	cdimage_close(c);
+}
+
+/* Nero, disc at once: each track's pregap in the file, cue points (v2: CUEX, LBAs; v1: CUES, MSF) */
+static void write_nrg(const char *name, const uint8_t *vol, bool v2, unsigned data_stride, unsigned audio_stride)
+{
+	FILE *f = create(name);
+	uint64_t at[3][3];
+	for (unsigned k = 0; k < 3; k++) {
+		unsigned stride = k ? audio_stride : data_stride;
+		at[k][0] = (uint64_t)ftell(f);
+		put_disc(f, vol, disc_pregap[k], disc_start[k], stride);
+		at[k][1] = (uint64_t)ftell(f);
+		put_disc(f, vol, disc_start[k], disc_end[k], stride);
+		at[k][2] = (uint64_t)ftell(f);
+	}
+	uint64_t chain = (uint64_t)ftell(f);
+	static const struct { uint8_t ctl, track, index; int32_t lba; } cue[] = {
+		{ 0x41, 0, 0, -150 }, { 0x41, 1, 0, -150 }, { 0x41, 1, 1, 0 }, { 0x01, 2, 0, 400 }, { 0x01, 2, 1, 550 },
+		{ 0x01, 3, 0, 650 }, { 0x01, 3, 1, 650 }, { 0x01, 0xAA, 1, DISC_END },
+	};
+	fputs(v2 ? "CUEX" : "CUES", f);
+	put_be(f, 8 * (sizeof cue / sizeof cue[0]), 4);
+	for (size_t k = 0; k < sizeof cue / sizeof cue[0]; k++) {
+		fputc(cue[k].ctl, f), fputc(cue[k].track == 0xAA ? 0xAA : cd_bcd(cue[k].track), f);
+		fputc(cd_bcd(cue[k].index), f), fputc(0, f);
+		if (v2) {
+			put_be(f, (uint32_t)cue[k].lba, 4);
+		} else {
+			uint32_t n = (uint32_t)(cue[k].lba + (int32_t)CD_MSF_OFFSET);
+			fputc(0, f), fputc((int)(n / 4500), f), fputc((int)(n / 75 % 60), f), fputc((int)(n % 75), f);
+		}
+	}
+	unsigned block = v2 ? 42 : 30;
+	fputs(v2 ? "DAOX" : "DAOI", f);
+	put_be(f, 22 + 3 * block, 4);
+	put_be(f, 22 + 3 * block, 4);
+	fputs("0123456789012", f);              /* (the catalog number) */
+	put_be(f, 0, 3);
+	fputc(1, f), fputc(3, f);
+	for (unsigned k = 0; k < 3; k++) {
+		unsigned stride = k ? audio_stride : data_stride;
+		fputs(k == 1 ? "USABC9900001" : "", f);
+		for (int j = k == 1 ? 12 : 0; j < 12; j++)
+			fputc(0, f);
+		put_be(f, stride, 2);
+		fputc(k ? (stride == CD_SECTOR ? 0x07 : 0x10) : stride == CD_DATA ? 0x00 : stride == CD_SECTOR ? 0x05 : 0x0F, f);
+		put_be(f, 0, 3);
+		for (int j = 0; j < 3; j++) {
+			if (v2)
+				put_be(f, (uint32_t)(at[k][j] >> 32), 4);
+			put_be(f, (uint32_t)at[k][j], 4);
+		}
+	}
+	fputs("SINF", f), put_be(f, 4, 4), put_be(f, 3, 4);
+	fputs("END!", f), put_be(f, 0, 4);
+	fputs(v2 ? "NER5" : "NERO", f);
+	if (v2)
+		put_be(f, 0, 4);
+	put_be(f, (uint32_t)chain, 4);
+	fclose(f);
+}
+
+/* Nero, track at once (ETN2): the tracks' data alone, a 2 s pregap before tracks 2 */
+static void write_nrg_tao(const char *name, const uint8_t *vol)
+{
+	FILE *f = create(name);
+	uint64_t at[3];
+	for (unsigned k = 0; k < 3; k++) {
+		at[k] = (uint64_t)ftell(f);
+		put_disc(f, vol, disc_start[k], disc_end[k], k ? CD_SECTOR : CD_DATA);
+	}
+	uint64_t chain = (uint64_t)ftell(f);
+	fputs("ETN2", f);
+	put_be(f, 3 * 32, 4);
+	for (unsigned k = 0; k < 3; k++) {
+		put_be(f, 0, 4), put_be(f, (uint32_t)at[k], 4);
+		put_be(f, 0, 4), put_be(f, (disc_end[k] - disc_start[k]) * (k ? CD_SECTOR : CD_DATA), 4);
+		put_be(f, k ? 0x07 : 0x00, 4);
+		put_be(f, disc_start[k], 4);
+		put_be(f, 0, 4), put_be(f, 0, 4);
+	}
+	fputs("END!", f), put_be(f, 0, 4);
+	fputs("NER5", f), put_be(f, 0, 4), put_be(f, (uint32_t)chain, 4);
+	fclose(f);
+}
+
+static void put_le16(FILE *f, unsigned v)
+{
+	put_le(f, v, 2);
+}
+
+/* Alcohol 120%: the .mdf a dump of the disc from LBA 0 (with each sector's subchannel after it: 2448), the .mds */
+static void write_mds(const char *name, const uint8_t *vol, unsigned stride)
+{
+	char mdf[64], mds[64];
+	snprintf(mdf, sizeof mdf, "%s.mdf", name);
+	snprintf(mds, sizeof mds, "%s.mds", name);
+	FILE *f = create(mdf);
+	put_disc(f, vol, 0, DISC_END, stride);
+	fclose(f);
+	const unsigned sessions = 0x58, blocks = sessions + 24, extra = blocks + 80 * 6, footer = extra + 3 * 8;
+	f = create(mds);
+	fputs("MEDIA DESCRIPTOR", f);
+	fputc(1, f), fputc(3, f);
+	put_le16(f, 0), put_le16(f, 1);
+	for (unsigned k = 22; k < 0x50; k++)
+		fputc(0, f);
+	put_le(f, sessions, 4), put_le(f, 0, 4);
+	put_le(f, (uint32_t)-150, 4), put_le(f, DISC_END, 4), put_le16(f, 1);
+	fputc(6, f), fputc(3, f), put_le16(f, 1), put_le16(f, 3), put_le(f, 0, 4), put_le(f, blocks, 4);
+	for (unsigned k = 0; k < 6; k++) {      /* A0, A1, A2, then the tracks */
+		static const uint8_t points[6] = { 0xA0, 0xA1, 0xA2, 1, 2, 3 };
+		unsigned point = points[k], t = k - 3;
+		bool track = k >= 3;
+		uint32_t at = track ? disc_start[t] + CD_MSF_OFFSET : DISC_END + CD_MSF_OFFSET;
+		fputc(!track ? 0 : t ? 0xA9 : 0xAA, f);
+		fputc(track && stride > CD_SECTOR ? 0x08 : 0, f);
+		fputc(0x10 | (t == 0 || k == 0 ? 4 : 0), f);
+		fputc(0, f), fputc((int)point, f), put_le(f, 0, 4);
+		if (k < 2)
+			fputc(k ? 3 : 1, f), fputc(0, f), fputc(0, f);
+		else
+			fputc((int)(at / 4500), f), fputc((int)(at / 75 % 60), f), fputc((int)(at % 75), f);
+		put_le(f, track ? extra + 8 * t : 0, 4);
+		put_le16(f, track ? stride : 0);
+		for (unsigned j = 0; j < 18; j++)
+			fputc(0, f);
+		put_le(f, track ? disc_start[t] : 0, 4);
+		put_le(f, track ? disc_start[t] * stride : 0, 4), put_le(f, 0, 4);
+		put_le(f, track, 4), put_le(f, track ? footer : 0, 4);
+		for (unsigned j = 0; j < 24; j++)
+			fputc(0, f);
+	}
+	for (unsigned t = 0; t < 3; t++)
+		put_le(f, t ? disc_start[t] - disc_pregap[t] : 150, 4), put_le(f, disc_end[t] - disc_start[t], 4);
+	put_le(f, footer + 16, 4), put_le(f, 0, 4), put_le(f, 0, 4), put_le(f, 0, 4);
+	fputs("*.mdf", f), fputc(0, f);
+	fclose(f);
+}
+
+/* CloneCD: the .img a raw dump of the disc from LBA 0, the .sub its subchannel (zeros: not read), the .ccd */
+static void write_ccd(const uint8_t *vol)
+{
+	FILE *f = create("clone.img");
+	put_disc(f, vol, 0, DISC_END, CD_SECTOR);
+	fclose(f);
+	f = create("clone.sub");
+	for (unsigned k = 0; k < DISC_END * CD_SUBCODE; k++)
+		fputc(0, f);
+	fclose(f);
+	f = create("clone.ccd");
+	fputs("[CloneCD]\r\nVersion=3\r\n[Disc]\r\nTocEntries=6\r\nSessions=1\r\nDataTracksScrambled=0\r\n"
+	      "CDTextLength=0\r\nCATALOG=0123456789012\r\n[Session 1]\r\nPreGapMode=1\r\nPreGapSubC=0\r\n", f);
+	static const struct { int point, control, plba; } e[] = {
+		{ 0xA0, 4, 4350 }, { 0xA1, 0, 13350 }, { 0xA2, 0, DISC_END }, { 1, 4, 0 }, { 2, 0, 550 }, { 3, 0, 650 },
+	};
+	for (unsigned k = 0; k < 6; k++)
+		fprintf(f, "[Entry %u]\r\nSession=1\r\nPoint=0x%02x\r\nADR=0x01\r\nControl=0x%02x\r\nTrackNo=0\r\n"
+			"AMin=0\r\nASec=0\r\nAFrame=0\r\nALBA=-150\r\nZero=0\r\nPMin=0\r\nPSec=0\r\nPFrame=0\r\nPLBA=%d\r\n",
+			k, e[k].point, e[k].control, e[k].plba);
+	fputs("[TRACK 1]\r\nMODE=1\r\nINDEX 1=0\r\n[TRACK 2]\r\nMODE=0\r\nISRC=USABC9900001\r\nINDEX 0=400\r\n"
+	      "INDEX 1=550\r\n[TRACK 3]\r\nMODE=0\r\nINDEX 1=650\r\n", f);
+	fclose(f);
+}
+
+static void test_nrg_mds_ccd(const uint8_t *vol)
+{
+	char why[256];
+	write_nrg("disc.nrg", vol, true, CD_DATA, CD_SECTOR);
+	check_disc("disc.nrg", false);
+	write_nrg("raw.nrg", vol, true, CD_SECTOR, CD_SECTOR);
+	check_disc("raw.nrg", true);
+	write_nrg("sub.nrg", vol, true, CD_MAX_STRIDE, CD_MAX_STRIDE);
+	check_disc("sub.nrg", true);
+	write_nrg("old.nrg", vol, false, CD_DATA, CD_SECTOR);
+	check_disc("old.nrg", false);
+	write_nrg_tao("tao.nrg", vol);
+	check_disc("tao.nrg", false);
+	struct cdimage *c = cdimage_open(path("disc.nrg"), why, sizeof why);
+	if (c) {
+		CHECK(!strcmp(c->catalog, "0123456789012"));
+		CHECK(!strcmp(c->track[1].isrc, "USABC9900001"));
+		CHECK(strstr(c->kind, "Nero") != NULL);
+		cdimage_close(c);
+	}
+	cleanup();
+
+	write_mds("alcohol", vol, CD_SECTOR);
+	check_disc("alcohol.mds", true);
+	check_disc("alcohol.mdf", true);        /* (given the data: its .mds beside it) */
+	CHECK_EQ(cdimage_detect(path("alcohol.mdf"), NULL, why, sizeof why), CDIMAGE_MDS);
+	write_mds("alcsub", vol, CD_MAX_STRIDE);
+	check_disc("alcsub.mds", true);
+	cleanup();
+
+	write_ccd(vol);
+	check_disc("clone.ccd", true);
+	check_disc("clone.img", true);
+	CHECK(cdimage_has_toc(path("clone.img")));
+	c = cdimage_open(path("clone.ccd"), why, sizeof why);
+	if (c) {
+		CHECK(!strcmp(c->catalog, "0123456789012"));
+		CHECK(!strcmp(c->track[1].isrc, "USABC9900001"));
+		cdimage_close(c);
+	}
+	cleanup();
+
+	/* CloneCD, two sessions (CD-Extra): audio, then the data in mode 2 after the gap between sessions */
+	FILE *f = create("extra.img");
+	put_samples(f, 1, 50 * CD_FRAMES, false);
+	put_samples(f, 2, 50 * CD_FRAMES, false);
+	for (uint32_t k = 0; k < DATA_SECTORS; k++) {
+		static const uint8_t sync[12] = { 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0 };
+		static const uint8_t sub[8] = { 0, 0, 8, 0, 0, 0, 8, 0 };
+		fwrite(sync, 1, 12, f);
+		put_be(f, 0, 3);
+		fputc(2, f);
+		fwrite(sub, 1, 8, f);
+		fwrite(vol + (size_t)k * CD_DATA, 1, CD_DATA, f);
+		for (int j = 0; j < 280; j++)
+			fputc(0, f);
+	}
+	fclose(f);
+	f = create("extra.ccd");
+	fputs("[CloneCD]\nVersion=3\n[Disc]\nTocEntries=8\nSessions=2\nDataTracksScrambled=0\n", f);
+	static const struct { int session, point, control, plba; } e[] = {
+		{ 1, 0xA0, 0, 4350 }, { 1, 0xA2, 0, 100 }, { 1, 1, 0, 0 }, { 1, 2, 0, 50 },
+		{ 2, 0xA0, 4, 4350 }, { 2, 0xA2, 4, 11500 + DATA_SECTORS }, { 2, 3, 4, 11500 },
+	};
+	for (unsigned k = 0; k < sizeof e / sizeof e[0]; k++)
+		fprintf(f, "[Entry %u]\nSession=%d\nPoint=0x%02x\nControl=0x%02x\nPLBA=%d\n", k, e[k].session, e[k].point,
+			e[k].control, e[k].plba);
+	fputs("[TRACK 1]\nMODE=0\nINDEX 1=0\n[TRACK 2]\nMODE=0\nINDEX 1=50\n[TRACK 3]\nMODE=2\nINDEX 1=11500\n", f);
+	fclose(f);
+	c = cdimage_open(path("extra.ccd"), why, sizeof why);
+	CHECK(c != NULL);
+	if (c) {
+		CHECK_EQ(c->tracks, 3);
+		CHECK_EQ(c->sessions, 2);
+		CHECK_EQ(c->track[1].end, 100);
+		CHECK_EQ(c->track[2].session, 2);
+		CHECK_EQ(c->track[2].mode, 2);
+		CHECK_EQ(c->track[2].start, 11500);
+		CHECK_EQ(c->leadout, 11500 + DATA_SECTORS);
+		CHECK_EQ(c->data, 2);
+		CHECK(audio_is(c, 60, 2, 10 * CD_FRAMES));
+		CHECK_EQ(cdimage_track_at(c, 5000), -1);
+		check_volume(c);
+		cdimage_close(c);
+	}
+	cleanup();
+}
+
+/* MAME's CHD: the fixtures, made by chdman from the disc's cue sheet */
+static void test_chd(void)
+{
+	static const struct { const char *name, *codecs; } chds[] = {
+		{ "game.chd", "cdlz, cdzl, cdfl" }, { "game-cdzs.chd", "cdzs, cdfl" },
+	};
+	char why[256];
+	for (size_t k = 0; k < sizeof chds / sizeof chds[0]; k++) {
+		const char *p = FIXTURE(chds[k].name);
+		CHECK_EQ(cdimage_detect(p, NULL, why, sizeof why), CDIMAGE_CHD);
+		struct cdimage *c = cdimage_open(p, why, sizeof why);
+		CHECK(c != NULL);
+		if (!c) {
+			fprintf(stderr, "cdformats: %s: %s\n", chds[k].name, why);
+			continue;
+		}
+		CHECK(strstr(c->kind, chds[k].codecs) != NULL);
+		cdimage_close(c);
+		/* (check_disc() reads from the test folder) */
+		FILE *in = fopen(p, "rb"), *out = create(chds[k].name);
+		int ch;
+		while (in && out && (ch = fgetc(in)) != EOF)
+			fputc(ch, out);
+		if (in)
+			fclose(in);
+		if (out)
+			fclose(out);
+		check_disc(chds[k].name, true);
+	}
+	struct cdimage *c = cdimage_open(FIXTURE("data-cdzl.chd"), why, sizeof why);
+	CHECK(c != NULL);
+	if (c) {
+		CHECK_EQ(c->tracks, 1);
+		CHECK_EQ(c->leadout, DATA_SECTORS);
+		CHECK(strstr(c->kind, "cdzl") != NULL);
+		check_volume(c);
+		cdimage_close(c);
+	}
+	cleanup();
+}
+
+/* The tone the audio fixtures hold, as 16-bit samples */
+static int16_t tone(unsigned channel, uint32_t frame)
+{
+	return (int16_t)(8000 * sin(2 * M_PI * (channel ? 660.0 : 440.0) * frame / CD_RATE));
+}
+
+/* Compressed audio in cue sheets: FLAC exactly, MP3 and Ogg Vorbis near enough; seeking; what isn't taken */
+static void test_compressed_audio(void)
+{
+	static const struct { const char *file; uint32_t frames; bool exact, mono; double snr; } files[] = {
+		{ "tone.flac", 30 * CD_FRAMES, true, false, 0 }, { "tone-mono.flac", 30 * CD_FRAMES, true, true, 0 },
+		{ "tone.mp3", 30 * CD_FRAMES, false, false, 20 }, { "tone.ogg", 17664, false, false, 25 },
+	};
+	char why[256], cue[PATH_MAX + 100];
+	for (size_t k = 0; k < sizeof files / sizeof files[0]; k++) {
+		snprintf(cue, sizeof cue, "FILE \"%s\" %s\nTRACK 01 AUDIO\nINDEX 01 00:00:00\n", FIXTURE(files[k].file),
+			 k == 2 ? "MP3" : "WAVE");
+		write_text("audio.cue", cue);
+		struct cdimage *c = cdimage_open(path("audio.cue"), why, sizeof why);
+		if (!c) {
+			fprintf(stderr, "cdformats: %s: %s\n", files[k].file, why);
+			CHECK(!"the cue sheet opens");
+			continue;
+		}
+		CHECK_EQ(c->leadout, (files[k].frames + CD_FRAMES - 1) / CD_FRAMES);
+		/* the whole track, then a sector again (back), then one further on */
+		uint8_t *s = malloc((size_t)c->leadout * CD_SECTOR), one[CD_SECTOR];
+		CHECK_EQ(cdimage_read_raw(c, 0, c->leadout, s), 0);
+		CHECK_EQ(cdimage_read_raw(c, 3, 1, one), 0);
+		CHECK(!memcmp(one, s + 3 * CD_SECTOR, CD_SECTOR));
+		CHECK_EQ(cdimage_read_raw(c, 20, 1, one), 0);
+		CHECK(!memcmp(one, s + 20 * CD_SECTOR, CD_SECTOR));
+		double sig = 0, err = 0;
+		unsigned differ = 0;
+		for (uint32_t f = 0; f < files[k].frames; f++) {
+			int16_t l = (int16_t)(s[4 * f] | s[4 * f + 1] << 8), r = (int16_t)(s[4 * f + 2] | s[4 * f + 3] << 8);
+			int16_t wl = tone(0, f), wr = files[k].mono ? wl : tone(1, f);
+			differ += l != wl || r != wr;
+			sig += (double)wl * wl;
+			err += (double)(l - wl) * (l - wl);
+		}
+		if (files[k].exact)
+			CHECK_EQ(differ, 0);
+		else if (10 * log10(sig / (err + 1)) <= files[k].snr) {        /* (the left channel, near enough) */
+			fprintf(stderr, "cdformats: %s: %.1f dB\n", files[k].file, 10 * log10(sig / (err + 1)));
+			CHECK(!"near enough");
+		}
+		unsigned tail = 0;                      /* (past its end, to the end of the sector: silence) */
+		for (uint32_t f = files[k].frames; f < c->leadout * CD_FRAMES; f++)
+			tail += s[4 * f] || s[4 * f + 1];
+		CHECK_EQ(tail, 0);
+		free(s);
+		cdimage_close(c);
+	}
+
+	/* what isn't taken: another rate, something that isn't audio */
+	snprintf(cue, sizeof cue, "FILE \"%s\" MP3\nTRACK 01 AUDIO\nINDEX 01 00:00:00\n", FIXTURE("tone-22k.mp3"));
+	write_text("audio.cue", cue);
+	why[0] = 0;
+	CHECK(cdimage_open(path("audio.cue"), why, sizeof why) == NULL);
+	CHECK(strstr(why, "22050 Hz") != NULL);
+	snprintf(cue, sizeof cue, "FILE \"%s\" FLAC\nTRACK 01 AUDIO\nINDEX 01 00:00:00\n", FIXTURE("game.chd"));
+	write_text("audio.cue", cue);
+	CHECK(cdimage_open(path("audio.cue"), why, sizeof why) == NULL);
+	CHECK(strstr(why, "not audio Blue reads") != NULL);
+	cleanup();
+}
+
+/* What each kind is taken for, by its contents */
+static void test_detect(void)
+{
+	char why[256], other[4096];
+	write_text("sheet.txt", "REM made by hand\r\nFILE \"x.bin\" BINARY\r\n  TRACK 01 AUDIO\r\n");
+	CHECK_EQ(cdimage_detect(path("sheet.txt"), NULL, why, sizeof why), CDIMAGE_CUE);
+	write_text("notes.txt", "Just some notes, not a cue sheet\n");
+	CHECK_EQ(cdimage_detect(path("notes.txt"), NULL, why, sizeof why), CDIMAGE_PLAIN);
+	CHECK(!cdimage_has_toc(path("notes.txt")));
+	CHECK_EQ(cdimage_detect(FIXTURE("packed-zlib.dmg"), NULL, why, sizeof why), CDIMAGE_PACKED);
+
+	/* a .bin of raw sectors, its cue sheet beside it */
+	uint8_t *vol = hfs_volume();
+	FILE *f = create("rip.bin");
+	if (vol)
+		put_disc(f, vol, 0, DISC_END, CD_SECTOR);
+	fclose(f);
+	write_text("RIP.CUE", "FILE \"rip.bin\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nTRACK 02 AUDIO\n"
+		   "INDEX 00 00:05:25\nINDEX 01 00:07:25\nTRACK 03 AUDIO\nINDEX 01 00:08:50\n");
+	CHECK_EQ(cdimage_detect(path("rip.bin"), other, why, sizeof why), CDIMAGE_CUE);
+	CHECK(!strcmp(other, path("RIP.CUE")));
+	check_disc("rip.bin", true);
+	free(vol);
+
+	/* Alcohol 120%'s later version, a DVD's */
+	f = create("dvd.mds");
+	fputs("MEDIA DESCRIPTOR", f);
+	fputc(2, f), fputc(0, f);
+	for (int k = 0; k < 100; k++)
+		fputc(0, f);
+	fclose(f);
+	why[0] = 0;
+	CHECK(cdimage_open(path("dvd.mds"), why, sizeof why) == NULL);
+	CHECK(strstr(why, "version") != NULL);
+	cleanup();
+}
+
+void test_cdformats(void)
+{
+	if (!begin())
+		return;
+	uint8_t *vol = hfs_volume();
+	CHECK(vol != NULL);
+	if (vol) {
+		test_nrg_mds_ccd(vol);
+		test_chd();
+		test_compressed_audio();
+		test_detect();
+	}
+	free(vol);
 	end();
 }

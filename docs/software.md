@@ -64,7 +64,7 @@ real time on an M5 (`--realtime`, a script in seconds; medians of 4 runs,
 interleaved) it scored 7,085 before the JIT's [floating-point work](jit.md#floating-point)
 and 16,616 after (in a later session, 6,250 and 14,700: the host's speed
 varies), while the Processor test's code runs as fast as before; see
-Findings in [plan.md](plan.md#findings).
+[findings.md](findings.md), "MacBench's Floating Point test".
 
 Its CD-ROM tests run with the MacBench 5.0 CD (`MacBench5.toast`) in a
 CD-ROM drive, on an installed 8.5 and 9.2.2: the CD-ROM test (148 MB of
@@ -73,7 +73,7 @@ instruction time, 4,261 on 9.2.2 with `clock 400`, 5,366-5,383 in real
 time, a window or not) and the CD-ROM inspection tests (sequential and
 random reads of 512 bytes and 1 MB). They read through the File Manager
 only; below it MacBench just takes an inventory of the drives (see
-Findings in [plan.md](plan.md#findings), "MacBench's CD-ROM test"). A report of the test
+[findings.md](findings.md), "MacBench's CD-ROM test"). A report of the test
 freezing MacBench on 9.2.2 in a window (the Memory Manager faulting on a
 broken system heap, then the Toolbox) didn't reproduce here.
 
@@ -158,5 +158,5 @@ pad is the one AppleJack.
 Japanese, shown in Mac OS Roman without a Japanese system; typing "c" in the
 Finder selects it), then JISIN. It shows its title, then a photo at a
 time, the next at a click. A scripted click doesn't select a desktop icon
-(see [plan.md](plan.md#findings), Findings), which is why opening the disc that way seemed to
+(see [findings.md](findings.md), "Desktop icons from scripts"), which is why opening the disc that way seemed to
 do nothing.

@@ -919,10 +919,10 @@ static void fill_page_holes(struct machine *m)
 /* What went in the floppy drive */
 static void floppy_said(const struct disk *d)
 {
-	printf("floppy: %s in the drive (%lluK%s, %s%s)\n", d->media_path,
+	printf("floppy: %s in the drive (%lluK%s%s, %s%s)\n", d->media_path,
 	       (unsigned long long)(d->image.data_size >> 10),
-	       d->image.kind == FLOPPY_DC42 ? " Disk Copy 4.2 image" : "", d->image.volume,
-	       d->read_only ? ", locked" : "");
+	       d->image.kind == FLOPPY_DC42 ? " Disk Copy 4.2 image" : d->image.kind == FLOPPY_PACKED ? " " : "",
+	       d->image.kind == FLOPPY_PACKED ? d->image.format : "", d->image.volume, d->read_only ? ", locked" : "");
 	if (d->image.kind == FLOPPY_DC42 && !d->image.checksums_ok)
 		printf("floppy: %s: its Disk Copy checksums don't match what's in it (it may be damaged)\n",
 		       d->media_path);
@@ -1023,7 +1023,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 			printf("disk %u: a CD-ROM drive, empty\n", k);
 		for (unsigned p = 0; p < d->partitions && (d->media || !d->removable); p++) {
 			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, d->path,
-			       d->removable ? " (a CD: read-only, ejectable)" : d->backend && !d->cdrom ? " (shared folder)" :
+			       d->removable ? " (a CD: read-only, ejectable)" :
+			       d->backend && !d->cdrom && !d->packed ? " (shared folder)" :
 			       d->read_only ? " (read-only)" : "",
 			       (unsigned long long)(d->part[p].size >> 20),
 			       (unsigned long long)d->part[p].offset, d->part[p].name[0] ? ", partition " : "",
@@ -3871,7 +3872,7 @@ static const char *frame_wait(struct machine *m)
  * sound plays, guest time ahead is sound played ahead, which the host's
  * sound output can only drop: a movie streaming from disk ran guest time
  * 1.1 to 2.3 times as fast as the host clock, its sound in pieces
- * (docs/plan.md, Findings). So while sound plays, a transfer takes host
+ * (docs/findings.md). So while sound plays, a transfer takes host
  * time instead, all of it, as a real drive's DMA does while the processor
  * goes on: the guest waits in the driver's call until it's over, taking
  * interrupts meanwhile (it makes the call again, which goes no further

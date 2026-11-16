@@ -57,3 +57,40 @@ size_t rsrc_build(const struct rsrc *r, unsigned n, uint8_t *out, size_t size)
 	}
 	return map_off + map_len;
 }
+
+int rsrc_find(const uint8_t *fork, size_t len, uint32_t type, unsigned index, struct rsrc *out)
+{
+	if (len < 16)
+		return -1;
+	uint32_t data_off = be32(fork), map_off = be32(fork + 4), data_len = be32(fork + 8), map_len = be32(fork + 12);
+	if (data_off > len || data_len > len - data_off || map_off > len || map_len > len - map_off ||
+	    map_len < MAP_HEADER + 2)
+		return -1;
+	const uint8_t *map = fork + map_off;
+	uint32_t types = be16(map + 24);
+	if (types + 2 > map_len)
+		return -1;
+	unsigned ntypes = (be16(map + types) + 1u) & 0xFFFFu;
+	for (unsigned t = 0; t < ntypes; t++) {
+		const uint8_t *e = map + types + 2 + 8 * t;
+		if (types + 2 + 8 * (t + 1) > map_len)
+			return -1;
+		if (be32(e) != type)
+			continue;
+		unsigned count = be16(e + 4) + 1u;
+		if (index >= count)
+			return -1;
+		uint32_t ref = types + be16(e + 6) + 12 * index;
+		if (ref + 12 > map_len)
+			return -1;
+		uint32_t at = be32(map + ref + 4) & 0xFFFFFF;
+		if (at > data_len || data_len - at < 4 || be32(fork + data_off + at) > data_len - at - 4)
+			return -1;
+		out->type = type;
+		out->id = (int16_t)be16(map + ref);
+		out->len = be32(fork + data_off + at);
+		out->data = fork + data_off + at + 4;
+		return 0;
+	}
+	return -1;
+}

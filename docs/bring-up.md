@@ -352,7 +352,7 @@ instruction time its startup used to stop short of the Finder until a key
 was pressed: a Time Manager software interrupt the 68k emulator never took,
 and nothing else to interrupt the native code it then napped in. The
 display's vertical blank interrupts it 60 times a second now, as an iMac's
-does ([plan.md](plan.md#findings), Findings).
+does ([findings.md](findings.md), "The restored 9.2.2 waits for a key" and after).
 
 A volume Apple Software Restore has restored but not yet given back (Blue
 closed with its last dialog up) has neither folder, and on its first
@@ -367,7 +367,7 @@ and it learns of activity from the ADB keyboard's key-downs but not from an
 ADB mouse (the iMac's mouse is USB, and its driver tells the power manager
 itself), so the dialog's Quit took no click until a key was pressed. While
 Mac OS dozes, Blue now has mouse input go after a tap of Option, which
-wakes it (`src/cuda.c`; [plan.md](plan.md#findings), Findings): clicks and moves work after
+wakes it (`src/cuda.c`; [findings.md](findings.md), "Mac OS 9.2.2's doze and the mouse"): clicks and moves work after
 half an hour's idling too.
 
 The CD's system and the restored one start up as quickly as before in

@@ -116,7 +116,7 @@ enum { OPTION_SWAP_RECT, OPTION_BUFFER_RECT, OPTION_SWAP_LIMIT, OPTION_COLORMAP_
 /* ---- identity ------------------------------------------------------------------- */
 
 /*
- * As Apple's ATI renderer (see docs/opengl-plan.md, Identity); and as its
+ * As Apple's ATI renderer (see docs/3d.md, Identity and extensions); and as its
  * generic software renderer, for pixel formats only it offered (those with
  * an accumulation buffer), Blue drawing them the same way but saying what
  * Apple's said
@@ -603,7 +603,7 @@ size_t opengl_build_library(uint8_t *out, size_t size, struct ndrv_layout *layou
 		.extra = lib.data,
 		.extra_len = lib.len,
 		.zero_len = lib.end - (uint32_t)lib.len,
-		.current_version = 1,           /* (as Apple's: see docs/opengl-plan.md) */
+		.current_version = 1,           /* (as Apple's: see docs/3d.md) */
 	};
 	/* the layout first (the data's doesn't depend on the code), then the recording code (see above) */
 	if (!ndrv_build(&spec, out, size, layout))

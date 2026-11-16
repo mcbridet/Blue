@@ -1,0 +1,51 @@
+Test fixtures: small images that tests/test_cd.c and tests/test_dmg.c read,
+made by tools Blue doesn't have (it only reads these formats). Each was made
+from an input Blue's tests make again themselves, so the tests compare what
+Blue reads from a fixture with that input, byte for byte (or, for the lossy
+audio, by its length and how close it is).
+
+Inputs (made by a program linked with Blue's own hfs.c, as the tests make them):
+
+- vol.img: a 400K HFS volume, hfs_format(..., 409600, "Packed", 0xB0000000,
+  { "Read Me", 'TEXT', 'ttxt', "Hello from a compressed image" }).
+- Game.cue / game.bin: test_single_bin()'s disc in tests/test_cd.c (an HFS
+  volume of 400 2048-byte sectors, "Test CD", as raw mode 1 sectors; 150
+  sectors of silence; audio track 2, 100 sectors of pattern 2; audio track 3,
+  50 sectors of pattern 3), its last sector whole; Data.cue, the data track
+  alone (data.bin, its first 400 sectors).
+- tone.raw: 30 sectors of 16-bit stereo, 440 Hz left, 660 Hz right, at 8000.
+
+Made with:
+
+- packed-zlib.dmg, packed-bzip2.dmg, packed-lzfse.dmg, packed-lzma.dmg,
+  packed-adc.dmg: `hdiutil convert vol.img -format UDZO` (UDBZ, ULFO, ULMO,
+  UDCO) on macOS 27.2 (Apple's own UDIF writer: zlib, bzip2, LZFSE, xz and ADC
+  chunks).
+- game.chd: `chdman createcd -i Game.cue -o game.chd` (cdlz, cdzl, cdfl);
+  game-cdzs.chd: the same with `-c cdzs,cdfl` (zstd); data-cdzl.chd:
+  `chdman createcd -c cdzl -i Data.cue`. chdman 0.289, built from MAME's
+  source (src/tools/chdman.cpp).
+- tone.flac, tone.mp3 (`-c:a libmp3lame -b:a 160k`), tone.ogg (ffmpeg's own
+  Vorbis encoder, `-c:a vorbis -strict -2 -q:a 4`), tone-mono.flac (the left
+  channel alone, `-af pan=mono|c0=c0`), tone-22k.mp3 (0.1 s at 22050 Hz, to be
+  refused): `ffmpeg -f s16le -ar 44100 -ac 2 -i tone.raw ...`, FFmpeg 9.0.2.
+
+SHA-256:
+
+    f29caf5a327b13edcc17ccee104e8b6ebaa37a2f2940579ebb140ec8053a97f6  data-cdzl.chd
+    656f7a086a89d498a8a8111ec6c70095526725a76a3930757aa40eda596f569f  game-cdzs.chd
+    3f88aa9610310e28a0eaea1b4b522706cb14694bce006efd84e6c04313fe6186  game.chd
+    a1f5db77d4a92dfc28cff119c583a24520952e9b73eb126f70463f1c505f1355  packed-adc.dmg
+    896890e5243bb04cc801dbff1a84f2243bb2764a2a833aa8a03e1cdc46017a16  packed-bzip2.dmg
+    0ec68d1ff889035e7d71f0927c144ee30a9a5a0406bb7c237a8ef9281b5d63c2  packed-lzfse.dmg
+    1ead7551b2da6e5ee3619e7e25e060df534f5efd67c3692b74b2a097af0bbb85  packed-lzma.dmg
+    96e5f9195eedc5b3fcb5f3005b1453745abf9cc5026ebeeb9ab0fb06f7150ebf  packed-zlib.dmg
+    2a547a423ec87df2687870f1c4edb9a3fda05f253efd6a5e915d2b93dd907b75  tone-22k.mp3
+    fc4767f383d920d3061eeb5f051237eee4fb87b37344b0ecf927f0f5a3a71c93  tone-mono.flac
+    c866d9a9b0e263f2d6e9ede903d882e52bf789279c09553c4a201a43b5cf9515  tone.flac
+    beaef83394176187d0e3ffdc8e94bb99a1e31143c0ee079adbafeb0eb84b6e7b  tone.mp3
+    335b7f56e55d3b0b36482aa3a554a6c20a5a29710ef303122ec5c709ac3313ca  tone.ogg
+
+The other formats (Nero, Alcohol 120%, CloneCD, NDIF, early UDIF with its
+block table in a resource fork, UDIF's raw and zero chunks) the tests write
+themselves.

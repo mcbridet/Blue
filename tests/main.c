@@ -22,6 +22,8 @@ int main(int argc, char **argv)
 		{ "audio", test_audio },
 		{ "cdimage", test_cdimage },
 		{ "cdaudio", test_cdaudio },
+		{ "cdformats", test_cdformats },
+		{ "dmg", test_dmg },
 		{ "ohci", test_ohci },
 		{ "drivers", test_drivers },
 		{ "net", test_net },

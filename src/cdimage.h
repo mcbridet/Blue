@@ -2,13 +2,17 @@
  * CD images with a table of contents: cue sheets (CDRWIN's `.cue`, the
  * usual companion of `.bin` files) whose tracks are in raw 2352-byte
  * sectors (audio, mode 1 or mode 2 data), in 2048- or 2336-byte data
- * sectors, or in WAVE or AIFF files (audio at 44.1 kHz, 16-bit stereo);
- * and plain images (a `.iso`, `.cdr` or `.toast`: one data track of
- * 2048-byte sectors). Like a drive, it gives the table of contents (track
- * numbers, types and addresses, sessions), the data track's 2048 bytes a
- * sector as one stream (what Mac OS mounts), and any sector's 2352 bytes
- * (audio as samples, little-endian like a drive's digital audio), with the
- * Q subchannel for any address. Files are read as needed (pread()).
+ * sectors, or in audio files (WAVE, AIFF, FLAC, MP3 or Ogg Vorbis at 44.1
+ * kHz, the compressed ones decoded as read: audiodec.h); Nero's `.nrg`,
+ * Alcohol 120%'s `.mds` (with its `.mdf`), CloneCD's `.ccd` (with its `.img`)
+ * and MAME's CHD (cdformats.c); and plain images (a `.iso`,
+ * `.cdr` or `.toast`: one data track of 2048-byte sectors), compressed Mac
+ * images among them (UDIF and NDIF, dmg.h). Each kind is told by its
+ * contents. Like a drive, it gives the table of contents (track numbers,
+ * types and addresses, sessions), the data track's 2048 bytes a sector as one
+ * stream (what Mac OS mounts), and any sector's 2352 bytes (audio as samples,
+ * little-endian like a drive's digital audio), with the Q subchannel for any
+ * address. Files are read as needed (pread(), or decoded a piece at a time).
  *
  * Addresses are logical blocks (LBA, sectors from the first track's start,
  * 75 a second); MSF (minutes, seconds, frames) counts from 2 s earlier.
@@ -28,6 +32,7 @@
 #define CD_MSF_OFFSET 150u              /* LBA 0 is 00:02:00 */
 #define CD_MAX_TRACKS 99u
 #define CD_SUBCODE 96u                  /* P-W subchannel bytes in a sector */
+#define CD_MAX_STRIDE (CD_SECTOR + CD_SUBCODE)  /* a sector and its subchannel, as some images keep them */
 
 /* The Q subchannel's control field */
 #define CD_CONTROL_PREEMPHASIS 0x1u
@@ -44,17 +49,33 @@ struct cd_track {
 	uint32_t start;                 /* ... of index 1 */
 	uint32_t end;                   /* ... after its last sector (the next track's pregap, or the lead-out) */
 	char isrc[13];                  /* "" if none */
-	/* where its sectors are: `file_sectors` from LBA `file_lba` at `file_pos`, `sector_size` bytes each */
+	/*
+	 * where its sectors are: `file_sectors` from LBA `file_lba` at `file_pos`,
+	 * `sector_size` bytes each (2352, 2048 or 2336), `stride` apart (more than
+	 * that where each has its subchannel after it)
+	 */
 	int file;                       /* -1: none (silence) */
 	uint32_t file_lba, file_sectors;
 	uint64_t file_pos;
-	unsigned sector_size;           /* 2352, 2048 or 2336 */
+	unsigned sector_size, stride;
 };
 
 struct cd_file;
 
+enum cdimage_format {
+	CDIMAGE_PLAIN,                  /* a plain image: one data track */
+	CDIMAGE_PACKED,                 /* ... compressed (UDIF, NDIF) */
+	CDIMAGE_CUE,
+	CDIMAGE_NRG,
+	CDIMAGE_MDS,
+	CDIMAGE_CCD,
+	CDIMAGE_CHD,
+};
+
 struct cdimage {
 	char *path;
+	enum cdimage_format format;
+	char kind[80];                  /* what it is, for messages ("a CHD (v5: cdlz, cdzl, cdfl)") */
 	struct cd_track track[CD_MAX_TRACKS];
 	unsigned tracks;
 	unsigned sessions;
@@ -68,9 +89,22 @@ struct cdimage {
 };
 
 /*
- * Opens a cue sheet (by its name, `.cue`) or a plain image. Returns NULL,
- * with the reason in `why`, if it can't (a cue sheet's files missing,
- * audio in another format, ...).
+ * What kind of image a file is, by its contents (a cue sheet by its name or
+ * its text): a format, or -1 with the reason in `why` (an image of a kind
+ * Blue knows but doesn't read, or that it can't). `open` (if not NULL, with
+ * room for 4096 bytes) gets the file to open: another beside it, given the
+ * data of an image whose table of contents is there (an `.mdf`'s `.mds`, a
+ * CloneCD `.img`'s `.ccd`, a `.bin`'s `.cue`), else the path.
+ */
+int cdimage_detect(const char *path, char *open, char *why, size_t len);
+
+/* Whether a file is an image with a table of contents (a cue sheet, Nero, Alcohol, CloneCD, CHD) */
+bool cdimage_has_toc(const char *path);
+
+/*
+ * Opens an image of any of these kinds. Returns NULL, with the reason in
+ * `why`, if it can't (a cue sheet's files missing, audio in another format,
+ * ...).
  */
 struct cdimage *cdimage_open(const char *path, char *why, size_t len);
 void cdimage_close(struct cdimage *c);

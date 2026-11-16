@@ -1,298 +1,13 @@
-# Plan: Mac OS 9.1 and later
+# Findings
 
-Mac OS 9.1, 9.2 and 9.2.2 need the "Mac OS ROM" file from their own CD,
-and that ROM wants a NanoKernel 2 underneath: a kernel with
-Multiprocessing Services built in, that runs Mac OS as one task (the "blue
-task") among others it schedules. Blue implements the NanoKernel v1
-interface natively (`src/nk.c`). This plan adds the parts of the NanoKernel
-2 interface Mac OS 9.1 uses, one piece at a time, without changing what
-8.5–9.0.4 see.
-
-The work is broken into tasks that a subagent can pick up with no other
-context than this file. Each task says what it needs, what it touches, how
-to check it, and what to hand back.
-
-## Status
-
-Done:
-
-- **Parcels** (`src/parcels.c`, `src/rom.c`): 9.1's ROM file keeps its
-  contents in parcels. Blue loads them, takes the 4 MB Toolbox image from
-  the `'rom '` parcel, and puts the `'node'` parcels' libraries
-  (`AAPL,CodePrepare`: MotherBoardHAL, TimeManagerLib, NVRAMServicesLib,
-  RTCServicesLib; `AAPL,CodeRegister`: NativePowerMgrLib, StartLib) and the
-  `'prop'` parcels that match its devices (Cuda, Grackle, the RTC under
-  via-cuda, `/rom/macos`'s version) in the device tree. `rom parcels
-  MOS91.rom` lists them.
-- **Address space** (`default_regions()` in `src/nk.c`): 9.1's ConfigInfo
-  has no page map (the Trampoline in the same file hands the kernel one),
-  so Blue lays out the 8.5 ROM's map at the logical addresses ConfigInfo
-  still gives.
-- **A blue task** (`init_info_records()`): for ROM files with parcels
-  (`m->mp_kernel`), NanoKernelInfo's version 2 fields name a blue process
-  (ID 1, which the ROM checks), a blue task and a page queue.
-- **Multiprocessing Services calls** (`src/mp.c`, `kcall_mp_dispatch()`):
-  `sc` (only when `mp_kernel`) or kernel call 8, call number in r0. Done so
-  far: tasks (7-10, 126; see below), queues (15-18, 39), semaphores
-  (20-23), critical regions (25-28), event groups (49-52, 54),
-  notifications (64-67, 128), task queries (11, 12, 14, 56, 59, 63),
-  `MPYieldWithHint` (13), `MPGetNextID` (37), areas (77, 80; one per
-  startup region plus Mac OS's RAM; 78 their records, 93/94 page ages),
-  the page ager's (82, 100), timers (40, 41, 30, 31, 32), delays (33, and
-  55 for tasks), processes (3, 4, 5, 6, 99, 116), the CPU plugin (2, 46,
-  in `nk.c`), and `sc` with r0 -1 and -2 (`system_call()`: is the current
-  task the blue one). `BLUE_LOG_MP=1` logs each, the task switches,
-  timers firing and software interrupts raised.
-- **Tasks** (Task 1): tasks other than the blue one are made, started,
-  terminated and deleted, and run on the one processor: registers saved
-  in `struct mp`, swapped by `switch_task()`.
-- **Scheduling** (Task 2): NanoKernel 2's priorities, ready queue and time
-  slices (`mp_next()`, `mp_switch()`, `mp_tick()`), waits that block and
-  wake (see Findings), the blue task's polls (yield) and naps (tasks run
-  meanwhile), interrupts making the blue task critical
-  (`mp_interrupt()`), and its 68k interrupt mask setting its priority
-  (`blue_boost()`). NanoKernelInfo's task count starts at 2, as with the
-  real kernel's idle task.
-- **Timers and delays** (Task 3): timeouts on waits, `MPDelayUntil`, and
-  timer objects firing (`mp_tick()`), all on the guest timebase.
-- **Software interrupts** (Task 5): setting an event group marked by
-  `MPSetSWIEvent` puts it in the emulator's table and raises its 68k level
-  (`raise_swi()` in `mp.c`), posted to the emulator like an external
-  interrupt (`post_software_interrupt()` in `nk.c`); the 68k handler's
-  `MPWaitForEvent` takes it out (`swi_taken()`). The emulator's
-  PriorityShifty bits (0x100, the top bit) are kept as NanoKernel 2 keeps
-  them, so the emulator yields its boost when it unmasks interrupts.
-- **The rest of startup** (Task 8): the page ager's area records (78) and
-  page ages (93, 94); the CPU plugin (2, 46: Mac OS registers its G3
-  plugin, whose routines run as NanoKernel 2's SIGP runs them);
-  `MPProcessors` (3); processes (4, 5, 6, 99, 116). The 9.1 CD boots to
-  the Finder.
-- **The clock and NVRAM** (Task 8): for ROM files with parcels the device
-  tree has the iMac's NVRAM chip (`nvram` under mac-io, `src/nvram.c`),
-  backed by RTAS's 8 KB and the same `--nvram` file; with it
-  NVRAMServicesLib prepares, and so does RTCServicesLib after it, whose
-  Cuda RTC driver asks the Cuda for the time. See Findings.
-- **The startup disk** (startup-wait): for ROM files with parcels the
-  device tree has Open Firmware's `/chosen` `bootpath` (the partition the
-  ROM file came from, else the first partition with boot blocks), and the disk driver answers the DriverGestalt
-  selectors by which StartLib finds that drive, so the Start Manager takes
-  it at once instead of after 25 s. See Findings, "The Start Manager's
-  wait".
-- **Floppies** (`--floppy`, `--floppy-drive`; `src/floppy.c`, the
-  removable drive in `src/disk.c`): a floppy drive of Blue's own disk
-  driver at PCI device 7, for raw and Disk Copy 4.2 images, whose disk
-  comes and goes: put in from the window's menu, by dropping an image on
-  the window, or from scripts (`floppy insert`, `floppy eject`); ejected
-  by Mac OS. Mounts, writes, Eject, Erase Disk and a restart work on the
-  8.5 and 9.1 CDs, FAT disks on an installed 8.5 (File Exchange). See
-  Findings, "Media changes".
-- **Mac OS 9.2.2** (Task 10): the MacOS9Lives 9.2.2 CD starts up to the
-  Finder. For ROM files with parcels the info records are NanoKernel
-  2.28's (HWInfo 0x0108 with CascadeInfo, ProcessorInfo 0x0112, SystemInfo
-  0x0107); the kernel has the coherence group and processor objects, and
-  calls 44, 45, 62 and 132; kernel call 7 answers unknown selectors; the
-  floppy controller's Mac I/O cell reads as zeros; Blue's lanLib stays in
-  the Ethernet node. See Findings, "Mac OS 9.2.2: the CD" and after.
-- **CD swapping** (`--cdrom`, `--cdrom-drive`; removable CD-ROM drives in
-  `src/disk.c`, where images go and the menu in `src/drives.c`): CD-ROM
-  drives' discs come and go like the floppy's, through the same media
-  changes, wherever they can be swapped (a window or real time, an empty
-  drive, a script with `cdrom` commands); dropped images go by size, a
-  floppy's to the floppy drive, others to a CD-ROM drive. The menu shows
-  each drive's disc with Eject; its list of images is gone, and the
-  `--floppy` images after the first go in as Mac OS ejects. Eject, Put
-  Away and the Trash work on an installed 8.5 with a second CD-ROM drive
-  (`ut.iso` out, `86.iso` in, by script), 9.1 and 8.5 still start up from
-  ejectable CDs, and runs where discs can't be swapped are the same as
-  before. See Findings, "Ejectable drives".
-- **Drives always there, and Insert...** (`src/main.c`, `src/chooser.c`,
-  `src/chooser_mac.m`, the menu in `src/ui.cpp` and `src/display.c`): in a
-  window or real time Blue adds an empty floppy drive, and an empty CD-ROM
-  drive when none was given (`--cdrom` or `--cdrom-drive`) and one of the
-  four disks is free (else it says so once), so an image can go in
-  whatever Mac OS started with; headless instruction-time runs get only the
-  drives given, as before. Each drive in the menu has Insert... beside
-  Eject: the host's file chooser, opened on the window's thread and not
-  waited for (macOS: an NSOpenPanel, `beginWithCompletionHandler:`, its
-  events run by SDL's own event loop; elsewhere zenity's or kdialog's, on
-  the PATH, run by `posix_spawn` and watched by a thread of its own, which
-  wakes the window when it's done); the file chosen goes to the machine as
-  the menu's action with a path, and in that drive through
-  `drive_insert()` (`drives_pick_in()`: that drive's checks and messages);
-  without a chooser, or if it fails, the menu says to drop an image on the
-  window. Checked: a real-time headless run of an installed 8.5 with no
-  drives given had both (`disk 1: a CD-ROM drive, empty`, the floppy drive
-  as drive 10), and a script's floppy and `922.iso` went in them and
-  mounted; with four disks, or three and `--share`, no CD-ROM drive and the
-  one line saying so; a window run of it, F12's menu with both drives
-  empty, Eject disabled and Insert... (captured by window ID); the Open
-  panel shown by a test harness running an event loop as SDL's does (not
-  blocking it, "Choose a disk image to put in the floppy drive", Insert),
-  cancelled (waking the window, nothing chosen) and closed unfinished.
-  Clicks and keys posted to the window's process didn't reach the menu
-  while another application was in front, so a file wasn't chosen there.
-  `tests/test_chooser.c` runs the zenity/kdialog chooser with stand-ins
-  (a file chosen, cancelled, failing, kdialog's without zenity, none, closed
-  unfinished); `test_routing()` in `tests/test_drives.c` has
-  `drives_pick_in()`. Not built on Linux in this session (no Linux host):
-  the zenity/kdialog chooser is plain POSIX, built and tested on macOS
-  too, and only `chooser_open()` differs.
-- **CD audio** (Task 16; `src/cdimage.c`, `src/cdaudio.c`, `src/cdrom.c`):
-  CD-ROM drives answer as Apple's CD-ROM driver, with CD icons; cue sheets
-  with audio tracks; the drive's audio played through the sound chip's
-  input and read digitally. See Findings, "CD audio".
-- **The display's VBL interrupt** (Task 17; `src/video.c`, `src/macio.c`,
-  `src/bootinfo.c`, `src/nk.c`): a 60 Hz vertical-blank interrupt on the
-  iMac's ATI line (source 22), through the display node's interrupt set,
-  in place of the Driver Services timer. The restored 9.2.2 reaches the
-  Finder in instruction time without a key. See Findings, "The display's
-  interrupt".
-- **OpenGL** (Task 18; milestones 0 to 8 of [opengl-plan.md](opengl-plan.md)): the
-  libraries, AGL and clears, checked by a test application in the guest;
-  gl calls recorded in guest memory by the library's own code, and a
-  fixed-function front end on the host drawing triangles (matrices,
-  clipping, culling, depth, blending, logic ops), points and lines by
-  OpenGL's rules (wide, antialiased, stippled, textured), textures, client
-  arrays, lighting, fog, texture coordinate generation, clip planes,
-  stencil, polygon offset, modes and stipple, the attribute stacks,
-  display lists, the raster position and pixel rectangles, 3D textures,
-  the accumulation buffer (as Apple's generic renderer's), 16-bit
-  drawables dithered, and OpenGLUtility on the host, checked against
-  Mesa's OpenGL. Unreal Tournament's OpenGL build plays on the GPU
-  and in software, and so does Quake III Arena's demo; the installer
-  offers the libraries, and on Mac OS 9 moves Apple's to Extensions
-  (Disabled) while Blue's are there.
-  The groundwork (milestone 0):
-  the 3D backend's texture units and stages, blend equations and color
-  masks, with RAVE drawing through them, pixels unchanged; the software
-  rasterizer without fused multiply-adds; the fragment builder's many
-  exports, own code and zero-filled data; host calls with floats. See
-  Findings, "Fused multiply-adds".
-- **The window on a thread of its own** (Task 15, window-speed;
-  `src/display.c`, `src/mem.c`, `src/video.c`, the JIT's fault handler
-  and checked stores): the window draws and presents on the main thread
-  while the Mac runs on another, and the framebuffer's pages are watched
-  for writes (`MEM_WATCH`) instead of compared with a copy each frame. The
-  Mac stops 0.01-0.2 ms a frame for the window where it stopped 0.2-1.2
-  ms. See Findings, "The window on a thread of its own".
-- **Pippin titles** (Task 19; `src/pippin.c`): Blue Pippin Library, a guest
-  tool, is Blue's own PippinPPC (the Bandai Pippin's library) with Apple's
-  twelve exports on Mac OS's calls. Super Marathon's two games play from
-  their disc on installed 8.5 and 9.2.2, and save, load and delete saves
-  through it. See Findings, "PippinPPC" and after.
-- **The window's look** (ui-platinum; `src/ui.cpp`, `src/font.c`,
-  `third_party/fonts`, `tools/fonts.py`): the menu (F12), the prompts and
-  the status bar look like Mac OS 8's Platinum in the site's colours
-  (Platinum greys, Bondi Blue for checks and the keyboard's focus), with
-  bevelled boxes and buttons, a striped title bar, the default button's
-  ring (Return presses it), and the text in ChicagoFLF, kept in the
-  program and drawn on Chicago's own pixel grid. The same Dear ImGui menu
-  on macOS and Linux (no GTK, no native menus). See Findings, "The
-  window's look".
-- **The window's scale** (screen-scale; `src/display.c`, `src/density.c`,
-  `src/ui.cpp`): each Mac pixel is a whole number of the display's pixels,
-  1 to 4. Auto, the default, picks the one that brings Mac OS nearest to 80
-  pixels per inch, from the display's physical size (CoreGraphics on
-  macOS; SDL 2's figure or the kernel's EDID on Linux), else the display's
-  own scale; `--scale` and the menu (Scale: Auto (3x), 1x to 4x, radio
-  buttons) set it. With Blue Enhancements a resized window asks for its
-  pixels over the scale, and that screen is drawn at exactly the scale;
-  without, the window opens at the screen's size times the scale, within
-  the display, and a new scale resizes it. `--integer-scale` now only keeps
-  the window from filtering a screen that isn't its own. See Findings, "The
-  window's scale".
-- **Packaging** (packaging; `src/version.h`, `src/hostlib.c`,
-  `src/welcome.c`, `tools/package-macos.sh`, `tools/macos-deps.sh`,
-  `tools/package-linux.sh`): releases are `Blue-arm64.dmg` and
-  `Blue-x86_64.dmg` (a Blue.app each, macOS 11 or later, signed ad hoc)
-  and `Blue-x86_64.AppImage`, `Blue-aarch64.AppImage` (built in Ubuntu 22.04:
-  glibc 2.35), carrying SDL2 and libslirp with GLib and what it needs,
-  separate and replaceable, with their licences, and each release has
-  their exact sources in `Blue-third-party-sources.tar.gz`. Blue loads
-  them from beside itself first. The version is `src/version.h`'s
-  (`--version`, the usage, the Info.plist; a release's tag must match it).
-  Opened from the desktop with nothing to do, Blue shows a Platinum window
-  with the command line for it, until the launcher ([roadmap.md](roadmap.md)).
-  See Findings, "Packaging".
-
-Where it stops:
-
-```
-build/blue boot --headless --cdrom 91.iso --max 20000000000
-stopped: instruction limit reached (system context)
-```
-
-The CD's Finder is up by instruction 1.1 billion (under 1 s on the host):
-"Mac OS 9.1 / Starting Up..." with the extensions' icons, then the desktop
-with the CD's window open (9 items: Before You Install, Installing Mac OS
-9.1.pdf, Mac OS Install, Adobe Software, CD Extras, Utilities...), and it
-idles there (MP calls 11, 13, 18, 31, 32, 52 as the Time Manager runs; the
-page ager every 3 s). Two runs are identical. The menu-bar clock shows the
-guest time (`--fixed-time` and the guest time since, in the host's time
-zone, as for 8.5), and 9.1 reads NVRAM through its own driver for the
-`nvram` node (`nvram: 320 reads, 0 writes` at the end; it writes what it
-changed when it shuts down or restarts). 9.1 installs from the CD onto a
-blank disk image with its installer, scripted (see Findings, "Installing
-9.1"), and the installed system starts up and takes the guest tools. In
-real time with fast start the Finder is up
-after 16 s of guest time (1.3 s on the host; it was 41 s before the
-startup disk was found at once), against 13.8 s for the 8.5 CD: what's
-left is mostly AppleTalk on Ethernet (5 s) and the CD's transfers.
-
-The 9.2.2 CD (`build/blue boot --headless --cdrom 922.iso --max 4000000000`) has the
-Finder up by instruction 1.5 billion, with the CD's Read Me open in
-SimpleText (as under QEMU), and idles there; two runs are identical. In
-real time with fast start the Finder is up after 13.4-13.7 s of guest time
-(about 1 s on the host), and the host then sleeps 25 s of 30. It has
-sound, USB's interrupts and interrupt-driven Ethernet (Findings, "9.2.2's
-interrupt sets"). Its installer, Apple
-Software Restore, restores the CD's image onto a blank disk from `disk
-create` (671 MB, by instruction 40 billion of a scripted run), and the
-restored system starts up to the Finder (the Setup Assistant over it the
-first time), in real time and, since the display has its vertical-blank
-interrupt, in instruction time too (Findings, "The restored 9.2.2 waits
-for a key"). Set up, it's at the Finder by instruction 1.9 billion, and
-after 13 s of guest time in real time. After half an hour of idling the power manager
-dozes (PowerDispatch
-1, CacheDispatch 4), and at 55 minutes its 'powr' task stops and restarts
-scheduling around a sleep that doesn't happen; the system carries on.
-
-## Ground rules for every task
-
-- **Build and test:** `make -j8`, then `make test` (all suites must pass).
-  C11 for the emulator, tabs, the style of the code around you. Comments
-  only where the code doesn't say it; describe what is, not the history.
-- **Don't change 8.5–9.0.4.** Everything new is for NanoKernel 2 ROMs only,
-  behind `m->mp_kernel` (true for ROM files with parcels). Before handing
-  back, check that the 8.5 CD still reaches the Finder:
-  `build/blue boot --headless --rom MOS.rom --cdrom 85.iso --max 4000000000
-  --screenshot /tmp/85.png` (only the menu-bar clock may differ between runs).
-- **Stay reproducible.** Runs in instruction time (`--headless`, without
-  `--realtime`) must stay exactly reproducible: guest tasks run on the one
-  host thread, scheduled at instruction counts and guest timebase values,
-  never by host time.
-- **The 9.1 check:** `build/blue boot --headless --cdrom 91.iso --max
-  20000000000` (a few seconds). Add `BLUE_LOG_MP=1` for the calls, and
-  `--screenshot f.png` once something may be on screen. Report the new
-  stopping point (the last lines of output).
-- **Leave the user's files alone.** `hd.img`, `hd86.img`, `86update.img`
-  and the NVRAM files are the user's installs. CDs go in with `--cdrom`
-  (read-only). For a writable disk, copy one to a temporary directory.
-- **Go easy on the host's memory.** Never load a whole disk or CD image, or
-  a large RAM dump, into a Python process (machfs `Volume.read()` on a 2 GB
-  image, `f.read()` of a whole image): read only the blocks needed, or mmap.
-  Run one heavy process at a time, leave none running when a step is done,
-  and delete big scratch files as soon as they're no longer needed.
-- **Parallel work:** the project is not a git repository, so two subagents
-  editing the same file will clobber each other. Tasks below list the
-  files they own; run tasks that share files one after another. (Making
-  the project a git repository would allow a worktree per task.)
-- **Hand back:** a short report (what changed, what was found, the new
-  stopping point), and update this file: the task's **Status** line, and
-  anything learned that later tasks need under **Findings** at the end.
-  Update the documentation in its style when behaviour changes: the
-  README for what users see, and docs/ for the rest ([bring-up.md](bring-up.md)'s
-  "Mac OS 9.1 (from its CD)" section was the README's until November 2026).
+What was found while making Blue work: facts about Mac OS, Apple's ROMs
+and NanoKernels, the programs and hosts Blue runs on, and measurements of
+Blue itself, each with what it was found for and, where it matters, how.
+They're kept much as they were written, roughly grouped by subject, and
+new ones go at the end. The documents listed
+in [README.md](README.md) describe Blue as it is, and point here for the
+detail; [bring-up.md](bring-up.md) tells how each version of Mac OS was
+made to start up.
 
 ## References
 
@@ -326,713 +41,9 @@ scheduling around a sleep that doesn't happen; the system carries on.
   68k PC), `--traps N` (68k traps), `--watch ADDR`, `--trace-range LO:HI`.
   Instruction counts are the same with and without the JIT.
 
-## How Blue's kernel works (what the tasks build on)
-
-- `nk_boot()`'s loop in `src/nk.c` runs guest code with `ppc_run()` in
-  chunks and handles each exit: kernel calls (`twi` → `kernel_call()`),
-  `sc` (→ `kcall_mp_dispatch()` when `mp_kernel`), faults, host calls for
-  Blue's drivers. Devices and interrupts are updated every `SYNC_INSNS`
-  instructions and at real exits.
-- Mac OS (the blue task) runs as NanoKernel 1 contexts: the System context
-  (Apple's 68k emulator) and an alternate context (native code), switched
-  by `switch_context()` with `save_context()`/`load_context()` to context
-  blocks in guest memory. `m->system`, `m->context`, `m->flags`,
-  `m->enables` describe the running one.
-- Interrupts: `update_interrupts()` posts the 68k level to the emulator
-  through EmulatorData and the System context's CR; native code running
-  then is ended with exception 0 (`m->preempt`) so the emulator takes it.
-- Idle: `idle_wait(m, deadline)` (PowerDispatch naps, the `_SynchIdleTime`
-  hook, MP call 55) sleeps in real time; in instruction time it returns at
-  once. With tasks ready, they run instead (`blue_naps()`).
-- `src/mp.c` holds the Multiprocessing Services objects (`struct mp`):
-  IDs as NanoKernel 2 makes them (slot << 16 | the slot's use count), the
-  blue process, task, page queue and address space, the tasks' saved
-  registers and the ready queue, and `mp_call()`, which does a call for
-  the current task and returns false for ones it doesn't have.
-- Tasks: `mp.current` is on the processor (its registers in `m->cpu`);
-  `blue_running()` says whether that's the blue task. After an exit,
-  `nk_boot()`'s loop switches (`switch_task()`) to `mp_next()` when
-  `mp.yield` is set.
-
-## Decisions
-
-- **Tasks share the one processor and host thread.** Each task other than
-  the blue one has a saved register set (GPRs, FPRs, CR, LR, CTR, XER,
-  FPSCR, PC) in `struct mp`. Switching tasks swaps them with `m->cpu`'s;
-  the blue task's state is whatever its NanoKernel 1 contexts hold.
-- **Blocking, as NanoKernel 2 does it:** a task that must wait is taken
-  off the processor with its PC on the `sc`; when what it waits for comes
-  (or its timeout), it is made ready and runs the `sc` again.
-- **The blue task never blocks** (NanoKernel 2 returns
-  `kMPBlueBlockingErr`, -29293, and Mac OS polls). While it polls, or
-  naps, ready tasks run.
-- **Interrupts belong to the blue task.** When one is posted while another
-  task runs, the blue task runs next.
-- **Time is the guest timebase.** Timeouts, timers and time slices are in
-  timebase ticks, so instruction-time runs stay reproducible.
-- **Calls are added as Mac OS makes them**, each after NanoKernel 2's
-  source, rather than all at once.
-
-## Tasks
-
-Dependencies: 1 → 2 → 3 → 4; 5 after 2; 6 and 7 any time (they don't touch
-the kernel); 8 onwards as the boot progresses.
-
-### 1. Task contexts and task creation
-
-- **Status:** done. Calls 7 (create), 8 (start), 9 (terminate), 10
-  (delete), 126 (`KCSetTaskType`), 59 (the debugger's queue) in `mp.c`;
-  per-task state and saved registers in `struct mp` (`mp_regs()`), a FIFO
-  ready queue, `mp_next()`/`mp_switch()`; `switch_task()`,
-  `blue_yields()`, `system_call()` in `nk.c`. A returning entry point ends
-  the task (its LR starts at the kernel data page; the ISI there
-  terminates it with r3). To get to a nap, timers are made, set and armed
-  (40, 30, 31, 32) without firing: Task 3 makes them fire. `tests/test_mp.c`
-  covers the task calls. See Findings.
-- **Owns:** `src/mp.c`, `src/mp.h`, the task-switching parts of `src/nk.c`.
-- **Goal:** tasks other than the blue one exist and can run.
-- **Steps:**
-  1. Read `MPCall_7` (create), `MPCall_8` (start: parameter, priority),
-     `MPCall_9` (terminate), `MPCall_10`, and `CreateTask` in
-     `NKTasks.s`, and the Task structure in `NKOpaque.a`. Note which
-     registers carry what (call 7 returns the ID in r10).
-  2. Give `struct mp` per-task state: registers, state (ready, running,
-     blocked, terminated), weight/priority, termination queue, exception
-     queue. Keep `mp.c` free of `struct machine`: `nk.c` asks it which
-     task runs next and swaps registers.
-  3. A switch primitive in `nk.c`: save the running task's registers,
-     load another's; for the blue task, save and restore `m->cpu` plus the
-     NanoKernel 1 context fields, so the blue task resumes exactly where
-     it was (System or alternate context).
-  4. A task whose entry returns: point its LR at a stub that ends it
-     (NanoKernel 2 sends the termination message to its queue with the
-     task's result: see `MPCall_9` and the exit path).
-  5. Until task 2 exists, run a new task when the blue task next polls
-     (gets `kMPBlueBlockingErr`) or naps, until it blocks or ends.
-- **Done when:** the 9.1 check gets past call 7 (and the start call), the
-  new task runs (log the switches with `BLUE_LOG_MP`), and the boot stops
-  somewhere later. Note what the task does first (likely waiting on a
-  queue).
-
-### 2. Scheduler, blocking and waking
-
-- **Status:** done. Priorities, ready queue and time slices after
-  `NKScheduler.s` (`mp_next()`, `mp_switch()`, `mp_tick()` in `mp.c`;
-  `switch_task()`, `blue_naps()`, `blue_boost()` and the run loop in
-  `nk.c`); waits on queues, semaphores, event groups and critical regions
-  block and are woken (and deletions wake them with `kMPDeletedErr`);
-  `MPYieldWithHint` (13); the page ager's calls (82, 100, 116). Timeouts
-  are Task 3's. `tests/test_mp.c` covers it. See Findings.
-- **Owns:** `src/mp.c`, `src/mp.h`, the run loop in `src/nk.c`.
-- **Goal:** waits block MP tasks and wake them; the blue task and MP
-  tasks share the processor fairly and deterministically.
-- **Steps:**
-  1. Blocking waits for MP tasks on queues (18), semaphores (23), event
-     groups (52), critical regions (27): block with the PC on the `sc`;
-     notify, signal, set and exit wake the first waiter, which reruns the
-     call (`EnqueueMessage`, `SignalSemaphore`, `SetEvent` show how).
-  2. The ready queue and choosing what runs: NanoKernel 2 has priorities
-     (critical, latency-protected, normal, idle) and weights
-     (`NKScheduler.s`); start with what Mac OS uses, simplest that is
-     faithful.
-  3. Switch points: a task blocks or ends; the blue task polls (blue
-     blocking) or naps (`idle_wait` callers: give ready tasks the time
-     first, nap only if none); a time slice ends (a timebase deadline,
-     checked at chunk boundaries); an interrupt is posted while a task
-     other than the blue one runs (the blue task runs next).
-  4. Instruction-time runs: confirm two runs give identical output.
-- **Done when:** blocked tasks don't spin, the 9.1 check gets further, and
-  8.5 still boots.
-
-### 3. Timers and delays
-
-- **Status:** done. Waits on queues (18), semaphores (23), event groups
-  (52) and critical regions (27) time out (a Duration: milliseconds, or
-  negative, microseconds; `kDurationForever` doesn't), their calls
-  returning `kMPTimeoutErr`; `MPDelayUntil` (33, and 55 for tasks) blocks
-  until a time; timers (40 records the time made, 41 deletes, 31 arms with
-  NanoKernel 2's options) fire in `mp_tick()`: queue, semaphore and event
-  group as call 30 set, then deleted unless kept (an event group may raise
-  a software interrupt: Task 5). `idle_wait()` wakes for them in real
-  time (`mp_next_due()`). `tests/test_mp.c` covers it. See Findings.
-- **Owns:** `src/mp.c`, `src/mp.h`.
-- **Goal:** timeouts on waits, `MPDelayUntil` (33) for tasks, timer
-  objects (`NKCreateTimer` 40, `NKDeleteTimer` 41, `NKSetTimerNotify` 30,
-  `MPArmTimer` 31, `MPCancelTimer` 32), all on the guest timebase.
-- **Notes:** call 55 (`MPDelayUntilSys`) already exists for the blue task
-  (it naps); keep that behaviour for the blue task. Timers fire by causing
-  their notification (queue, semaphore or event group).
-- **Done when:** a task's delay and a wait with a timeout end on time in
-  instruction time.
-
-### 4. Exceptions in tasks
-
-- **Status:** not started. **Needs:** 1.
-- **Owns:** `src/mp.c`, the fault paths in `src/nk.c`.
-- **Goal:** a fault, illegal instruction or trap in a task other than the
-  blue one goes where NanoKernel 2 sends it (the task's exception queue,
-  `MPSetExceptionHandler` 56, with the message format in `NKTasks.s`;
-  else the task is terminated), never to the blue task's contexts.
-  `MPThrowException` (57) too.
-- **Done when:** a test task that faults is reported on its queue (a unit
-  test in `tests/`), and the blue task is unaffected.
-
-### 5. Software interrupts to the 68k emulator
-
-- **Status:** done. `raise_swi()` (in `set_event()`) and `swi_taken()` (in
-  `MPWaitForEvent`) in `mp.c` keep the emulator's table and level as
-  `SetEvent` and `MPWaitForEvent` do (with or without the table); a napping
-  blue task is woken critical; `post_software_interrupt()` in `nk.c` posts
-  it (CR, `preempt`) as `update_interrupts()` does external ones. The
-  PriorityShifty bits are modelled (`blue_boost()`, `set_shifty()`; see
-  Findings), and `MPGetNextID` (37) added for the page ager.
-  `tests/test_mp.c` covers the bookkeeping. The 68k handler runs (each
-  software interrupt is followed by its `MPWaitForEvent` through kernel
-  call 8, the `FE1F` glue). See Findings.
-- **Owns:** `set_event()` in `src/mp.c`, `update_interrupts()` and nearby
-  in `src/nk.c`.
-- **Goal:** setting an event group marked by `MPSetSWIEvent` (54) raises
-  its 68k software interrupt, as NanoKernel 2's `SetEvent` does: the
-  group's ID goes in the emulator's context block (`SWIEventGroupID`,
-  `+0xD0`) or, when `EDPOffsetSWIRelated` (`+0xC8`) is set, in that table
-  of EmulatorData at the interrupt's level; then the interrupt is posted
-  the way external interrupts are. Work out from the emulator's code in
-  the ROM image how it takes and acknowledges them.
-- **Notes:** at startup the ROM marks two groups, levels 7 and 1; the
-  level-7 one is a notification target of the RAM area's page faults.
-- **Done when:** the run no longer stops with "software interrupts from
-  Multiprocessing Services aren't delivered yet", and the 68k handler runs
-  (trap log or trace shows it).
-
-### 6. Reference run under QEMU (optional, research only)
-
-- **Status:** done. [nk2-reference.md](nk2-reference.md) answers the questions; 9.1
-  boots to the Finder on QEMU's `mac99` unpatched. Tools:
-  `tools/qemu-ref/run91.sh`, `shots.py`, `rsp.py` (gdbstub client, no gdb
-  needed), `mptrace.py` (MP call trace), `nk2dump.py` (decodes RAM dumps).
-- **Owns:** `tools/qemu-ref/` (new files only), a notes file
-  [nk2-reference.md](nk2-reference.md).
-- **Goal:** what Apple's 9.1 Trampoline and NanoKernel 2 really do, to
-  check Blue against: the page map they build (and the areas from it),
-  the device tree after the Trampoline (parcel properties applied), the
-  first IDs and NanoKernelInfo, the sequence of MP calls during startup
-  (a breakpoint on the system call vector, `0xC00`). `tools/qemu-ref/`
-  boots a 1.x ROM file on `g3beige`; 9.1's ROM may need `mac99`.
-- **Done when:** the notes file answers those questions, or says what
-  stood in the way.
-
-### 7. A disassembly helper (optional)
-
-- **Status:** done: `tools/disasm.py` (usage in its docstring and under
-  References).
-- **Owns:** new files in `tools/`.
-- **Goal:** one command to disassemble PowerPC or 68k code at a guest
-  address, from a ROM file (its image) or a RAM dump, naming the code
-  fragment an address is in (the ROM image's PEF containers, the parcels'
-  libraries). Python with capstone as an optional dependency, like the
-  other `tools/` scripts; usage in its docstring.
-- **Done when:** it disassembles `0xFFCE2700` (the MP call stubs) and
-  `0xFFC015E0` (the 68k code that prepares `AAPL,CodePrepare`'s
-  libraries) from `MOS91.rom`, with fragment names.
-
-### 8. The rest of startup
-
-- **Status:** the 9.1 CD reaches the Finder; installing from it is left to
-  the user (in a window). Done: the page ager's area records (78) and page
-  ages (93, 94); the CPU plugin (2, 46: `cpu_plugin_register()`,
-  `cpu_plugin_call()` in `nk.c`); `MPProcessors` (3); processes (4, 5, 6,
-  99, 116, with every object's owning process). `tests/test_mp.c` covers
-  areas and processes. The clock and NVRAM work (the iMac's `nvram` node
-  and chip for these ROM files; `tests/test_nvram.c`). Open: whether an
-  installed 9.1 boots. Task 4 wasn't needed: no task faulted. See Findings.
-- **Goal:** take the 9.1 check from wherever it stops to the Finder,
-  fixing one stop at a time. Expected along the way:
-  - More MP calls (areas and pages: `MPCreateArea` 72, `MPGetPhysicalAddress`
-    81, `MPHoldPages` 89 and friends, `MPGetPageSize` 69, `NKLocateInfoRecord`
-    107; follow `NKAddressSpaces.s` and `NKPaging.s`). Virtual memory stays
-    off: every page is mapped, so page faults to a backing provider
-    shouldn't happen. First: the page ager's area record (78) and page ages
-    (93, 94), every 3 s (see Findings, "The page ager's pass").
-  - The parcels' libraries being prepared and registered (the 68k code at
-    `0xFFC015E0`/`0xFFC016B0` walks `Devices:device-tree:AAPL,CodePrepare`
-    and `AAPL,CodeRegister`): check they load.
-  - The parcels' drivers against Blue's devices: the Cuda library, the
-    RTC driver under via-cuda, and NVRAM (done: the ROM's driver for
-    `mac-io/nvram` drives Blue's `nvram` node; see Findings).
-  - The display, disk and Ethernet drivers Blue makes (NDRVs, lanLib)
-    under 9.1, and idle (does 9.1's Process Manager still nap through
-    call 55 and `_SynchIdleTime`?), fast start.
-- **Done when:** the 9.1 CD reaches the Finder; then its installer puts
-  9.1 on an empty disk image and that boots.
-
-### 9. Regression and documentation
-
-- **Status:** ongoing. Run after every task that changes behaviour.
-- **Checks:** `make test`; the 8.5 CD to the Finder (above); 8.6 and
-  9.0.4 if their images are available (copy writable disks first).
-- **Documentation:** the "Mac OS 9.1 (from its CD)" section (README's
-  then, [bring-up.md](bring-up.md#mac-os-91-from-its-cd)'s now) and Next steps
-  ([roadmap.md](roadmap.md)); the site's Status window (`site/index.html`, "Mac OS 9.1–9.2.2"
-  row) once 9.1 works.
-
-### 10. Mac OS 9.2–9.2.2
-
-- **Status:** the MacOS9Lives 9.2.2 CD (`922.iso`) starts up to the Finder,
-  and its Apple Software Restore installs onto a blank disk image. Done:
-  NanoKernel 2.28's info records for ROM files with parcels
-  (`init_info_records()` in `nk.c`, `bootinfo_hwinfo()`, `bootinfo_build()`
-  in `bootinfo.c`); the coherence group and processor objects
-  (`mp_init()`), `MPGetNextCpuID` (62), `MPStartScheduling` (44),
-  `MPStopScheduling` (45), `NKSetClockDriftCorrection` (132) in `mp.c`;
-  CacheDispatch (kernel call 7) for selectors above 2 (`kernel_call()`);
-  the floppy controller's cell (`empty_cell_ops`, `setup_machine()`);
-  Blue's lanLib kept over the ROM file's `bmac+` one (`build_tree()`).
-  `tests/test_mp.c` and `tests/test_nvram.c` cover them. Open: Apple's own
-  9.2/9.2.2 CDs (not tried: none here). Interrupt sets for the USB
-  controller, the sound chip and lanLib on 9.2.2 (`AAPL,interrupt-index`
-  for ROM files whose Trampoline makes it, and the codec's valid bit: see
-  Findings, "9.2.2's interrupt sets") are done: sound, USB's interrupts and
-  interrupt-driven Ethernet. The
-  installed system's wait for a key in instruction time is gone (Task 17).
-- **Goal:** their ROM files (newer parcels, possibly newer kernel
-  features) on the same path. Find out first whether they list `iMac,1`
-  in `<COMPATIBLE>`.
-
-### 11. ROM from the startup disk
-
-- **Status:** done. Without `--rom`, `blue boot` takes the "Mac OS ROM"
-  file from the startup disk, as a New World Mac's firmware does: the first
-  drive in command-line order (partitions in map order) whose blessed
-  System Folder (Finder info word 0) holds a file of type `tbxi`, the first
-  in catalog order (`src/hfsread.c`: HFS, HFS+, HFS+ in an HFS wrapper;
-  extents overflow). It prints where from (`rom: "Mac OS 9.1:System
-  Folder:Mac OS ROM" from 91.iso, ...`); the run is otherwise as with
-  `--rom MOS91.rom`. `rom info 91.iso` (and the other `rom` commands) read
-  a disk image's the same way. `tests/test_hfsread.c` covers the reader.
-  The Startup Disk control panel's choice (startup-disk): Mac OS 9.1 and
-  later set Open Firmware's boot-device, which Blue reads from NVRAM at
-  launch and at each restart (`src/startup.c`, `src/ofnvram.c`), and starts
-  the ROM file of the disk and partition it names (see Findings, "The
-  Startup Disk control panel"). `tests/test_startup.c` covers the NVRAM
-  partition and variables, the paths, and which drive starts;
-  `tests/test_nvram.c` the tree's `/options`, `/openprom` and disk order.
-
-### 12. Shared folder
-
-- **Status:** done. `--share DIR` attaches a host folder as an HFS volume
-  (`src/share.c`): metadata made in memory by `hfs_build()` (`src/hfs.c`,
-  now with folders, B-trees of any depth, map nodes and Mac OS's name
-  order), file data read from the host's files on demand, Mac OS's writes
-  in an overlay; written back at the end of the run if Mac OS put the
-  volume away, the host's deleted or replaced files moved to
-  `DIR/.blue-recovery/<date>/`, else the volume kept there as an image.
-  The disk driver takes a `struct disk_backend` (read and write callbacks)
-  in place of a file. `hfsread` reads through a callback too, and walks
-  the whole catalog (`hfsread_walk()`). `tests/test_share.c` covers names,
-  volumes (checked with hfsutils, and on Linux Apple's `fsck_hfs` from
-  hfsprogs), dates, and writing back. 8.5 and 9.1 from their CDs and 8.6
-  from a disk show the volume; Finder copies, new folders, renames, moves,
-  deletions and a SimpleText save came back to the folder. Open: writing
-  back when the volume is ejected, and offering the folder again as new
-  media (needs the disk driver's removable media).
-
-### 13. Installing the guest tools
-
-- **Status:** done (8.5, 8.6, 9.1, 9.2.2). In
-  window runs, Blue looks for the guest tools in the startup disk's
-  System Folder before Mac OS starts (`install_check()` in
-  `src/install.c`: the System Folder's folders, whatever their names, for
-  files of the tools' type and creator whose code makes the tool's host
-  call; current if both forks are the bytes this version of Blue makes).
-  Once the Finder is up, if one is missing or differs (and the disk is writable
-  and not locked), a box over the screen offers to install or update them
-  ("Install and Restart", "Update and Restart"; Mac OS 9's "Move and
-  Restart" and "Put Back and Restart"); Mac OS runs on meanwhile. On yes,
-  Mac OS writes them itself: Blue
-  diverts the Process Manager's next idle call (`_SynchIdleTime` before
-  Mac OS 9, trap AAAA with $82F0 in D0 on 9.x) to a 68k bootstrap that
-  prepares a
-  generated installer fragment with the Code Fragment Manager and calls it
-  (see Findings). Once all is in place (and only then) the installer
-  flushes the volume and sends the Process Manager the Restart Apple event
-  (`aevt` `rest`), and Mac OS restarts as Special > Restart does; the
-  tools load as any extension at startup, and the check after the
-  restart finds them current. Input scripts answer with `tools install` or `tools
-  later` (and turn the check on without a window); `tools install`
-  restarts Mac OS too. `tests/test_install.c`
-  covers the check on HFS volumes made with `hfs_build()`, the offer, and
-  the installer against a File Manager of its own, the restart included.
-  `--tools` is gone:
-  `blue tools create FILE` makes the volume for installing them by hand
-  (`--cdrom FILE`). Don't Ask Again (the offer's third button; `tools
-  never`): Mac OS writes "Blue Preferences" (type 'pref', Enhancements'
-  creator, CR-ended text: `Blue Preferences`, `Offer the guest tools: no`)
-  in its Preferences folder, by the same installer (job
-  `INSTALL_JOB_NEVER`: FindFolder 'pref', PBGetCatInfo for the folder's
-  name, FSpDelete of an older one, FSpCreate, FSpOpenDF, FSWrite, FSClose,
-  FlushVol; no restart); the check finds it among the System Folder's
-  folders, and the offer then isn't made by itself. The window's menu has
-  Install Guest Tools... (`tools offer`), which makes it whenever there's
-  something to install (disabled otherwise, with why), and installing
-  deletes the file (FSpDelete before the FlushVol), so later versions are
-  offered again. The choice goes with the disk. `tests/test_install.c`
-  covers the file's contents, the check, the menu's offer and both jobs.
-  Checked on the restored 9.2.2 (set up): Don't Ask Again wrote the file,
-  the next startup offered nothing, `tools offer` and Install installed
-  the tools, deleted the file and restarted. 9.1, installed from its CD
-  (Findings, "Installing 9.1"): offered once the Finder was up (the Setup
-  Assistant in front), Install and Restart put the five tools in
-  Extensions and Apple's OpenGL libraries in Extensions (Disabled), Mac OS
-  restarted (through the Cuda), the check then found them current;
-  Enhancements ran and switched to 1024x768 for a `resize`, and Blue GL
-  Test (from a tools volume made with `BLUE_TOOLS_GL_TEST=1`) drew its
-  triangle scene through Blue's OpenGL. An Enhancements that Mac OS has
-  launched but that hasn't run yet is found in use as it's replaced: it's
-  asked to quit, and the installer goes in again once it has (Findings,
-  "Enhancements is in use before it runs"). Open: none.
-
-### 14. Clipboard
-
-- **Status:** done. Text is shared by Mac OS and the host's clipboard in
-  window runs in real time: `src/clip.c` (conversions; which side's text
-  is newer), Blue Enhancements in `src/tools.c` (the guest side), and
-  SDL2's text clipboard in `src/display.c`, on the window's thread, which
-  is the emulation's. Enhancements (version 2 in its data: the installer
-  tells an older copy on disk by its bytes, the version tells Blue where
-  a running older copy's data is, which still switches modes) writes
-  routine descriptors for ZeroScrap and PutScrap into the trap table and
-  puts a GetNextEvent filter in `jGNEFilter`; when the host's text changes
-  it posts the front application a resume event with convertClipboard, and
-  keys typed in the window wait for that (at most 0.5 s). Input scripts'
-  `clipboard` and `print-clipboard` stand in for the host's clipboard.
-  `tests/test_clip.c` covers the conversions, echoes and held keys,
-  `tests/test_tools.c` the patches. Scripted both ways on the 8.5 and 9.1
-  CDs (SimpleText; `BLUE_TOOLS_APPL=1` lets the Finder open Enhancements
-  from the tools volume) and on a copy of an 8.5 install (Note Pad,
-  Scrapbook, the Finder's names, Internet Explorer 4.01's address field);
-  there `tools install` replaced the older Enhancements (`helper.quit`
-  takes the patches out too) and the new one pasted in Note Pad (then
-  started at once; installs restart Mac OS now). Open:
-  pictures (see Findings), styles, applications that put their copy in the
-  scrap only at a suspend, and the real host clipboard, which only a
-  window run by hand uses.
-
-### 15. Showing the screen
-
-- **Status:** done. Three changes to what the window costs the emulation
-  thread (which stops the Mac meanwhile): only the rows that changed are
-  shown (`video_changed_rows()`: bands of them, compared with the copy last
-  shown; whole frames still for mode and CLUT changes, the window's
-  exposes and once a second), each band converted once, straight into a
-  locked ARGB8888 streaming texture (`video_palette()`, `video_convert()`;
-  `display_rows()` in `src/display.c`) and drawn again only there in the
-  prescaled copy; and a hardware cursor (`src/video.c`), which the window
-  draws over the screen (`display_cursor()`), in window runs in real time
-  only. `video_to_rgb()` stays for screenshots, which draw the hardware
-  cursor in. `tests/test_video.c` checks the conversion against
-  `video_to_rgb()` at every depth, the bands, and the cursor calls with a
-  stand-in Video Services Library. Checked in 8.5 and 9.1 from their CDs
-  and 8.6 from a disk: the arrow, the I-beam (all inverting pixels), the
-  watch (animated, with inverting pixels), hiding while typing; with SDL's
-  software renderer too (inverting pixels are black there). Instruction-time
-  runs are unchanged. Measurements in Findings. Presenting on a thread of
-  its own and watching the framebuffer for writes followed (window-speed):
-  see "The window on a thread of its own" in Findings.
-
-### 16. CD audio
-
-- **Status:** done (8.5; 9.1 has no installed image here to try
-  AppleCD Audio Player on). CD images with audio as cue sheets
-  (`src/cdimage.c`: `.bin` in raw, 2048- or 2336-byte sectors, `MOTOROLA`,
-  WAVE and AIFF tracks, `INDEX 00` and `PREGAP`/`POSTGAP`, sessions; the
-  table of contents, the data track's 2048 bytes a sector as a
-  `disk_backend`, raw sectors, the Q and P-W subchannel; `blue disk toc`
-  lists it). The drive's player (`src/cdaudio.c`): ranges or the driver's
-  play lists, pause, stop, scan, volume, channel routing, its position a
-  function of guest time; frames in a FIFO taken by the sound chip's analog
-  input (`struct awacs_input` in `src/awacs.c`), mixed with the DMA's or
-  alone, resampled to the codec's rate, through when the codec selects the
-  CD with loop-through (or nothing). Every CD-ROM drive answers as Apple's
-  CD-ROM driver (`src/cdrom.c`, after Technical Note DV22: ReadTOC 1-6,
-  ReadTheQSubcode, ReadHeader, AudioTrackSearch, AudioPlay, AudioPause,
-  AudioStop, AudioStatus, AudioScan, AudioControl, ReadMCN, ReadISRC,
-  ReadAudioVolume, spindle speed, ReadAudio, the play lists 122-126;
-  GetDriveType, GetBlockSize, ReturnDeviceIdent, GetCDFeatures,
-  Get2KOffset), named `.AppleCD`, with DriverGestalt `devt` `cdrm`,
-  `intf`, `dvrf`, `minf`, and a CD and CD-ROM drive icon (Control 21/22,
-  `mics`/`dics`/`mnam`; drawn in `src/cdrom.c` with the floppy's palette).
-  Tests: `tests/test_cd.c` (synthetic discs: an HFS data track made with
-  `hfs_format()` read back with hfsread, audio tracks of patterns in each
-  kind of file; the player's positions, pauses, lists, volume, pacing by
-  guest time, resampling, through the codec), `tests/test_awacs.c` (the
-  analog input with and without DMA), `tests/test_drives.c` (the driver
-  calls on a cue sheet's disc). Checked on an installed 8.5 with the real
-  Quake CD (`Quake [1996].cue`): the ISO 9660 data track mounts
-  (QUAKE106), AppleCD Audio Player lists the 10 audio tracks with their
-  lengths and plays, shuffles and scans them; `BLUE_SOUND_WAV` holds
-  track 2's samples bit for bit (scaled by Mac OS's volume), in
-  instruction time (reproducibly) and in real time; a synthetic audio disc
-  mounts as "Audio CD 1", and MoviePlayer's conversion of a track to AIFF
-  holds its samples bit for bit. Instruction-time runs of the 8.5 and 9.1
-  CDs reach the Finder as before, but for the CD icon (on the desktop and
-  in the window's title). Open: see [future.md](future.md), "More CD formats".
-
-### 17. The display's VBL interrupt
-
-- **Status:** done. The display interrupts at each vertical blank, as the
-  iMac's ATI chip does, instead of the driver's Driver Services timer
-  (which ran on the Time Manager, so stopped with it). The chip
-  (`src/video.c`: `video_set_time()`, `video_next_vbl()`, `video_irq()`)
-  counts vertical blanks on the timebase, n at n/60 s rounded up, so 60
-  a guest second exactly and the same in every run; each latches its VBL
-  status, which holds the display's line (source 22, level 2: `bootinfo.h`,
-  `bootinfo_level_masks()`) while the interrupt is on, until the driver
-  acknowledges it. The kernel brings it up to date with the other devices
-  (`update_device_time()`, `device_next_tb()`, `update_interrupts()`, and
-  `idle_wait()` wakes for it in real time). The display node has
-  `interrupts` and an interrupt set (`interrupt_set()` in `bootinfo.c`, with
-  `AAPL,interrupt-index` for 9.2's ROM files). The driver
-  (`video_driver_call()`, `open_step()`) at Open: RegistryPropertyGet of
-  `driver-ist`, GetInterruptFunctions, InstallInterruptFunctions with its
-  handler (entry 1) and the set's refCon, enabler and disabler,
-  VSLNewInterruptService, the chip's interrupt on and the set's enabler;
-  without an interrupt set, no VBL service. The handler acknowledges the
-  vertical blank (kIsrIsNotComplete if there was none) and queues the
-  secondary handler (entry 2) unless it's queued already; that calls
-  VSLDoInterruptService. SetInterrupt (Control 7) turns the chip's
-  interrupt off and on (a vertical blank from while it was off doesn't
-  count). The timer path is gone: every system here has interrupt sets.
-  With more level-2 interrupts, latched DMA pulses got lost (see Findings,
-  "Pulses lost at PrioritizeInterrupts"): `macio_release()` keeps one Mac
-  OS hasn't handled for one more re-evaluation. Tests: `tests/test_video.c`
-  (the timing: 60 in a guest second, 276,666 or 276,667 ticks apart, one
-  interrupt for several unacknowledged; the driver's Open with and without
-  a set, the handler, the secondary handler, SetInterrupt),
-  `tests/test_nvram.c` (the display node's properties),
-  `tests/test_dbdma.c` (pulses kept and released). Checked (instruction
-  time, against main): the 8.5 CD, installed 8.5 and 8.6, the 9.1 and
-  9.2.2 CDs reach the Finder as before, two runs identical but for the JIT's
-  links; VBLs 59 a guest second (14,298 in the 8.5 CD's 4 billion
-  instructions, 241 s; main's timer: 13,750), fewer where Mac OS keeps
-  interrupts masked longer than a frame (Unreal Tournament: 52); the restored
-  9.2.2 reaches the Setup Assistant over the Finder in all of 6 runs with
-  different `--fixed-time`s (main: stuck in 3, stalled 17-25 s in the
-  others); Unreal Tournament (8.6, with its CD) plays its intro with sound
-  (main, merged: black screen, sound stopped, waiting for it); the hardware
-  cursor follows the pointer in window runs (8.5 and 9.2.2 CDs); fast start
-  in real time as main's (8.5 CD 13.8 s of guest time, 9.1 16.2 s, 9.2.2
-  13.1 s, 8.6 installed 18.5-18.7 s); host time the same within noise.
-- **Open:** none. On the restored 9.2.2's first startup (a disk Apple
-  Software Restore left unmounted), quitting the Setup Assistant left the
-  desktop without a menu bar: not the VBL's doing (see Findings, "The
-  restored 9.2.2's first startup without a menu bar").
-
-### 18. OpenGL for Mac OS 9 games
-
-- **Status:** milestones 0 to 8 done ([opengl-plan.md](opengl-plan.md) has the plan,
-  its milestones and what's built). Milestone 8, the rest of OpenGL 1.2:
-  logic ops (OpenGL's own on the GPU); line stipple (the counter going on
-  along strips and loops, starting again for separate lines) and polygon
-  stipple (through the pixel store); points and lines by OpenGL's rules
-  (`raster_gl_fragments()`, shared by both backends: the diamond-exit
-  rule, wide ones as columns or rows, points as squares), antialiased (each
-  fragment's alpha times the pixel's area covered; the hints change
-  nothing, as with Apple's ATI renderer, which always asked RAVE's best
-  antialiasing) and textured (a line's level of detail its texels a pixel);
-  16-bit frames dithered by a 4 x 4 ordered matrix while `GL_DITHER` is on;
-  and the accumulation buffer, which on Mac OS 9.2.2 only Apple's generic
-  software renderer had: pixel formats asking for one are that renderer's
-  (ID 0x00020200, not accelerated), drawn as ATI's but with Apple's
-  strings ("Apple", "Generic", "1.1" and the extensions 9.2.2's engine
-  made of the renderer's). Both extensions that list has and Blue hadn't
-  are done, and in every context's list, as on a Rage 128 with 9.2.2:
-  `GL_APPLE_specular_vector` (the specular term by the light's reflection,
-  as Apple's specification and engine have it) and
-  `GL_EXT_texture_lod_bias` (per unit, clamped to 10, the deepest level,
-  as 9.2.2 gave no maximum; in software added to triangles' and lines'
-  levels of detail, on the GPU `texture()`'s bias). Then
-  `GL_TEXTURE_MIN_LOD` and `_MAX_LOD` applied (in software clamping the
-  level of detail, on the GPU a sampler's), and `GL_EXT_texture_env_combine`
-  as Apple's engine takes it (five functions, four sources, the operands,
-  scales of 1, 2 and 4; each unit's combine a stage of the backend's),
-  offered in ATI's list as a Rage 128's had it, not in the generic one's.
-  Quake III's demo and UT, run again, take up none of the three (their
-  calls logged): new instruction-time references for both, and on
-  milestone 8's runs the code costs 0.06% more host instructions in Quake
-  III, none measurable in UT (a first build cost 0.2%: new fields in the
-  middle of the state put the per-pixel loads out of AArch64's reach; they
-  are at the ends now). On radeonsi (x86-64 Linux, gcc and clang) all
-  tests pass, the new scenes within 1 of Blue's software; three older
-  scenes were moved off ties first (see Findings).
-  Nine more scenes against Mesa (logic ops, the LOD bias and range
-  exactly, combine within 2; the rest where llvmpipe's stipple counter,
-  smooth coverage and line texturing depart),
-  two in the test application (the same on macOS and Linux, the GPU
-  within 1). RAVE's pixels, the boots and, built with the library's old
-  data, the games' instruction-time runs are main's (but for Quake III's
-  16-bit frame's dither). Not done: GLU's tessellators and NURBS,
-  antialiased polygons, auxiliary buffers, color index. Milestone 7, performance: measured
-  first (`BLUE_GL_PROFILE`: where each frame's host time goes), in real
-  time on an M5 at 640 x 480. On the GPU, Quake III's demo and UT run at
-  60 frames a second with 7-10 ms of each frame to spare (the guest 3-5
-  ms, the front end 0.3-1.8, reading back 1.6-2.3, mostly the GPU
-  finishing at low clocks); in software the rasterizer is the cost (7-12
-  ms a frame waited for). The rasterizer is about 30% faster, its pixels
-  the same bit for bit (pixels unpacked and packed as vectors, vector
-  blend factors, blending by one and zero skipped, bilinear texel
-  addresses without float clamping where they're exact): Quake III in
-  software 59.2 to 59.9 frames a second, UT's intro 52.3 to 56.8. In a
-  window in real time, frames are shown when they're due, at an even pace
-  (before, the window's own updates ran slower than 60 a second, and a
-  frame was shown twice and the next lost every few seconds). The games'
-  instruction-time runs, the 3D engine's pixels (software and GPU) and the
-  8.5 and 9.1 boots are as before. Two test fixes: `opengl` crashed on a
-  Linux without libEGL (feedback compared against Mesa without Mesa), and
-  on AMD's radeonsi `gpu` and `opengl` failed at ties the tests set up
-  (pixel centers exactly on texel edges, an alpha exactly the alpha
-  test's, a depth exactly a quad's), now moved off, and at radeonsi's
-  `glCopyPixels` of depths (see Findings), not compared there. Milestone
-  6, completeness: selection
-  and feedback (`src/glselect.c`: hit records and every feedback type, the
-  primitives clipped to the view volume, in Mesa's order), evaluators
-  (`src/gleval.c`: one- and two-dimensional maps of every kind, grids,
-  meshes, made normals), `aglSetFullScreen` (the Display Manager switches
-  the screen to the size asked for and back when the drawable goes, by the
-  library's callouts) and `aglUseFont` (as Apple's: QuickDraw draws each
-  glyph into an offscreen world, the host makes it a list's `glBitmap`).
-  OpenGLLibrary now imports those calls from InterfaceLib, so its data
-  moved: an older version's copy is left alone, with a message to update
-  it. S3TC and paletted textures are left out: Mac OS 9.2.2's engine and
-  ATI renderer don't offer them. Feedback and selection give Mesa's
-  records, the evaluators' two new scenes Mesa's pixels (within 2), and
-  the test application's `fullscreen` and `font` scenes are the same
-  screenshots on macOS and Linux. Quake III's demo and UT play, but at
-  other moments than main's in instruction time: the library's imports
-  shift when they start (built without them, the milestone's Blue gives
-  main's runs exactly). Milestone 5: display lists (kept with
-  the bytes their calls' pointers pointed to, arrays' draws as the
-  attribute calls they make; nested, shared), the raster position,
-  `glBitmap`, `glDrawPixels` and `glCopyPixels` of colors, depth and
-  stencil (zoomed, through the pixel transfer and maps), `glCopyTexImage`
-  and `glCopyTexSubImage`, `glGetTexImage`, 3D textures in both backends,
-  and OpenGLUtility on the host (`src/glu.c`: the matrices, projections,
-  scaled images and mipmaps, quadrics, as SGI's GLU 1.2 does them; Apple's
-  strings; tessellators and NURBS renderers kept but drawing nothing).
-  Four scenes against Mesa differ by 1 at most but in lines at a slope
-  (Mesa's libGLU drawing "glu"'s quadrics), every scene made into a list
-  draws the same pixels, and the test application's new scenes (lists of
-  quadrics made through OpenGLUtility; pixel rectangles) are the same
-  screenshots on macOS and Linux. Quake III Arena's demo (id's, from
-  archive.org) installs with its installer and plays `demo001` on a clone
-  of 8.6, the same frame on macOS and Linux in instruction time (with
-  `TZ=UTC`), and Unreal Tournament's runs are main's. Milestone 4: client
-  arrays of every
-  type (interleaved, `glDrawElements`, `glDrawRangeElements`, compiled
-  arrays), lighting (8 lights, two sides, separate specular, the color
-  material, normalizing and rescaling), fog, texture coordinate generation
-  (with `GL_NV_texgen_reflection`'s), user clip planes, stencil in both
-  backends (RAVE's pixels and speed unchanged), polygon offset and modes,
-  `glPushAttrib` and `glPushClientAttrib`, `glGet*` for all of it; eight
-  scenes against Mesa differ by 2 at most but in one face lit from behind
-  (by 3), and the test application's lit, fogged, stenciled scene is the
-  same screenshot on macOS and Linux. The user has no Quake III (the
-  plan's check), so the scenes and Unreal Tournament were the checks. Mac
-  OS 9's OpenGLLibrary has no fog coordinates. Milestone 3: textures (`src/gltex.c`:
-  objects shared between contexts made to share, 1D and 2D images and
-  subimages in every format and type, parameters, completeness, two units
-  with their environments as the backend's stages, the texture matrices),
-  `glReadPixels`, the extensions string; swaps to a port paced by the
-  display's refresh as the 3D engine's frames are; the installer offers
-  the libraries, and on Mac OS 9 moves Apple's to Extensions (Disabled)
-  once Blue's are in Extensions, or offers to put them back if Blue's
-  are gone (checked on a clone of 9.2.2). Unreal Tournament's OpenGL build
-  plays (the intro and a match on 8.6, the intro on 9.2.2), on the GPU (60
-  frames a second in real time) and in software (about 50), its pictures
-  the RAVE build's; four textured scenes against Mesa differ only where Mesa's
-  `GL_CLAMP` blends with the border color and at three pixel centers on a
-  shared edge. Milestone 2: most gl calls recorded by
-  code of the library's own into a buffer in the process's memory, done on
-  the host at its next host call; the fixed-function front end
-  (`src/glfront.c`): matrices, `glBegin`/`glEnd`'s primitives, clipping
-  with a guard band, culling, flat and smooth shading, depth, blending,
-  the alpha test, masks, scissor and viewport, the same numbers on every
-  host; where OpenGL leaves room, the Rage 128's way (colors linear in
-  screen space). Six scenes drawn through the libraries match `gpu.c` and
-  Mesa's compatibility profile but for pixels whose centers are on edges
-  (and, in a perspective scene, Mesa's perspective-corrected colors); a
-  perspective scene in the test application gives the same screenshot on
-  macOS and Linux. `gpu.c`'s varyings are smooth now (llvmpipe got
-  noperspective ones wrong where it clips). Milestone 1: the three libraries
-  (`src/opengl.c`, from the table `tools/gltable.py` made of Apple's),
-  AGL, contexts laid out as Apple's with their dispatch tables, swaps into
-  a window's port clipped to its regions (`src/surface.c`), clears; a test
-  application of Blue's own (`src/gltest.c`) whose window, cleared through
-  the guest's OpenGL on installed 8.5 and 8.6, gives the same screenshot on
-  macOS and Linux, in software and on the GPU. Milestone 0: Blue's own OpenGLLibrary, OpenGLMemory and
-  OpenGLUtility, recording calls in guest memory, with OpenGL's fixed
-  function in C on the host, drawn by `raster.c` and `gpu.c`. Done: the
-  3D backend's richer vertices and states (three colors, a fog coordinate,
-  two texture units combined in up to four stages as `GL_COMBINE`, blend
-  equations and constant colors, no blending, color masks, fragments
-  without alpha drawn too), RAVE's texture operations as stages
-  (`raster_rave_stages()`), a GPU program for each configuration of stages;
-  the rasterizer built without fused multiply-adds; `ndrv_build()` with
-  any number of exports through a PEF hash table, data exports, code of a
-  fragment's own, zero-filled data, termination routines and versions; host
-  calls with f1 to f13 and `ndrv_args`. Tests: `tests/test_raster.c` (each
-  stage operation and kind of argument, blend equations, constant colors,
-  color masks drawn and cleared, the fog coordinate, fragments without
-  alpha), `tests/test_gpu.c` (the same against `raster.c`, a projective
-  unit, minifying and magnifying filters), `tests/test_tools.c` (300
-  exports found as the Code Fragment Manager finds them, the rest of the
-  builder), `tests/test_drivers.c` (`ndrv_args`), `tests/test_jit.c`
-  (f1 to f13 at a host call, both engines). Checked: 20 random streams of
-  RAVE calls (6,000 frames) give the same pixels as before in software,
-  on macOS (with the next item) and Linux; on the GPU, 4 frames differ,
-  each in one pixel's channel by one step. The 8.5 and 9.1 CDs boot to the same screenshots as
-  main's.
-- **Next:** the plan's milestones are done. Candidates for speed, if a
-  game needs them: reading back asynchronously while the guest waits for
-  its frame's turn, a vertex cache in `glDrawElements`. Open items: OpenGLUtility's
-  tessellators and NURBS renderers keep their objects and properties but
-  draw nothing (until a program needs them); antialiased polygons
-  (`GL_POLYGON_SMOOTH` is kept, not drawn), auxiliary buffers and color
-  index aren't offered. (`raster.c`'s pixels on edges two
-  triangles share: fixed, see Findings, "Shared edges in the software
-  rasterizer".)
-
-### 19. Pippin titles
-
-- **Status:** done. Blue Pippin Library (`src/pippin.c`, file "Blue
-  Pippin Library", 'shlb' 'syPP', fragment `PippinPPC`, host call number
-  0x108 in its unused stubs only, to tell Blue's copy) is offered and
-  installed with the other guest tools (the Finder icon: the stack with a
-  "P!" puzzle piece). Its code is its own: each export calls InterfaceLib
-  (FindFolder, PBGetCatInfoSync, DirCreate, Standard File, FSpDelete,
-  FlushVol, OpenWD, the Gestalt value calls, the trap table) or
-  AppearanceLib (StandardAlert); `tests/test_pippin.c` runs it in the
-  interpreter against a Mac OS of the test's own (folders, dialogs,
-  Gestalt, the trap table), and checks the exports by the PEF hash table.
-  Super Marathon's Marathon and Marathon 2 launch from the disc and play
-  on 8.5 and 9.2.2 installed on disks (scratch installs: 8.5 from its CD,
-  9.2.2 restored); a game saved at a level's end lands in
-  `Preferences:Pippin:marathon2.ppc` (or `marathon.ppc`), loads with
-  Continue Saved Game, is deleted with Delete Saved Game, and Quit returns
-  to the Finder. The saves were tested with copies of the disc whose first
-  level's player start is at its exit terminal (no monsters, no mission),
-  made in scratch: playing through a level isn't scriptable. The other
-  Pippin disc here, "1995.1.17 Hanshin Daishinsai" (a Director 4
-  projector, 68k), runs on both.
-- **Open:** titles that use the Pippin's video calls (PippinVideo.h's)
-  or its floppy dock. (The AppleJack controller: the host's game
-  controllers play as one, by each title's mapping; see Findings, "The
-  AppleJack".)
-
 ## Findings
 
-Facts later tasks need, added as they are found.
-
-- **Fused multiply-adds** (OpenGL, milestone 0): clang contracts `a * b +
+- **Fused multiply-adds** (OpenGL): clang contracts `a * b +
   c` into one fused operation within an expression by default, and does on
   Apple silicon (345 in `raster.c`), where it rounds once instead of twice;
   so the software rasterizer's pixels on Apple silicon Macs differed from
@@ -1043,7 +54,7 @@ Facts later tasks need, added as they are found.
   in the environment, as CI does. Apple's OpenGL driver: setting the blend
   equation for every draw call, even to the same value, cut a test of many
   small draws to a fifth of its frame rate.
-- **Shared edges in the software rasterizer** (OpenGL, after milestone 3):
+- **Shared edges in the software rasterizer** (OpenGL):
   `raster.c`'s edge functions were floats, with the top-left rule on top;
   at a pixel center exactly on an edge two triangles share, rounding could
   leave both just below zero, so neither drew it (3 pixels on a quad's
@@ -1069,14 +80,14 @@ Facts later tasks need, added as they are found.
   8,000 more in the streams by rounding, most in slivers whose gradients
   are huge). It's faster: 5-27% on 3,000 60-pixel triangles, 12-27% on
   100,000 4-pixel ones. The GPU's pixels are unchanged.
-- **No fog coordinates on Mac OS 9** (OpenGL, milestone 4): Mac OS 9.2.2's
+- **No fog coordinates on Mac OS 9** (OpenGL): Mac OS 9.2.2's
   OpenGLLibrary exports `glSecondaryColor*EXT` and
   `glSecondaryColorPointerEXT`, but no `glFogCoord*` or
   `glFogCoordPointerEXT`, and its engine lists neither
   `GL_EXT_fog_coord` nor `GL_EXT_secondary_color` (the secondary color is
   there for separate specular and `GL_COLOR_SUM_EXT`). Fog goes by the
   eye-space depth alone, and `GL_FOG_COORDINATE_SOURCE` is an invalid enum.
-- **Pixel rectangles in Mesa** (OpenGL, milestone 5): Mesa 25.2 (llvmpipe)
+- **Pixel rectangles in Mesa** (OpenGL): Mesa 25.2 (llvmpipe)
   draws an image from the raster position rounded to the nearest pixel
   corner (`lroundf`), where OpenGL 1.2's 3.6.4 takes the position as it is
   (the same pixels at a zoom of 1 but at half-way positions); Blue rounds
@@ -1085,24 +96,24 @@ Facts later tasks need, added as they are found.
   Blue keeps OpenGL 1.2's rectangles (checked in `tests/test_glfront.c`),
   and the scenes compared with Mesa zoom by whole numbers. Mesa's pixel
   maps don't work: see the next item.
-- **Mesa 25.2's pixel maps corrupt its heap** (OpenGL, milestone 5): its
+- **Mesa 25.2's pixel maps corrupt its heap** (OpenGL): its
   `glDrawPixels` with `GL_MAP_COLOR` on frees a 40-byte block it goes on
   using. Its blue and alpha come out as garbage, even through identity
   maps, and when the context goes, Mesa reads the block and writes 4 bytes
   into it (valgrind: freed in `glDrawPixels`, read and written in
   `eglDestroyContext`). A program of a few calls to Mesa alone, without
   Blue, aborts every time ("corrupted double-linked list"). In
-  `tests/test_opengl.c` it was the intermittent crash during milestone 5
+  `tests/test_opengl.c` it was an intermittent crash for a while
   (an abort or a segfault in about a third of the runs, depending on how
   the threads' allocations fell; a sanitized build and `MALLOC_CHECK_`
   changed that, and AddressSanitizer found nothing in Blue's code). It
   stopped once the scene compared with Mesa used no maps, and wasn't
-  understood until it was reproduced, after the milestone, by putting the
+  understood until it was reproduced later by putting the
   maps back (10 crashes in 30 runs; none with a negative zoom but no
   maps). Blue's GPU backend never uses Mesa's maps (the pixel transfer
   is the front end's, on the host). The Mesa harness now fails a scene that turns
   `GL_MAP_COLOR` on, rather than run it.
-- **SGI's GLU, 1.2 and 1.3** (OpenGL, milestone 5): Apple's OpenGLUtility
+- **SGI's GLU, 1.2 and 1.3** (OpenGL): Apple's OpenGLUtility
   is SGI's 1.2 ("1.2 MacOS 8.0"; it imports OpenGLLibrary's `glc_cc` as
   data, `NewPtr` and `DisposePtr`). 1.2 makes every mipmap level through
   16-bit images, each the last scaled (`scale_internal`); 1.3, Mesa's
@@ -1114,7 +125,7 @@ Facts later tasks need, added as they are found.
   quadrics drawn as points or silhouettes with flat normals (stale stack
   memory: Mesa's libGLU gave a previous call's); Blue gives the smooth
   ones there.
-- **Mesa 25.2's feedback and evaluators** (OpenGL, milestone 6): its
+- **Mesa 25.2's feedback and evaluators** (OpenGL): its
   feedback gives `GL_LINE_TOKEN` where OpenGL 1.2's 5.3 has
   `GL_LINE_RESET_TOKEN` (each separate line, each strip's first segment,
   each polygon's outline's), and, flat shaded, each vertex's own color
@@ -1130,7 +141,7 @@ Facts later tasks need, added as they are found.
   derivatives are in u' and v', so a domain run backwards doesn't turn the
   normal round as 5.1's dp/du x dp/dv does. Blue keeps OpenGL's way in
   each; the scenes compared with Mesa avoid them.
-- **Apple's `aglUseFont` and `aglSetFullScreen`** (OpenGL, milestone 6,
+- **Apple's `aglUseFont` and `aglSetFullScreen`** (OpenGL,
   disassembled from Mac OS 9.2.2's OpenGLLibrary): `aglUseFont` fails with
   `AGL_BAD_STATE` while a list is being made and `AGL_BAD_VALUE` for a font
   `RealFont` doesn't have; it measures the font in a 4 x 4 1-bit GWorld,
@@ -1146,7 +157,7 @@ Facts later tasks need, added as they are found.
   device, attaches the drawable through its engine and sets the viewport
   to the size; neither the library, the engine nor the ATI renderer
   imports a Display Manager call.
-- **radeonsi's `glCopyPixels` of depths** (OpenGL, milestone 7; Mesa
+- **radeonsi's `glCopyPixels` of depths** (OpenGL; Mesa
   26.2 on a Radeon RX 6800 XT, surfaceless EGL, compatibility profile):
   copying `GL_DEPTH` writes no color at all (OpenGL 1.2's 4.3.3 has the
   fragments take the raster color) and writes the depths with the depth
@@ -1156,7 +167,7 @@ Facts later tasks need, added as they are found.
   radeonsi leaves black with depth 0.5 there, with the test `GL_LESS`,
   `GL_ALWAYS` or off. `tests/test_opengl.c` leaves those pixels out on
   radeonsi.
-- **Ties in the tests** (OpenGL, milestone 7): a test whose numbers put a
+- **Ties in the tests** (OpenGL): a test whose numbers put a
   pixel center exactly on a texel's edge, or a value exactly at a test's
   reference, passes on one GPU and fails on another, since there the last
   bit of a division or interpolation decides (radeonsi rounded otherwise
@@ -1165,19 +176,19 @@ Facts later tasks need, added as they are found.
   quad's). Exact rational numbers make them: perspective with q of 1 to
   2.5 across 32 pixels and 16 texels put many pixel centers on edges.
   The tests keep a margin now (a thousandth of a texel; an alpha's 0.5
-  between pixel centers). After milestone 8, the same with colors: a
+  between pixel centers). Later, the same with colors: a
   clear of 0.1 (25.5 of 255: radeonsi rounds it down, llvmpipe and Blue
   up) and logic ops over a gradient (radeonsi's interpolated colors a
   step from llvmpipe's at some pixels, which XOR and the like turn into
   differences in high bits); the scenes' colors are whole 255ths, flat,
   where logic ops take them.
-- **radeonsi's aliased points** (OpenGL, after milestone 8; Mesa 26.2.6
+- **radeonsi's aliased points** (OpenGL; Mesa 26.2.6
   on a Radeon RX 6800 XT, compatibility profile): a point of size 2.6
   without `GL_POINT_SMOOTH` is a square 2.6 pixels across (as core
   profiles have it), where OpenGL 1.2's 3.3 rounds the size to the
   nearest whole number, 3 (llvmpipe and Blue do). Whole sizes are drawn
   alike; `tests/test_opengl.c` leaves the 2.6 point out on radeonsi.
-- **Apple's renderers' info on Mac OS 9.2.2** (OpenGL, milestone 8,
+- **Apple's renderers' info on Mac OS 9.2.2** (OpenGL,
   disassembled): `gldGetRendererInfo` of the ATI renderer gives no
   accumulation buffer, no stencil and no offscreen drawables (accelerated,
   full screen, compliant); the generic software renderer's gives
@@ -1185,8 +196,8 @@ Facts later tasks need, added as they are found.
   16-16-16-16, stencil 0 or 8, 4 auxiliary buffers, window, offscreen,
   backing store, MP safe, robust, multiscreen and compliant, not
   accelerated or full screen. Its `gldGetString` gives "Apple", "Generic",
-  "1.1" and an extension list ending in `GL_ARB_multitexture` (left out of
-  [opengl-plan.md](opengl-plan.md) before). The engine's `glGetString` passes the
+  "1.1" and an extension list ending in `GL_ARB_multitexture`. The
+  engine's `glGetString` passes the
   vendor, renderer and version on as they are, and makes the extensions
   its own seven followed by those of the renderer's it knows (13), in the
   renderer's order, each with a space after it. ATI's
@@ -1195,16 +206,16 @@ Facts later tasks need, added as they are found.
   smooth points or lines are on, whatever the hint. ATI's `gldGetString`
   picks its renderer's name and extensions by the chip; a Rage 128's
   list has `GL_EXT_texture_env_combine`, `GL_EXT_texture_lod_bias` and
-  `GL_SGIS_texture_edge_clamp` ([opengl-plan.md](opengl-plan.md) had guessed, from the
-  strings' order, a shorter one). The engine keeps `glTexEnv`'s LOD bias as
+  `GL_SGIS_texture_edge_clamp` (the strings' order alone suggests a
+  shorter one). The engine keeps `glTexEnv`'s LOD bias as
   given, per unit, but answers no `GL_MAX_TEXTURE_LOD_BIAS_EXT`
   (`GL_INVALID_ENUM`); its specular vector is the specification's formula.
   Its `glTexEnv` takes `GL_EXT_texture_env_combine`'s values only (no
   `GL_SUBTRACT_ARB`, no other unit's texture as a source), and answers a
   scale other than 1, 2 or 4 with `GL_INVALID_ENUM` (the extension:
   `GL_INVALID_VALUE`).
-- **Where new state goes in `raster_state` and `gl_state`** (OpenGL,
-  after milestone 8): adding 16 bytes to each texture unit's
+- **Where new state goes in `raster_state` and `gl_state`** (OpenGL):
+  adding 16 bytes to each texture unit's
   `struct raster_unit` (which comes early in `raster_state`) cost Quake
   III's run 0.15% more host instructions, with no new work per pixel: the
   fields the row loops read moved past where AArch64's paired and
@@ -1215,8 +226,8 @@ Facts later tasks need, added as they are found.
   read per pixel or per vertex goes at the end of those structures, and a
   host instruction count (`time -l`, one rasterizer thread, on runs that
   are otherwise identical) shows it.
-- **Mesa's line stipple and smooth points and lines** (OpenGL, milestone
-  8; Mesa 25.2's llvmpipe): a strip's stipple counter goes on from segment
+- **Mesa's line stipple and smooth points and lines** (OpenGL;
+  Mesa 25.2's llvmpipe): a strip's stipple counter goes on from segment
   to segment by their lengths, not by the fragments drawn (OpenGL 1.2's
   3.4.2), so its dashes may end a pixel sooner or later; smooth lines'
   alpha is a ramp by distance from the line, and smooth points are drawn
@@ -1226,7 +237,7 @@ Facts later tasks need, added as they are found.
   center, it takes the row below, and OpenGL's perturbed endpoints the one
   above. Blue follows
   OpenGL 1.2 in each; the scenes compared with Mesa allow for them.
-- **S3TC and paletted textures on Mac OS 9.2.2** (OpenGL, milestone 6):
+- **S3TC and paletted textures on Mac OS 9.2.2** (OpenGL):
   the extension strings of 9.2.2's OpenGLEngine, OpenGLRendererATI and
   the software OpenGLRenderer have neither S3TC nor
   `GL_EXT_paletted_texture`; only the "NVIDIA OpenGL" engine on the same
@@ -1268,8 +279,8 @@ Facts later tasks need, added as they are found.
 - **CD audio, the codec:** Mac OS 8.5's sound driver writes register 0 =
   0x233 (input: the CD, gain 3) and register 1 = 0x8C0 (loop-through on,
   the speaker muted); Mac OS 9.1 here writes 0x000 and 0x880 (no input
-  selected, no loop-through: its input component isn't loaded, see Mac OS
-  9), so the CD plays through when nothing is selected too. Output
+  selected, no loop-through: its input component isn't loaded, see
+  [bring-up.md](bring-up.md#mac-os-9)), so the CD plays through when nothing is selected too. Output
   attenuation 0x249 (9 steps, 13851/65536) applies to the CD as to DMA
   sound. In instruction time CD audio costs about 1 s per 8 billion
   instructions with 385 s of it playing (an installed 8.5 boot: 4.85 s
@@ -1320,7 +331,7 @@ Facts later tasks need, added as they are found.
   message goes to the termination queue; `kMPInsufficientResourcesErr` if
   already terminated. 10 deletes a terminated task. 126 sets the name
   (`KCSetTaskType`). 59 sets the debugger's queue (where
-  `ThrowTaskToDebugger` sends exceptions; Task 4). NanoKernel 2's `Task.State`
+  `ThrowTaskToDebugger` sends exceptions). NanoKernel 2's `Task.State`
   is 0 (not queued: new, blocked, terminated), 1 ready, 2 running;
   terminated is a flag. New tasks have weight 100, priority nominal (2),
   like the blue task (weight 200), so starting one doesn't preempt the blue
@@ -1337,7 +348,7 @@ Facts later tasks need, added as they are found.
 - **Startup's tasks:** 0x001F0001 'deth' waits on queue 0x001C0001 (the
   blue process's termination queue, every task's); 0x00210001 'dbgr' waits
   on the debugger's queue 0x001D0001; 0x00230001 'ager' (page ager) calls
-  100 first. 'deth' and 'dbgr' block (forever, until Task 2 wakes them).
+  100 first. 'deth' and 'dbgr' block (forever, until what they wait for comes).
   In an experiment where 'ager' returned at once (which checked the
   return path: it ended, the blue task carried on), the blue task then
   idled to the 20-billion limit (21 million naps, 68k traps AA7F and AAFE
@@ -1355,15 +366,15 @@ Facts later tasks need, added as they are found.
   the System context's CR wherever it is (`system_cr()`: the blue task's
   saved registers when it was in the System context), and `preempt` waits
   until the blue task is back. Kernel calls other than 8 and exceptions in
-  other tasks stop the run (Task 4). The switch happens in `nk_boot()`'s
+  other tasks stop the run. The switch happens in `nk_boot()`'s
   loop after an exit is handled, when `mp.yield` is set (see the
   scheduler's finding below).
 - **Timers:** 40 makes one (ID in r4), 30 sets what firing does (as 66
   does for notifications), 31 arms it (options: see "Timers in Blue"
   below), 32 returns the time left in r4:r5 and disarms. TimeManagerLib's
   timers set event group 0x160001, the level-1 software interrupt group,
-  when they fire (Task 5 delivers the interrupt).
-- **The scheduler in Blue (Task 2, `mp.c`):** one ready queue in arrival
+  when they fire (see "Software interrupts" below).
+- **The scheduler in Blue (`mp.c`):** one ready queue in arrival
   order (`mp->ready`, the blue task included when it's ready but not
   running); `mp_next()` (NanoKernel 2's `SchEval`) keeps the running task
   unless a ready one is strictly more urgent, else takes the first of the
@@ -1391,7 +402,8 @@ Facts later tasks need, added as they are found.
   again (`SignalSemaphore` leaves the value alone); deleting an object
   wakes every waiter with `kMPDeletedErr` (priority unchanged). Such
   statuses are kept in `task.resume`: the call made again returns it at
-  once (`mp_call()`), which is also how timeouts end waits (Task 3).
+  once (`mp_call()`), which is also how timeouts end waits ("Timers in
+  Blue", below).
 - **The blue task:** a poll (`kMPBlueBlockingErr`) yields to tasks as
   urgent and records the object (`mp->polled`, NanoKernel 2's
   `BlueSpinningOn`); when that object becomes available, a napping blue
@@ -1416,7 +428,7 @@ Facts later tasks need, added as they are found.
   In Blue's run the mask is 7 from instruction 1.1 million to about 53.88
   million, right after TimeManagerLib arms its timers. No kernel call 4
   comes with it (the real one comes because an interrupt is pending).
-- **PriorityShifty's other bits** (Task 5, `set_shifty()` in `nk.c`): the
+- **PriorityShifty's other bits** (`set_shifty()` in `nk.c`): the
   kernel sets 0x100 whenever it boosts the blue task for its mask, and when
   it posts an interrupt to it (external or software). The emulator's
   set-SR routine (`0x6806C410`, which MOVE to SR, RTE and the like go
@@ -1433,7 +445,7 @@ Facts later tasks need, added as they are found.
   the blue task nominal at the front, so it keeps the processor to the end
   of its slice and the tasks first run at 54,320,000. 0x200
   (latency-protected whatever the mask) isn't modelled: nothing sets it.
-- **Software interrupts** (Task 5): `MPSetSWIEvent` (54) marks a group
+- **Software interrupts:** `MPSetSWIEvent` (54) marks a group
   0x10 | level (1-8, else 1). The emulator puts its table's offset, 0xAE0,
   at ECB+0xC8 itself at startup (`0x6806DDFC`): entries are at
   EmulatorData+0xAE0 + 4 × level. Setting the group (`SetEvent`,
@@ -1457,7 +469,7 @@ Facts later tasks need, added as they are found.
   highest level left, or 0, in ECB+0xD0 (`swi_taken()`). Without a table
   (ECB+0xC8 0), ECB+0xD0 holds the group itself, one at a time. Deleting a
   group leaves its entry (as NanoKernel 2 does).
-- **The page ager's pass** (every 3 s; Task 8, done): it walks the areas
+- **The page ager's pass** (every 3 s): it walks the areas
   with `MPGetNextID` (37: class r3, 0 any; the previous ID r4, 0 from the
   first; the next ID in r4, `kMPInvalidIDErr` after the last, when it
   starts again from 0: with no areas it would spin) and asks for each
@@ -1500,7 +512,7 @@ Facts later tasks need, added as they are found.
   with process 0 and returns `kMPInvalidIDErr`, as on the real kernel;
   other uses are unimplemented. NanoKernelInfo.TaskCount starts at 2
   (`mp->tasks`), so the page-fault queue's reserves are 2, 3, 4, 5.
-- **Timers in Blue (Task 3):** timer objects and blocked tasks' deadlines
+- **Timers in Blue:** timer objects and blocked tasks' deadlines
   (`task.deadline`: a timeout, a delay's end, the blue task's nap) end in
   `mp_tick()`, earliest first and, among those due together, in the order
   they were armed or blocked (`mp->queued`), as NanoKernel 2's sorted timer
@@ -1534,7 +546,7 @@ Facts later tasks need, added as they are found.
   group's ID pushed, and the ROM's handler calls MPWaitForEvent(group, 0).
   The Trampoline puts AAPL,CodePrepare and AAPL,CodeRegister first among
   `/`'s children.
-- **The CPU plugin** (Task 8; `nk.c`): code Mac OS registers for the
+- **The CPU plugin** (`nk.c`): code Mac OS registers for the
   machine's processors (starting others, their clocks, power and
   temperature). Before one is registered, `MPCpuPlugin` (46: selector r3,
   arguments r4-r10) returns -29286; Mac OS's probes make it with selector 0
@@ -1559,7 +571,7 @@ Facts later tasks need, added as they are found.
   processors) don't happen in Blue (no idle task, one processor). After
   registering, Mac OS calls selector 0 once more, then `MPProcessors` (3:
   r3 0 all, else scheduled; the count in r3, 1).
-- **Processes** (Task 8): `MPCreateProcess` (4: address space r3, 0 the
+- **Processes:** `MPCreateProcess` (4: address space r3, 0 the
   system's → r5) makes one late in startup (0x01B40001 in Blue,
   0x01C00001 on QEMU), and `MPSetBlueProcessID` (99: process r3, word r4;
   blue task only, else `kMPInsufficientResourcesErr`) moves the blue task
@@ -1572,14 +584,14 @@ Facts later tasks need, added as they are found.
   own; startup's to the blue process), for `MPGetNextIDOwnedByProcess`
   (116: process r3, class r4, previous ID r5 → the next r5 of that class
   that belongs to it; class process, CPU or coherence group: paramErr).
-- **Preparing `AAPL,CodePrepare`** (Task 8): the 68k code at `0xFFC015E0`
+- **Preparing `AAPL,CodePrepare`:** the 68k code at `0xFFC015E0`
   has `0xFFC01300` walk the node's properties (those `AAPL,prepare_order`
   names first: here only "Placeholder", which isn't there; then the rest
   in order: MotherBoardHAL, TimeManagerLib, NVRAMServicesLib,
   RTCServicesLib) and prepare each library (`0xFFC01250`), and it stops
   at the first one that fails (its init returns an error). So a library
   that can't find its device keeps every later one from running.
-- **The clock** (Task 8, done): 9.1 showed 12:00 AM because RTCServicesLib
+- **The clock** (9.1): 9.1 showed 12:00 AM because RTCServicesLib
   never ran: NVRAMServicesLib, before it, failed (`nrNotFoundErr`, -2539:
   no node with `device_type` nvram), and the walk above stopped. The ROM's
   ReadDateTime (`0xFFC0C572`) calls the platform's primitive (ProductInfo
@@ -1600,7 +612,7 @@ Facts later tasks need, added as they are found.
   moves its offset until the next restart). With the `nvram` node below,
   the run makes one more Cuda packet (the get) and the clock is right;
   Date & Time (8.6's, from a second disk) sets it with one more.
-- **NVRAM** (Task 8, done): NVRAMServicesLib's init finds the node with
+- **NVRAM** (9.1): NVRAMServicesLib's init finds the node with
   `device_type` nvram and prepares its driver, which for an `nvram` under a
   node named mac-io is the ROM file's "Cuda NVRAM Plugin" (`nvram,cuda`;
   parcel flags: device_type and parent's name): it reads `AAPL,address`
@@ -1628,8 +640,9 @@ Facts later tasks need, added as they are found.
   0x2000, `reg` 0x60000 0x20000. Blue's node and chip are only in trees
   for ROM files with parcels; RTAS keeps the bytes (`src/nvram.c` points
   at them).
-- **Task 4** (exceptions in tasks other than the blue one) wasn't needed
-  to reach the Finder: no task faulted.
+- **Exceptions in tasks other than the blue one** weren't needed to
+  reach 9.1's Finder: no task faulted. (One of 9.2.2's did, below:
+  'accu'.)
 - **Quiet writes** (Mac OS 8.5's own ROM file): ConfigInfo maps the ROM
   (BAT lower `0xFFCF3253`, PMDT attributes 0x353; the 9.1 Trampoline's
   BAT too, WIMG 0b1010) write-through and PP 3, which NanoKernel 1 and 2
@@ -2287,18 +1300,9 @@ Facts later tasks need, added as they are found.
   WaitNextEvent and GetNextEvent instead, calling the Process Manager's
   (which switches processes inside them) through CallUniversalProc, left
   applications without their windows.
-- **Pictures (not done):** Mac OS to host, the scrap's `PICT` is QuickDraw
-  drawing: simplest to have Mac OS draw it (DrawPicture into a GWorld,
-  from Enhancements) and hand the host the pixels. Host to Mac OS: decode
-  PNG (needs an inflater: zlib, or stb_image in third_party) and make a
-  PICT of one DirectBitsRect (32-bit pixels), mind the 4 MB limit. The host
-  side is the bigger part: SDL2's clipboard is text only. SDL3's
-  (`SDL_SetClipboardData` and MIME types) would do X11, Wayland and macOS
-  alike; without it, NSPasteboard through the Objective-C runtime on
-  macOS, and on Linux the X11 CLIPBOARD selection (an `image/png` target,
-  answering SelectionRequest events) and a Wayland data source, each
-  separately.
-- **Showing the screen** (Task 15; M5, window runs, the pointer moved in
+- **Pictures** on the clipboard aren't passed: how they could be is in
+  [future.md](future.md#pictures-on-the-clipboard).
+- **Showing the screen** (M5, window runs, the pointer moved in
   circles by a timed script, 50 moves a second; per presented frame, and
   the share of the emulation thread's time in `display_frame()`; medians
   of 3-5 runs, their range in brackets. The machine was shared and the
@@ -2334,7 +1338,7 @@ Facts later tasks need, added as they are found.
   allocates one for each lock). SDL's renderers take ARGB8888 as it is
   (Metal's, here, lists it first; so do OpenGL's and the software one);
   RGB24 was converted again by SDL on the CPU.
-- **The hardware cursor** (Task 15; Designing PCI Cards and Drivers, the
+- **The hardware cursor** (Designing PCI Cards and Drivers, the
   Display Device Driver Guide; Apple's IOGraphics, whose NDRV support
   implements the same library on Mac OS X). Control 22 SetHardwareCursor
   (VDSetHardwareCursorRec: csCursorRef, two reserved words), Control 23
@@ -2370,7 +1374,7 @@ Facts later tasks need, added as they are found.
   so only for window runs in real time. (SheepShaver reads the
   CursorImage's pixmap itself, 1-bit cursors only, and guesses the hot
   spot.)
-- **The window on a thread of its own** (Task 15, window-speed; M5,
+- **The window on a thread of its own** (window-speed; M5,
   macOS, window runs in real time; `BLUE_WINDOW_PROFILE=1` measures it).
   Before, the emulation thread did all the window's work at each frame:
   compared the framebuffer with a copy of what was last shown, row by row,
@@ -2704,7 +1708,7 @@ Facts later tasks need, added as they are found.
     display's density is looked at as the window moves or changes size or
     display, and once a second (1.5-10 µs: sdl2-compat's
     `SDL_GetWindowDisplayIndex` is most of it).
-- **Mac OS 9.2.2: the CD** (Task 10): MacOS9Lives' "Mac OS 9.2.2
+- **Mac OS 9.2.2: the CD:** MacOS9Lives' "Mac OS 9.2.2
   Universal" (`922.iso`, volume MacOS9Lives in the partition "Toast 5.2 HFS
   Optimizer"), for Macs Apple's 9.2.2 doesn't support. Its ROM file is
   10.2f1 (its Read Me: "Modified Mac ROM 10.2.1MR"), `<COMPATIBLE>` MacRISC
@@ -2776,7 +1780,7 @@ Facts later tasks need, added as they are found.
   counter has moved, sets a correction in ppb against ProcessorInfo's
   decrementer rate; else it sets 0. On an iMac's Paddington that address is
   in the floppy controller's (SWIM3) cell. Blue had nothing there: the
-  task faulted (exception 18 in a task: Task 4). The cell now reads zeros
+  task faulted (exception 18 in a task). The cell now reads zeros
   (`setup_machine()`, `empty_cell_ops`, for ROM files with parcels).
 - **The ROM file's lanLib for `bmac+`** (9.2.2's parcel flags 0xC, blob
   flags 6, not keep-existing) took the place of Blue's in the Ethernet
@@ -2815,9 +1819,9 @@ Facts later tasks need, added as they are found.
   native code within 16 ms, while Blue's VBL is a Driver Services timer
   that itself needs the Time Manager. Options: a VBL interrupt from the
   display device (`video.c`, its node's interrupt set), or timers firing at
-  their exact time in instruction time. **Resolved** by the first (Task
-  17); see the next.
-- **The display's interrupt** (Task 17): on the iMac the ATI chip's PCI
+  their exact time in instruction time. **Resolved** by the first: see
+  the next.
+- **The display's interrupt:** on the iMac the ATI chip's PCI
   interrupt goes to Paddington's source 22 (MAME's `imacg3.cpp` wires its
   Rage IIc there; its OHCI is source 28, as Blue's, and NetBSD on a Bondi
   iMac says the same of the OHCI; QEMU's g3beige wires Grackle's four PCI
@@ -2857,7 +1861,8 @@ Facts later tasks need, added as they are found.
   interrupt dropped on purpose (its CR bits never posted) at 250 s of
   guest time waited 22.5 s without the VBL, under 18 ms with it; at 30 s,
   forever without.
-- **Pulses lost at PrioritizeInterrupts** (Task 17): `macio_release()`
+- **Pulses lost at PrioritizeInterrupts** (with the display's interrupt):
+  `macio_release()`
   dropped every taken pulse at each PrioritizeInterrupts, but Mac OS calls
   that not only once it has handled what it dispatched: also when it
   lowers its 68k interrupt mask, and at the end of a dispatch that began
@@ -3169,8 +2174,8 @@ Facts later tasks need, added as they are found.
   the volume unmounted; or `power`, then a click on Shut Down (541 188).
   The Setup Assistant's first screen quits with Command-Q and a click on
   Quit (569 487 at 1024x768).
-- **The restored 9.2.2's first startup without a menu bar** (Task 17's
-  open item): reproduced from a blank disk (a scripted restore, the run
+- **The restored 9.2.2's first startup without a menu bar** (seen with
+  the display's interrupt, not its doing): reproduced from a blank disk (a scripted restore, the run
   stopped with Apple Software Restore's last dialog up, then the disk
   started and the Setup Assistant quit at its first screen: the desktop and
   its icons, no menu bar (MBarHeight 0), no Control Strip, the Finder
@@ -3381,7 +2386,7 @@ Facts later tasks need, added as they are found.
   start; little sound plays then).
   Tests: `tests/test_audio.c` (pass-through at the goal, the 0.5% bound, a
   device 0.3% fast or slow for 5 minutes, recovery from 150 ms over).
-- **PippinPPC on a Pippin** (Task 19): the Pippin's System Folder has an
+- **PippinPPC on a Pippin:** the Pippin's System Folder has an
   enabler ('gbly' "Pippin") whose 'nlib' 777, "PippinPPC" (1,901 bytes),
   is the library. Its twelve exports import only GetToolboxTrapAddress and
   CallUniversalProc: each calls the trap $AA6F (Pippin.h's
@@ -3412,7 +2417,7 @@ Facts later tasks need, added as they are found.
   string at offset 12 (63 characters at most), else CurApName.
   PippinStandardDeleteFile asks the user to delete files to free
   *bytesRequested, and returns the bytes deleted there.
-- **Super Marathon on Mac OS** (Task 19): `marathon.ppc` and
+- **Super Marathon on Mac OS:** `marathon.ppc` and
   `marathon2.ppc` import six of the functions, strongly, and at startup
   ask Gestalt for 'pipn' (gestaltPippinAttr): without it, a fatal "Sorry,
   but this game is only for the Pippin." With it, preferences go through
@@ -3571,7 +2576,7 @@ Facts later tasks need, added as they are found.
   display.c no longer prints it). Reproducible runs, the reference boots
   among them, are `build/blue boot --headless ...`: the same logs and
   screenshots as before.
-- **A Pippin disc on its own** (Task 19): Super Marathon's disc (one HFS
+- **A Pippin disc on its own:** Super Marathon's disc (one HFS
   volume, "Super Marathon") has a `PippinAuthenticationFile` ('PpnV',
   'PpnA') at its root and a blessed System Folder with Finder, System
   ('zsys'), the `Pippin` enabler ('gbly' 'MACS'), Pippin Launch and a
@@ -3590,6 +2595,43 @@ Facts later tasks need, added as they are found.
   terminal, and (but with `--headless`) over a black screen in a 640 x
   480 window at the display's own scale, with Copy Command (the Pippin's)
   and Quit; exit status 1.
+- **AppleCD Player and two CD-ROM drives** (CD images): the AppleCD
+  Player in the 8.5 CD's CD Extras opens `.AppleCD` by name, so with two
+  CD-ROM drives it sees only the first (each drive's driver is named
+  `.AppleCD`); it plays an audio CD by itself as soon as it opens. To hear
+  a test CD with the 8.5 CD as the startup disk, the test CD goes first on
+  the command line: 8.5's Start Manager still starts from the 8.5 CD, the
+  first drive with a System Folder. On the 8.5 CD's System an ISO 9660 data
+  track isn't mounted (it has no ISO 9660 File Access): Mac OS offers to
+  initialize it.
+- **What other tools make of CD images** (CD images): MAME's chdman (0.289)
+  stores a CD's audio big-endian (Nero, Alcohol and CloneCD images keep it
+  little-endian, as a `.bin` does); it drops a cue sheet's last sector if
+  the file ends partway through it, so its CHD is a sector shorter than the
+  cue sheet. Its Nero reader takes each track's offset in the file as the
+  sum of the earlier tracks' bytes from index 1, leaving out pregaps the
+  file holds, so audio after a track with a stored pregap goes in shifted
+  (the table of contents is right); Blue reads `DAOX`'s offsets as given.
+  Nero images from MAME's tests have mode code 0 with 2352-byte sectors, so
+  Blue takes a track's kind from the code and its sector size from the
+  block. ffmpeg's own Vorbis encoder (this ffmpeg has no libvorbis) loses
+  the right channel of a 660 Hz tone almost entirely (stb_vorbis and
+  ffmpeg decode it alike), and its last granule leaves 24 to 40 frames of
+  padding; libmp3lame's MP3s are as long as their LAME header says, a few
+  dozen frames more than the source: so a lossy rip's track can be a
+  sector longer than the CD's.
+- **What macOS makes and calls corrupt** (compressed images): `hdiutil`'s
+  ULMO chunks are xz streams of LZMA2 alone, without a check; UDCO's are
+  ADC; UDZO's zlib with a header; ULFO's LZFSE with `bvx2`/`bvxn` blocks.
+  Its `-layout` default for a folder is a GUID partition table, whose HFS+
+  partition Mac OS 8.5 to 9 reads but not the table (Blue gives each such
+  partition a drive). An early UDIF made as Disk Copy 6.3 made them (the
+  block table in `blkx` resources after the data, each partition's
+  offsets from its own data offset) is "corrupt" to `hdiutil imageinfo`,
+  and 7-Zip lists it but takes the offsets as the data fork's; Blue's
+  reading of it is checked against the image it was made from. macOS 27
+  keeps a file's resource fork in its `com.apple.ResourceFork` attribute,
+  and `NAME/..namedfork/rsrc` reads it (an NDIF image's `bcem` resource).
 - **The AppleJack** (game controllers): Apple's Pippin Technical Note
   "Applejack Input Device Driver" (PPBD-JHACEF003, 4/11/96) gives its
   driver's data, AJGlobalData: `pipp`, MyTalkR0, handlerID, ourMBState,
@@ -3626,3 +2668,58 @@ Facts later tasks need, added as they are found.
   _GetIndADB $A078 and _GetADBInfo $A079 (Blue Pippin Library's patch
   first went on $A079 by mistake: Marathon then found no AppleJack, and
   GetADBInfo for the mouse's address 3 gave the AppleJack's record).
+- **InputSprocket's drivers** (game controllers): InputSprocketLib 1.4.1
+  (Mac OS 8.6's) loads every shared library of creator `insp` (or Apple's
+  own, `insi`) in the Extensions folder, for each game that starts it (its
+  own instance, data and all). A driver registers its devices from its
+  initialization routine (MacALLY's checks ISpGetVersion for 1.1 or later
+  first); InputSprocket 1.7 also calls the exports
+  ISpDriver_FindAndLoadDevices, _CheckConfiguration, _DisposeDevices and
+  _Tickle. ISpDevice_New takes an ISpDeviceDefinition (92 bytes: the
+  name, a Str63; class, identifier, permanentID, flags) and a meta handler
+  that gives a function for each selector, Init 1 to CalibrateDialog 22
+  (Dirty is 12, SetActive 13); ISpElement_New an ISpElementDefinitionStruct
+  (104 bytes: device, group, the name, kind, label, configInfo and its
+  length, dataSize). Init gets the game's needs (ISpNeed, 92 bytes: the
+  name, then kind at 68, label 72, flags 76), its virtual elements and the
+  `used` flags, and the driver pushes to those virtual elements itself:
+  Apple's Mouse driver keeps them by the needs' kinds (its code at 0x413C)
+  and pushes to them (0x1640). ISpConfigure's dialog (its DLOG 111, 581 x
+  365) gives the device a rect for its panel (Show, with the item number
+  its items begin at) and passes it every event of the dialog's through
+  HandleEvent, mouse-downs included; 1.4.1 never calls DialogItemHit or
+  Click. While the dialog is up it calls GetState with an empty buffer at
+  every event (2,044 times in a few seconds) and Dirty to know when to say
+  "Custom"; it keeps what GetState gives for the game, and gives it back
+  through SetState after Init.
+- **Delta data** (game controllers): InputSprocket.h has ISpDeltaData as a
+  Fixed, but Apple's Mouse driver pushes `(int)(count x scale)`, the scale
+  a float (1.0, changed by its panel's slider): plain counts. A delta
+  element's state (ISpElement_GetSimpleState) is the sum of the events
+  pushed since it was last read (InputSprocketLib's code at 0x10B8 drains
+  them). Unreal Tournament reads its two delta needs' states each frame,
+  takes 1/128 of each (`srawi 7`) and passes them on as the mouse's X and
+  Y (input keys 0xE4 and 0xE5; User.ini's `MouseX=Axis aMouseX
+  Speed=6.0`): so a count is 128 to it, and the real mouse can't be what
+  it plays by through InputSprocket (it reads that itself). To it a
+  positive Y delta is up, and so is an axis's maximum (its "Look/Move"
+  axis looks down at the minimum).
+- **Unreal Tournament's needs** (game controllers): 26 (Mac version 400):
+  the axes Turn (`xaxi`) and Look/Move (`yaxi`), both flagged as having a
+  button and a delta version; the deltas Turn and Look/Move (Mouse
+  Left/Right, Up/Down: `xdlt`, `ydlt`); the buttons Fire/Click (`fire`),
+  Alt Fire (`sfir`), Jump, Crouch, Previous and Next Weapon (`btpv`,
+  `btnx`), Throw Weapon, Mouse Look, Previous, Next and Activate
+  Inventory, Walk, Step Left and Right (`blft`, `brgt`), Sidestep (`side`)
+  and Center View; and Look Up and Down, Turn Left and Right and Run
+  Forward and Backward, flagged as having axis and delta versions. Its
+  User.ini binds them to joystick keys (`Joy1=Fire` to `Joy12=Walking`,
+  `JoyX=StrafeLeft`, `JoyPovUp=MoveForward`...). With mouse look on (its
+  default), the Look/Move axis looks rather than moves, so the left stick
+  moves by the Run buttons. It calls ISpTickle at most once a second
+  (LMGetTicks), activates the mouse and speech classes and deactivates the
+  keyboard's; Options, Input Device calls ISpConfigure. Its menus' pointer
+  follows the Mac's mouse, and the delta needs too. It needs its CD in the
+  drive; from the intro, `open DM-Tempest` typed after Tab (its console)
+  starts a practice match, and in instruction time `clock 300` makes it
+  playable.
