@@ -103,4 +103,12 @@ struct hfsread_found {
 int hfsread_system_file(const char *const *paths, unsigned count, uint32_t type, struct hfsread_found *found,
 			char *err, size_t errlen);
 
+/*
+ * The same for one drive: the partition of the image at `path` whose map
+ * entry is `map_entry` (0: the image's only volume, without a map); `found`'s
+ * drive is 0. Returns as above (0 also when there's no such partition).
+ */
+int hfsread_system_file_in(const char *path, unsigned map_entry, uint32_t type, struct hfsread_found *found,
+			   char *err, size_t errlen);
+
 #endif

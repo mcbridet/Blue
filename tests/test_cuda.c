@@ -129,4 +129,40 @@ void test_cuda(void)
 	CHECK(!(rd(IFR) & VIA_IRQ_T2));
 	via_set_time(&via, 1101);
 	CHECK(rd(IFR) & VIA_IRQ_T2);
+
+	/* Autopoll: the mouse's click as it is, and while Mac OS dozes, after a tap of Option */
+	static const uint8_t autopoll[] = { 0x01, 0x01, 0x01 };
+	send(autopoll, sizeof autopoll);
+	CHECK_EQ(receive(r, sizeof r), 3);
+	adb_mouse_button(&cuda.adb, true);
+	cuda_poll(&cuda, 10000);
+	CHECK_EQ(receive(r, sizeof r), 5);
+	CHECK_EQ(r[1], 0x40);
+	CHECK_EQ(r[2], 0x3C);                   /* Talk R0 from the mouse */
+	CHECK_EQ(r[3], 0x00);                   /* button down */
+	cuda_doze(&cuda, 10005);
+	adb_mouse_button(&cuda.adb, false);
+	cuda_poll(&cuda, 10020);
+	CHECK_EQ(receive(r, sizeof r), 5);
+	CHECK_EQ(r[2], 0x2C);                   /* from the keyboard: Option down and up */
+	CHECK_EQ(r[3], 0x3A);
+	CHECK_EQ(r[4], 0xBA);
+	CHECK_EQ(cuda.wake_taps, 1);
+	cuda_poll(&cuda, 10040);
+	CHECK_EQ(receive(r, sizeof r), 5);
+	CHECK_EQ(r[2], 0x3C);
+	CHECK_EQ(r[3], 0x80);                   /* button up */
+	cuda_doze(&cuda, 10050);                /* (at most a tap a second) */
+	cuda_mouse_moved(&cuda);
+	cuda_poll(&cuda, 10060);
+	cuda_mouse_moved(&cuda);
+	cuda_doze(&cuda, 11000);
+	cuda_poll(&cuda, 11300);                /* (napped too long ago: not dozing) */
+	CHECK_EQ(cuda.wake_taps, 1);
+	cuda_mouse_moved(&cuda);                /* the cursor put where the host pointer is */
+	cuda_doze(&cuda, 11400);
+	cuda_poll(&cuda, 11410);
+	CHECK_EQ(receive(r, sizeof r), 5);
+	CHECK_EQ(r[3], 0x3A);
+	CHECK_EQ(cuda.wake_taps, 2);
 }

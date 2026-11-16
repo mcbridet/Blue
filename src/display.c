@@ -191,10 +191,12 @@ struct handed {
 	char status[480];
 	bool has_drives;
 	struct ui_drives drives;
+	bool tools;
+	char tools_why_not[160];
 	bool prompt_changed;
 	bool prompt;
 	unsigned prompt_id;             /* (counts the prompts shown) */
-	char prompt_text[1024], prompt_yes[32], prompt_no[32];
+	char prompt_text[1024], prompt_yes[32], prompt_no[32], prompt_alt[32];
 	int capture;                    /* capture the pointer (1) or let it go (0); -1: as it is */
 	int status_bar;                 /* show the status bar (1) or hide it (0); -1: as it is */
 	char *clipboard;                /* text for the host's clipboard (to free), or NULL */
@@ -240,7 +242,9 @@ struct display {
 	struct ui_drives drives;
 	bool prompt;                    /* a question or news is shown (display_prompt()): input goes to it */
 	unsigned prompt_id;
-	char prompt_text[1024], prompt_yes[32], prompt_no[32];
+	char prompt_text[1024], prompt_yes[32], prompt_no[32], prompt_alt[32];
+	bool tools;                     /* the menu has Install Guest Tools... (display_tools_state()), */
+	char tools_why_not[160];        /* ... enabled unless this says why not */
 	bool fullscreen;
 	bool status_bar;                /* shown, below the screen (only with the menu's SDL) */
 	struct ui_status bar;           /* what it shows */
@@ -744,7 +748,10 @@ static void draw(struct display *d)
 			.prompt = d->prompt ? d->prompt_text : NULL,
 			.prompt_yes = d->prompt_yes,
 			.prompt_no = d->prompt_no[0] ? d->prompt_no : NULL,
+			.prompt_alt = d->prompt_alt[0] ? d->prompt_alt : NULL,
 			.drives = d->has_drives ? &d->drives : NULL,
+			.tools = d->tools,
+			.tools_why_not = d->tools_why_not[0] ? d->tools_why_not : NULL,
 		};
 		enum ui_action action = ui_draw(d->ui, &s, ww, wh, ww > 0 ? (float)pw / (float)ww : 1, now - d->menu_time);
 		d->menu_time = now;
@@ -867,6 +874,7 @@ static void chosen(struct display *d, enum ui_action action)
 		break;
 	case UI_PROMPT_YES:
 	case UI_PROMPT_NO:
+	case UI_PROMPT_ALT:
 		d->prompt = false;
 		prompt = d->prompt_id;
 		show_pointer(d);
@@ -1137,6 +1145,8 @@ static void take(struct display *d, struct taken *t)
 		memcpy(d->menu_status, in->status, sizeof d->menu_status);
 		d->has_drives = in->has_drives;
 		d->drives = in->drives;
+		d->tools = in->tools;
+		memcpy(d->tools_why_not, in->tools_why_not, sizeof d->tools_why_not);
 		d->stale |= d->menu;
 		in->info_changed = false;
 	}
@@ -1147,6 +1157,7 @@ static void take(struct display *d, struct taken *t)
 		memcpy(d->prompt_text, in->prompt_text, sizeof d->prompt_text);
 		memcpy(d->prompt_yes, in->prompt_yes, sizeof d->prompt_yes);
 		memcpy(d->prompt_no, in->prompt_no, sizeof d->prompt_no);
+		memcpy(d->prompt_alt, in->prompt_alt, sizeof d->prompt_alt);
 		in->prompt_changed = false;
 	}
 	t->capture = in->capture;
@@ -1606,6 +1617,15 @@ void display_menu_state(struct display *d, enum ui_mouse mouse, const char *stat
 	pthread_mutex_unlock(&host.lock);
 }
 
+void display_tools_state(struct display *d, bool shown, const char *why_not)
+{
+	pthread_mutex_lock(&host.lock);
+	d->in.tools = shown;
+	snprintf(d->in.tools_why_not, sizeof d->in.tools_why_not, "%s", why_not ? why_not : "");
+	d->in.info_changed = true;
+	pthread_mutex_unlock(&host.lock);
+}
+
 void display_drives_state(struct display *d, const struct ui_drives *drives)
 {
 	pthread_mutex_lock(&host.lock);
@@ -1627,10 +1647,26 @@ bool display_prompt(struct display *d, const char *text, const char *yes, const 
 	snprintf(in->prompt_text, sizeof in->prompt_text, "%s", text ? text : "");
 	snprintf(in->prompt_yes, sizeof in->prompt_yes, "%s", yes ? yes : "");
 	snprintf(in->prompt_no, sizeof in->prompt_no, "%s", no ? no : "");
+	in->prompt_alt[0] = '\0';
 	in->prompt_changed = true;
 	pthread_mutex_unlock(&host.lock);
 	wake(d);
 	return true;
+}
+
+void display_prompt_alt(struct display *d, const char *label)
+{
+	if (!d)
+		return;
+	pthread_mutex_lock(&host.lock);
+	bool shown = d->in.prompt;
+	if (shown) {
+		snprintf(d->in.prompt_alt, sizeof d->in.prompt_alt, "%s", label ? label : "");
+		d->in.prompt_changed = true;
+	}
+	pthread_mutex_unlock(&host.lock);
+	if (shown)
+		wake(d);
 }
 
 void display_status_bar(struct display *d, bool on)

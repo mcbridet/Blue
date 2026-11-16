@@ -30,6 +30,9 @@
  *     > Restart (programs can ask to save their work first, or stop it), and
  *     the tools load as any extension does.
  *
+ * Don't Ask Again goes the same way: Mac OS writes Blue's preferences file
+ * (below) in its Preferences folder, and the check finds it next time.
+ *
  * Blue's OpenGL libraries have the fragment names of Apple's (Mac OS 9's
  * OpenGLLibrary, OpenGLMemory and OpenGLUtility), so only one of each can be
  * enabled: Apple's are in Extensions (Disabled) while Blue's are in the
@@ -79,7 +82,27 @@ struct install_check {
 	bool apple_disable;             /* Blue's are all in the Extensions folder, and some of Apple's too */
 	bool apple_restore;             /* Blue's aren't anywhere, Apple's only in Extensions (Disabled) */
 	bool apple_kept;                /* Apple's were put back earlier in this run: Blue's aren't offered */
+	/* Blue's preferences file, in one of the System Folder's folders (Preferences): don't offer the tools */
+	bool prefs_found, never;
+	uint32_t prefs_dir;
 };
+
+/*
+ * Blue's preferences file: "Blue Preferences" (INSTALL_PREFS_NAME), of type
+ * 'pref' and Blue Enhancements' creator, in the startup disk's Preferences
+ * folder, which Mac OS writes for Blue as it writes the tools (see below).
+ * It's text, CR-ended lines: "Blue Preferences", then settings ("Offer the
+ * guest tools: no", for Don't Ask Again; lines Blue doesn't know are left
+ * alone, and so is a file whose first line isn't that).
+ */
+#define INSTALL_PREFS_NAME "Blue Preferences"
+#define INSTALL_PREFS_MAX 1024u
+
+/* Makes the file's contents (with `never`: don't offer the tools); returns their length, or 0 if `len` is too small */
+size_t install_prefs_make(char *out, size_t len, bool never);
+
+/* Reads the file's contents: false if they aren't Blue's preferences, else whether not to offer the tools */
+bool install_prefs_parse(const uint8_t *data, size_t len, bool *never);
 
 /*
  * Looks for the tools in the blessed System Folder of partition `part` of
@@ -106,16 +129,30 @@ enum install_phase {
 	INSTALL_DONE,
 };
 
+/* The answer to the offer */
+enum install_answer {
+	INSTALL_NOT_NOW,
+	INSTALL_YES,            /* install (or update, or move, or put back), and restart */
+	INSTALL_NEVER,          /* Don't Ask Again: Mac OS writes Blue's preferences file saying so */
+};
+
+/* What the installer does in Mac OS */
+enum install_job { INSTALL_JOB_TOOLS, INSTALL_JOB_NEVER };
+
 struct install {
 	enum install_phase phase;
 	bool on;                        /* offering (window runs, and runs whose input script answers) */
+	bool checked;                   /* the startup disk was looked at, and can take the tools (writable, unlocked) */
 	struct install_check check;
-	int answer;                     /* a script's, before the question: 1 yes, -1 no */
+	enum install_answer answer;     /* a script's, before the question (`answered`) */
+	bool answered;
 	bool ask;                       /* the question is to be shown */
 	char question[640];
 	const char *yes;                /* "Install and Restart", "Update and Restart", ... */
+	const char *never;              /* "Don't Ask Again" */
 	char news[1024];                /* the outcome, to be shown once (news_ready) */
 	bool news_ready;
+	enum install_job job;
 	/* until the Finder is up: the Finder is the current application, idling without disk transfers */
 	uint64_t finder_tb, quiet_tb, idle_tb, disk;
 	uint64_t quit_tb, stopped_tb;   /* when Enhancements was asked to quit, when it had */
@@ -152,6 +189,12 @@ struct install {
 	/* the restart: asked for (once all went well), or not (why) */
 	bool restarting;
 	int16_t restart_error;
+	/* Blue's preferences file: written (Don't Ask Again), or deleted once the tools are installed */
+	uint32_t prefs_dir;
+	char prefs_folder[HFSREAD_NAME_MAX];
+	bool prefs_forgotten;
+	int16_t prefs_error;
+	const char *prefs_doing;
 };
 
 /* What the installer sees at an idle call */
@@ -171,18 +214,19 @@ void install_init(struct install *in);
 /*
  * Looks at the startup disk (partition `part` of the image at `path`;
  * `read_only` if it's attached so) before Mac OS starts, and says what it
- * found. From then on, the tools are offered if anything's to be done.
- * `check.apple_kept` is kept as it was (once Apple's OpenGL libraries have
- * been put back, Blue's aren't offered again after the restart that
- * follows, nor later in the run: see nk.c).
+ * found. From then on, the tools are offered if anything's to be done, and
+ * Blue's preferences file doesn't say not to (Don't Ask Again; the menu
+ * still offers them: install_offer()). `check.apple_kept` is kept as it was
+ * (once Apple's OpenGL libraries have been put back, Blue's aren't offered
+ * again after the restart that follows, nor later in the run: see nk.c).
  */
 void install_begin(struct install *in, const char *path, unsigned part, bool read_only);
 
 /*
  * At each idle call. Returns true if the guest has been diverted to the
  * bootstrap (then it doesn't idle): only at an idle trap's dispatch, once
- * the answer was yes (phase INSTALL_INJECT). Afterwards `ask` may say
- * there's a question to show, and `news_ready` news.
+ * the answer was yes or Don't Ask Again (phase INSTALL_INJECT). Afterwards
+ * `ask` may say there's a question to show, and `news_ready` news.
  */
 bool install_idle(struct install *in, const struct install_idle *w);
 
@@ -190,7 +234,14 @@ bool install_idle(struct install *in, const struct install_idle *w);
 void install_finder(struct install *in, uint64_t tb);
 
 /* The answer (from the window or a script); a script's may come before the question. */
-void install_answer(struct install *in, bool yes, struct helper *h);
+void install_answer(struct install *in, enum install_answer a, struct helper *h);
+
+/*
+ * The offer, asked for (the window's menu: Install Guest Tools...), Don't
+ * Ask Again or not. NULL if it can be made now; otherwise why not.
+ */
+const char *install_unofferable(const struct install *in);
+void install_offer(struct install *in);
 
 /* The installer's host call: its main routine, or a resumption after a callout. */
 void install_call(struct install *in, struct ndrv_call *c);
