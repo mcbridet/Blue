@@ -48,11 +48,14 @@ script.txt --max 5000000000`), for example:
 3950000000 cdrom insert Game CD 2.iso
 4000000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)
 4100000000 print-clipboard       # prints the host's clipboard, with what Mac OS copied since
+4200000000 share file Added.txt From the host.\n
+4300000000 share refresh         # as the menu's Refresh: Mac OS puts the shared folder's disk away, and it's offered again
 ```
 
 (`floppy insert` and `cdrom insert` take the rest of their line as the
 image's path, comments included; `floppy eject` and `cdrom eject` take one
-out: see [drives.md](drives.md#removable-drives).)
+out: see [drives.md](drives.md#removable-drives). `share file` writes a
+file in the shared folder, the rest of its line, as if on the host.)
 
 The commands, one a line after the instruction count (lines starting
 with `#` are comments):
@@ -71,6 +74,8 @@ with `#` are comments):
 | `tools install`, `tools later`, `tools never`, `tools offer` | the guest tools' offer: answered, or made now |
 | `clipboard TEXT`, `print-clipboard` | the host's clipboard, stood in for |
 | `clock N` | from here, guest time as for an N MIPS processor |
+| `share eject`, `share refresh` | Mac OS puts the shared folder's volume away (whatever it has open on it, or as the menu's Refresh: not while files are open on it), and it's written back and offered again (see [shared-folder.md](shared-folder.md#put-away-and-offered-again)) |
+| `share file NAME TEXT` | the shared folder has NAME holding TEXT (the rest of the line, as for `clipboard`), as if the host had written it |
 | `pad N plug [NAME]`, `pad N unplug` | game controller N (0 to 3) plugged in or out |
 | `pad N button NAME down\|up` | its button pressed or let go, by SDL's name: `a`, `b`, `x`, `y`, `back`, `guide`, `start`, `leftstick`, `rightstick`, `leftshoulder`, `rightshoulder`, `dpup`, `dpdown`, `dpleft`, `dpright` |
 | `pad N axis NAME VALUE` | its stick or trigger moved, from -1 to 1 (a trigger's from 0): `leftx`, `lefty` (down positive), `rightx`, `righty`, `lefttrigger`, `righttrigger` |

@@ -122,7 +122,9 @@ the drives' flags as it runs), so CD-ROM drives are ejectable only where
 discs can be swapped: in a window or real time, with `--cdrom-drive`, or
 with an input script that swaps CDs (`cdrom` commands); other
 instruction-time runs keep them fixed, as before, the same instruction for
-instruction.
+instruction. The shared folder's drive is removable in the same runs (and
+with `share` commands): Mac OS ejects its disk, which is written back and
+offered again (see [shared-folder.md](shared-folder.md#put-away-and-offered-again)).
 
 ## CDs: audio and cue sheets
 

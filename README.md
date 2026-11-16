@@ -105,7 +105,7 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **Sound** | Yes, with CD audio from most kinds of CD image | Yes, with CD audio from `.cue`/`.bin` images | Only in separate experimental builds | Yes |
 | **Sound input** | Not yet | No | No | Yes |
 | **Disk images** | Dropped on the window or inserted from the menu: CD images in most formats, compressed `.dmg` and Disk Copy images, floppies | Uncompressed images, and one at a time dropped in as a CD | Raw and QEMU's own formats, changed from a menu | Mac OS X's |
-| **Shared folders** | A folder of yours as a disk, its changes written back when Mac OS shuts down | A folder as a live disk, though programs can't run from it | Separate experimental drivers | Mac OS X's disks, directly |
+| **Shared folders** | A folder of yours as a disk, its changes written back when Mac OS shuts down or puts it away, and offered again with yours | A folder as a live disk, though programs can't run from it | Separate experimental drivers | Mac OS X's disks, directly |
 | **Networking** | TCP/IP through its NAT; no port forwarding yet | TCP/IP through its NAT, with port forwarding; AppleTalk with extra setup, on some hosts | TCP/IP through its NAT, with port forwarding; AppleTalk through bridged networking, run as root | Mac OS X's, AppleTalk included |
 | **USB devices** | Not yet | No | Passed through from the host | Through Mac OS X |
 | **Game controllers** | Gamepads, as keys or through InputSprocket | No | A USB gamepad, passed through | Unreliable |
@@ -347,6 +347,11 @@ F12 or Esc closes it again.
 - **The drives:** each floppy and CD-ROM drive shows what's in it, with
   **Eject** and **Insert…** buttons (see
   [Disks, CDs and floppies](#disks-cds-and-floppies)).
+- **Refresh "Folder"** brings changes across with the
+  [shared folder](#the-shared-folder) now: Mac OS puts its disk away, what
+  Mac OS changed goes to your folder, and the disk comes back with what's
+  in your folder. The menu says when the folder has changed on your
+  computer.
 - **Screenshot** saves the Mac's screen as a PNG on your Desktop.
 - **Fullscreen** fills your display with the Mac.
 - **Scale** sets how big the Mac's pixels are (see
@@ -605,15 +610,23 @@ its own, named after the folder. It's the easiest way to move files
 between your computer and the Mac: put a downloaded program in the
 folder, and install it from the disk in Mac OS.
 
-Changes cross over once per run, in each direction:
+Changes cross over each time Mac OS puts the disk away:
 
-- Files you add to the folder while the Mac runs appear in Mac OS the next
-  time you start it.
-- What Mac OS changes on the disk is written back to the folder when Mac
-  OS shuts down (or you put the disk away). If Blue stops without that,
-  because you chose Turn Off (in Blue's menu, or when it asked as you
-  quit), nothing is written back, and anything that had changed is kept
-  as a disk image in the folder's `.blue-recovery` folder instead.
+- **Put the disk away in Mac OS** (drag it to the Trash, or select it and
+  choose Put Away or Special > Eject): what Mac OS changed on it is
+  written back to the folder there and then, and a moment later the disk
+  comes back, with what's in the folder now, files you added on your
+  computer included.
+- **Refresh "Folder"** in [Blue's menu](#blues-menu-f12) (F12) does the same
+  without your putting the disk away: Mac OS puts it away, and it comes
+  back. It's disabled while Mac OS has files open on the disk (quit the
+  programs using them first), and the menu says when the folder has
+  changed on your computer.
+- **Shut down** from Mac OS, and what Mac OS changed is written back as
+  Blue quits. If Blue stops without that, because you chose Turn Off (in
+  Blue's menu, or when it asked as you quit), nothing is written back, and
+  anything that had changed is kept as a disk image in the folder's
+  `.blue-recovery` folder instead.
 
 Blue never destroys your files: a file that Mac OS deleted or replaced is
 moved to `.blue-recovery` inside the folder, under the date and time, and
@@ -976,9 +989,11 @@ four drives are taken by disks and CDs, there's no spare CD-ROM drive.
 
 ### My changes in the shared folder didn't reach my computer
 
-Changes are written back when Mac OS shuts down: choose Shut Down when
-Blue asks as you quit. If Blue stopped without a shutdown (Turn Off), look
-in the folder's `.blue-recovery` folder. See [The shared folder](#the-shared-folder).
+Changes are written back when Mac OS puts the disk away (drag it to the
+Trash, or choose Refresh in Blue's menu) or shuts down: choose Shut Down
+when Blue asks as you quit. If Blue stopped without a shutdown (Turn Off),
+look in the folder's `.blue-recovery` folder. See
+[The shared folder](#the-shared-folder).
 
 ### Mac OS forgot my settings, or my startup disk
 

@@ -176,8 +176,9 @@ window's scale (radio buttons: Auto, saying what it chose, and 1x to 4x;
 see [the scale](#the-scale)); the
 status bar; whether the pointer is captured while the Mac hides its
 cursor; the game controllers (their names, the mapping they follow, and a
-checkbox that turns it off: see [Game controllers](#game-controllers)); and what's in the floppy and CD-ROM drives, each with Eject and
-Insert... (see [drives.md](drives.md#removable-drives)). In real time guest time doesn't count
+checkbox that turns it off: see [Game controllers](#game-controllers)); what's in the floppy and CD-ROM drives, each with Eject and
+Insert... (see [drives.md](drives.md#removable-drives)); and Refresh for the shared folder
+(see [shared-folder.md](shared-folder.md#put-away-and-offered-again)). In real time guest time doesn't count
 the pause, so the Mac's clock is that much behind afterwards.
 
 ## Quitting

@@ -1040,6 +1040,43 @@ made to start up.
   fsck_hfs 540) checks HFS volumes, map nodes and order included;
   hfsutils' `hfsck -n` fails to read any image, so the test runs it
   without `-n` on a copy.
+- **Ejecting the shared folder's volume** (the shared folder put away and
+  offered again; an installed 8.5 and 9.2.2, headless): Mac OS 8.5's
+  Finder, having put away a volume whose window was open (Command-E, or a
+  program's `UnmountVol` and `Eject` with the window open), ejected the
+  next volume mounted in the same drive as soon as it was mounted: with
+  `Eject`, which leaves it off line (its VCB kept, `vcbDrvNum` 0,
+  `vcbDRefNum` the drive's number). Put back in, it was mounted again but
+  the Finder never showed it, or the Finder asked "Please insert the disk:
+  Exchange", ejecting every disk put in. It did so whatever the new
+  volume's name, creation date or size, offered again 1, 3 or 12 seconds
+  later, or the old volume itself put back; not with the window closed
+  first, not on 9.2.2, and not in the floppy drive (a writable, ejectable
+  drive too). The difference was the drive's icons: the shared folder's
+  drive declined Control 21 and 22 and DriverGestalt `mics`, as the disks
+  do, and once it gave them (its own, a disk with a folder on it) the
+  Finder let the new volume be, in each of those cases. Answering
+  DriverGestalt `devt` `flop`, `minf`, `flus`, Control 23 or the
+  two-sided flag, as the floppy drive does, changed nothing. (The eject
+  came from code in the system heap, a `gpch` resource holding "Trash Can
+  Usage Map", after Alias Manager calls and name comparisons: `DTFlush`,
+  `FlushVol`, then Control 7.) 8.5's `Eject` of a volume it hasn't
+  unmounted also writes its MDB with the unmounted attribute set, so the
+  MDB alone doesn't tell a volume put away: Blue looks for a VCB of the
+  drive's too, on line or off. `UnmountVol` and `Eject` by drive number,
+  from code of Blue's run at an idle call, put the volume away as the
+  Finder does on 8.5 and 9.2.2 (its window closed, the volume gone);
+  `UnmountVol` returns `fBsyErr` while SimpleText has a document of it
+  open. Files open, before asking: 8.5's FCB table (FSFCBLen 94) has the
+  volume's B-trees (file numbers 3 and 4), Desktop DB and Desktop DF, and
+  SimpleText's document; 9.2.2's is a stand-in (FSFCBLen 4, an entry of
+  four bytes for each FCB, a VCB pointer at +20 of it), which had four
+  for the volume when idle, its Finder window open or not, and five with
+  the document open. (Its real FCBs, 208 bytes each, are in pointer
+  blocks of 128, listed in a block FSVars points to at +0xB82: too
+  particular to 9.2.2 to go by.) Tests: `test_removable()` and
+  `test_share_drive()` in `tests/test_drives.c`, `test_write_back_again()`
+  in `tests/test_share.c`.
 - **Keys in input scripts:** in 9.1's Finder, Return held for 10 million
   instructions didn't start editing an icon's name; held for 1 million it
   does (8.5 took Command-D held 20 million).

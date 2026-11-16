@@ -11,8 +11,6 @@ was found along the way, and how Mac OS was brought up, are in
    opened from the desktop (which for now show a window saying how to start
    Blue from the command line).
 2. Host ports forwarded to the guest, so that it can serve.
-3. The shared folder written back when Mac OS ejects the volume, and
-   offered again as new media, so that changes cross during a run.
 
 ## When a program needs them
 
