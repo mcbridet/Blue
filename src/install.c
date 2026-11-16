@@ -1319,16 +1319,17 @@ static void report_never(struct install *in, struct ndrv_call *c)
 {
 	char buf[64];
 	const char *const how = " To install them later, choose Install Guest Tools... in Blue's menu (F12).";
+	in->news[0] = '\0';
 	if (in->error == WRONG_DISK)
-		snprintf(in->news, sizeof in->news, "couldn't save Don't Ask Again: Mac OS didn't start up from \"%s\".",
-			 in->check.system);
+		add(in->news, sizeof in->news, "couldn't save Don't Ask Again: Mac OS didn't start up from \"%s\".",
+		    in->check.system);
 	else if (in->error || in->prefs_error)
-		snprintf(in->news, sizeof in->news, "couldn't save Don't Ask Again (%s: %s), so Blue will offer its guest "
-			 "tools again next time.", in->error ? in->error_doing : in->prefs_doing,
-			 error_text(in->error ? in->error : in->prefs_error, buf, sizeof buf));
+		add(in->news, sizeof in->news, "couldn't save Don't Ask Again (%s: %s), so Blue will offer its guest "
+		    "tools again next time.", in->error ? in->error_doing : in->prefs_doing,
+		    error_text(in->error ? in->error : in->prefs_error, buf, sizeof buf));
 	else
-		snprintf(in->news, sizeof in->news, "Blue won't offer its guest tools on \"%s\" again (" INSTALL_PREFS_NAME
-			 " in \"%s:%s\" says so).%s", in->check.volume, in->check.system, in->prefs_folder, how);
+		add(in->news, sizeof in->news, "Blue won't offer its guest tools on \"%s\" again (" INSTALL_PREFS_NAME
+		    " in \"%s:%s\" says so).%s", in->check.volume, in->check.system, in->prefs_folder, how);
 	finish_news(in);
 	ndrv_finish(c, 0);
 }

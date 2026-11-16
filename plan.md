@@ -2256,10 +2256,11 @@ Facts later tasks need, added as they are found.
     window at 1280 x 1024 in millions of colours are the same to the
     pixel, but the status bar's processor light (whose brightness is the
     share of the time the Mac was busy, less now).
-  - **Linux** (arm64, in a podman container: Debian's SDL 2, gcc, Xvfb
-    without a window manager, xdotool and xclip for input): no warnings in
-    Blue's files (gcc's `-Wformat-truncation` in `install.c`, main's), the
-    tests pass, and in windows: the 8.5 CD's Finder; F12's menu (with its
+  - **Linux** (arm64, in a podman container: Ubuntu 24.04's SDL 2, gcc
+    13, Xvfb without a window manager, xdotool and xclip for input): no
+    warnings in Blue's files (gcc's `-Wformat-truncation` in `install.c`,
+    main's, is gone too: `report_never()` writes its news with `add()`, as
+    `report()` does), the tests pass, and in windows: the 8.5 CD's Finder; F12's menu (with its
     Install Guest Tools...), driven by the mouse and the keyboard
     (Screenshot and its news, Fullscreen on and off, Resume, Turn off,
     which ends the run as before); clicks and drags in the guest; the
@@ -2274,6 +2275,27 @@ Facts later tasks need, added as they are found.
     leaves the X window its size (the renderer draws for the screen's);
     dropped files weren't tried (xdotool can't drag), nor sound. Frames
     came 57-58 a second there (the container's timers).
+  - **ThreadSanitizer** (macOS, `make BUILD=build/tsan CC='cc
+    -fsanitize=thread -g' CXX='c++ -fsanitize=thread -g'`) found no races
+    in three window runs: the 8.5 CD's `--window --instruction-time` boot
+    with scripted clicks, a window drag and keys (8 s); the installed 8.5
+    in real time for 24 s with the status bar, the guest tools' offer
+    answered Not Now, a click, a drag and a key, and F12's menu opened and
+    closed twice with its Screenshot taken in between (that input made in
+    the window's thread as SDL's events would be, by a scratch build, as
+    the host's own input was the user's); and Unreal
+    Tournament's intro with RAVE on the GPU (the guest tools installed and
+    a restart first, 52 s; 35-38 frames a second under TSan). (A small
+    racy program gets its report, so TSan works there.) SDL 2 on macOS is
+    Homebrew's sdl2-compat, whose constructor `dlopen()`s
+    `libSDL3.dylib`, a bare name that dyld finds through the caller's
+    rpath (sdl2-compat's leads to Homebrew's sdl3); under TSan the caller
+    is TSan's `dlopen()`, so SDL 3 isn't found and sdl2-compat aborts:
+    `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` finds it (macOS drops
+    `DYLD_` variables for its own programs, so with `/usr/bin/timeout` it
+    goes after: `timeout 60 env DYLD_FALLBACK_LIBRARY_PATH=...
+    build/tsan/blue ...`). TSan doesn't see what the JIT's code does, but
+    the machine's thread hands everything to the window's in C.
 - **Mac OS 9.2.2: the CD** (Task 10): MacOS9Lives' "Mac OS 9.2.2
   Universal" (`922.iso`, volume MacOS9Lives in the partition "Toast 5.2 HFS
   Optimizer"), for Macs Apple's 9.2.2 doesn't support. Its ROM file is
