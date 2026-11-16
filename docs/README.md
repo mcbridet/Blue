@@ -48,6 +48,5 @@ test and debug it.
 **What's next**
 
 - [roadmap.md](roadmap.md): the next steps.
-- [future.md](future.md): ideas further off: a modem, a serial port,
-  sound input, AltiVec, pictures on the clipboard, printing and a few
-  game controller extras.
+- [future.md](future.md): ideas further off: a modem, sound input,
+  AltiVec, printing and a few game controller extras.

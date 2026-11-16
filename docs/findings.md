@@ -1337,8 +1337,7 @@ made to start up.
   WaitNextEvent and GetNextEvent instead, calling the Process Manager's
   (which switches processes inside them) through CallUniversalProc, left
   applications without their windows.
-- **Pictures** on the clipboard aren't passed: how they could be is in
-  [future.md](future.md#pictures-on-the-clipboard).
+- **Pictures** on the clipboard aren't passed: only text is.
 - **Showing the screen** (M5, window runs, the pointer moved in
   circles by a timed script, 50 moves a second; per presented frame, and
   the share of the emulation thread's time in `display_frame()`; medians

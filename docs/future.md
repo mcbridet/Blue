@@ -4,8 +4,8 @@ Ideas worth doing some day, beyond the [roadmap](roadmap.md). Each says
 what the real iMac had, what it would be good for under Blue, and what it
 would take.
 
-The modem and a serial port both need the same thing first: a
-serial controller that carries data. Blue's Z8530 SCC (`src/scc.c`) has
+The modem needs something first: a serial controller that carries
+data. Blue's Z8530 SCC (`src/scc.c`) has
 nothing attached today: what Mac OS sends vanishes, the receiver always sees
 an idle line, and it raises no interrupts. It would need data both ways, its
 interrupts (receive, transmit, status changes), the handshake and
@@ -37,34 +37,6 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   the sound chip; Blue could play that while connecting.
 - **Size:** moderate, nearly all of it in the serial controller; the modem
   and TCP parts are small.
-
-## Serial port
-
-- **The iMac's:** none on the outside: the iMac was the first Mac without
-  the two mini-DIN-8 serial ports, and serial devices needed a USB-serial
-  adapter with its own drivers (Keyspan's, for example). Its serial
-  controller served only the internal modem and infrared.
-- **What for:** the modem's port wired straight to the host instead of to a
-  pretend modem, so programs that pick a serial port talk to something
-  real:
-  - devices of the time through a USB-serial adapter on the host: syncing a
-    Newton with Newton Connection Utilities or a Palm with HotSync, or a
-    terminal program on a router's or retro computer's console;
-  - a null-modem link between two Blue windows, for file transfer
-    programs and games that offer a serial or modem link;
-  - a host program at the other end of a pseudo-terminal, for scripted
-    tests.
-- **How:** an option such as `--serial PATH` (a host serial device or a
-  pseudo-terminal Blue creates and names) or `--serial tcp:HOST:PORT` (and
-  a listening form), used instead of the modem on that channel. For a host
-  device, the bit rate, parity and stop bits Mac OS sets go to it through
-  termios, and the handshake lines (DTR, RTS, CTS, DCD) through its
-  modem-control lines, so hardware handshaking works end to end. Whether the
-  infrared channel could appear as a second, plain serial port instead (and
-  under what name Mac OS lists each port) is to be checked in the ROM's
-  device tree.
-- **Size:** small once the serial controller carries data: the host side is
-  termios and socket plumbing.
 
 ## Sound input (microphone and line in)
 
@@ -149,24 +121,6 @@ only, as with Ethernet, with input-script commands for reproducible tests.
 - **Size:** large, comparable to a big part of the JIT. Worth it when a
   program needs AltiVec, or vector-heavy work turns out too slow; try the
   program first.
-
-## Pictures on the clipboard
-
-- **Where Blue is:** the clipboard carries text only
-  ([guest-tools.md](guest-tools.md#the-clipboard)); pictures (`PICT`) and
-  styles (`styl`) stay on their side.
-- **How:** Mac OS to host, the scrap's `PICT` is QuickDraw drawing, so it's
-  simplest to have Mac OS draw it (`DrawPicture` into a GWorld, from Blue
-  Enhancements) and hand the host the pixels. Host to Mac OS: decode PNG
-  (which needs an inflater: zlib, or stb_image in `third_party`) and make a
-  `PICT` of one DirectBitsRect (32-bit pixels), minding the 4 MB limit.
-- **The host side** is the bigger part: SDL2's clipboard is text only.
-  SDL3's (`SDL_SetClipboardData` and MIME types) would do X11, Wayland and
-  macOS alike; without it, NSPasteboard through the Objective-C runtime on
-  macOS, and on Linux the X11 CLIPBOARD selection (an `image/png` target,
-  answering SelectionRequest events) and a Wayland data source, each
-  separately.
-- **Size:** moderate.
 
 ## Printing
 
