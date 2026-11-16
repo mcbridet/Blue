@@ -261,8 +261,10 @@ struct display {
 	unsigned frame_w, frame_h, frame_bpp;
 	size_t frame_rb, frame_bytes, frame_rows;      /* (and what's allocated) */
 	bool frame_ended;               /* ... it has changed since the window took it */
+	uint64_t frame_end_ns;          /* ... when it was last handed over */
 	struct handed in;
 	struct display_times times_out; /* (the window's thread's, as of its last turn) */
+	bool times_read;                /* ... read since: its latency_max_ns starts again */
 
 	/* the machine's */
 	char drop[1024];                /* the file last dropped on the window */
@@ -364,6 +366,7 @@ void display_times(struct display *d, struct display_times *t)
 {
 	pthread_mutex_lock(&host.lock);
 	*t = d->times_out;
+	d->times_read = true;
 	pthread_mutex_unlock(&host.lock);
 }
 
@@ -939,9 +942,11 @@ static void handle(struct display *d, SDL_Event *e)
 		}
 		if (d->menu) {
 			menu_key(d, sc, down);
+			d->stale = true;
 			return;
 		}
 		if (d->prompt) {                /* (Esc is its "no") */
+			d->stale = true;
 			if (sc != SDL_SCANCODE_ESCAPE)
 				menu_key(d, sc, down);
 			else if (down)
@@ -978,6 +983,7 @@ static void handle(struct display *d, SDL_Event *e)
 		if (d->menu || d->prompt) {
 			if (d->ui)
 				ui_mouse_move(d->ui, (float)e->motion.x, (float)e->motion.y);
+			d->stale = true;
 			return;
 		}
 		ev.type = DISPLAY_EVENT_MOUSE_MOVE;
@@ -992,6 +998,7 @@ static void handle(struct display *d, SDL_Event *e)
 			static const int buttons[4] = { -1, 0, 2, 1 };
 			if (d->ui && e->button.button < 4)
 				ui_mouse_button(d->ui, buttons[e->button.button], e->type == SDL_MOUSEBUTTONDOWN);
+			d->stale = true;
 			return;
 		}
 		/* (a click on the status bar isn't one at the bottom of the screen; letting go anywhere is) */
@@ -1006,6 +1013,7 @@ static void handle(struct display *d, SDL_Event *e)
 		if ((d->menu || d->prompt) && d->ui) {
 			float flip = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
 			ui_mouse_wheel(d->ui, flip * (float)e->wheel.x, flip * (float)e->wheel.y);
+			d->stale = true;
 		}
 		return;
 	case SDL_DROPFILE:
@@ -1029,6 +1037,8 @@ static void handle(struct display *d, SDL_Event *e)
 
 /* What the window takes over (host.lock held) to act on afterwards */
 struct taken {
+	bool frame;                     /* a frame ended (with changes or not) */
+	uint64_t ended_ns;              /* when the frame taken was handed over (0: none taken) */
 	bool resized;                   /* the screen's size changed */
 	unsigned width, height;
 	struct video_rows bands[BANDS]; /* the rows converted, to upload */
@@ -1052,6 +1062,7 @@ static void take_frame(struct display *d, struct taken *t)
 	if (!d->frame_ended || !w || !h || !f->palette.bpp)
 		return;
 	d->frame_ended = false;
+	t->frame = true;
 	if ((size_t)w * h > d->argb_size) {
 		uint32_t *argb = realloc(d->argb, (size_t)w * h * sizeof *argb);
 		if (!argb)
@@ -1086,8 +1097,10 @@ static void take_frame(struct display *d, struct taken *t)
 		t->bands[0] = (struct video_rows){ 0, h };
 		t->nbands = 1;
 	}
-	if (t->nbands)
+	if (t->nbands) {
 		d->times.frames++;
+		t->ended_ns = d->frame_end_ns;
+	}
 	timed(d, DISPLAY_TIME_CONVERT, t0, &cpu);
 }
 
@@ -1144,6 +1157,9 @@ static void take(struct display *d, struct taken *t)
 	t->clipboard_asked = in->clipboard_asked;
 	in->clipboard_asked = false;
 	t->close = in->close;
+	if (d->times_read)
+		d->times.latency_max_ns = 0;
+	d->times_read = false;
 	d->times_out = d->times;
 }
 
@@ -1203,7 +1219,13 @@ static void act(struct display *d, struct taken *t)
 
 static void destroy_window(struct display *d);
 
-#define REDRAW_NS 16000000u             /* the menu and prompts are drawn this often while shown */
+/*
+ * The menu is drawn this often while it's open (the machine, paused, sends
+ * no frames); a prompt with each frame the machine sends, as the screen
+ * underneath (drawn more often, it took the GPU from the 3D engine's frames
+ * meanwhile), and as it answers input
+ */
+#define REDRAW_NS 16000000u
 #define IDLE_MS 250                     /* (the window looks round at least this often) */
 
 /* The window's thread: until the machine closes the window, or is over */
@@ -1211,7 +1233,7 @@ static void run(struct display *d)
 {
 	uint64_t drawn = 0;
 	for (;;) {
-		bool animated = d->menu || d->prompt;
+		bool animated = d->menu;
 		uint64_t now = clock_ns(CLOCK_MONOTONIC);
 		int timeout = animated ? (drawn + REDRAW_NS > now ? (int)((drawn + REDRAW_NS - now) / 1000000u) : 0) :
 				IDLE_MS;
@@ -1242,11 +1264,16 @@ static void run(struct display *d)
 		timed(d, DISPLAY_TIME_EVENTS, t0, &c0);
 
 		now = clock_ns(CLOCK_MONOTONIC);
-		if (animated && now - drawn >= REDRAW_NS - 1000000u)
+		if ((d->menu && now - drawn >= REDRAW_NS - 1000000u) || (d->prompt && t.frame))
 			d->stale = true;
 		if (d->stale) {
 			draw(d);
 			drawn = now;
+			if (t.ended_ns) {
+				uint64_t latency = clock_ns(CLOCK_MONOTONIC) - t.ended_ns;
+				d->times.latency_ns += latency;
+				d->times.latency_max_ns = latency > d->times.latency_max_ns ? latency : d->times.latency_max_ns;
+			}
 		}
 		if (d->choice != UI_NONE) {
 			chosen(d, d->choice);
@@ -1520,6 +1547,7 @@ fail:
 void display_frame_end(struct display *d)
 {
 	d->frame_ended = true;
+	d->frame_end_ns = clock_ns(CLOCK_MONOTONIC);
 	pthread_mutex_unlock(&host.lock);
 	wake(d);
 }

@@ -1882,8 +1882,10 @@ static void window_profile(struct machine *m, uint64_t now)
 	for (unsigned k = 0; k < DISPLAY_TIMES; k++)
 		printf("%s %s %.3f [%.3f]", k ? "," : "", names[k], (double)(t.ns[k] - m->wp_display.ns[k]) * 1e-6 / f,
 		       (double)(t.cpu_ns[k] - m->wp_display.cpu_ns[k]) * 1e-6 / f);
-	printf("; %.1f frames taken/s, %.1f draws/s\n", (double)(t.frames - m->wp_display.frames) / s,
-	       (double)(t.draws - m->wp_display.draws) / s);
+	unsigned long taken = t.frames - m->wp_display.frames;
+	printf("; %.1f frames taken/s, shown %.3f ms after (at most %.3f), %.1f draws/s\n", (double)taken / s,
+	       taken ? (double)(t.latency_ns - m->wp_display.latency_ns) * 1e-6 / (double)taken : 0.0,
+	       (double)t.latency_max_ns * 1e-6, (double)(t.draws - m->wp_display.draws) / s);
 	m->wp_ns = now;
 	m->wp_idle_ns = m->idle_ns;
 	m->wp_unwatched = m->mem.unwatched;

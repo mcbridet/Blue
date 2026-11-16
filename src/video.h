@@ -27,6 +27,8 @@
 #define VIDEO_FIRST_DEPTH_MODE 0x80u
 #define VIDEO_VBL_HZ 60u
 #define VIDEO_FRAME_SOURCES 32          /* 3D drawing contexts paced by its refresh (see video_frame_shown()) */
+#define VIDEO_PAGES 4096                /* framebuffer pages video_copy_changes() keeps track of (16 MB) */
+#define VIDEO_QUIET 8                   /* ... watched once they've stayed the same for this many frames */
 
 struct video_mode {
 	uint16_t width, height;
@@ -82,6 +84,7 @@ struct video {
 	uint64_t frame_tb[VIDEO_FRAME_SOURCES];
 	bool hw_cursor;                 /* offer Mac OS a hardware cursor (set before building the driver) */
 	struct video_cursor cursor;
+	uint8_t quiet[VIDEO_PAGES];     /* frames the framebuffer's pages have stayed the same (video_copy_changes()) */
 };
 
 extern const struct video_mode video_modes[];
@@ -197,12 +200,12 @@ struct video_rows {
  *
  * It goes a host page at a time (mem.h's, at least MEM_PAGE_SIZE bytes),
  * comparing each with the copy. With `watch`, the framebuffer's pages are
- * watched for writes (mem_watch()): a host page that hasn't changed since
- * the last frame is watched from now on, and while it's still watched it
- * hasn't been written, and isn't compared. One that has changed isn't
- * watched again until it stays the same for a frame: a page written every
- * frame would otherwise take a fault every frame, which costs several
- * times what comparing it does.
+ * watched for writes (mem_watch()): a host page that has stayed the same
+ * for VIDEO_QUIET frames (or was all copied) is watched from now on, and
+ * while it's still watched it hasn't been written, and isn't compared. A
+ * page written in most frames (a game's, a movie's) isn't watched again
+ * until it has stayed the same that long: being seen written costs several
+ * times what comparing it does (a fault or a protection change).
  */
 unsigned video_copy_changes(struct video *v, uint8_t *copy, uint8_t *changed, unsigned rows, bool all, bool watch);
 

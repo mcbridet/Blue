@@ -129,9 +129,12 @@ static void test_copy_changes(void)
 		CHECK_EQ(video_copy_changes(v, copy, changed, ROWS, false, watch), to - from);
 		CHECK(marked(changed, ROWS, from, to));
 		CHECK(!memcmp(copy, fb, ROWS * ROW));
-		/* written again (with the same byte), it isn't watched until it's stayed the same */
+		/* written again (with the same byte), it isn't watched until it's stayed the same a while */
 		memset(changed, 0, sizeof changed);
 		CHECK(mem_ok_w(&mem, at, 1));
+		for (unsigned k = 1; k < VIDEO_QUIET; k++)
+			CHECK_EQ(video_copy_changes(v, copy, changed, ROWS, false, watch), 0);
+		CHECK(!mem_watched(&mem, at));
 		CHECK_EQ(video_copy_changes(v, copy, changed, ROWS, false, watch), 0);
 		CHECK_EQ(mem_watched(&mem, at), watch);
 
@@ -145,7 +148,9 @@ static void test_copy_changes(void)
 		CHECK(marked(changed, ROWS, from, ROWS));
 		CHECK(!memcmp(copy, fb, ROWS * ROW));
 		memset(changed, 0, sizeof changed);
-		CHECK_EQ(video_copy_changes(v, copy, changed, ROWS, false, watch), 0);
+		for (unsigned k = 0; k < VIDEO_QUIET; k++)
+			CHECK_EQ(video_copy_changes(v, copy, changed, ROWS, false, watch), 0);
+		CHECK_EQ(mem_watched(&mem, at), watch);
 	}
 	/* comparing sees what watching wouldn't: writes no one was told of */
 	fb[3 * unit + 5] ^= 1;

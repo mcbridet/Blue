@@ -726,6 +726,10 @@ unsigned video_copy_changes(struct video *v, uint8_t *copy, uint8_t *changed, un
 			continue;
 		}
 		bool differs = all || memcmp(copy + at, fb + at, len) != 0;
+		size_t page = at >> MEM_PAGE_SHIFT;
+		uint8_t *quiet = page < VIDEO_PAGES ? &v->quiet[page] : NULL;
+		if (quiet)
+			*quiet = all ? VIDEO_QUIET : differs ? 0 : *quiet < VIDEO_QUIET ? *quiet + 1 : VIDEO_QUIET;
 		if (differs) {
 			memcpy(copy + at, fb + at, len);
 			unsigned from = (unsigned)(at / rb), to = (unsigned)((at + len - 1) / rb) + 1;
@@ -736,7 +740,7 @@ unsigned video_copy_changes(struct video *v, uint8_t *copy, uint8_t *changed, un
 				marked = to;
 			}
 		}
-		if (!watch || (differs && !all))
+		if (!watch || !quiet || *quiet < VIDEO_QUIET)
 			continue;
 		if (arm_to != at) {
 			if (arm_to > arm_from)

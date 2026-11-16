@@ -187,6 +187,7 @@ struct display_times {
 	unsigned long frames;
 	unsigned long draws;
 	uint64_t ns[DISPLAY_TIMES], cpu_ns[DISPLAY_TIMES];
+	uint64_t latency_ns, latency_max_ns;    /* from frames' ends (display_frame_end()) to their presenting */
 };
 void display_times(struct display *d, struct display_times *t);
 
