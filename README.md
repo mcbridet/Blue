@@ -112,7 +112,7 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **Pippin titles** | Yes | No | No | No |
 
 SheepShaver also runs System 7.5 to Mac OS 8.1, given an Old World ROM.
-Blue's other gaps, such as serial ports and printing, are listed under
+Blue's other gaps, such as USB devices, are listed under
 [What isn't there](#what-isnt-there).
 
 ## Download and install
@@ -911,13 +911,11 @@ version runs in Rosetta 2 without the JIT.
 
 Blue doesn't do everything a Mac of the time could:
 
-- **Serial ports, infrared and printing.**
 - **USB and FireWire devices** of any kind (game controllers reach Mac OS
   as the keyboard and mouse, and through InputSprocket: see
   [Game controllers](#game-controllers)).
-- **Sound input** (a microphone), and 3D sound.
+- **Sound input** (a microphone).
 - **AppleTalk** networking, and connections into the Mac.
-- **3dfx Glide,** for games that draw with a Voodoo card.
 - **Old World Macs:** Blue is an original iMac, and can't start the ROMs
   of earlier Power Macs or 68k Macs.
 
