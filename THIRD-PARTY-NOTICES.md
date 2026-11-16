@@ -80,6 +80,25 @@ shall not be used in advertising or otherwise to promote the sale, use or
 other dealings in this Software without prior written authorization from
 Silicon Graphics, Inc.
 
+## References (no code used)
+
+Blue's kernel follows the interfaces and behaviour documented by these, as
+facts needed for compatibility; none of their code is in Blue:
+
+- Elliot Nunn's reverse-engineered NanoKernel 1
+  (https://github.com/elliotnunn/NanoKernel) and NanoKernel 2
+  (https://github.com/elliotnunn/powermac-rom): the kernel's data
+  structures' offsets, Multiprocessing Services' call numbers, arguments
+  and objects, and how tasks (the blue task among them) are scheduled.
+- tbxi (https://github.com/elliotnunn/tbxi, MIT): the ROM file's parcels'
+  layout and flags.
+- Apple's `PPCInfoRecordsPriv.h`, published with Darwin: the info records'
+  offsets.
+- QEMU and OpenBIOS: reference runs of Apple's own NanoKernel 2
+  (`tools/qemu-ref/`, `docs/nk2-reference.md`).
+- The x86-64 encoder's tests compare with encodings LLVM's assembler
+  produces.
+
 ## Bundled in Blue.app and the AppImages
 
 Built from source, Blue loads these from the system at run time. The app

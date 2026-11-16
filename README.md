@@ -17,6 +17,7 @@
   <a href="#get-started">Get started</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#license">License</a> ·
+  <a href="#acknowledgements">Acknowledgements</a> ·
   <a href="#documentation">Documentation</a>
 </p>
 
@@ -103,6 +104,31 @@ published by the Free Software Foundation. It comes with no warranty: see
 [LICENSE](LICENSE). The code it includes or bundles from others, and their
 licences, are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 Blue includes no Apple software, and isn't affiliated with Apple.
+
+## Acknowledgements
+
+Blue stands on other people's careful work:
+
+- **Elliot Nunn's reverse engineering** of the Power Mac ROM:
+  [NanoKernel](https://github.com/elliotnunn/NanoKernel) (NanoKernel 1),
+  [powermac-rom](https://github.com/elliotnunn/powermac-rom) (NanoKernel 2:
+  its tasks and the blue task, scheduler, Multiprocessing Services calls and
+  objects) and [tbxi](https://github.com/elliotnunn/tbxi) (the ROM file's
+  parcels). Blue's kernel is its own code, written to the interfaces and
+  behaviour these document.
+- **[QEMU](https://www.qemu.org) and [OpenBIOS](https://github.com/openbios/openbios),**
+  whose `mac99` machine runs Apple's real NanoKernel 2: Blue's was checked
+  against it ([docs/nk2-reference.md](docs/nk2-reference.md)). Blue's
+  networking uses QEMU's [libslirp](https://gitlab.freedesktop.org/slirp/libslirp).
+- **[SheepShaver and Basilisk II](https://github.com/cebix/macemu),** which
+  showed long ago that classic Mac OS can run on a host kernel.
+- **[Mesa](https://mesa3d.org),** the reference Blue's OpenGL is tested
+  against, and SGI's OpenGL Utility library, which Blue's follows.
+- **[SDL](https://www.libsdl.org)** and **[Dear ImGui](https://github.com/ocornut/imgui)**
+  (Omar Cornut) for the window, and **Robin Casady's ChicagoFLF**, after
+  Susan Kare's Chicago, for its menus.
+- **Apple's own documentation:** Inside Macintosh, the technotes and
+  developer notes, and the headers published with Darwin.
 
 ## Documentation
 
