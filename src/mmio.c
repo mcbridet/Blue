@@ -76,6 +76,12 @@ bool mmio_decode(const struct mmio_bus *bus, const struct ppc_cpu *cpu, struct m
 	return a->region && decode(cpu->exit_insn, a) && a->store == cpu->fault_write;
 }
 
+bool mmio_decode_insn(uint32_t insn, struct mmio_access *a)
+{
+	a->region = NULL;
+	return decode(insn, a);
+}
+
 void mmio_perform(const struct mmio_access *a, struct ppc_cpu *cpu)
 {
 	const struct mmio_region *r = a->region;

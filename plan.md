@@ -143,6 +143,11 @@ Done:
   for writes (`MEM_WATCH`) instead of compared with a copy each frame. The
   Mac stops 0.01-0.2 ms a frame for the window where it stopped 0.2-1.2
   ms. See Findings, "The window on a thread of its own".
+- **Pippin titles** (Task 19; `src/pippin.c`): Blue Pippin Library, a guest
+  tool, is Blue's own PippinPPC (the Bandai Pippin's library) with Apple's
+  twelve exports on Mac OS's calls. Super Marathon's two games play from
+  their disc on installed 8.5 and 9.2.2, and save, load and delete saves
+  through it. See Findings, "PippinPPC" and after.
 
 Where it stops:
 
@@ -924,6 +929,31 @@ the kernel); 8 onwards as the boot progresses.
   index aren't offered. (`raster.c`'s pixels on edges two
   triangles share: fixed, see Findings, "Shared edges in the software
   rasterizer".)
+
+### 19. Pippin titles
+
+- **Status:** done. Blue Pippin Library (`src/pippin.c`, file "Blue
+  Pippin Library", 'shlb' 'syPP', fragment `PippinPPC`, host call number
+  0x108 in its unused stubs only, to tell Blue's copy) is offered and
+  installed with the other guest tools (the Finder icon: the stack with a
+  "P!" puzzle piece). Its code is its own: each export calls InterfaceLib
+  (FindFolder, PBGetCatInfoSync, DirCreate, Standard File, FSpDelete,
+  FlushVol, OpenWD, the Gestalt value calls, the trap table) or
+  AppearanceLib (StandardAlert); `tests/test_pippin.c` runs it in the
+  interpreter against a Mac OS of the test's own (folders, dialogs,
+  Gestalt, the trap table), and checks the exports by the PEF hash table.
+  Super Marathon's Marathon and Marathon 2 launch from the disc and play
+  on 8.5 and 9.2.2 installed on disks (scratch installs: 8.5 from its CD,
+  9.2.2 restored); a game saved at a level's end lands in
+  `Preferences:Pippin:marathon2.ppc` (or `marathon.ppc`), loads with
+  Continue Saved Game, is deleted with Delete Saved Game, and Quit returns
+  to the Finder. The saves were tested with copies of the disc whose first
+  level's player start is at its exit terminal (no monsters, no mission),
+  made in scratch: playing through a level isn't scriptable. The other
+  Pippin disc here, "1995.1.17 Hanshin Daishinsai" (a Director 4
+  projector, 68k), runs on both.
+- **Open:** the AppleJack controller (future.md); titles that use the
+  Pippin's video calls (PippinVideo.h's) or its floppy dock.
 
 ## Findings
 
@@ -1717,7 +1747,9 @@ Facts later tasks need, added as they are found.
   devices dirty, so the 68k emulator's next RunAlternateContext can't be
   made in place (963,000 kernel exits, about 5% of the boot); not changed,
   as when devices are brought up to date is guest-visible (the USB
-  controller writes the frame number into guest memory).
+  controller writes the frame number into guest memory). (Both since
+  done, below: "The context switch", "Kernel calls while devices are
+  dirty".)
 - **Code that isn't hot yet** (JIT speed): the interpreter runs it at 6-8
   ns an instruction (46 ns for a block of 6.5), against 3-4 ns for warm
   code: guest code it hasn't seen, and the interpreter's dispatch
@@ -1760,7 +1792,8 @@ Facts later tasks need, added as they are found.
   the CD boots' fell by 22-34%. Most of what's left (8.5 CD: 24,700 of
   the first 30,000) are the 68k emulator's `stb` into the NanoKernel's info
   records at `0x5FFFEC0E`, which the kernel keeps read-only to see them
-  (`kdp_pull()`): the kernel's to make in place, if anyone.
+  (`kdp_pull()`): the kernel's to make in place, if anyone (since done:
+  "Stores to the info records", below).
 - **JIT speed, before and after** (medians of 5 alternating runs; M5 user
   time, the Zen 5's wall time; cycles and host instructions alongside):
 
@@ -1784,6 +1817,96 @@ Facts later tasks need, added as they are found.
   loops use none of what changed). The Zen 5 had only the 9.2.2 CD (one CD
   copied over the link), which gains least: it runs few `lwarx`, device
   registers or `lmw` across pages.
+- **The context switch** (kernel speed): `switch_context()` copied the 32
+  GPRs and 32 FPRs each way one at a time (nk.c said they vectorized; they
+  didn't), about 450 host instructions a switch: of the 23 ns a kernel
+  call in place cost, 9 went to saving and 9 to loading. NEON now copies
+  four GPRs or two FPRs at a time on AArch64 (lanes byte-reversed; a GPR's
+  doubleword in the context block is written back whole, its high word as
+  it was), and AVX2 four of either on x86-64 where the processor has it
+  (found at run time: the C stays baseline, and without AVX2 the copies
+  are as they were): 6 ns each way, 17 a call. Copying less was ruled out:
+  context blocks are guest memory, which the guest reads and writes (the
+  system context's is on the 68k emulator's hot data page), so switching
+  by pointer or lazily would take page protection that faults all the
+  time, and finding what changed costs what copying does. 9.1 CD on the
+  M5: host instructions 30.34 → 28.41 billion, user time 1.34 → 1.27 s;
+  the 9.2.2 CD on the Zen 5: instructions -3%, cycles -1% (gcc) and -2%
+  (clang).
+- **Kernel calls while devices are dirty** (kernel speed): an exit that
+  may have touched the devices (the idle hook's, a host call, a kernel
+  call that exits, a sync point) leaves them to be brought up to date at
+  the next exit, and until then no kernel call was made in place, so the
+  68k emulator's next RunAlternateContext exited for that alone. Bringing
+  them up to date is guest-visible (above), so it still happens at that
+  instruction, now in the call: `kcall()` gets the instructions the run
+  hasn't counted yet (`done`, as the mmio hook does; the fuzzer checks
+  that both engines say the same), and `kcall_in_place()` brings the
+  devices up to date at that instruction count and time base, then makes
+  the call unless an interrupt changed or the loop has more to do (then it
+  exits, the devices as that exit would have had them, and not due
+  again); not while DMA or sound moves (their next event is now). Kernel
+  exits: 8.5 CD 1,135,540 → 153,052, 8.5 disk 833,639 → 219,317, 9.1 CD
+  1,666,186 → 1,480,003. The 8.5 CD's host instructions fell 0.8% and its
+  time about 2%, not the 5% estimated above: that counted the device
+  updates, which stay; only the exits' own cost went. The update is out of
+  line (`kcall_dirty()`): inlined, it gave every call a frame of 12
+  registers (9.1: +0.6% instructions).
+- **Stores to the info records** (kernel speed): most of what still went
+  to the interpreter were the 68k emulator's byte stores (`stb` at
+  `0x6806628C`) to `0x5FFFEC0D` and `0x5FFFEC0E` in the InfoRecord page,
+  which the kernel keeps read-only to see them, making each at an exit
+  with the page writable and pulling the change into its copy of
+  KernelData (`kdp_pull()`). The mmio hook makes them the same way now
+  (`info_store()`: the store, the pull, the devices marked dirty as that
+  exit left them), unless a software interrupt, task switch or preemption
+  waits, or it's a store of another form or across a page; generated code
+  offers the hook stores that fault on a page that isn't writable, not
+  only accesses to pages that aren't readable. Exits to the interpreter:
+  8.5 CD 38,549 → 5,450, 9.1 22,386 → 7,493, 9.2.2 22,713 → 13,120, 8.5
+  disk 41,546 → 9,065, 9.2.2 disk 33,241 → 11,061.
+- **Quick system calls while devices are dirty** (kernel speed; tried and
+  dropped): most of NanoKernel 2's quick `sc`s that still exit are the
+  first after a real one, which leaves the devices dirty (9.1: 560,000 of
+  660,000). Answering them in place the same way (a hook that brings the
+  devices up to date, then generated code going on through the block
+  table) took 9.1's kernel exits from 1.48 to 0.89 million (the 9.2.2
+  disk's from 0.95 to 0.69) and its host instructions down 0.6%, but
+  cycles moved less than the noise (9.1 -0.1%, medians of 5; the 9.2.2 CD
+  on the Zen 5 +0.3% with gcc, -0.7% with clang): the device update, which
+  stays, is most of what such an exit costs. Not worth a hook in both code
+  generators.
+- **The interpreter's synthetic benchmark moves with code placement**:
+  `BLUE_JIT_BENCH=1`'s interpreted kernels ran 20-30% faster or slower
+  between builds that don't change the interpreter (on the M5 the copy
+  kernel ran about 500 million instructions a second after the context
+  switch commit, which changes only nk.c, and about 700 before it and
+  after the next one); the Zen 5 shows it with clang, not gcc. The
+  translated kernels don't move. Its interpreter numbers say little about
+  changes elsewhere.
+- **Kernel speed, before and after** (main as of 5e5e1bf, then with the
+  three changes above; medians of 5 alternating runs on the M5, user time;
+  of 11 on the Zen 5, wall time; cycles and host instructions alongside):
+
+  | | before | after |
+  |---|---|---|
+  | M5, 8.5 CD | 0.94 s, 4.19 G cycles, 24.09 G instructions | 0.91 s, 4.08 G, 23.29 G |
+  | M5, 9.1 CD | 1.32 s, 5.83 G, 30.46 G | 1.26 s, 5.56 G, 28.56 G |
+  | M5, 9.2.2 CD | 1.08 s, 4.84 G, 15.84 G | 1.06 s, 4.75 G, 15.38 G |
+  | M5, 8.5 disk (4 billion) | 1.19 s, 5.36 G, 23.52 G | 1.18 s, 5.30 G, 22.96 G |
+  | M5, 9.2.2 disk (6 billion) | 1.78 s, 7.91 G, 34.72 G | 1.76 s, 7.82 G, 34.07 G |
+  | Zen 5, 9.2.2 CD, gcc | 1.319 s, 6.85 G, 15.59 G | 1.309 s, 6.80 G, 15.13 G |
+  | Zen 5, 9.2.2 CD, clang | 1.281 s, 6.68 G, 15.92 G | 1.237 s, 6.45 G, 15.48 G |
+
+  Kernel exits: 8.5 CD 1,135,540 → 153,052, 9.1 1,666,186 → 1,480,003,
+  9.2.2 492,580 → 380,048, 8.5 disk 833,639 → 219,317, 9.2.2 disk
+  1,141,014 → 949,367; exits to the interpreter as above; the other kinds
+  as they were. The profiler's split (blocks, stubs, Blue, elsewhere) on
+  the M5: 8.5 69.7/1.6/26.1/2.6% → 71.8/0.7/25.3/2.2%, 9.1
+  64.3/0.8/33.0/1.9% → 67.5/0.9/30.0/1.6%, 9.2.2 77.3/0.7/18.8/3.1% →
+  78.2/0.6/18.8/2.4%. The synthetic benchmark's translated kernels are as
+  they were. The Zen 5 was shared (wall times spread ±5%; a run under
+  heavier load gave gcc -3.2%, clang -3.6%).
 - **Mac OS and a shared volume's MDB:** 8.5, 8.6 and 9.1 write the MDB
   with the unmounted attribute (`drAtrb` bit 8) clear as their first write
   after mounting a volume, before anything else, and with it set when they
@@ -3014,3 +3137,85 @@ Facts later tasks need, added as they are found.
   start; little sound plays then).
   Tests: `tests/test_audio.c` (pass-through at the goal, the 0.5% bound, a
   device 0.3% fast or slow for 5 minutes, recovery from 150 ms over).
+- **PippinPPC on a Pippin** (Task 19): the Pippin's System Folder has an
+  enabler ('gbly' "Pippin") whose 'nlib' 777, "PippinPPC" (1,901 bytes),
+  is the library. Its twelve exports import only GetToolboxTrapAddress and
+  CallUniversalProc: each calls the trap $AA6F (Pippin.h's
+  kPippinDispatch) with a D0-dispatched Pascal procInfo, the selector word
+  being the parameters' words << 8 | the selector:
+  `OSErr SavePRAMtoFlash(void)` 0x0000, `OSErr MakeWritesPermanent(void)`
+  0x0001, `OSErr ReadNVExtraPRAM(void *buffer, short count, short offset)`
+  0x0406 and `WriteNVExtraPRAM` 0x0407 (the order from the enabler's own
+  call: 2 bytes at 12, the AppleTalk setting), `void
+  InvokeSoftKeyboard(void)` 0x0009, `OSErr PippinFindFolder(short vRefNum,
+  OSType folderType, Boolean create, short *foundVRefNum, long
+  *foundDirID)` 0x080A (FindFolder's), `PippinStandardGetFile` 0x070B and
+  `PippinStandardPutFile` 0x060C (StandardGetFile's and StandardPutFile's),
+  `OSErr PippinStandardDeleteFile(long *bytesRequested)` 0x020D, `Boolean
+  HasFloppyDock(void)` 0x000E, `Boolean HasMountedFloppy(short *vRefNum)`
+  0x020F, `short GetDriveRefNum(short drive)` 0x0110 (1
+  kPippinStorageDevice, 2 kFloppyStorageDevice: the volume's vRefNum).
+  Pippin.h (the WWDC 1996 CD's "Pippin Video Sources") declares all but 0,
+  6 and 7, and two that aren't exported (Read/WriteAppleTalkBootSetting,
+  0x0011 and 0x0112); the enabler's 'gpch' 777 patches $AA6F for 1, 9 to
+  16, 0x11 and 0x112 and leaves 0, 6 and 7 to the Pippin ROM's. What they
+  do (Pippin Technical Notes "Pippin Standard File" and "Pippin Flash
+  Access", Dev CD Dec 96): a Pippin has 128 KB of flash (120 for titles),
+  a small HFS volume, copied to a RAM disk at startup; MakeWritesPermanent
+  writes it back (up to 8 s; Restart and Shut Down do too). Each title
+  keeps its files in one folder at the root of the flash or a floppy,
+  named by its 'pipn' resource: the enabler's code takes 'pipn' 1's Pascal
+  string at offset 12 (63 characters at most), else CurApName.
+  PippinStandardDeleteFile asks the user to delete files to free
+  *bytesRequested, and returns the bytes deleted there.
+- **Super Marathon on Mac OS** (Task 19): `marathon.ppc` and
+  `marathon2.ppc` import six of the functions, strongly, and at startup
+  ask Gestalt for 'pipn' (gestaltPippinAttr): without it, a fatal "Sorry,
+  but this game is only for the Pippin." With it, preferences go through
+  PippinFindFolder(GetDriveRefNum(kPippinStorageDevice), 'pipn', true, …)
+  rather than FindFolder's 'pref', the dialogs are the Pippin's,
+  MakeWritesPermanent follows a save, Delete Saved Game works (else a
+  beep), the 'pipp' resources 1000 and 1001 are copied into the AppleJack's
+  ADB device's data (there's no such device: nothing), and quitting calls
+  MakeWritesPermanent and ShutDwnStart. Their change_panel_state sends
+  pattern buffers (panel class 7) to its default case, which does nothing;
+  the game is saved when a level changes instead (the shell's state 13,
+  `_change_level`: after the level loads, "Save game as:"; 550 bytes for
+  Marathon 2, 278 for Marathon). Marathon (1) takes the chosen file's
+  folder from sfFile.vRefNum with directory 0, saving and loading, and
+  ignores parID: with an FSSpec's own vRefNum it saved at the volume's
+  root and found nothing to load. The library's dialogs now return a
+  working directory for the file's folder as the vRefNum (OpenWD, procID
+  'ERIK', Standard File's), as SFGetFile's did; Marathon 2 uses the FSSpec
+  either way. No ROM's InterfaceLib has the Gestalt value calls; the
+  System of 8.5 and 9.2.2 adds them ('fovr' 50 "InterfaceLib":
+  NewGestaltValue, SetGestaltValue, DeleteGestaltValue). The value is 0:
+  the Pippin's isn't known, and these titles only look for the selector.
+- **A library's initialization runs in the application's context**: the
+  Code Fragment Manager prepares an application's import libraries in the
+  new process, so NSetTrapAddress from an initialization routine is the
+  application's own patch (see "An application's patches are its own"):
+  the Pippin library's _ShutDown patch is in force only while the title
+  runs. The patch is 68k code in the library's data, put in place with
+  BlockMove (which flushes the 68k emulator's cache, as BlockMoveData
+  doesn't). Quit in Super Marathon's menu goes back to the Finder.
+- **StandardAlert's buttons** (AppearanceLib, Mac OS 8.5): a parameter
+  block with kAlertStdAlertCancelButton as both the default and the cancel
+  button returned paramErr, without an alert; Delete (the OK button) as
+  default and Cancel as the cancel button works.
+- **Desktop icons from scripts**: a scripted click on a disc's icon
+  deselected the startup disk and selected nothing (on the Hanshin disc,
+  as the restored 9.2.2's finding says), so Command-O opened nothing.
+  Typing selects: "c" for that disc, whose Japanese name shows in Mac OS
+  Roman as "ç„ê_ëÅèç-" (the Finder's order ignores the cedilla).
+- **Marathon's keys in instruction time** (with `clock 300`): Marathon 1
+  missed Tab held for 0.1 billion instructions (a third of a second of
+  guest time) and took it held 0.3 billion; Marathon 2 took 0.1 billion.
+- **hfsutils writes images it mounts**: `hmount` opens a writable image
+  read-write, and on a volume whose MDB lacks the "unmounted" bit (drAtrb
+  0x0100) libhfs scavenges: drWrCnt + 1, drLsMod set to the time, the bit
+  set, the volume bitmap written again (drFreeBks and drNxtCNID if they
+  disagreed). Mastered CDs often lack the bit (85.iso did, and its 8.5 CD
+  boot then read 924 fewer blocks and ended elsewhere than its
+  references). Use hfsutils only on APFS clones (`cp -c`), made read-only
+  (`chmod a-w`) when only reading: libhfs then mounts read-only.

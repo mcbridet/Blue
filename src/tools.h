@@ -15,6 +15,9 @@
  *   Blue OpenGL ...     OpenGLLibrary, OpenGLMemory and OpenGLUtility
  *                       (opengl.h), Mac OS 9's OpenGL; on Mac OS 9 they
  *                       take Apple's place (see install.h).
+ *   Blue Pippin Library PippinPPC (pippin.h), the Bandai Pippin's library,
+ *                       for Pippin titles that link to it; its code is its
+ *                       own, calling Mac OS (no host calls).
  */
 #ifndef BLUE_TOOLS_H
 #define BLUE_TOOLS_H
@@ -34,10 +37,11 @@
 #define HOSTCALL_TOOLS_GLM 0x105u       /* OpenGLMemory */
 #define HOSTCALL_TOOLS_GLU 0x106u       /* OpenGLUtility */
 #define HOSTCALL_TOOLS_GL_TEST 0x107u   /* the OpenGL test application (gltest.h) */
+#define HOSTCALL_TOOLS_PIPPIN 0x108u    /* (in the Pippin library's stubs, which nothing calls: see pippin.h) */
 #define TOOLS_VOLUME_SIZE (2u << 20)
 
 /* The tools' files, in the volume's order */
-enum { TOOLS_ENHANCEMENTS, TOOLS_3D_ENGINE, TOOLS_GL_LIBRARY, TOOLS_GL_MEMORY, TOOLS_GL_UTILITY, TOOLS_FILES };
+enum { TOOLS_ENHANCEMENTS, TOOLS_3D_ENGINE, TOOLS_GL_LIBRARY, TOOLS_GL_MEMORY, TOOLS_GL_UTILITY, TOOLS_PIPPIN, TOOLS_FILES };
 #define TOOLS_GL_FIRST TOOLS_GL_LIBRARY
 #define TOOLS_GL_FILES 3
 

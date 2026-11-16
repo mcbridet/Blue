@@ -717,10 +717,62 @@ Findings in plan.md, "MacBench's CD-ROM test"). A report of the test
 freezing MacBench on 9.2.2 in a window (the Memory Manager faulting on a
 broken system heap, then the Toolbox) didn't reproduce here.
 
+### Pippin titles
+
+Discs for the Bandai Pippin (Apple's 1996 console design, System 7.5) are
+HFS CDs, and many of their programs run on a Mac, but some link to the
+Pippin's own library, PippinPPC, which Mac OS hasn't got ("could not be
+opened because "PippinPPC" could not be found"). Blue Pippin Library, one
+of the guest tools (below), is Blue's own PippinPPC, with the Pippin's
+twelve functions mapped onto Mac OS 8.5 to 9.2.2 (`src/pippin.c`; plan.md
+has what each does on a Pippin):
+
+- The Pippin's file dialogs are Standard File's, starting in the title's
+  folder: on a Pippin that is at the root of its 120 KB of flash (or a
+  floppy's), here `System Folder:Preferences:Pippin:` and the title's name
+  (its `pipn` resource's, else the application's). Saves and preferences
+  go there, never to the CD. The file chosen comes back with a working
+  directory for its folder as its vRefNum, as the old Standard File's did,
+  since titles such as Marathon take the folder from that.
+  `PippinStandardDeleteFile`, the Pippin's "make room" dialog, is a file
+  chosen in the title's folder, deleted once a caution alert is answered
+  Delete. `MakeWritesPermanent` (writing the flash) flushes the volume;
+  there's no floppy dock; the soft keyboard and the Pippin's extra PRAM do
+  nothing.
+- While a title that links to it runs, Gestalt answers `pipn` (titles
+  check it, and Super Marathon quits without it: "Sorry, but this game is
+  only for the Pippin."), and ShutDwnStart and ShutDwnPower return at once:
+  a Pippin turns off when its title quits, which here would shut Mac OS
+  down.
+
+Super Marathon (Bungie, 1996: Marathon and Marathon 2 for the Pippin)
+plays from its disc on Mac OS 8.5 and 9.2.2 installed on disks, with the
+library installed. Open `M1:marathon.ppc` or `M2:marathon2.ppc`; the
+Pippin's menu offers Begin New Game, Continue Saved Game, Delete Saved
+Game, Preferences and Quit. The Pippin builds don't save at pattern
+buffers: they ask "Save game as:" when a level ends, and the saves land
+in `Preferences:Pippin:marathon.ppc` or `marathon2.ppc`; Continue Saved
+Game opens them there, and Quit goes back to the Finder. The keyboard
+works: in Marathon 2 the up arrow moves forward, Space fires, Tab acts (terminals),
+Return pages through a terminal, Command-Q asks to end the game; Marathon
+1 took Tab and Return held for a second in scripted tests, and its
+movement keys weren't found there (the Preferences screen sets them). The
+mouse works in the menus and dialogs. The Pippin's AppleJack controller
+isn't emulated (its buttons are keys: the titles' `pipp` resources map
+them onto the keyboard).
+
+"1995.1.17 Hanshin Daishinsai" (a Macromedia Director projector, `JISIN`,
+68k, without PippinPPC) runs on 8.5 and 9.2.2: open its disc (its name is
+Japanese, shown in Mac OS Roman without a Japanese system; typing "c" in the
+Finder selects it), then JISIN. It shows its title, then a photo at a
+time, the next at a click. A scripted click doesn't select a desktop icon
+(see plan.md, Findings), which is why opening the disc that way seemed to
+do nothing.
+
 ### Guest tools
 
 Some things only code inside Mac OS can do: Blue Enhancements, Blue
-3D Engine and Blue's OpenGL libraries (below). In a window, Blue offers to install them: before Mac OS
+3D Engine, Blue's OpenGL libraries and Blue Pippin Library (below). In a window, Blue offers to install them: before Mac OS
 starts it looks in the startup disk's System Folder (its folders,
 Extensions whatever its name and Extensions (Disabled) among them) for
 them, and once the Finder is up, if one is missing or isn't this version's
@@ -744,7 +796,7 @@ OS doesn't restart, and the box says what. This works on Mac OS 8.5, 8.6,
 through the restart, until OK) and printed:
 
 ```
-tools: installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory and Blue OpenGL Utility in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
+tools: installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory, Blue OpenGL Utility and Blue Pippin Library in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
 ```
 
 Mac OS 9 has OpenGL libraries of Apple's with the names Blue's have
@@ -955,9 +1007,13 @@ invisible file at its top, `Icon\r`):
   waiting for the frame's turn), the calls, records and primitives, and
   the GPU thread's time drawing and reading back; and a line for each
   update of the window (see docs/opengl-plan.md, milestone 7).
+- **Blue Pippin Library**: PippinPPC, the Bandai Pippin's library, for
+  Pippin titles (see Pippin titles above), put in Extensions. Unlike the
+  others its code is its own, calling Mac OS through InterfaceLib and
+  AppearanceLib; it makes no host calls.
 
 Like the drivers, these are generated code fragments whose logic runs in
-Blue through host calls (`src/tools.c`). Bugdom's setup, for the record:
+Blue through host calls (`src/tools.c`; but for the Pippin library's). Bugdom's setup, for the record:
 QuickDraw 3D 1.6, Game Sprockets, URL Access (part of Mac OS 8.6 and later;
 Bugdom won't load without it) and the 3D engine in
 Extensions; it asks for a registration code, which shareware-era copies
@@ -1029,13 +1085,18 @@ software (on 8.6, an M5 Mac).
     block (`kcall` in `src/ppc.h`), which makes the call in its common
     cases (no interrupt pending; verdict 0 or 32-255) with the same code
     as at an exit, then goes on through the block table. The kernel allows
-    it before each run only while an exit would do nothing more (no
-    devices to update, Multiprocessing Services tick due, task switch,
-    software interrupt or preemption waiting: `in_place()` in
-    `src/nk.c`), and as at an exit the call retires nothing, so runs are
-    the same instruction for instruction. Kernel exits in that 9.1 run
-    went from 11.7 to 1.5 million (8.5: 2.8 to 1.1), host time from 1.50
-    to 1.32 s (8.5: 1.03 to 1.02 s).
+    it before each run only while an exit would do nothing more
+    (Multiprocessing Services tick due, task switch, software interrupt or
+    preemption waiting: `in_place()` in `src/nk.c`); with the devices to
+    be brought up to date (after an exit that may have touched them), the
+    call does that first, at the instruction count and time base that
+    exit would have had, and goes on unless an interrupt changed or the
+    loop has more to do. As at an exit the call retires nothing, so runs
+    are the same instruction for instruction. Kernel exits in that 9.1 run
+    went from 11.7 to 1.5 million (8.5: 2.8 million to 153,000), host time
+    from 1.50 to 1.32 s (8.5: 1.03 to 1.02 s). The context switch copies
+    registers in vectors (NEON; AVX2 where the processor has it): a call
+    in place costs about 17 ns.
   - Device registers in place: loads and stores to device registers (1.6
     million in 4 billion instructions of the 8.5 CD boot: the Time Manager
     programming and reading VIA timer 2, its interrupt flags, and the USB
@@ -1065,7 +1126,11 @@ software (on 8.6, an M5 Mac).
     the access (interrupts, the next device event), which would find
     everything as it was: about 12 ns less, for most of 8.5's accesses.
     `BLUE_DEVICE_EXITS=1` has every access exit as before, for
-    comparisons.
+    comparisons. Stores to the NanoKernel's info records, which the
+    kernel keeps read-only to see them (the 68k emulator's, mostly), go
+    the same way: the hook makes them as the exit would (`info_store()`),
+    and generated code offers it stores that fault on a page that isn't
+    writable too.
   - Registers: CR, LR, r1, r3, r4, r24, r27 and r29 (the hottest across the
     68k emulator and native code) live in host registers while generated
     code runs; others are cached within a block and written back at exits
@@ -1584,13 +1649,14 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
 
 1. More JIT speed: what's left of a boot's host time outside generated
    code is mostly the kernel's (plan.md, Findings, "Where a boot's host
-   time goes"): kernel calls made in place cost 23 ns each, nearly all of
-   it the context switch's register copies (13% of the 9.1 CD boot);
-   host calls, the disk and display drivers (5-10%); and the 8.5 CD's
-   idle-hook exits, which keep the 68k emulator's next mode switch from
-   being made in place (about 5%). In the JIT: code runs in the
-   interpreter until it's hot (3-7%; translating sooner costs as much as
-   it saves) and translating takes 1-4%. On x86-64 the front end still
+   time goes" and what followed it): host calls, the disk and display
+   drivers (5-10%); Multiprocessing Services' calls; kernel calls made in
+   place, now 17 ns each with the context switch's copies vectorized; and
+   bringing devices up to date, which is guest-visible and stays where it
+   is (the exits it cost kernel calls are gone; for quick system calls,
+   answering in place saved too little to keep). In the JIT: code runs in
+   the interpreter until it's hot (3-7%; translating sooner costs as much
+   as it saves) and translating takes 1-4%. On x86-64 the front end still
    limits a Zen 5 (about half its dispatch slots get nothing), now mostly
    for the size of the code (docs/x86-jit-plan.md).
 2. Later: host ports forwarded to the guest (so it can serve); the shared
@@ -1738,10 +1804,10 @@ exits, never at exits made only for debugging, so tracing and trap logging
 don't change what the guest does. (At exits they are updated only when that
 could change anything: when a VIA timer runs out or a USB frame starts with
 its interrupt enabled, while sound DMA moves, or after something touched
-them. Kernel calls made in place, without an exit, only happen while an
-exit would do none of that; device register accesses made in place update
-devices as their exits would. An access on the last instruction before a
-sync point still exits, and the loop then services that sync point.) Tracing and trap logging use the
+them. Kernel calls made in place, without an exit, and device register
+accesses made in place update devices as their exits would. An access on
+the last instruction before a sync point still exits, and the loop then
+services that sync point.) Tracing and trap logging use the
 interpreter.
 
 Debugging `boot`: `--trace-from N --trace-reg 24` logs instructions with the
@@ -1852,7 +1918,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           reader: the startup disk's ROM file), startup.c (which disk is
           the startup disk), ofnvram.c (Open Firmware's variables in
           NVRAM: boot-device), share.c (shared folder),
-          rsrc.c (resource forks), tools.c (guest tools), install.c
+          rsrc.c (resource forks), tools.c (guest tools), pippin.c (their
+          PippinPPC, for Pippin titles), install.c
           (installing them from inside Mac OS), clip.c (the clipboard they
           share with the host), rave.c (3D engine), opengl.c +
           opengl_table.h (the guest's OpenGL libraries), glfront.c + gltex.c + gllight.c +

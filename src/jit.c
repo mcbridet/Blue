@@ -231,11 +231,9 @@ static void drop_block(struct jit *j, struct jit_block *b)
  * enabled), for its FR, FI and FPRF; the rest of the FPSCR (XX and FX,
  * already right for it) may have changed since (see fp_fpscr()).
  */
-static void fp_settle(struct jit *j, struct ppc_cpu *c)
+__attribute__((noinline)) static void fp_settle_op(struct jit *j, struct ppc_cpu *c)
 {
 	uint32_t code = j->st.fp_op;
-	if (!code)
-		return;
 	static struct ppc_cpu scratch;
 	scratch.fpscr = c->fpscr & ~0xFFu;
 	memcpy(&scratch.fpr[1], j->st.fp_ops, sizeof j->st.fp_ops);
@@ -245,6 +243,12 @@ static void fp_settle(struct jit *j, struct ppc_cpu *c)
 	if (j->st.fp_fpcc)
 		c->fpscr = (c->fpscr & ~0xF000u) | (j->st.fp_fpcc & 0xFu) << 12;
 	j->st.fp_op = j->st.fp_fpcc = 0;
+}
+
+static inline void fp_settle(struct jit *j, struct ppc_cpu *c)
+{
+	if (j->st.fp_op)
+		fp_settle_op(j, c);
 }
 
 /* For the settle stub (see build_settle()) */
@@ -260,11 +264,11 @@ static bool step(struct ppc_cpu *c, uint32_t insn, uint32_t pc)
 	return ppc_step(c, insn, pc);
 }
 
-/* The kernel's call in place (see ppc.h), which may read and set the FPSCR */
-static bool kcall(struct ppc_cpu *c, unsigned n)
+/* The kernel's call in place (see ppc.h), which may read and set the FPSCR; `left` as for mmio() */
+static bool kcall(struct ppc_cpu *c, unsigned n, uint64_t left)
 {
 	fp_settle(c->jit, c);
-	return c->kcall(c, n);
+	return c->kcall(c, n, c->jit->st.entry_budget - left);
 }
 
 /* A store by translated code to a page holding translated code, or a watched one; `value` is in guest byte order */
@@ -540,7 +544,8 @@ static void fastmem_free(struct jit *j)
 /*
  * A fastmem access faulted: its instruction gets checks, in a new
  * translation of its block; and if the page wasn't even readable (a
- * device's, perhaps), the way to the mmio hook too.
+ * device's, perhaps), or a store's wasn't writable (the kernel's info
+ * records), the way to the mmio hook too.
  */
 static void slow_down(struct jit *j, uint32_t site)
 {
@@ -549,7 +554,7 @@ static void slow_down(struct jit *j, uint32_t site)
 	unsigned w = (s->pc >> 2) & (PAGE_WORDS - 1);
 	if (pg) {
 		pg->slow[w / 64] |= 1ull << (w % 64);
-		if (!(j->mem->pageflags[j->fault_ea >> MEM_PAGE_SHIFT] & MEM_R))
+		if ((j->mem->pageflags[j->fault_ea >> MEM_PAGE_SHIFT] & MEM_RW) != MEM_RW)
 			pg->io[w / 64] |= 1ull << (w % 64);
 	}
 	drop_block(j, &j->blocks[s->block]);

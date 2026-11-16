@@ -30,7 +30,8 @@ The x86-64 JIT is complete: milestone 5 (performance) done.
   a partial-register MOV or AND, MOVZX, LEA; the block table's first level
   biased per page so lookups don't mask; exits to a block that exists
   linked when translated; the context switch's register copies unrolled
-  on x86 (GCC kept them loops: `nk.c`). Tried and reverted: r29 in a
+  on x86 (GCC kept them loops: `nk.c`; AVX2 vectors since, where the
+  processor has it). Tried and reverted: r29 in a
   host register with the budget in memory (Findings).
 - **On the Zen 5** (Linux, gcc, medians of 5; the same boots end exactly
   as on AArch64, logs and screenshots, with and without fastmem):
@@ -109,6 +110,17 @@ measurements):
   return stack (no fewer branch misses: the indirect predictor already had
   the returns). **Measured, not needed**: spreading the 68k emulator's
   dispatch, which each handler's block already has a copy of.
+- **The kernel's costs** (both hosts; plan.md, Findings): the context
+  switch's register copies in AVX2 vectors where the processor has it
+  (found at run time; a third of the instructions), kernel calls made in
+  place while devices are to be brought up to date (the update made in
+  the call, at the same instruction), and stores to the info records made
+  by the mmio hook. The 9.2.2 CD boot (medians of 11 alternating runs,
+  wall time; the machine was shared): gcc 1.319 → 1.309 s, clang 1.281 →
+  1.237 s; host instructions -2.9% and -2.8%. It ends exactly as before
+  (screenshot and log, with and without fastmem, gcc and clang); the
+  fuzzer passes 200,000 programs with each compiler and 50,000 with
+  `BLUE_JIT_FASTMEM=0`.
 
 Milestone 4 done (the rest):
 

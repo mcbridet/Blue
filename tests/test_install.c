@@ -98,10 +98,11 @@ static struct hfs_file tools[TOOLS_FILES];
 static uint8_t older[4096];                     /* an older Enhancements: the same, but for a byte */
 static const uint8_t apple_pef[24] = "Joy!peffpwpc\0\0\0\1";
 
-/* Blue's OpenGL libraries, current, in a folder: appended to items (returns how many there are then) */
-static unsigned with_gl(struct item *items, unsigned n, uint32_t folder, uint32_t first_id)
+/* Blue's libraries (OpenGL's and the Pippin's), current, in a folder: appended to items (returns how many there are
+ * then) */
+static unsigned with_libs(struct item *items, unsigned n, uint32_t folder, uint32_t first_id)
 {
-	for (unsigned t = TOOLS_GL_FIRST; t < TOOLS_GL_FIRST + TOOLS_GL_FILES; t++) {
+	for (unsigned t = TOOLS_GL_FIRST; t <= TOOLS_PIPPIN; t++) {
 		const struct hfs_file *f = &tools[t];
 		items[n++] = (struct item){ folder, first_id + t, f->name, false, f->type, f->creator, f->data, f->rsrc,
 					    f->data_len, f->rsrc_len };
@@ -165,7 +166,7 @@ static void test_check(void)
 	/* current, under other names */
 	struct item both[12] = { folders[0], folders[1], tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, "Helper", false),
 				 tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, "3D", false) };
-	CHECK_EQ(check(both, with_gl(both, 4, EXTENSIONS, 70), &ck), 0);
+	CHECK_EQ(check(both, with_libs(both, 4, EXTENSIONS, 70), &ck), 0);
 	CHECK_EQ(ck.tool[TOOLS_GL_LIBRARY].state, INSTALL_CURRENT);
 	CHECK_EQ(ck.tool[TOOLS_GL_UTILITY].id, 70 + TOOLS_GL_UTILITY);
 	CHECK_EQ(ck.tool[TOOLS_ENHANCEMENTS].state, INSTALL_CURRENT);
@@ -178,7 +179,7 @@ static void test_check(void)
 	CHECK(!ck.apple_disable && !ck.apple_restore);
 
 	/* Apple's OpenGL in Extensions beside Blue's: to be disabled */
-	CHECK_EQ(check(both, with_apple(both, with_gl(both, 4, EXTENSIONS, 70), EXTENSIONS, 80), &ck), 0);
+	CHECK_EQ(check(both, with_apple(both, with_libs(both, 4, EXTENSIONS, 70), EXTENSIONS, 80), &ck), 0);
 	CHECK(ck.apple[0].found[0] && ck.apple[2].found[0] && !ck.apple[0].found[1]);
 	CHECK_EQ(ck.apple[1].dir[0], EXTENSIONS);
 	CHECK(ck.apple_disable && !ck.apple_restore);
@@ -262,7 +263,7 @@ static void test_offer(void)
 
 	struct item both[12] = { folders[0], tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, NULL, false),
 				 tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, false) };
-	unsigned n = with_gl(both, 3, EXTENSIONS, 70);
+	unsigned n = with_libs(both, 3, EXTENSIONS, 70);
 	write_volume(both, n, 0);
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_OFF);
@@ -283,12 +284,13 @@ static void test_offer(void)
 	      NULL);
 	nine[2] = tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, NULL, false);
 	nine[3] = tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, false);
-	write_volume(nine, with_apple(nine, with_gl(nine, 4, EXTENSIONS, 70), EXTENSIONS, 80), 0);
+	write_volume(nine, with_apple(nine, with_libs(nine, 4, EXTENSIONS, 70), EXTENSIONS, 80), 0);
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
 	CHECK(strcmp(in.yes, "Move and Restart") == 0);
 	CHECK(strstr(in.question, "move Apple's to \"Extensions (Disabled)\"?") != NULL);
-	write_volume(nine, with_apple(nine, 4, DISABLED, 80), 0);
+	nine[4] = tool_item(TOOLS_PIPPIN, EXTENSIONS, 75, NULL, false);
+	write_volume(nine, with_apple(nine, 5, DISABLED, 80), 0);
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_WAIT_FINDER);
 	CHECK(strcmp(in.yes, "Put Back and Restart") == 0);
@@ -574,7 +576,7 @@ static void test_installer(void)
 	struct helper h = { .running = false };
 	struct item items[8] = { folder(SYSTEM, EXTENSIONS, "Extensions"), folder(SYSTEM, DISABLED, "Extensions (Disabled)"),
 				 tool_item(TOOLS_3D_ENGINE, DISABLED, 60, "Old 3D", true) };
-	write_volume(items, with_gl(items, 3, EXTENSIONS, 70), 0);
+	write_volume(items, with_libs(items, 3, EXTENSIONS, 70), 0);
 	memset(&fs, 0, sizeof fs);
 	fs.next_id = 100;
 	add_file(DISABLED, "Old 3D", 60, &tools[TOOLS_3D_ENGINE])->fork[0][0] ^= 1;
@@ -632,7 +634,7 @@ static void test_installer_errors(void)
 	struct helper h = { .running = false };
 	struct item items[8] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
 				 tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 61, NULL, true) };
-	unsigned n = with_gl(items, 2, EXTENSIONS, 70);
+	unsigned n = with_libs(items, 2, EXTENSIONS, 70);
 	write_volume(items, n, 0);
 	memset(&fs, 0, sizeof fs);
 	fs.next_id = 100;
@@ -706,7 +708,7 @@ static void test_installer_quit(void)
 	struct item items[8] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
 				 tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 62, "Blue Helper", true),
 				 tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 63, NULL, false) };
-	write_volume(items, with_gl(items, 3, EXTENSIONS, 70), 0);
+	write_volume(items, with_libs(items, 3, EXTENSIONS, 70), 0);
 	memset(&fs, 0, sizeof fs);
 	fs.next_id = 100;
 	add_file(EXTENSIONS, "Blue Helper", 62, &tools[TOOLS_ENHANCEMENTS])->locked = true;
@@ -794,7 +796,7 @@ static void test_installer_apple(void)
 	struct helper h = { .running = false };
 	static const char *const names[3] = { "OpenGLLibrary", "OpenGLMemory", "OpenGLUtility" };
 
-	/* 8.5 and 8.6 (no OpenGL of Apple's): all five in Extensions, said in one go */
+	/* 8.5 and 8.6 (no OpenGL of Apple's): all six in Extensions, said in one go */
 	struct item none[] = { folder(SYSTEM, EXTENSIONS, "Extensions") };
 	write_volume(none, 1, 0);
 	memset(&fs, 0, sizeof fs);
@@ -806,14 +808,16 @@ static void test_installer_apple(void)
 	run_installer(&in);
 	for (unsigned t = 0; t < TOOLS_FILES; t++)
 		CHECK(same_as(find(EXTENSIONS, tools[t].name), t));
-	CHECK(strcmp(in.news, "installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory "
-			      "and Blue OpenGL Utility in \"Test:System Folder:Extensions\". Mac OS is restarting.") == 0);
+	CHECK(strcmp(in.news, "installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory, "
+			      "Blue OpenGL Utility and Blue Pippin Library in \"Test:System Folder:Extensions\". Mac OS is "
+			      "restarting.") == 0);
 	h.running = true;
 
 	struct item items[12] = { folder(SYSTEM, EXTENSIONS, "Extensions"),
 				  tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, NULL, false),
-				  tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, false) };
-	write_volume(items, with_apple(items, 3, EXTENSIONS, 80), 0);
+				  tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, false),
+				  tool_item(TOOLS_PIPPIN, EXTENSIONS, 52, NULL, false) };
+	write_volume(items, with_apple(items, 4, EXTENSIONS, 80), 0);
 	memset(&fs, 0, sizeof fs);
 	fs.next_id = 100;
 	for (unsigned k = 0; k < 3; k++)
@@ -839,7 +843,8 @@ static void test_installer_apple(void)
 	memcpy(items, folders, sizeof folders);
 	items[2] = tool_item(TOOLS_ENHANCEMENTS, EXTENSIONS, 50, NULL, false);
 	items[3] = tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, false);
-	write_volume(items, with_apple(items, 4, DISABLED, 80), 0);
+	items[4] = tool_item(TOOLS_PIPPIN, EXTENSIONS, 52, NULL, false);
+	write_volume(items, with_apple(items, 5, DISABLED, 80), 0);
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, INSTALL_YES, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
@@ -852,7 +857,7 @@ static void test_installer_apple(void)
 	CHECK_EQ(fs.restarts, 2);
 	/* ... after which Blue's aren't offered again, in this run */
 	CHECK(in.check.apple_kept);
-	write_volume(items, with_apple(items, 4, EXTENSIONS, 80), 0);
+	write_volume(items, with_apple(items, 5, EXTENSIONS, 80), 0);
 	install_begin(&in, volume_path, 0, false);
 	CHECK_EQ(in.phase, INSTALL_OFF);
 	in.check.apple_kept = false;            /* (another run) */
@@ -865,7 +870,7 @@ static void test_installer_apple(void)
 	for (unsigned k = 0; k < 3; k++)
 		add_file(EXTENSIONS, names[k], 80 + k, NULL);
 	add_file(DISABLED, names[1], 99, NULL);
-	write_volume(items, with_apple(items, 4, EXTENSIONS, 80), 0);
+	write_volume(items, with_apple(items, 5, EXTENSIONS, 80), 0);
 	install_begin(&in, volume_path, 0, false);
 	install_answer(&in, INSTALL_YES, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
