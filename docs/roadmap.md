@@ -26,4 +26,4 @@ was found along the way, and how Mac OS was brought up, are in
   run; none of Mac OS 9.1's or 9.2.2's tasks makes one.
 
 [future.md](future.md) has ideas not on the roadmap: a modem, sound
-input, AltiVec, printing and a few game controller extras.
+input, printing and a few game controller extras.

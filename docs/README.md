@@ -49,4 +49,4 @@ test and debug it.
 
 - [roadmap.md](roadmap.md): the next steps.
 - [future.md](future.md): ideas further off: a modem, sound input,
-  AltiVec, printing and a few game controller extras.
+  printing and a few game controller extras.
