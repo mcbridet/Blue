@@ -1,36 +1,33 @@
 /*
- * The sound chip: an AWACS-family codec on the Mac I/O "davbus", as in the
- * beige G3 and the iMac, which Mac OS drives with its own sound driver
- * (.DAVAudio in the System file).
+ * The sound chip: the iMac's Burgundy codec on the Mac I/O "davbus", which
+ * Mac OS drives with its own sound driver (.DAVAudio in the System file, and
+ * SndHWLib's BurgundyPlugin).
  *
- * Its registers are little-endian, 0x10 apart, at Mac I/O + 0x14000:
+ * The davbus's registers are little-endian, 0x10 apart, at Mac I/O + 0x14000:
  *
- *   0x00 control        sample rate (bits 8-10), the subframe whose status
- *                       0x20 shows (bits 15-16), interrupt enables
- *   0x10 codec control  writes go to the codec's own registers: data in bits
- *                       0-11, register number in bits 12-15; bit 24 reads 1
- *                       while a write is in progress (never here)
- *   0x20 codec status   revision (bits 12-15) and manufacturer (8-11) of the
- *                       codec, and its input sense bits (0-3); bit 22 says
- *                       the codec's status is valid (`valid`)
+ *   0x00 control        input and output subframes on (bits 0-3, 4-7), sample
+ *                       rate (bits 8-10), the subframe whose status 0x20
+ *                       shows (bits 15-16), interrupt enables
+ *   0x10 codec control  a command to the codec's own registers (see
+ *                       burgundy.c); bit 24 reads 1 while one is in progress
+ *                       (never here)
+ *   0x20 codec status   the byte a read command fetched (bits 4-11), which of
+ *                       its register's (12-13) and a count of them (14-15);
+ *                       bit 22 says it's valid (`valid`)
  *   0x30 clip count     samples clipped since last read
  *   0x50 frame count    sample frames since reset, counting all the time
  *
  * Output is 16-bit big-endian stereo frames from DBDMA channel 8, taken at
- * the sample rate of guest time (burgundy_set_time()) and handed to a sink;
- * input on channel 9 records at the same pace, in the same format.
+ * the sample rate of guest time (burgundy_set_time()), mixed as the codec's
+ * registers say and handed to a sink; input on channel 9 records at the same
+ * pace, in the same format. With two subframes on (as Mac OS has them) each
+ * channel moves two frames a sample period, the codec's first.
  *
- * The codec's analog input (`input`) is where the iMac's CD drive plays:
- * the codec plays it through to its outputs, mixed with the DMA's frames
- * (or alone), when its input selector has the CD and loop-through is on,
- * or when no input was ever selected (Mac OS 9 sets up the input side
- * only with an input component, which Blue's sound node doesn't load).
- *
- * What input DMA records is what the input selector (register 0) has: the
- * microphone or sound-in (`mic`, the host's sound input), the CD (its
- * frames as the codec takes them), both mixed, or with none, silence; at
- * the input gain (register 0: left in bits 4-7, right in 0-3, 1.5 dB steps
- * from 0 dB), samples clipped counting in the clip count.
+ * The codec's inputs: channel 1 the CD (`input`, the CD-ROM drives' audio),
+ * which it plays through to its outputs when Mac OS monitors it, mixed with
+ * the DMA's frames (or alone); channels 2 and 3 the sound-in jack and the
+ * built-in microphone (`mic`, the host's sound input). What input DMA
+ * records is the channels Mac OS captures, at their gains and volumes.
  */
 #ifndef BLUE_BURGUNDY_H
 #define BLUE_BURGUNDY_H
@@ -50,10 +47,10 @@
 #define BURGUNDY_ID 0x01010000u
 #define BURGUNDY_CD_REC 4096u              /* the CD's frames kept for recording (MAX_CREDIT's worth) */
 
-/* The input selector's inputs (codec register 0) */
-#define BURGUNDY_IN_CD 0x200u
-#define BURGUNDY_IN_MIC 0x400u
-#define BURGUNDY_IN_LINE 0x800u            /* (sound in) */
+/* What's recorded (burgundy_recording()) */
+#define BURGUNDY_IN_CD 0x1u
+#define BURGUNDY_IN_LINE 0x2u              /* the sound-in jack (External Mic, Sound In) */
+#define BURGUNDY_IN_MIC 0x4u               /* the built-in microphone */
 
 /* Where played frames go: `count` frames of big-endian left/right samples */
 typedef void burgundy_sink(void *ctx, const uint8_t *frames, unsigned count, unsigned rate);
@@ -91,7 +88,7 @@ struct burgundy {
 	bool cd_rec_taking;                     /* ... since a few were waiting */
 	uint8_t rec_frame[4];                   /* a frame recorded, ... */
 	unsigned rec_at;                        /* ... its bytes moved so far (4: none waiting) */
-	uint64_t run_recorded;                  /* frames input DMA moved since it last started */
+	uint64_t run_recorded;                  /* the codec's frames input DMA moved since it last started */
 
 	/* frames since reset at the current rate: base + (time - since) * rate / time_hz */
 	uint64_t time, time_hz;
@@ -117,7 +114,7 @@ void burgundy_set_time(struct burgundy *a, uint64_t time);
 /* Sample rate in Hz, from the control register */
 unsigned burgundy_rate(const struct burgundy *a);
 
-/* Output gain of each channel (65536 = full scale), from the codec's attenuation */
+/* Output gain of each side (65536: 0 dB), from the codec's master volume and its outputs' attenuation */
 void burgundy_gain(const struct burgundy *a, unsigned *left, unsigned *right);
 
 /* Is output DMA running, or the analog input sounding (they need time to pass at a fine grain)? */
@@ -126,10 +123,10 @@ bool burgundy_playing(const struct burgundy *a);
 /* ... or input DMA? */
 bool burgundy_moving(const struct burgundy *a);
 
-/* Whether the analog input is played through to the outputs */
+/* Whether the CD is played through to the outputs */
 bool burgundy_through(const struct burgundy *a);
 
-/* What input DMA records from now (BURGUNDY_IN_ bits; 0 if it isn't moving, or nothing is selected) */
+/* What input DMA records from now (BURGUNDY_IN_ bits; 0 if it isn't moving, or nothing is captured) */
 unsigned burgundy_recording(const struct burgundy *a);
 
 extern const struct mmio_ops burgundy_mmio_ops;

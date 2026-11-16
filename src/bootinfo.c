@@ -40,7 +40,7 @@ enum {
 	DI_VIA1 = 0x08,
 	DI_SCC_READ = 0x0C,
 	DI_SCC_WRITE = 0x10,
-	DI_AWACS = 0x9C,                /* long 39: the sound chip (Gestalt 'snhw' is 'awgc' with Mac I/O) */
+	DI_SOUND = 0x9C,                /* long 39 (AWACSAddr): the sound chip (Gestalt 'snhw' is 'awgc' with Mac I/O) */
 	DI_MACIO = 0xE4,                /* long 57 */
 	DI_FLAGS_F8 = 0xF8,             /* long 62 */
 	DI_SIZE = 0x100,
@@ -509,7 +509,7 @@ int bootinfo_build(struct mem *mem, struct bootinfo *bi, const struct bootinfo_m
 	memset(pi, 0, PI_SIZE + DI_SIZE);
 
 	const uint32_t bases_valid = 1u << (DI_VIA1 / 4) | 1u << (DI_SCC_READ / 4) | 1u << (DI_SCC_WRITE / 4);
-	const uint32_t ext_valid = 1u << (DI_AWACS / 4 - 32) | 1u << (DI_MACIO / 4 - 32) | 1u << (DI_FLAGS_F8 / 4 - 32);
+	const uint32_t ext_valid = 1u << (DI_SOUND / 4 - 32) | 1u << (DI_MACIO / 4 - 32) | 1u << (DI_FLAGS_F8 / 4 - 32);
 
 	/*
 	 * Flags at +0x24: bits 24-26 select the ADB/power manager (3 = Cuda via VIA1).
@@ -549,7 +549,7 @@ int bootinfo_build(struct mem *mem, struct bootinfo *bi, const struct bootinfo_m
 	put_be32(di + DI_VIA1, MACIO_VIA1);
 	put_be32(di + DI_SCC_READ, MACIO_SCC);
 	put_be32(di + DI_SCC_WRITE, MACIO_SCC);
-	put_be32(di + DI_AWACS, MACIO_SOUND);
+	put_be32(di + DI_SOUND, MACIO_SOUND);
 	put_be32(di + DI_MACIO, MACIO_BASE);
 	put_be32(di + DI_FLAGS_F8, 0x00010100);
 

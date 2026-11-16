@@ -370,6 +370,7 @@ static void record(struct burgundy *a, uint8_t *data, uint32_t n)
 		for (unsigned k = 0; k < count; k++)
 			want += (a->in_slot + k) % slots == codec;
 		int16_t f[2 * MIX_FRAMES];
+		a->run_recorded += want;
 		if (want) {
 			adc(a, f, want);
 			if (a->recorded) {
@@ -408,7 +409,6 @@ static uint32_t dma_input(void *ctx, unsigned key, uint8_t *data, uint32_t len, 
 	a->in_credit -= n;
 	record(a, data, n);
 	a->frames_recorded += n / FRAME_BYTES;
-	a->run_recorded += n / FRAME_BYTES;
 	return n;
 }
 
