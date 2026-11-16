@@ -15,8 +15,8 @@ Extensions whatever its name and Extensions (Disabled) among them) for
 them, and once the Finder is up, if one is missing or isn't this version's
 (both forks compared with what it makes), a box over the screen says so,
 with Install and Restart (or Update and Restart), Not Now and Don't Ask
-Again (below); Mac OS runs on meanwhile. On Install, Mac OS writes the files itself (see Findings in
-[plan.md](plan.md#findings)): each goes to a temporary file in the folder it belongs in, which
+Again (below); Mac OS runs on meanwhile. On Install, Mac OS writes the files itself (see
+[findings.md](findings.md), "Running code of Blue's in Mac OS on demand"): each goes to a temporary file in the folder it belongs in, which
 then takes the old copy's place, so an error (a full or locked disk) leaves
 nothing half written; a disabled copy is updated where it is and stays
 disabled. An older Blue Enhancements that's running is asked to quit
@@ -278,8 +278,8 @@ Discs for the Bandai Pippin (Apple's 1996 console design, System 7.5) are
 HFS CDs, and many of their programs run on a Mac, but some link to the
 Pippin's own library, PippinPPC, which Mac OS hasn't got ("could not be
 opened because "PippinPPC" could not be found"). Blue Pippin Library is Blue's own PippinPPC, with the Pippin's
-twelve functions mapped onto Mac OS 8.5 to 9.2.2 (`src/pippin.c`; [plan.md](plan.md#19-pippin-titles)
-has what each does on a Pippin):
+twelve functions mapped onto Mac OS 8.5 to 9.2.2 (`src/pippin.c`; [findings.md](findings.md), "PippinPPC
+on a Pippin", has what each does on a Pippin):
 
 - The Pippin's file dialogs are Standard File's, starting in the title's
   folder: on a Pippin that is at the root of its 120 KB of flash (or a
@@ -298,3 +298,7 @@ has what each does on a Pippin):
   only for the Pippin."), and ShutDwnStart and ShutDwnPower return at once:
   a Pippin turns off when its title quits, which here would shut Mac OS
   down.
+
+Nothing provides the Pippin's video calls (`PippinVideo.h`'s, which
+aren't among PippinPPC's twelve) or its floppy dock, for titles that use
+them.

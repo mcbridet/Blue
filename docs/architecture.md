@@ -46,7 +46,8 @@ macOS and Linux hosts, AArch64 and x86-64
   covers the whole range from 8.5 on.
 - **OS ladder:** 8.5 → 8.6 → 9.0.4 on the NanoKernel v1 interface, then the
   v2 interface for 9.1 and 9.2.2 (both CDs start up to the Finder, and install; see
-  [bring-up.md](bring-up.md)).
+  [bring-up.md](bring-up.md)). 9.2.2 is MacOS9Lives' CD; Apple's own 9.2
+  and 9.2.2 CDs haven't been tried.
 
 ## Starting Mac OS: the loader
 
@@ -116,6 +117,83 @@ its tasks, for 9.1 and later (`src/mp.c`; see
   channels) are acknowledged in the controller when delivered and stay in
   `PendingInts` until a PrioritizeInterrupts after Mac OS has handled them
   (see [interrupt sets](devices.md#interrupt-sets)).
+
+### The kernel's loop
+
+`nk_boot()`'s loop in `src/nk.c` runs guest code in chunks (`ppc_run()`:
+the JIT, or the interpreter) and handles each exit: kernel calls (`twi`,
+`kernel_call()`), `sc` (`kcall_mp_dispatch()` under NanoKernel 2's
+interface), faults, and the host calls of Blue's drivers and guest tools.
+Devices and interrupts are brought up to date every 20,000 instructions
+(`SYNC_INSNS`) and at exits that may have touched them. The common kernel
+calls, NanoKernel 2's quick system calls and device register accesses are
+made without leaving the engines (see the JIT's [kernel calls in
+place](jit.md#kernel-calls-in-place)).
+
+- Mac OS runs as NanoKernel 1 contexts: the System context (Apple's 68k
+  emulator) and an alternate context (native code), switched by
+  `switch_context()`, which saves and loads the registers to and from the
+  context blocks in guest memory (in vectors: NEON, or AVX2 where the
+  processor has it). `m->system`, `m->context`, `m->flags` and `m->enables`
+  describe the running one.
+- Interrupts: `update_interrupts()` posts the 68k level to the emulator
+  through EmulatorData and the System context's CR; native code running
+  then is ended with exception 0 (`m->preempt`), so the emulator takes it.
+- Idle: `idle_wait()` (PowerDispatch's nap, the `_SynchIdleTime` hook,
+  Multiprocessing Services' call 55) sleeps in real time until the next
+  timer, interrupt or input, and returns at once in instruction time; with
+  Multiprocessing Services' tasks ready, they run instead (`blue_naps()`).
+
+### Multiprocessing Services
+
+For ROM files with parcels (9.1 and later: `m->mp_kernel`), the kernel is
+a NanoKernel 2, with Multiprocessing Services built in, running Mac OS as
+one task (the "blue task") among others it schedules. Everything it does
+is behind `mp_kernel`, so 8.5 to 9.0.4 see NanoKernel 1 as before.
+`src/mp.c` holds its objects (`struct mp`): IDs as NanoKernel 2 makes them
+(the slot << 16 | the slot's use count; the blue process is the first, 1,
+which the ROM checks), the blue process, task, page queue and address
+space, the tasks' saved registers and the ready queue, and `mp_call()`,
+which makes a call for the current task. Calls are there as Mac OS makes
+them, each after NanoKernel 2's source; one that isn't stops the run,
+naming it. They are: tasks (7-10, 126), queues (15-18, 39), semaphores
+(20-23), critical regions (25-28), event groups (49-52, and 54, which
+marks one to raise a 68k software interrupt when set), notifications
+(64-67, 128), task queries (11, 12, 14, 56, 59, 63), `MPYieldWithHint`
+(13), `MPGetNextID` (37), areas (77, 80: one for each startup region and
+Mac OS's RAM; 78 their records, 93 and 94 page ages), the page ager's (82,
+100), timers (30, 31, 32, 40, 41), delays (33, and 55), processes (3-6,
+99, 116), processors and their scheduling (44, 45, 62, 132), the CPU
+plugin (2, 46: in `nk.c`), and `sc` with r0 -1 and -2 (whether the
+current task is the blue one: `system_call()`). Its rules are NanoKernel
+2's:
+
+- **Tasks share the one processor and host thread.** Each task other than
+  the blue one has its registers (GPRs, FPRs, CR, LR, CTR, XER, FPSCR,
+  PC) saved in `struct mp` while another runs; after an exit, when
+  `mp.yield` says the choice may change, the loop switches
+  (`switch_task()`) to `mp_next()`'s. The blue task's state is whatever
+  its NanoKernel 1 contexts hold. `mp.current` is the task on the
+  processor, and `blue_running()` says whether that's the blue task.
+- **Blocking:** a task that must wait is taken off the processor with its
+  PC on the `sc`; when what it waits for comes, or its timeout, it's made
+  ready and makes the call again.
+- **The blue task never blocks:** NanoKernel 2 answers it
+  `kMPBlueBlockingErr` (-29293), and Mac OS polls. While it polls or naps,
+  ready tasks run.
+- **Interrupts belong to the blue task:** one posted while another task
+  runs has the blue task run next.
+- **Time is the guest timebase:** timeouts, timers and time slices are in
+  timebase ticks, so instruction-time runs stay the same every time.
+- **Exceptions in other tasks** stop the run, as do kernel calls from them
+  other than 8: NanoKernel 2 sends them to the task's exception queue, but
+  none of 9.1's or 9.2.2's tasks makes one.
+
+How 9.1 and 9.2.2 use it is in
+[bring-up.md](bring-up.md#mac-os-91-from-its-cd); the calls, their
+registers, and NanoKernel 2's scheduling as Blue follows it are in
+[findings.md](findings.md), and what Apple's does under QEMU in
+[nk2-reference.md](nk2-reference.md).
 
 ## The device tree and native drivers
 

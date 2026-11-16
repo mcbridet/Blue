@@ -37,8 +37,8 @@ here: the source again). The display, the USB controller, the
 sound chip and the Ethernet node have them (the Ethernet node only for
 its receive DMA channel, the one Blue raises; lanLib takes its set's
 last member, which is that channel's in the iMac's set of all three as
-well, and Open Transport doesn't stall with that one either: [plan.md](plan.md#findings),
-Findings), with
+well, and Open Transport doesn't stall with that one either: [findings.md](findings.md),
+"Open Transport's stall"), with
 `AAPL,interrupt-index` when the ROM file's Trampoline makes it (the
 display's always: earlier ROMs ignore it). Their handlers mask and
 unmask the source but never clear a latched pulse in the controller, so

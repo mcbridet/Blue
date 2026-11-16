@@ -928,8 +928,8 @@ The [docs](docs/README.md) folder goes further:
   [the source layout](docs/layout.md).
 - [The QEMU reference](docs/qemu-reference.md) and
   [NanoKernel 2 under QEMU](docs/nk2-reference.md).
-- [The roadmap](docs/roadmap.md), [the plan](docs/plan.md) with its
-  findings, and [ideas for later](docs/future.md).
+- [What was found along the way](docs/findings.md), in detail.
+- [The roadmap](docs/roadmap.md) and [ideas for later](docs/future.md).
 
 ## License
 

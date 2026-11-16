@@ -2,7 +2,7 @@
 
 What's next for Blue. [future.md](future.md) has ideas further off; what
 was found along the way, and how Mac OS was brought up, are in
-[plan.md](plan.md#findings) and [bring-up.md](bring-up.md).
+[findings.md](findings.md) and [bring-up.md](bring-up.md).
 
 ## Next steps
 

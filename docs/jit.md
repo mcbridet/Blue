@@ -456,7 +456,7 @@ Memory copies stay in Mac OS's own code: BlockMove and its relatives
 (InterfaceLib's, and the 68k emulator's for the `_BlockMove` trap) take
 0.3-1.2% of guest instructions in the CD boots and a game's startup, and
 1-2% of host time, mostly in copies too small to be worth a kernel exit
-([plan.md](plan.md#findings), Findings).
+([findings.md](findings.md), "BlockMove on the host isn't worth it").
 
 On an AMD Ryzen Threadripper PRO 9975WX (Zen 5, Linux, gcc; medians of
 5), the x86-64 translator against the interpreter:
@@ -505,7 +505,7 @@ switches, 0.5-0.9%) too little to batch. Of the instructions the
 interpreter runs, 16-41% are hot code, at the device sync points (every
 20,000 instructions), where the next block is longer than what's left of
 the budget. Measured breakdowns, run by run, are in
-[plan.md](plan.md#findings) ("Where a boot's host time goes" and after).
+[findings.md](findings.md) ("Where a boot's host time goes" and after).
 
 ### x86-64 against AArch64
 

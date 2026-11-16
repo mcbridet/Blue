@@ -24,6 +24,9 @@ test and debug it.
   measurements.
 - [bring-up.md](bring-up.md): how Mac OS 8.5, 9.0, 9.1 and 9.2.2 were made to
   start up.
+- [findings.md](findings.md): what was found along the way, in detail:
+  Apple's ROMs and NanoKernels, Mac OS, programs, hosts, and measurements of
+  Blue; with references.
 - [software.md](software.md): notes on particular programs and games:
   Bugdom, Unreal Tournament, MacBench, Pippin titles.
 
@@ -39,11 +42,9 @@ test and debug it.
 - [nk2-reference.md](nk2-reference.md): what Apple's NanoKernel 2 does,
   found under QEMU.
 
-**Plans**
+**What's next**
 
 - [roadmap.md](roadmap.md): the next steps.
-- [plan.md](plan.md): the plan for Mac OS 9.1 and later, its tasks, and the
-  findings along the way.
 - [future.md](future.md): ideas further off: a modem, a serial port,
   infrared, 3D sound, sound input, AltiVec, 3dfx Glide, pictures on the
   clipboard, printing, game controllers and more CD formats.
