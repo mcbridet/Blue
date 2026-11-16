@@ -184,7 +184,8 @@ cursor; the game controllers (their names, the mapping they follow, a
 checkbox that turns it off, and Mappings..., which shows Blue's mappings
 in the menu's place, to change: see [input.md](input.md#mappings-of-ones-own)); what's in the floppy and CD-ROM drives, each with Eject and
 Insert... (see [drives.md](drives.md#removable-drives)); and Refresh for the shared folder
-(see [shared-folder.md](shared-folder.md#put-away-and-offered-again)). In real time guest time doesn't count
+(see [shared-folder.md](shared-folder.md#put-away-and-offered-again)); and, in real time, whether sound input is
+on and whether Mac OS is using the microphone (see [devices.md](devices.md#sound)). In real time guest time doesn't count
 the pause, so the Mac's clock is that much behind afterwards.
 
 ## Quitting
@@ -258,7 +259,8 @@ the time actually spent running them, as a clock rate (the Mac thinks it
 has a 266 MHz G3, which runs about one instruction a cycle), worked out
 once a second from a random 1 in 32 runs (timing each costs too much),
 and not shown while the guest naps (busy less than a tenth of the time)
-or the menu pauses it.
+or the menu pauses it. A Microphone light, amber, is there only while
+the host's microphone is open for Mac OS.
 In narrow windows (640 wide, say) the names are shortened and the text
 made smaller to fit.
 

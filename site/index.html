@@ -234,7 +234,7 @@
                   <p class="abox-title">Blue</p>
                   <span class="part svc"><strong>CPU</strong> PowerPC JIT and interpreter</span>
                   <span class="part svc"><strong>Kernel</strong> Memory, interrupts, Multiprocessing Services</span>
-                  <span class="part svc"><strong>Devices</strong> An iMac’s: ADB, timers, display interrupt, sound, Ethernet, USB, NVRAM</span>
+                  <span class="part svc"><strong>Devices</strong> An iMac’s: ADB, timers, display interrupt, Burgundy sound, Ethernet, USB, NVRAM</span>
                   <span class="part svc"><strong>Drivers</strong> Display, disks, CDs and floppies, Ethernet, 3D, OpenGL</span>
                   <span class="part svc"><strong>Loader</strong> ROM and its parcels, tables, device tree</span>
                 </div>
@@ -280,8 +280,7 @@
               <tr><th scope="row">3D</th><td class="blue yes">QuickDraw 3D, RAVE (as an ATI Rage 128) and OpenGL, drawn on your GPU</td><td>Software only</td><td>Software only</td><td>Programs that draw straight to the screen or the hardware often fail</td></tr>
               <tr><th scope="row">Restart and Startup Disk</th><td class="blue yes">Both work</td><td>Restarting can freeze or crash it; Startup Disk doesn’t work</td><td>Neither works</td><td>Mac OS X’s own</td></tr>
               <tr><th scope="row">Screen</th><td class="blue yes">Follows the window’s size, scaled to suit your display</td><td>A fixed size, set in its settings</td><td>Set in Mac OS’s Monitors control panel</td><td class="yes">Mac OS 9’s windows among Mac OS X’s</td></tr>
-              <tr><th scope="row">Sound</th><td class="blue yes">Yes, with CD audio from most kinds of CD image</td><td class="yes">Yes, with CD audio from <code>.cue</code>/<code>.bin</code> images</td><td>Only in separate experimental builds</td><td class="yes">Yes</td></tr>
-              <tr><th scope="row">Sound input</th><td class="blue">Not yet</td><td>No</td><td>No</td><td class="yes">Yes</td></tr>
+              <tr><th scope="row">Audio</th><td class="blue yes">Yes, with CD audio from most kinds of CD image, and your microphone as input</td><td class="yes">Output, with CD audio from <code>.cue</code>/<code>.bin</code> images; no input</td><td>Only in separate experimental builds</td><td class="yes">Yes, input included</td></tr>
               <tr><th scope="row">Disk images</th><td class="blue yes">Dropped on the window or inserted from the menu: CD images in most formats, compressed <code>.dmg</code> and Disk Copy images, floppies</td><td>Uncompressed images, and one at a time dropped in as a CD</td><td>Raw and QEMU’s own formats, changed from a menu</td><td>Mac OS X’s</td></tr>
               <tr><th scope="row">Shared folders</th><td class="blue yes">A folder of yours as a disk, its changes written back when Mac OS shuts down or puts it away, and offered again with yours</td><td class="yes">A folder as a live disk, though programs can’t run from it</td><td>Separate experimental drivers</td><td class="yes">Mac OS X’s disks, directly</td></tr>
               <tr><th scope="row">Networking</th><td class="blue yes">TCP/IP through its NAT; no port forwarding yet</td><td class="yes">TCP/IP through its NAT, with port forwarding; AppleTalk with extra setup, on some hosts</td><td class="yes">TCP/IP through its NAT, with port forwarding; AppleTalk through bridged networking, run as root</td><td class="yes">Mac OS X’s, AppleTalk included</td></tr>
@@ -319,7 +318,7 @@
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-speaker"/></svg>Sound</span>
-          <span class="notes">Output through an AWACS chip, as in the iMac, with CD audio.</span>
+          <span class="notes">Output through a Burgundy chip, as in the iMac, with CD audio and input from your microphone, opened only while Mac OS records.</span>
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-mouse"/></svg>Keyboard &amp; Mouse</span>

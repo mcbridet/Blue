@@ -1,8 +1,7 @@
 # Roadmap
 
-What's next for Blue. [future.md](future.md) has ideas further off; what
-was found along the way, and how Mac OS was brought up, are in
-[findings.md](findings.md) and [bring-up.md](bring-up.md).
+What's next for Blue. What was found along the way, and how Mac OS was
+brought up, are in [findings.md](findings.md) and [bring-up.md](bring-up.md).
 
 ## Next steps
 
@@ -26,5 +25,3 @@ was found along the way, and how Mac OS was brought up, are in
   sent to the task's exception queue as NanoKernel 2 does (with
   `MPSetExceptionHandler` and `MPThrowException`). Such a fault stops the
   run; none of Mac OS 9.1's or 9.2.2's tasks makes one.
-
-[future.md](future.md) has an idea not on the roadmap: printing.

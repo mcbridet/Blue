@@ -85,6 +85,7 @@ with `#` are comments):
 | `modem pickup` | the script's far end answers the next number dialled (`CONNECT 56000`), rather than nobody (`NO CARRIER`) |
 | `modem recv TEXT` | the far end sends TEXT (the rest of the line: `\r`, `\n`, `\\` and `\xHH` stand for a CR, a newline, a backslash and any byte) |
 | `modem hangup` | the far end hangs up |
+| `mic play FILE`, `mic stop` | the microphone hears a WAV file (the rest of the line), once from its start, as Mac OS records; or nothing more |
 
 Times can be seconds of host time since the start instead, written with
 an `s` (`12.5s click 100 200`), for scripts in real time (in the window,
@@ -132,6 +133,22 @@ time too. For example, Remote Access dialling with a scripted far end:
 
 (`modem recv` takes the rest of its line, so a comment can't follow it: the
 line above is an LCP Configure-Request.)
+
+`mic play` stands in for the microphone (see [Sound](devices.md#sound)), as
+`--mic-file` does for a whole run (over and over): the file is read only as
+Mac OS records from the microphone or sound-in, so a recording comes out
+the same each time. `BLUE_SOUND_IN_WAV=FILE` writes what Mac OS got, and
+`BLUE_SOUND_WAV=FILE` what it played, to compare with the file. For
+example, with SimpleSound open on an installed 8.5 at 800x600 (the counts
+are a particular run's), it records five seconds of the file as a new
+alert sound and plays it back:
+
+```
+5900000000 click 76 188         # SimpleSound's Add...
+6200000000 click 272 170        # Record
+6400000000 click 310 170        # Stop
+6500000000 click 383 170        # Play
+```
 
 `clock N` keeps a run reproducible while making guest time pass as on a
 guest processor of N MIPS, so that work paced by guest time (sound, timer
@@ -255,13 +272,14 @@ and doesn't read it.
 | `BLUE_LOG_RAVE=1` | every call to the 3D engine |
 | `BLUE_LOG_SERIAL=1` | the serial controller's register accesses (the modem's channel), and its DCD, CTS, DTR and RTS |
 | `BLUE_LOG_SHARE=1` | Mac OS's writes to the shared folder |
-| `BLUE_LOG_SOUND=1` | the sound chip's register accesses |
+| `BLUE_LOG_SOUND=1` | the sound chip's register accesses, and the codec's registers as they're written |
 | `BLUE_LOG_USB=1` | the USB controller's register accesses (not the frame number) |
 | `BLUE_LOG_WHEEL=1` | where each of the scroll wheel's turns went: the scroll bar clicked, the lines its action procedure scrolled, or why not ([guest-tools.md](guest-tools.md#the-scroll-wheel)) |
 | `BLUE_NET=1` | connects the Ethernet in instruction time too (then not reproducible) |
 | `BLUE_PERF=1` | the host processor's counters for the emulation thread, every second (Linux) |
 | `BLUE_RASTER_THREADS=N` | the software rasteriser's threads, counting the emulated processor's (3, or fewer processors if there are; 1 to 8) |
 | `BLUE_RAVE_FPS=1` | prints the 3D engine's frame rate every second |
+| `BLUE_SOUND_IN_WAV=FILE` | records what Mac OS records (the codec's frames input DMA delivers), as a WAVE file |
 | `BLUE_SOUND_WAV=FILE` | records what the sound chip plays, CD audio included, as a WAVE file (in instruction time too) |
 | `BLUE_TOOLS_APPL=1` | `tools create` makes the volume's Blue Enhancements an application, to try it from a CD's system |
 | `BLUE_TOOLS_GL_TEST=1` | `tools create` puts Blue GL Test on the volume |

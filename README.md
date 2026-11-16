@@ -52,7 +52,7 @@ from that disk, in a window on your desktop.
 - **3D:** QuickDraw 3D and RAVE through an engine games see as an ATI Rage
   128, and Mac OS 9's OpenGL through Blue's own libraries, drawn on the GPU
   (over Metal on Apple silicon) or in software.
-- **The rest of a Mac:** sound and CD audio, networking through your
+- **The rest of a Mac:** sound, CD audio and your microphone, networking through your
   connection, the internal modem (its calls go over the internet), a
   folder of yours as a disk, the clipboard shared both ways,
   and disk, CD (`.iso`, `.toast`, `.cue`/`.bin`, `.nrg`, `.mds`, `.ccd`,
@@ -102,8 +102,7 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **3D** | QuickDraw 3D, RAVE (as an ATI Rage 128) and OpenGL, drawn on your GPU | Software only | Software only | Programs that draw straight to the screen or the hardware often fail |
 | **Restart and Startup Disk** | Both work | Restarting can freeze or crash it; Startup Disk doesn't work | Neither works | Mac OS X's own |
 | **Screen** | Follows the window's size, scaled to suit your display | A fixed size, set in its settings | Set in Mac OS's Monitors control panel | Mac OS 9's windows among Mac OS X's |
-| **Sound** | Yes, with CD audio from most kinds of CD image | Yes, with CD audio from `.cue`/`.bin` images | Only in separate experimental builds | Yes |
-| **Sound input** | Not yet | No | No | Yes |
+| **Audio** | Yes, with CD audio from most kinds of CD image, and your microphone as input | Output, with CD audio from `.cue`/`.bin` images; no input | Only in separate experimental builds | Yes, input included |
 | **Disk images** | Dropped on the window or inserted from the menu: CD images in most formats, compressed `.dmg` and Disk Copy images, floppies | Uncompressed images, and one at a time dropped in as a CD | Raw and QEMU's own formats, changed from a menu | Mac OS X's |
 | **Shared folders** | A folder of yours as a disk, its changes written back when Mac OS shuts down or puts it away, and offered again with yours | A folder as a live disk, though programs can't run from it | Separate experimental drivers | Mac OS X's disks, directly |
 | **Networking** | TCP/IP through its NAT; no port forwarding yet | TCP/IP through its NAT, with port forwarding; AppleTalk with extra setup, on some hosts | TCP/IP through its NAT, with port forwarding; AppleTalk through bridged networking, run as root | Mac OS X's, AppleTalk included |
@@ -296,15 +295,16 @@ installation its own. Mac OS 9.1 and later write their settings when they
 shut down or restart, so shut down from Mac OS to keep changes.
 
 Blue keeps its own settings, those you choose in its menu, in a settings
-file: for now, your [game controllers' mappings](#game-controllers). It's
-in `~/Library/Application Support/Blue/settings.ini` on macOS, and
+file: your [game controllers' mappings](#game-controllers), and whether
+sound input is on. It's in `~/Library/Application Support/Blue/settings.ini`
+on macOS, and
 `~/.config/blue/settings.ini` on Linux (or in `$XDG_CONFIG_HOME/blue/`).
 It's plain text, `name = value` lines under a `[section]`, which you can
 read and edit (with Blue closed): `[controller]` has the mapping for all
 controllers, a line for each button, stick and trigger (`a = Return`,
 `lefttrigger = Control-Click`, `rightstickmode = Mouse`), and
-`[controller ID]` sections a kind of controller's own, by its SDL GUID.
-Blue writes it whole each time something changes, to a new file it then
+`[controller ID]` sections a kind of controller's own, by its SDL GUID;
+`[sound]` has `microphone = on` or `off`. Blue writes it whole each time something changes, to a new file it then
 puts in the old one's place. Runs without a window, in instruction time
 or with an input script leave it alone; `--settings FILE` uses another
 file (in any run), and `--settings none` none.
@@ -377,6 +377,9 @@ F12 or Esc closes it again.
   [Game controllers](#game-controllers)).
 - **Modem** says what the [modem](#the-modem) is doing, and **Hang Up**
   ends its call.
+- **Sound input from the microphone** says whether Mac OS is using your
+  microphone, and turns sound input off and on (off, Mac OS records
+  silence; see [Sound](#sound)). Blue remembers the choice.
 
 While the menu is open, the Mac's clock stops, so it's behind by that
 much afterwards.
@@ -391,6 +394,8 @@ doing:
 - **Disk**, **CD-ROM** and **Floppy** light up as they read (green) and
   write (amber), with how many bytes a second they move.
 - **Network** lights up as the Mac sends and receives, in bits a second.
+- **Microphone** appears, lit amber, only while Blue has your microphone
+  open for Mac OS.
 
 A dimmed light means there's no such device, and "F12: menu" on the
 right is a reminder of where the menu is. `--no-status-bar` starts
@@ -734,11 +739,28 @@ ones: see [docs/devices.md](docs/devices.md#the-modem).
 ### Sound
 
 Sound plays while the Mac runs in a window, through Mac OS's own sound
-driver, and follows Mac OS's volume and mute (in the Monitors & Sound or
-Sound control panel, or the Control Strip). CD audio, from an audio CD's
-or a game's cue sheet, plays through the same chip and follows the same
-volume, as on the iMac; AppleCD Audio Player, in the Apple menu, plays
-audio CDs. `--no-sound` turns sound off.
+driver for the iMac's sound chip (a Burgundy), and follows Mac OS's volume
+and mute (in the Monitors & Sound or Sound control panel, or the Control
+Strip). CD audio, from an audio CD's or a game's cue sheet, plays through
+the same chip and follows the same volume, as on the iMac; AppleCD Audio
+Player, in the Apple menu, plays audio CDs. `--no-sound` turns sound off.
+
+Mac OS records from your computer's microphone: choose Built-in Mic,
+External Mic or Sound In as the sound input (Monitors & Sound's Sound
+Monitoring Source on Mac OS 8.5 and 8.6, the Sound control panel's Input
+on Mac OS 9), then record, for example a new alert sound (SimpleSound's
+Add… on 8.5, the Sound control panel's New Sound on 9). With CD, Mac OS
+records the CD's audio. Blue opens your microphone only while Mac OS
+records from it, and closes it a moment after; the status bar's
+**Microphone** light shows when it's open. The first time, macOS asks
+whether Blue may use the microphone; if you say no, Mac OS records
+silence (System Settings, Privacy & Security, Microphone changes it).
+Blue's menu turns sound input off, and so does `--no-mic`. Sound input
+works in real time, in the window or with `--headless --realtime`;
+`--mic-file FILE.wav` has Mac OS hear a WAV file instead, in any run.
+Mac OS 9.0 and 9.0.4 get no sound input: their sound input component has
+a bug that can crash Mac OS at startup when there is one (untested with
+Blue's sound chip).
 
 ### 3D graphics
 
@@ -811,7 +833,7 @@ The options of `blue boot`:
 | `--floppy-drive` | Adds an empty floppy drive. (A window, or real time, has one anyway.) |
 | `--share FOLDER` | Shows a folder on your computer as a disk (one folder). |
 | `--nvram FILE` | Keeps the Mac's NVRAM (settings, the startup disk) in this file. |
-| `--settings FILE` | Keeps Blue's own settings (the game controllers' mappings) in this file, in any run; `--settings none` keeps none (see [Keeping your settings](#keeping-your-settings)). |
+| `--settings FILE` | Keeps Blue's own settings (the game controllers' mappings, sound input) in this file, in any run; `--settings none` keeps none (see [Keeping your settings](#keeping-your-settings)). |
 | `--ram MB` | The Mac's memory, from 8 to 1024 MB (128 unless you say). |
 | `--rom FILE` | Starts this ROM file, or 4 MB ROM image, instead of the startup disk's. |
 
@@ -830,6 +852,8 @@ or CI), `blue boot` says so and stops: run it with `--headless`.
 | `--integer-scale` | Scales the screen by whole numbers only: crisp, with a border if need be. |
 | `--no-status-bar` | Starts without the status bar. |
 | `--no-sound` | Doesn't play the Mac's sound. |
+| `--no-mic` | Mac OS records silence: Blue never opens your microphone (see [Sound](#sound)). |
+| `--mic-file FILE.wav` | Mac OS's microphone hears this WAV file, over and over, instead of yours, in any run (for tests). |
 | `--no-net` | Leaves the Mac's Ethernet unplugged. |
 | `--no-gpu` | Draws 3D in software rather than on the GPU. |
 
@@ -914,13 +938,11 @@ Blue doesn't do everything a Mac of the time could:
 - **USB and FireWire devices** of any kind (game controllers reach Mac OS
   as the keyboard and mouse, and through InputSprocket: see
   [Game controllers](#game-controllers)).
-- **Sound input** (a microphone).
 - **AppleTalk** networking, and connections into the Mac.
 - **Old World Macs:** Blue is an original iMac, and can't start the ROMs
   of earlier Power Macs or 68k Macs.
 
-[docs/future.md](docs/future.md) has ideas for some of these, and
-[docs/roadmap.md](docs/roadmap.md) what's next.
+[docs/roadmap.md](docs/roadmap.md) has what's next.
 
 ## Troubleshooting and FAQ
 
@@ -978,6 +1000,12 @@ Sound plays only in the window, in real time (not with `--headless` or
 OS's own volume and mute, in the Monitors & Sound or Sound control panel.
 For a CD's music, attach an image with tracks (a `.cue`, `.nrg`, `.mds`,
 `.ccd` or `.chd`): a plain `.iso` has no audio tracks.
+
+If Mac OS records only silence: check the sound input it records from
+(Built-in Mic, in the control panel), that sound input is on in Blue's
+menu, and that macOS lets Blue use the microphone (System Settings,
+Privacy & Security, Microphone). Blue says on its output why it can't
+open one. Mac OS 9.0.x has no sound input.
 
 ### The network doesn't work
 
@@ -1151,7 +1179,7 @@ The [docs](docs/README.md) folder goes further:
 - [The QEMU reference](docs/qemu-reference.md) and
   [NanoKernel 2 under QEMU](docs/nk2-reference.md).
 - [What was found along the way](docs/findings.md), in detail.
-- [The roadmap](docs/roadmap.md) and [ideas for later](docs/future.md).
+- [The roadmap](docs/roadmap.md).
 
 ## License
 

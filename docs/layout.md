@@ -71,7 +71,7 @@ art/      blue.svg (the icon's master), finder-icons.txt (the Finder
           (macOS: the executable's and Blue.app's), blue.desktop (Linux)
 docs/     the documentation (README.md lists it): how Blue works,
           building, debugging, findings.md (what was found along the way),
-          roadmap.md and future.md (what's next), nk2-reference.md (Mac OS
+          roadmap.md (what's next), nk2-reference.md (Mac OS
           9.1 under QEMU: what Apple's NanoKernel 2 does), images/ (the
           README's screenshots)
 site/     the website (index.html, style.css, main.js, its icons)
