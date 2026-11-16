@@ -93,22 +93,25 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **Runs on** | macOS 11 and later, and Linux: Apple silicon, ARM64 and x86-64 | macOS, Linux and Windows | macOS, Linux and Windows | PowerPC Macs, with Mac OS X 10.0 to 10.4 |
 | **How** | Apple's code, unmodified, on a native kernel in place of the NanoKernel | Apple's code on a patched ROM, with a kernel of its own | A whole Power Mac emulated, firmware and all | Mac OS 9 as a program in Mac OS X, on a real PowerPC |
 | **Speed** | A JIT on every host: about 18 times a Power Mac G3/300 in MacBench 5's processor test, on an Apple M5 | A JIT on Intel and AMD; none on Apple silicon | A JIT, with every device and the memory management unit emulated | The PowerPC's own, up to a Power Mac G5 |
+| **AltiVec** | Not yet | Yes, as a G4 (7400) | Yes, as a G4 | On G4 and G5 Macs |
+| **Mac OS's virtual memory** | Not yet: give the Mac more memory instead | No | Yes | Mac OS X's own |
 | **What you need** | A Mac OS CD or disk image | A Mac OS CD or disk image, and a ROM file found elsewhere | A Mac OS CD or disk image | Mac OS 9 installed beside Mac OS X |
 | **3D** | QuickDraw 3D, RAVE (as an ATI Rage 128) and OpenGL, drawn on your GPU | Software only | Software only | Programs that draw straight to the screen or the hardware often fail |
 | **Restart and Startup Disk** | Both work | Restarting can freeze or crash it; Startup Disk doesn't work | Neither works | Mac OS X's own |
 | **Screen** | Follows the window's size, scaled to suit your display | A fixed size, set in its settings | Set in Mac OS's Monitors control panel | Mac OS 9's windows among Mac OS X's |
 | **Sound** | Yes, with CD audio from most kinds of CD image | Yes, with CD audio from `.cue`/`.bin` images | Only in separate experimental builds | Yes |
+| **Sound input** | Not yet | No | No | Yes |
 | **Disk images** | Dropped on the window or inserted from the menu: CD images in most formats, compressed `.dmg` and Disk Copy images, floppies | Uncompressed images, and one at a time dropped in as a CD | Raw and QEMU's own formats, changed from a menu | Mac OS X's |
 | **A shared folder** | A folder of yours as a disk, its changes written back when Mac OS shuts down | A folder as a live disk, though programs can't run from it | Separate experimental drivers | Mac OS X's disks, directly |
+| **Connections into the Mac** | Not yet | Through port forwarding | Through port forwarding | — |
+| **AppleTalk** | Not yet | With extra setup, on some hosts | Through bridged networking, run as root | Through Mac OS X's network |
+| **USB devices** | Not yet | No | Passed through from the host | Through Mac OS X |
+| **Game controllers** | Not yet | No | A USB gamepad, passed through | Unreliable |
 | **Pippin titles** | Yes | No | No | No |
 
-Each of them does things Blue doesn't:
-- **SheepShaver** runs System 7.5 to Mac OS 8.1, given an Old World ROM.
-- **QEMU** runs Mac OS X, emulates a G4 with AltiVec, and passes USB
-  devices through.
-- **Classic** put Mac OS 9 programs side by side with Mac OS X's.
-
-Blue's own gaps are listed under [What isn't there](#what-isnt-there).
+SheepShaver also runs System 7.5 to Mac OS 8.1, given an Old World ROM.
+Blue's other gaps, such as serial ports and modems, are listed under
+[What isn't there](#what-isnt-there).
 
 ## Download and install
 

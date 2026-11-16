@@ -259,19 +259,26 @@
               <tr><th scope="row">Runs on</th><td class="blue yes">macOS 11 and later, and Linux: Apple silicon, ARM64 and <span class="nw">x86-64</span></td><td class="yes">macOS, Linux and Windows</td><td class="yes">macOS, Linux and Windows</td><td>PowerPC Macs, with Mac OS X <span class="nw">10.0–10.4</span></td></tr>
               <tr><th scope="row">How</th><td class="blue">Apple’s code, unmodified, on a native kernel in place of the NanoKernel</td><td>Apple’s code on a patched ROM, with a kernel of its own</td><td>A whole Power Mac emulated, firmware and all</td><td>Mac OS 9 as a program in Mac OS X, on a real PowerPC</td></tr>
               <tr><th scope="row">Speed</th><td class="blue yes">A JIT on every host: about 18 times a Power Mac G3/300 in MacBench 5’s processor test, on an Apple M5</td><td>A JIT on Intel and AMD; none on Apple silicon</td><td>A JIT, with every device and the memory management unit emulated</td><td class="yes">The PowerPC’s own, up to a Power Mac G5</td></tr>
+              <tr><th scope="row">AltiVec</th><td class="blue">Not yet</td><td class="yes">Yes, as a G4 (7400)</td><td class="yes">Yes, as a G4</td><td class="yes">On G4 and G5 Macs</td></tr>
+              <tr><th scope="row">Mac OS’s virtual memory</th><td class="blue">Not yet: give the Mac more memory instead</td><td>No</td><td class="yes">Yes</td><td class="yes">Mac OS X’s own</td></tr>
               <tr><th scope="row">What you need</th><td class="blue yes">A Mac OS CD or disk image</td><td>A Mac OS CD or disk image, and a ROM file found elsewhere</td><td class="yes">A Mac OS CD or disk image</td><td>Mac OS 9 installed beside Mac OS X</td></tr>
               <tr><th scope="row">3D</th><td class="blue yes">QuickDraw 3D, RAVE (as an ATI Rage 128) and OpenGL, drawn on your GPU</td><td>Software only</td><td>Software only</td><td>Programs that draw straight to the screen or the hardware often fail</td></tr>
               <tr><th scope="row">Restart and Startup Disk</th><td class="blue yes">Both work</td><td>Restarting can freeze or crash it; Startup Disk doesn’t work</td><td>Neither works</td><td>Mac OS X’s own</td></tr>
               <tr><th scope="row">Screen</th><td class="blue yes">Follows the window’s size, scaled to suit your display</td><td>A fixed size, set in its settings</td><td>Set in Mac OS’s Monitors control panel</td><td class="yes">Mac OS 9’s windows among Mac OS X’s</td></tr>
               <tr><th scope="row">Sound</th><td class="blue yes">Yes, with CD audio from most kinds of CD image</td><td class="yes">Yes, with CD audio from <code>.cue</code>/<code>.bin</code> images</td><td>Only in separate experimental builds</td><td class="yes">Yes</td></tr>
+              <tr><th scope="row">Sound input</th><td class="blue">Not yet</td><td>No</td><td>No</td><td class="yes">Yes</td></tr>
               <tr><th scope="row">Disk images</th><td class="blue yes">Dropped on the window or inserted from the menu: CD images in most formats, compressed <code>.dmg</code> and Disk Copy images, floppies</td><td>Uncompressed images, and one at a time dropped in as a CD</td><td>Raw and QEMU’s own formats, changed from a menu</td><td>Mac OS X’s</td></tr>
               <tr><th scope="row">A shared folder</th><td class="blue yes">A folder of yours as a disk, its changes written back when Mac OS shuts down</td><td class="yes">A folder as a live disk, though programs can’t run from it</td><td>Separate experimental drivers</td><td class="yes">Mac OS X’s disks, directly</td></tr>
+              <tr><th scope="row">Connections into the Mac</th><td class="blue">Not yet</td><td class="yes">Through port forwarding</td><td class="yes">Through port forwarding</td><td>—</td></tr>
+              <tr><th scope="row">AppleTalk</th><td class="blue">Not yet</td><td class="yes">With extra setup, on some hosts</td><td class="yes">Through bridged networking, run as root</td><td class="yes">Through Mac OS X’s network</td></tr>
+              <tr><th scope="row">USB devices</th><td class="blue">Not yet</td><td>No</td><td class="yes">Passed through from the host</td><td>Through Mac OS X</td></tr>
+              <tr><th scope="row">Game controllers</th><td class="blue">Not yet</td><td>No</td><td class="yes">A USB gamepad, passed through</td><td>Unreliable</td></tr>
               <tr><th scope="row">Pippin titles</th><td class="blue yes">Yes</td><td>No</td><td>No</td><td>No</td></tr>
             </tbody>
           </table>
         </div>
         <div class="doc compare-outro">
-          <p>Each of them does things Blue doesn’t. SheepShaver runs System 7.5 to Mac OS 8.1, given an Old World ROM. QEMU runs Mac OS X, emulates a G4 with AltiVec, and passes USB devices through. Classic put Mac OS 9 programs side by side with Mac OS X’s. Blue’s own gaps are in its <a href="https://github.com/__REPO__#what-isnt-there">README</a>.</p>
+          <p>SheepShaver also runs System 7.5 to Mac OS 8.1, given an Old World ROM. Blue’s other gaps, such as serial ports and modems, are in its <a href="https://github.com/__REPO__#what-isnt-there">README</a>.</p>
         </div>
       </div>
     </div>
