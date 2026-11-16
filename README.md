@@ -101,9 +101,8 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **Sound** | Yes, with CD audio from most kinds of CD image | Yes, with CD audio from `.cue`/`.bin` images | Only in separate experimental builds | Yes |
 | **Sound input** | Not yet | No | No | Yes |
 | **Disk images** | Dropped on the window or inserted from the menu: CD images in most formats, compressed `.dmg` and Disk Copy images, floppies | Uncompressed images, and one at a time dropped in as a CD | Raw and QEMU's own formats, changed from a menu | Mac OS X's |
-| **A shared folder** | A folder of yours as a disk, its changes written back when Mac OS shuts down | A folder as a live disk, though programs can't run from it | Separate experimental drivers | Mac OS X's disks, directly |
-| **Connections into the Mac** | Not yet | Through port forwarding | Through port forwarding | — |
-| **Networking** | TCP/IP through its NAT | TCP/IP through its NAT; AppleTalk with extra setup, on some hosts | TCP/IP through its NAT; AppleTalk through bridged networking, run as root | Mac OS X's, AppleTalk included |
+| **Shared folders** | A folder of yours as a disk, its changes written back when Mac OS shuts down | A folder as a live disk, though programs can't run from it | Separate experimental drivers | Mac OS X's disks, directly |
+| **Networking** | TCP/IP through its NAT; no port forwarding yet | TCP/IP through its NAT, with port forwarding; AppleTalk with extra setup, on some hosts | TCP/IP through its NAT, with port forwarding; AppleTalk through bridged networking, run as root | Mac OS X's, AppleTalk included |
 | **USB devices** | Not yet | No | Passed through from the host | Through Mac OS X |
 | **Game controllers** | Gamepads, as keys or through InputSprocket | No | A USB gamepad, passed through | Unreliable |
 | **Pippin titles** | Yes | No | No | No |
@@ -488,13 +487,13 @@ triggers its left and right fire buttons; Back, Guide (Home, PS) and
 Start its three buttons below; and the right stick its trackball.
 
 Games that use InputSprocket (Apple Game Sprockets' input library, which
-most Mac action games of the late 1990s do, Unreal Tournament among them)
+most Mac action games of the late 1990s do)
 get each pad as a game controller of its own, through Blue Game
 Controllers, one of the [guest tools](#the-guest-tools). The game sets it
 up as it would a joystick: shooters move and slide with the left stick,
 turn and look with the right (as with the mouse), fire with the right
-trigger and jump with A, and the game's own controls dialog (Unreal
-Tournament's Options, Input Device) shows the pad, its buttons, sticks
+trigger and jump with A, and the game's own controls dialog (often under
+Options) shows the pad, its buttons, sticks
 and triggers by name, to change what each does; the game keeps your
 choices. While the game is in front, the controls it uses do only that;
 the rest keep the mapping above, so Start is still Esc, for its menus.
