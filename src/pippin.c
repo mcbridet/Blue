@@ -28,6 +28,7 @@ const struct ndrv_import pippin_imports[PIPPIN_IMPORTS] = {
 	[PIPPIN_DELETE_GESTALT_VALUE] = { "InterfaceLib", "DeleteGestaltValue" },
 	[PIPPIN_NGET_TRAP_ADDRESS] = { "InterfaceLib", "NGetTrapAddress" },
 	[PIPPIN_NSET_TRAP_ADDRESS] = { "InterfaceLib", "NSetTrapAddress" },
+	[PIPPIN_OPEN_WD] = { "InterfaceLib", "OpenWD" },
 	[PIPPIN_STANDARD_ALERT] = { "AppearanceLib", "StandardAlert" },
 };
 
@@ -87,6 +88,8 @@ _Static_assert(PATCH_SIZE <= D_PATCH - D_TEMPLATE && PATCH_SIZE <= D_ORIGINAL - 
 #define PREFERENCES_LO 0x6566
 #define PIPN_HI 0x7069                          /* 'pipn' */
 #define PIPN_LO 0x706E
+#define ERIK_HI 0x4552                          /* 'ERIK': Standard File's working directories */
+#define ERIK_LO 0x494B
 #define FLOPPY_DEVICE 2                         /* kFloppyStorageDevice */
 #define FNF_ERR (-43)
 #define DUP_FN_ERR (-48)
@@ -127,11 +130,11 @@ _Static_assert(F_ITEM + 2 <= FRAME - 24, "the frame holds them");
 /* ---- PowerPC code ------------------------------------------------------------------- */
 
 enum label {
-	L_SUBFOLDER, L_STORAGE, L_TITLE, L_DEFAULT_DIR,         /* the routines below */
+	L_SUBFOLDER, L_STORAGE, L_TITLE, L_DEFAULT_DIR, L_WORKING_DIR,  /* the routines below */
 	L_SUB_FILE, L_SUB_NOT_FOUND, L_SUB_RETURN, L_STO_RETURN, L_TIT_APP, L_TIT_RELEASE, L_TIT_SHORT,
 	L_TIT_APP_SHORT, L_TIT_FOLDER, L_TIT_RETURN, L_DEF_RETURN, L_FF_RETURN, L_GD_RETURN, L_MW_LAST,
 	L_MW_RETURN, L_PF_RETURN, L_DF_ASK, L_DF_STORE, L_DF_RETURN, L_RN_DONE, L_IN_PATCH, L_TE_PATCH,
-	L_TE_RETURN, L_COUNT
+	L_TE_RETURN, L_WD_RETURN, L_COUNT
 };
 #define MAX_FIXUPS 64
 
@@ -423,6 +426,26 @@ static void subroutines(struct gen *g)
 	emit(g, STW(0, LM_CUR_DIR_STORE, 0));
 	label(g, L_DEF_RETURN);
 	epilogue(g);
+
+	/* working_dir(StandardFileReply *): a file chosen, its vRefNum a working directory for its folder */
+	label(g, L_WORKING_DIR);
+	prologue(g);
+	emit(g, MR(31, 3));
+	emit(g, LBZ(0, REPLY_GOOD, 31));
+	emit(g, CMPWI(0, 0));
+	branch(g, BEQ, L_WD_RETURN);
+	emit(g, LHA(3, REPLY_FILE, 31));
+	emit(g, LWZ(4, REPLY_FILE + 2, 31));
+	emit(g, LIS(5, ERIK_HI));
+	emit(g, ORI(5, 5, ERIK_LO));
+	emit(g, ADDI(6, 1, F_LOC));
+	call(g, PIPPIN_OPEN_WD);
+	emit(g, EXTSH_(3, 3));
+	branch(g, BNE, L_WD_RETURN);
+	emit(g, LHZ(0, F_LOC, 1));
+	emit(g, STH(0, REPLY_FILE, 31));
+	label(g, L_WD_RETURN);
+	epilogue(g);
 }
 
 /* Each entry's code; `at` gets where it starts (in words from the first) */
@@ -562,6 +585,8 @@ static void entries(struct gen *g, size_t at[E_COUNT])
 	emit(g, MR(5, 29));
 	emit(g, MR(6, 28));
 	call(g, PIPPIN_STANDARD_GET_FILE);
+	emit(g, MR(3, 28));
+	branch(g, BL, L_WORKING_DIR);
 	epilogue(g);
 
 	/* void PippinStandardPutFile(ConstStr255Param prompt, ConstStr255Param defaultName, StandardFileReply *) */
@@ -580,6 +605,8 @@ static void entries(struct gen *g, size_t at[E_COUNT])
 	branch(g, BEQ, L_PF_RETURN);
 	emit(g, LHZ(0, REPLY_FILE, 29));
 	emit(g, STH(0, data(g, D_LAST_VREF), 2));
+	emit(g, MR(3, 29));
+	branch(g, BL, L_WORKING_DIR);
 	label(g, L_PF_RETURN);
 	epilogue(g);
 

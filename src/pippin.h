@@ -16,7 +16,11 @@
  *                             by the title's 'pipn' 1 resource (a Pascal
  *                             string at offset 12), else the application's name
  *   PippinStandardGetFile     StandardGetFile, PippinStandardPutFile
- *   PippinStandardPutFile     StandardPutFile, starting in the title's folder
+ *   PippinStandardPutFile     StandardPutFile, starting in the title's folder;
+ *                             the reply's vRefNum a working directory for the
+ *                             file's folder (Standard File's, 'ERIK'), so that
+ *                             titles that ignore its parID (Marathon's
+ *                             vRefNum and directory 0) find the file there
  *   PippinStandardDeleteFile  a file chosen with StandardGetFile (from the
  *                             title's folder), deleted once a caution alert
  *                             has been answered Delete; the space it took in
@@ -58,7 +62,7 @@ enum {
 	PIPPIN_FIND_FOLDER, PIPPIN_PB_GET_CAT_INFO_SYNC, PIPPIN_DIR_CREATE, PIPPIN_FLUSH_VOL, PIPPIN_STANDARD_GET_FILE,
 	PIPPIN_STANDARD_PUT_FILE, PIPPIN_FSP_DELETE, PIPPIN_GET_RESOURCE, PIPPIN_RELEASE_RESOURCE, PIPPIN_BLOCK_MOVE,
 	PIPPIN_BLOCK_MOVE_DATA, PIPPIN_NEW_GESTALT_VALUE, PIPPIN_DELETE_GESTALT_VALUE, PIPPIN_NGET_TRAP_ADDRESS,
-	PIPPIN_NSET_TRAP_ADDRESS, PIPPIN_STANDARD_ALERT, PIPPIN_IMPORTS
+	PIPPIN_NSET_TRAP_ADDRESS, PIPPIN_OPEN_WD, PIPPIN_STANDARD_ALERT, PIPPIN_IMPORTS
 };
 extern const struct ndrv_import pippin_imports[PIPPIN_IMPORTS];
 

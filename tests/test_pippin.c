@@ -40,6 +40,7 @@ static struct ndrv_layout layout;
 #define LM_CUR_DIR_STORE 0x398u
 #define LM_CUR_AP_NAME 0x910u
 #define SHUTDOWN_ENTRY 0x1234ABCDu      /* _ShutDown's routine in the trap table */
+#define WORKING_DIR (-32700)            /* a working directory's reference */
 
 /* ---- the test's Mac OS ------------------------------------------------------------- */
 
@@ -70,6 +71,8 @@ static struct {
 	bool pipn;                      /* GetResource('pipn', 1) has one */
 	int16_t alert_item;
 	char alert[256];
+	int16_t wd_vref;                /* OpenWD's: the volume and folder */
+	uint32_t wd_dir;
 	unsigned released;
 } os;
 
@@ -218,6 +221,12 @@ static uint32_t fake(unsigned imp, const uint32_t *a)
 	case PIPPIN_NSET_TRAP_ADDRESS:
 		CHECK(a[1] == 0xA895 && a[2] == 1);
 		os.trap = a[0];
+		return 0;
+	case PIPPIN_OPEN_WD:
+		CHECK_EQ(a[2], FOURCC('E', 'R', 'I', 'K'));
+		os.wd_vref = (int16_t)a[0];
+		os.wd_dir = a[1];
+		mem_w16(&mem, a[3], (uint16_t)WORKING_DIR);
 		return 0;
 	case PIPPIN_STANDARD_ALERT:
 		CHECK_EQ(a[0], 2);                              /* kAlertCautionAlert */
@@ -484,6 +493,7 @@ static void test_dialogs(void)
 	      os.get_args[3] == ARGS + 0x200);
 	CHECK_EQ(os.sf_save_disk, -STARTUP);
 	CHECK_EQ(os.cur_dir_store, title ? title->dir : 0);
+	CHECK_EQ(os.calls[PIPPIN_OPEN_WD], 0);                 /* (cancelled) */
 
 	mem_w16(&mem, LM_SF_SAVE_DISK, 0);
 	os.choose = true;
@@ -494,6 +504,14 @@ static void test_dialogs(void)
 	CHECK(os.put_args[0] == ARGS + 0x300 && os.put_args[1] == ARGS + 0x400 && os.put_args[2] == ARGS + 0x500);
 	CHECK_EQ(os.sf_save_disk, -STARTUP);
 	CHECK_EQ(mem_r8(&mem, ARGS + 0x500), 1);
+	/* the reply's vRefNum a working directory for the file's folder (for titles that take the folder from it) */
+	CHECK(os.wd_vref == OTHER_VOLUME && os.wd_dir == 77);
+	CHECK_EQ((int16_t)mem_r16(&mem, ARGS + 0x500 + 6), WORKING_DIR);
+	CHECK_EQ(mem_r32(&mem, ARGS + 0x500 + 8), 77);
+	os.chosen_dir = 78;
+	CALL("PippinStandardGetFile", 0, 0xFFFF, 0, ARGS + 0x600, 0);
+	CHECK(os.wd_vref == OTHER_VOLUME && os.wd_dir == 78);
+	CHECK_EQ((int16_t)mem_r16(&mem, ARGS + 0x600 + 6), WORKING_DIR);
 	os.flushes = 0;
 	CHECK_EQ(CALL("MakeWritesPermanent", 0, 0, 0, 0, 0), 0);
 	CHECK(os.flushes == 2 && os.flushed[0] == STARTUP && os.flushed[1] == OTHER_VOLUME);
