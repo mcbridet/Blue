@@ -5,6 +5,9 @@ build/
 *.toast
 *.dmg
 *.nvram
+*.dsk
+*.zip
+*.7z
 __pycache__/
 .DS_Store
 jit-timing-*.txt
