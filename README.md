@@ -247,11 +247,9 @@ Blue starts up from the first drive that has a System Folder with a "Mac
 OS ROM" file in it, in the order you gave them. The new disk is empty, so
 the Mac starts up from the CD.
 
-**Most Mac OS CDs:** open "Mac OS Install" on the CD and follow it.
-Choose Macintosh HD as the destination, and when you reach the Install
-screen, click **Options** and turn off **"Update Apple Hard Disk
-Drivers"**: the driver updater only knows Apple's own drives, and fails
-on Blue's. The installation takes a few minutes at most.
+**Most Mac OS CDs:** open "Mac OS Install" on the CD and follow it,
+with Macintosh HD as the destination. The installation takes a few
+minutes at most.
 
 **Restore CDs,** which install with Apple Software Restore instead:
 open Apple Software Restore from the CD's window. Click Switch Disk until
@@ -878,12 +876,6 @@ window shows the command to use. See
   from a drive it can write to.
 - If you used `--rom`, leave it out: Blue then uses the CD's own ROM file,
   which is the one that version of Mac OS needs.
-
-### The installer stops, or complains about drivers
-
-Turn off "Update Apple Hard Disk Drivers" in the installer's Options (see
-[Install Mac OS](#2-install-mac-os)). Drive Setup lists no drives: that's
-expected, and you don't need it.
 
 ### There's no menu bar after restoring Mac OS 9.2.2
 

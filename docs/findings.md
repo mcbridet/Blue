@@ -2141,12 +2141,12 @@ made to start up.
   Continue (594 443), Select (594 443; Macintosh HD is already the
   destination, "None Installed", 2046 MB available, 368 MB needed),
   Continue on Important Information and on the license (594 443), Agree
-  (530 366), Options... (314 443), the "Update Apple Hard Disk Drivers"
-  checkbox (217 226), OK (551 389), Start (594 443) at 11.2 billion. Mac
-  OS 9.1 then Internet Access, and "The installation process has
-  finished" by 40 billion (268 MB written, 52 MB read). Its Quit (532 348)
-  took no click, nor Return, at 40-45 billion, but took the second of two
-  clicks 0.3 billion apart, and Return at 50 billion: Energy Saver had put
+  (530 366), Start (594 443) at 10.6 billion, the options as they are
+  (see "The installers' hard disk driver updater"). Mac OS 9.1 then
+  Internet Access, and "The installation process has finished" by 36
+  billion (268 MB written, 52 MB read). Its Quit (532 348) took no click,
+  nor Return, at 40-45 billion, but took the second of two clicks 0.3
+  billion apart, and Return at 50 billion: Energy Saver had put
   the screen to sleep (no doze: 9.1 makes no PowerDispatch calls), and the
   first input only wakes it, as on a Mac. `power`, then Shut Down (541
   188), and the volume is unmounted cleanly (HFS, attributes 0x0100). The
@@ -2760,3 +2760,49 @@ made to start up.
   drive; from the intro, `open DM-Tempest` typed after Tab (its console)
   starts a practice match, and in instruction time `clock 300` makes it
   playable.
+- **The installers' hard disk driver updater** (Mac OS Install's "Update
+  Apple Hard Disk Drivers" option, on by default: "The Installer looks for
+  hard drives formatted with Apple disk utility software. If any are
+  found, it updates the drivers to the latest version. Drives formatted
+  with a disk utility other than Apple's are not updated or altered.";
+  instruction time, `--fixed-time 1000000000`, `--log-hostcalls`): with it
+  on, Mac OS 8.5 (its CD), 8.6 (the International 8.6 Update CD, over an
+  installed 8.5) and 9.1 (its CD) each install onto a blank `disk create`
+  disk, and the installed system starts up from the disk alone, with its
+  own ROM file (8.6's Toolbox release 0x44B5), to the Finder. On Blue's
+  drives the updater finds nothing to update and says nothing: no dialog,
+  Drive Setup doesn't open, and the installation report (Installer Logs,
+  in Documents on 9.1) has a "Driver Updating" heading with nothing under
+  it, after "Disk Verification" (The disk "Macintosh HD" appears OK.);
+  with the option off the heading isn't there. On and off, Blue's disk
+  driver gets the same requests (but for when 'flus' comes), and writes go
+  to the same places in the disk's first 16 KB (the boot blocks once, the
+  MDB, the volume bitmap). The installer's own look at the destination
+  asks, either way, DriveStatus (Status 8), DriveInfo (Control 23:
+  controlErr), DriverGestalt 'devt' ('disk') and 'intf' (statusErr with
+  8.5's and 8.6's ROM files, 'scsi' with 9.1's), WhoIsThere (Status 97:
+  statusErr) and the icons (Control 20-22, DriverGestalt 'mics': none).
+  The updater's own requests, none of them made with the option off, go
+  elsewhere: 8.5's and 8.6's (68k code) make two _ATAManager calls and
+  four SCSIAction calls (`_SCSIAtomic`), and Blue has no ATA or SCSI bus
+  for them to find a drive on; 9.1's asks the drivers for DriverGestalt
+  'util' in turn (Blue's disk and CD-ROM drivers among them: statusErr),
+  and makes no 68k ATA or SCSI Manager calls. The scripts, at 800x600:
+  8.5's as "Installing 9.1" says, but Mac OS Install double-clicked (194
+  150) in the CD's window at 4 billion, and Start at 11.4 billion (after a
+  look at the options: Options... (314 443), OK (551 389)); finished by 30
+  billion (166 MB written), its Quit taking the first click. 8.6 from the
+  installed 8.5 with the CD: Command-Q and Quit (541 197) for the Setup
+  Assistant, then typing in the Finder (see "Desktop icons from scripts"):
+  `in` and Command-O (the CD), `us` and Command-O (US-USEnglish), the same
+  again ("US-Mac OS 8.6 Update.smi", a self-mounting image: "Mac OS 8.6
+  Update" is up by 14 billion), `up` and Command-O (its Update Install
+  Pieces), `m` and Command-O (Mac OS Install); Continue, Select (8.5
+  installed, 52 MB needed), Continue, Continue and Agree as for 9.1 from
+  18 billion, to "Install/Remove Software" (Options... at 203 443), Start
+  at 23.4 billion: "This installation/removal requires a restart and
+  cannot take place while other applications are running. Click Continue
+  to automatically quit all other running applications. Click Stop to
+  leave your disk untouched." Continue (532 372), finished by 30 billion
+  (74 MB written), Restart (532 348), and Blue restarts the machine into
+  8.6.
