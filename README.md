@@ -1,11 +1,84 @@
-# Blue
+<p align="center">
+  <img src="art/png/blue-256.png" width="128" height="128" alt="Blue's icon: three slabs, Platinum on Bondi Blue">
+</p>
 
-Run classic Mac OS on arbitrary hardware by replacing the bottom of the OS
-instead of emulating a whole Power Mac.
+<h1 align="center">Blue</h1>
 
-Blue was called syshm until November 2026. Its settings in the environment
-are `BLUE_*` now: if one of the old names is set, Blue says what it's
-called now, and doesn't read it.
+<p align="center">
+  <strong>Classic Mac OS on a native kernel.</strong><br>
+  Mac OS 8.5 to 9.2.2 on today's Macs and Linux PCs: Apple's own code runs
+  unmodified, on a native replacement for the Power Mac's NanoKernel instead
+  of an emulated Power Mac.
+</p>
+
+<p align="center">
+  <a href="https://mcbridet.github.io/Blue/">Website</a> ·
+  <a href="https://github.com/mcbridet/Blue/releases/latest">Download</a> ·
+  <a href="#get-started">Get started</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#documentation">Documentation</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/mcbridet/Blue/actions/workflows/ci.yml"><img src="https://github.com/mcbridet/Blue/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/mcbridet/Blue/releases/latest"><img src="https://img.shields.io/github/v/release/mcbridet/Blue?color=0095b6&label=release" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/runs_on-macOS_%7C_Linux-0095b6" alt="Runs on macOS and Linux">
+  <img src="https://img.shields.io/badge/CPU-AArch64_%7C_x86--64-0095b6" alt="AArch64 and x86-64">
+</p>
+
+<p align="center">
+  <img src="docs/images/blue-window.png" width="800" alt="Mac OS 8.5's Setup Assistant in Blue's window, above Blue's status bar">
+</p>
+
+## Highlights
+
+- **Mac OS 8.5 to 9.2.2,** unmodified, from their CDs or installed on a disk
+  image. Blue starts the "Mac OS ROM" file from the startup disk, as the
+  original iMac's firmware does.
+- **Fast:** a PowerPC JIT on Apple silicon, ARM64 Linux and x86-64 (Intel
+  from 2013, AMD from 2015), many times a real G3's speed.
+- **3D:** QuickDraw 3D and RAVE through an engine games see as an ATI Rage
+  128, and Mac OS 9's OpenGL through Blue's own libraries, drawn on the GPU
+  (over Metal on Apple silicon) or in software.
+- **The rest of a Mac:** sound and CD audio, networking through your
+  connection, a folder of yours as a disk, the clipboard shared both ways,
+  and disk, CD (`.iso`, `.toast`, `.cue`/`.bin`) and floppy images you drop
+  on the window.
+- **Guest tools,** offered once the Finder is up: the screen follows the
+  window's size, the clipboard is shared, and the 3D engine, OpenGL and a
+  library for Bandai Pippin titles are installed.
+- **Reproducible runs** for testing and debugging: in instruction time, a run
+  is the same every time, down to the instruction.
+
+## Download
+
+| Platform | Download |
+|---|---|
+| macOS, Apple silicon and Intel | [Blue.dmg](https://github.com/mcbridet/Blue/releases/latest/download/Blue.dmg) |
+| Linux x86-64 | [Blue-x86_64.AppImage](https://github.com/mcbridet/Blue/releases/latest/download/Blue-x86_64.AppImage) |
+| Linux AArch64 | [Blue-aarch64.AppImage](https://github.com/mcbridet/Blue/releases/latest/download/Blue-aarch64.AppImage) |
+
+Or build it from source: `git clone https://github.com/mcbridet/Blue` and
+`make` (see [Build and test](#build-and-test)).
+
+## Get started
+
+Blue doesn't include any Apple software: you need an image of a Mac OS CD
+from 8.5 to 9.2.2. Below, `blue` is `/Applications/Blue.app/Contents/MacOS/blue`
+on macOS, the AppImage on Linux, or `build/blue` if you built it.
+
+```sh
+blue disk create hd.img 2G "Macintosh HD"                            # a blank disk
+blue boot --disk hd.img --cdrom 85.iso --window --nvram blue.nvram   # install Mac OS from its CD
+blue boot --disk hd.img --window --nvram blue.nvram                  # then start up from the disk
+```
+
+In the installer's Options, turn off "Update Apple Hard Disk Drivers". Once
+the Finder is up, Blue offers to install its guest tools, then restarts Mac
+OS. Drop CD and floppy images on the window, or use Insert… in Blue's menu
+(F12); `--share DIR` shows a folder of yours as a disk.
+
+## How it works
 
 On a real Power Mac only the NanoKernel runs in supervisor mode; the 68k
 emulator, the Toolbox, applications and drivers all run in PowerPC user mode
@@ -15,10 +88,32 @@ code unmodified and supplies the rest natively:
 ```
 68k apps, 68k Toolbox code    → Apple's own 68k emulator (from the ROM, unchanged)
 PPC apps, Toolbox, drivers    → Blue's user-mode PowerPC JIT and interpreter
-══════ NanoKernel interface: kernel calls (twi), exceptions, interrupts ══════
-Native kernel + HAL drivers + loader   ← Blue, portable C
-Linux today; other hosts / bare metal later
+══════ NanoKernel interface: kernel calls (twi, sc), exceptions, interrupts ══════
+Native kernel + an iMac's devices + drivers + loader   ← Blue, portable C
+macOS and Linux hosts, AArch64 and x86-64
 ```
+
+## Documentation
+
+The rest of this file is Blue's technical documentation and development
+record:
+
+- [Target](#target) and [Status](#status): what runs, and how each part was
+  made to work: [Mac OS 9](#mac-os-9), [9.1](#mac-os-91-from-its-cd),
+  [9.2.2](#mac-os-922-from-its-cd), [networking](#networking),
+  [the shared folder](#shared-folder),
+  [floppies and CDs](#floppies-and-cds-removable-drives),
+  [MacBench](#macbench), [Pippin titles](#pippin-titles),
+  [guest tools](#guest-tools)
+- [Virtual machine description](#virtual-machine-description),
+  [Next steps](#next-steps), [Build and test](#build-and-test),
+  [QEMU reference](#qemu-reference), [Assets](#assets), [Layout](#layout)
+- Plans and findings: [plan.md](plan.md), [future.md](future.md), and
+  `docs/` (OpenGL, Glide, the GPU backend, the x86-64 JIT)
+
+Blue was called syshm until November 2026. Its settings in the environment
+are `BLUE_*` now: if one of the old names is set, Blue says what it's
+called now, and doesn't read it.
 
 ## Target
 
@@ -30,10 +125,10 @@ Linux today; other hosts / bare metal later
   `iMac,1 PowerMac1,1 PowerBook1,1`; the family SheepShaver uses).
 - **OS:** the retail Mac OS 8.5 CD (`85.iso`). It boots with the ROM file it
   carries itself (1.1.x, no `<COMPATIBLE>` list) or with `MOS.rom`.
-- **Machine identity:** to be decided by the universal info tables Blue
-  builds. Retail 8.5 predates the Power Mac G3 (Blue and White), so an iMac
-  identity is the safer first choice; the B&W G3 (`PowerMac1,1`) for 8.5.1
-  and later.
+- **Machine identity:** the original iMac (`iMac,1`): its device tree,
+  devices and drivers, as the universal info tables Blue builds describe
+  it. Retail 8.5 predates the Power Mac G3 (Blue and White), so the iMac
+  covers the whole range from 8.5 on.
 - **OS ladder:** 8.5 → 8.6 → 9.0.4 on the NanoKernel v1 interface, then the
   v2 interface for 9.1 and 9.2.2 (both CDs start up to the Finder; see
   below).
