@@ -2166,6 +2166,16 @@ packages of the rest (libslirp0, libglib2.0-0, libpcre3: their sources by
 `README.txt` gives them). Blue's own source is this repository, at the
 release's tag.
 
+**Their exact sources:** each release also carries
+`Blue-third-party-sources.tar.gz` (in its `SHA256SUMS` too), with the exact
+source of every library in its packages, as the release's builds used it:
+for Blue.app, the upstream tarballs its libraries are built from, Blue's
+patch to GLib and `tools/macos-deps.sh`, which builds them; for the
+AppImages, Ubuntu's source packages (`.dsc`, `.orig.tar.*`,
+`.debian.tar.*`) of the versions they carry, and SDL2's tarball. Its
+`README.txt` gives each library's version, licence and packages (see
+THIRD-PARTY-NOTICES.md).
+
 ### Packaging
 
 The version is `src/version.h`'s (`BLUE_VERSION`), which `blue --version`

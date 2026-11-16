@@ -620,13 +620,14 @@ static int32_t cause_notification(struct mp *mp, uint32_t id)
 /*
  * The timer or blocked task to end first: the earliest, and among those
  * due at once, the first armed or blocked. NULL if none; its time to
- * *time (UINT64_MAX: never), its ID to *id.
+ * *time (UINT64_MAX: never), its ID to *id (0: none).
  */
 static struct mp_object *earliest(struct mp *mp, uint64_t *time, uint32_t *id)
 {
 	struct mp_object *first = NULL;
 	uint32_t since = 0;
 	*time = UINT64_MAX;
+	*id = 0;
 	for (unsigned k = 0; k < mp->slots; k++) {
 		struct mp_object *o = &mp->obj[k];
 		uint64_t t;

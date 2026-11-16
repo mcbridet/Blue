@@ -207,12 +207,13 @@ Done:
   `Blue-x86_64.dmg` (a Blue.app each, macOS 11 or later, signed ad hoc)
   and `Blue-x86_64.AppImage`, `Blue-aarch64.AppImage` (built in Ubuntu 22.04:
   glibc 2.35), carrying SDL2 and libslirp with GLib and what it needs,
-  separate and replaceable, with their licences. Blue loads them from
-  beside itself first. The version is `src/version.h`'s (`--version`, the
-  usage, the Info.plist; a release's tag must match it). Opened from the
-  desktop with nothing to do, Blue shows a Platinum window with the
-  command line for it, until the launcher ([roadmap.md](roadmap.md)). See
-  Findings, "Packaging".
+  separate and replaceable, with their licences, and each release has
+  their exact sources in `Blue-third-party-sources.tar.gz`. Blue loads
+  them from beside itself first. The version is `src/version.h`'s
+  (`--version`, the usage, the Info.plist; a release's tag must match it).
+  Opened from the desktop with nothing to do, Blue shows a Platinum window
+  with the command line for it, until the launcher ([roadmap.md](roadmap.md)).
+  See Findings, "Packaging".
 
 Where it stops:
 
@@ -3484,11 +3485,32 @@ Facts later tasks need, added as they are found.
     `/proc/self/exe` with links resolved.
   - **Ubuntu 22.04's GCC 11 lacks `__builtin_shufflevector`** (raster.c),
     so the AppImage's Blue is built with `gcc-12`, with libstdc++ and
-    libgcc linked in: glibc (2.35) is all it needs. GCC 12 also warns of
-    `id` maybe used uninitialized in `mp_tick()` (inlined `fire()`), a
-    false alarm GCC 13 and clang don't raise. Ubuntu 22.04's GLib 2.72
-    uses PCRE 8.39 (`libpcre.so.3`), not PCRE2, and gettext's functions
-    are glibc's: the AppImage carries SDL2, libslirp, GLib and PCRE.
+    libgcc linked in: glibc (2.35) is all it needs. GCC 12 also warned of
+    `id` maybe used uninitialized in `mp_tick()` (inlined `fire()`), which
+    GCC 13 and clang didn't: `earliest()` set `*id` only when it found a
+    timer or task. It now sets it to 0 (none: no object's ID is 0) at the
+    start, as it sets `*time` to `UINT64_MAX`, so its results are defined
+    either way; GCC 12 builds Blue without a warning. Ubuntu 22.04's GLib
+    2.72 uses PCRE 8.39 (`libpcre.so.3`), not PCRE2, and gettext's
+    functions are glibc's: the AppImage carries SDL2, libslirp, GLib and
+    PCRE.
+  - **The bundled libraries' exact sources** go with each release, in
+    `Blue-third-party-sources.tar.gz` ([THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md#their-exact-sources-blue-third-party-sourcestargz)). Meson
+    fetches PCRE2 and proxy-libintl for GLib's wraps into
+    `subprojects/packagecache` (PCRE2's with a WrapDB zip of its Meson
+    files, and a patch from GLib's own `packagefiles`), checking the
+    SHA-256 the wraps give; files already there are used, so
+    `tools/macos-deps.sh` puts in those it kept and keeps what Meson
+    fetched (libffi, for GObject only, isn't carried and isn't kept). On
+    Ubuntu, `${source:Version}` is the source package's version (the
+    binary's can differ), `apt-get source --print-uris` lists its files,
+    and `apt-get source --download-only` checks them against the signed
+    `Sources` indexes, which need `deb-src` (commented out in the
+    ubuntu:22.04 image). Launchpad keeps every version's files
+    (`+archive/primary/+sourcefiles/PKG/VERSION/FILE`, the epoch included),
+    where mirrors drop superseded ones. In podman on macOS the files
+    apt-get writes as root look 0600 from the Mac (they're 0644 in the
+    container); the archive's files are made readable anyway.
   - **The AppImage runtime**: the AppImage project's static type2-runtime
     needs no libfuse2, only `fusermount`; without FUSE (a container) it
     says so, and `--appimage-extract-and-run` works anywhere. Bundled
