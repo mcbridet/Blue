@@ -716,8 +716,13 @@ unsigned video_copy_changes(struct video *v, uint8_t *copy, uint8_t *changed, un
 			static int check = -1;          /* BLUE_WINDOW_CHECK: compared all the same, to find writes not seen */
 			if (check < 0)
 				check = getenv("BLUE_WINDOW_CHECK") != NULL;
-			if (check && memcmp(copy + at, fb + at, len))
-				printf("window: a write to 0x%08zX wasn't seen (BLUE_WINDOW_CHECK)\n", v->fb_base + at);
+			if (check && memcmp(copy + at, fb + at, len)) {
+				size_t k = 0;
+				while (copy[at + k] == fb[at + k])
+					k++;
+				printf("window: a write to 0x%08zX wasn't seen (BLUE_WINDOW_CHECK): %02X, was %02X\n",
+				       v->fb_base + at + k, fb[at + k], copy[at + k]);
+			}
 			continue;
 		}
 		bool differs = all || memcmp(copy + at, fb + at, len) != 0;
