@@ -2234,6 +2234,9 @@ Facts later tasks need, added as they are found.
   second where frames came 50-60, and the game's GPU frames fell to 49-55
   a second, the window's presenting taking the GPU from them; drawn with
   the frames, as main drew it, they're at 60.
+  - **Sound** in those runs (UT's music, in real time): no frames
+    dropped, and 2,816 frames of silence added at the start, as in main's
+    runs (one of main's added 30,976, in a stall of the host).
   - **The window's own costs** (its thread): `SDL_UpdateTexture` of a
     whole 1024 x 768 frame takes 0.4-0.8 ms with Metal (a buffer made and
     filled each time), against the old locked texture's 0.04-0.08 (where
