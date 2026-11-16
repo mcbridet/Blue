@@ -757,8 +757,6 @@ Blue doesn't have everything a real iMac had, yet:
 
 - **AltiVec,** the G4's vector instructions: programs that need a G4
   don't run.
-- **Mac OS's virtual memory,** which stays off: give the Mac more memory
-  with `--ram` instead.
 - **Modems, serial ports, infrared and printing.**
 - **Game controllers** (joysticks and gamepads), and USB or FireWire
   devices of any kind: the keyboard and mouse are the Mac's input.
@@ -921,8 +919,9 @@ menu still offers them. To stop the offer, choose Don't Ask Again.
 
 ### An application says there isn't enough memory
 
-Mac OS's virtual memory stays off in Blue. Give the Mac more memory with
-`--ram` (up to 1024 MB), and the application more in its Get Info window.
+Give the Mac more memory with `--ram` (up to 1024 MB), and the application
+more in its Get Info window. Mac OS's virtual memory stays off in Blue, so
+the memory `--ram` gives is all Mac OS has.
 
 ### StuffIt archives won't open on Mac OS 8.5 or 8.6
 
