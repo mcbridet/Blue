@@ -732,14 +732,23 @@ the kernel); 8 onwards as the boot progresses.
   software renderer had: pixel formats asking for one are that renderer's
   (ID 0x00020200, not accelerated), drawn as ATI's but with Apple's
   strings ("Apple", "Generic", "1.1" and the extensions 9.2.2's engine
-  made of the renderer's).
-  Five more scenes against Mesa (logic ops exactly; the rest where
-  llvmpipe's stipple counter, smooth coverage and line texturing depart),
+  made of the renderer's). Both extensions that list has and Blue hadn't
+  are done, and in every context's list, as on a Rage 128 with 9.2.2:
+  `GL_APPLE_specular_vector` (the specular term by the light's reflection,
+  as Apple's specification and engine have it) and
+  `GL_EXT_texture_lod_bias` (per unit, clamped to 10, the deepest level,
+  as 9.2.2 gave no maximum; in software added to triangles' and lines'
+  levels of detail, on the GPU `texture()`'s bias).
+  Six more scenes against Mesa (logic ops and the LOD bias exactly; the
+  rest where llvmpipe's stipple counter, smooth coverage and line texturing
+  depart),
   two in the test application (the same on macOS and Linux, the GPU
   within 1). RAVE's pixels, the boots and, built with the library's old
   data, the games' instruction-time runs are main's (but for Quake III's
   16-bit frame's dither). Not done: GLU's tessellators and NURBS,
-  antialiased polygons, auxiliary buffers, color index. Milestone 7, performance: measured
+  antialiased polygons, auxiliary buffers, color index, textures' minimum
+  and maximum levels of detail (kept, not applied),
+  `GL_EXT_texture_env_combine`. Milestone 7, performance: measured
   first (`BLUE_GL_PROFILE`: where each frame's host time goes), in real
   time on an M5 at 640 x 480. On the GPU, Quake III's demo and UT run at
   60 frames a second with 7-10 ms of each frame to spare (the guest 3-5
@@ -865,7 +874,9 @@ the kernel); 8 onwards as the boot progresses.
   tessellators and NURBS renderers keep their objects and properties but
   draw nothing (until a program needs them); antialiased polygons
   (`GL_POLYGON_SMOOTH` is kept, not drawn), auxiliary buffers and color
-  index aren't offered. (`raster.c`'s pixels on edges two
+  index aren't offered; `GL_TEXTURE_MIN_LOD` and `GL_TEXTURE_MAX_LOD` are
+  kept but not applied; `GL_EXT_texture_env_combine`, which a Rage 128's
+  list had, isn't offered. (`raster.c`'s pixels on edges two
   triangles share: fixed, see Findings, "Shared edges in the software
   rasterizer".)
 
@@ -1022,7 +1033,13 @@ Facts later tasks need, added as they are found.
   renderer's order, each with a space after it. ATI's
   `glrUpdatePointSettings` and `glrUpdateLineSettings` set RAVE's
   `kQATag_Antialias` to `glrAntiAliasHint(GL_NICEST)`, best, whenever
-  smooth points or lines are on, whatever the hint.
+  smooth points or lines are on, whatever the hint. ATI's `gldGetString`
+  picks its renderer's name and extensions by the chip; a Rage 128's
+  list has `GL_EXT_texture_env_combine`, `GL_EXT_texture_lod_bias` and
+  `GL_SGIS_texture_edge_clamp` (docs/opengl-plan.md had guessed, from the
+  strings' order, a shorter one). The engine keeps `glTexEnv`'s LOD bias as
+  given, per unit, but answers no `GL_MAX_TEXTURE_LOD_BIAS_EXT`
+  (`GL_INVALID_ENUM`); its specular vector is the specification's formula.
 - **Mesa's line stipple and smooth points and lines** (OpenGL, milestone
   8; Mesa 25.2's llvmpipe): a strip's stipple counter goes on from segment
   to segment by their lengths, not by the fragments drawn (OpenGL 1.2's

@@ -23,7 +23,8 @@ by OpenGL's rules, dithering, the accumulation buffer) are built; Quake
 III Arena's demo plays. S3TC and paletted textures are left out: Apple's
 Mac OS 9.2.2 doesn't offer them for a Rage 128. What's left is under "Not
 done" in milestone 8: OpenGLUtility's tessellators and NURBS, antialiased
-polygons, auxiliary buffers, color index (and the imaging subset's
+polygons, auxiliary buffers, color index, textures' minimum and maximum
+levels of detail, `GL_EXT_texture_env_combine` (and the imaging subset's
 convolution, histogram and minmax, not planned). The user chose OpenGL
 before Glide, and accepted the proposed decisions below for now
 (replacing the libraries, recording in guest memory, fixed function in C
@@ -114,9 +115,8 @@ Milestone 8:
   GL_ARB_texture_env_add GL_EXT_blend_color GL_EXT_blend_minmax
   GL_EXT_blend_subtract GL_EXT_texture_env_add GL_EXT_texture_lod_bias
   GL_EXT_abgr GL_EXT_bgra GL_SGIS_texture_edge_clamp GL_ARB_multitexture `
-  (with its last space); two of those Blue doesn't do (the specular
-  vector, the LOD bias), and its functions answer as for ATI's (the user's
-  decision: only the strings are Apple's). `aglQueryRendererInfo`
+  (with its last space); its functions are ATI's, as Blue does them.
+  `aglQueryRendererInfo`
   lists both, ATI's first (the order Apple's engine gave isn't known), each
   described as 9.2.2's renderers describe themselves (the generic one:
   window, offscreen, robust, backing store, MP safe, multiscreen,
@@ -131,12 +131,42 @@ Milestone 8:
   4.2.4 has it). `GL_ACCUM_*_BITS`, `GL_ACCUM_CLEAR_VALUE` and
   `GL_ACCUM_BUFFER_BIT`'s push and pop; without an accumulation buffer
   `glAccum` is `GL_INVALID_OPERATION`.
+- **`GL_APPLE_specular_vector`** (Apple's specification, and 9.2.2's
+  engine, disassembled, do the same): with
+  `GL_LIGHT_MODEL_SPECULAR_VECTOR_APPLE` true (`glLightModel`), each
+  light's specular term takes (2 n x (n x l) + l) . p, the light's
+  reflection toward the eye (p: from the vertex to the eye with a local
+  viewer, else (0, 0, 1)), in place of n . h, raised to the shininess
+  where it's above 0, as before; `glGet`, the lighting bits' push and pop.
+- **`GL_EXT_texture_lod_bias`:** `glTexEnv` and `glGetTexEnv` of
+  `GL_TEXTURE_FILTER_CONTROL_EXT`'s `GL_TEXTURE_LOD_BIAS_EXT`, per unit, kept
+  as given (as Apple's engine keeps it) and, as the extension has it,
+  clamped to `GL_MAX_TEXTURE_LOD_BIAS_EXT` where it's added to the level of
+  detail: 10, the deepest level a texture can have (1024 down to 1), as the
+  extension recommends. (9.2.2's engine answers no maximum: `glGet` of it is
+  `GL_INVALID_ENUM` there.) In software it's added to each triangle's and
+  line's level of detail before the level is chosen and before deciding
+  whether it's magnified; where the coordinates don't change, and for
+  points, it stays magnified, as on a GPU. On the GPU it's `texture()`'s
+  bias, in programs of their own (units with no bias draw with the same
+  programs as before). The texture bits' push and pop keep it.
+- **Where they're offered:** in every context, as on Apple's. 9.2.2's
+  engine lists the specular vector among its own extensions, which every
+  context has, and its ATI renderer gives `GL_EXT_texture_lod_bias` for a
+  Rage 128 (disassembled: it picks the renderer's name and extensions by
+  the chip, the Rage 128 being chip 4, whose list is `GL_ARB_multitexture
+  GL_ARB_texture_env_add GL_EXT_compiled_vertex_array
+  GL_EXT_texture_env_add GL_EXT_abgr GL_EXT_bgra GL_EXT_texture_env_combine
+  GL_EXT_texture_lod_bias GL_SGIS_texture_edge_clamp`; see "What Mac OS 9
+  ships"). Blue's ATI list, what Blue does of the engine's in its order,
+  now has both.
 - **The library's data:** the generic renderer's strings moved it, so its
-  version is 5, and 6 with Apple's version and extensions for it: one
-  installed by an older Blue is left alone, with the message to update it.
-- **Checked against Mesa** (`tests/test_opengl.c`, on Linux): five more
+  version is 5, then 6 with Apple's version and extensions for it, and 7
+  with the two extensions in ATI's list: one installed by an older Blue is
+  left alone, with the message to update it.
+- **Checked against Mesa** (`tests/test_opengl.c`, on Linux): six more
   scenes, as milestone 4's table (pixels differing by more than 2 out of
-  6,912, and the most any differs by), and a sixth not against Mesa (its
+  6,912, and the most any differs by), and one not against Mesa (its
   framebuffer objects have no accumulation buffer):
 
   | scene | GPU | Mesa | what differs |
@@ -147,6 +177,7 @@ Milestone 8:
   | smoothlines (antialiased lines 1 and 2.5 wide, points 7.5 and 3.2, blended) | 0 (1) | 278 (122) | llvmpipe's coverage (above) |
   | texlines (textured lines 1 and 3 wide, nearest and minified linear; points 6 across) | 0 (2) | 51 (20) | the linear line's mix: half a texel a pixel |
   | accum (two images averaged, scaled, moved; cleared and returned within scissor boxes, through a color mask) | 0 (0) | | |
+  | lodbias (a texture whose levels are each a color, on squares biased up and down, past the last level, under 0, a magnified quad biased into minifying, unit 1's bias) | 0 (0) | 0 (0) | |
 
   `tests/test_raster.c`: lines and points as llvmpipe draws them (first
   and last pixels, counts), the stipple's counter, coverage summing to the
@@ -159,7 +190,14 @@ Milestone 8:
   operations, clamping, scissor, color mask and 8 bits' steps;
   `tests/test_opengl.c`: the generic renderer's pixel formats (and those
   refused), renderer info, strings and bits, and a 16-bit window's dither
-  (and none, `GL_DITHER` off).
+  (and none, `GL_DITHER` off). For the two extensions: the specular
+  vector's values against Apple's formula in double precision (a headlight,
+  a local viewer and a positional light), its state and push and pop; the
+  LOD bias's state, errors, maximum and push and pop (`test_glfront.c`), the
+  levels it picks in software for triangles, lines and points
+  (`test_raster.c`) and on the GPU, either unit or both (`test_gpu.c`:
+  exactly `raster.c`'s); ATI's and the generic renderer's strings exactly
+  (`test_opengl.c`).
 - **The test application:** scenes `lines` (a smooth-shaded quad through a
   polygon stipple and a quad over it by XOR, stippled lines, fans of lines
   from a display list aliased and antialiased, points aliased and
@@ -199,10 +237,14 @@ Milestone 8:
   through the runs.
 - **Not done:** OpenGLUtility's tessellators and NURBS (their objects and
   properties only: until a program needs them); antialiased polygons
-  (`GL_POLYGON_SMOOTH` is kept but not drawn); auxiliary buffers (the generic renderer had 4;
-  Blue's pixel formats refuse `AGL_AUX_BUFFERS`); color index (no index
-  pixel formats); the imaging subset's convolution, histogram and minmax
-  (not planned).
+  (`GL_POLYGON_SMOOTH` is kept but not drawn); auxiliary buffers (the
+  generic renderer had 4; Blue's pixel formats refuse `AGL_AUX_BUFFERS`);
+  color index (no index pixel formats); `GL_TEXTURE_MIN_LOD` and
+  `GL_TEXTURE_MAX_LOD` (OpenGL 1.2's: kept and queried, not applied when
+  drawing; found while adding the LOD bias); `GL_EXT_texture_env_combine`
+  (a Rage 128's list had it; Blue's stages could draw it, but `glTexEnv`
+  doesn't take `GL_COMBINE_EXT`, so it isn't offered); the imaging
+  subset's convolution, histogram and minmax (not planned).
 
 Milestone 7:
 
@@ -1168,13 +1210,25 @@ GLRendererIndex8D32, GLRendererRGB555A8D16 and GLRendererRGB555A8D32.
   Technologies Inc."; renderers "Rage II OpenGL Engine", "Rage Pro OpenGL
   Engine", "Rage Mobility OpenGL Engine", "Rage 128 OpenGL Engine", "ATI
   Radeon OpenGL Engine", "ATI 3DRage OpenGL Engine"; version
-  `1.1.ATI-%d.%d`; and three extension lists by chip:
-  - `GL_ARB_texture_env_add GL_EXT_compiled_vertex_array
+  `1.1.ATI-%d.%d`; and extension lists by chip. As read again in 9.2.2's
+  (its `gldGetString`, disassembled), it has eight names, "ATI Radeon 8500
+  OpenGL Engine" and "ATI Radeon 9000 OpenGL Engine" too, picked by the
+  chip (0 3DRage, 1 Rage II, 2 Rage Pro, 3 Rage Mobility, 4 Rage 128, 5
+  Radeon, 6 Radeon 8500, 7 Radeon 9000), and four lists:
+  - Rage II: `GL_ARB_texture_env_add GL_EXT_compiled_vertex_array
     GL_EXT_texture_env_add GL_EXT_abgr GL_EXT_bgra`
-  - the same plus `GL_ARB_multitexture GL_EXT_texture_lod_bias` (from the
-    order of the strings, presumably the Rage 128)
-  - that plus `GL_EXT_texture_env_combine GL_SGIS_texture_edge_clamp`
-    (presumably the Radeon)
+  - Rage Pro and Rage Mobility: `GL_ARB_multitexture` and the same, then
+    `GL_EXT_texture_lod_bias`
+  - Rage 128 (and 3DRage, and any other): `GL_ARB_multitexture
+    GL_ARB_texture_env_add GL_EXT_compiled_vertex_array
+    GL_EXT_texture_env_add GL_EXT_abgr GL_EXT_bgra
+    GL_EXT_texture_env_combine GL_EXT_texture_lod_bias
+    GL_SGIS_texture_edge_clamp`
+  - the Radeons: that plus `GL_EXT_texture_filter_anisotropic`
+
+  (Read before only by the order of the strings, which had guessed the
+  second list the Rage 128's.) All but the first end with a space; the
+  engine makes a context's list of them as above.
 
   9.1's installer also carries ATI's RAVE engines for these chips ("ATI 3D
   Accelerator", "ATI Rage 128 3D Accelerator", "ATI Radeon 3D

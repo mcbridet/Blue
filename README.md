@@ -840,7 +840,8 @@ invisible file at its top, `Icon\r`):
   clipped, culled, flat or smooth shaded, depth tested, blended or by logic
   ops, alpha tested, masked and scissored in the viewport; points and lines
   by OpenGL's rules (wide, antialiased, stippled, textured), the polygon
-  stipple, the accumulation buffer, 16-bit drawables dithered; textures
+  stipple, the accumulation buffer, 16-bit drawables dithered, Apple's
+  specular vector and the texture LOD bias extension; textures
   (objects, 1D and 2D images in every format and type, parameters, two
   units with their texture environments, the texture matrices);
   client arrays (`glDrawArrays`, `glDrawElements`, interleaved, compiled);
@@ -859,8 +860,9 @@ invisible file at its top, `Icon\r`):
   goes) and `aglUseFont` (QuickDraw draws the glyphs, as with Apple's).
   Not yet: OpenGLUtility's tessellators and NURBS (they draw nothing);
   antialiased polygons (`GL_POLYGON_SMOOTH` is kept, not drawn), auxiliary
-  buffers and color index; S3TC and paletted textures aren't offered (nor
-  were they by Apple's for a Rage 128). An OpenGLLibrary installed by an older version of Blue is left
+  buffers, color index, textures' minimum and maximum levels of detail
+  (kept, not applied) and `GL_EXT_texture_env_combine`; S3TC and paletted
+  textures aren't offered (nor were they by Apple's for a Rage 128). An OpenGLLibrary installed by an older version of Blue is left
   alone, and Blue says to update it.
   Unreal Tournament's OpenGL build (on the UT CD, `Extras:OpenGL UT.sea`)
   and Quake III Arena's demo play with them, on the GPU and in software.
