@@ -831,9 +831,10 @@ invisible file at its top, `Icon\r`):
   to its regions), the screen or an offscreen buffer, when it's swapped.
   So far: AGL (ATI's accelerated "Rage 128 OpenGL Engine" as on Mac OS 9,
   and, for pixel formats with an accumulation buffer, which only Apple's
-  software renderer offered, that one, "Generic", drawn the same way; their
-  pixel formats and renderer info; contexts laid out as Apple's, with their
-  dispatch tables; drawables, swaps, swap and buffer rectangles) and, of
+  software renderer offered, that one, "Generic", drawn the same way but
+  with Apple's strings; their pixel formats and renderer info; contexts
+  laid out as Apple's, with their dispatch tables; drawables, swaps, swap
+  and buffer rectangles) and, of
   OpenGL, the matrices and their stacks, `glBegin` and `glEnd`'s points,
   lines, triangles, quads and polygons with their colors, transformed,
   clipped, culled, flat or smooth shaded, depth tested, blended or by logic

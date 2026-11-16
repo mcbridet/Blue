@@ -730,7 +730,9 @@ the kernel); 8 onwards as the boot progresses.
   16-bit frames dithered by a 4 x 4 ordered matrix while `GL_DITHER` is on;
   and the accumulation buffer, which on Mac OS 9.2.2 only Apple's generic
   software renderer had: pixel formats asking for one are that renderer's
-  (ID 0x00020200, not accelerated, "Apple" "Generic"), drawn as ATI's.
+  (ID 0x00020200, not accelerated), drawn as ATI's but with Apple's
+  strings ("Apple", "Generic", "1.1" and the extensions 9.2.2's engine
+  made of the renderer's).
   Five more scenes against Mesa (logic ops exactly; the rest where
   llvmpipe's stipple counter, smooth coverage and line texturing depart),
   two in the test application (the same on macOS and Linux, the GPU
@@ -1014,10 +1016,13 @@ Facts later tasks need, added as they are found.
   backing store, MP safe, robust, multiscreen and compliant, not
   accelerated or full screen. Its `gldGetString` gives "Apple", "Generic",
   "1.1" and an extension list ending in `GL_ARB_multitexture` (left out of
-  docs/opengl-plan.md before). ATI's `glrUpdatePointSettings` and
-  `glrUpdateLineSettings` set RAVE's `kQATag_Antialias` to
-  `glrAntiAliasHint(GL_NICEST)`, best, whenever smooth points or lines are
-  on, whatever the hint.
+  docs/opengl-plan.md before). The engine's `glGetString` passes the
+  vendor, renderer and version on as they are, and makes the extensions
+  its own seven followed by those of the renderer's it knows (13), in the
+  renderer's order, each with a space after it. ATI's
+  `glrUpdatePointSettings` and `glrUpdateLineSettings` set RAVE's
+  `kQATag_Antialias` to `glrAntiAliasHint(GL_NICEST)`, best, whenever
+  smooth points or lines are on, whatever the hint.
 - **Mesa's line stipple and smooth points and lines** (OpenGL, milestone
   8; Mesa 25.2's llvmpipe): a strip's stipple counter goes on from segment
   to segment by their lengths, not by the fragments drawn (OpenGL 1.2's

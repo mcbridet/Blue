@@ -105,9 +105,18 @@ Milestone 8:
   on a Mac of the time: renderer ID 0x00020200, not accelerated (so games
   that ask for `AGL_ACCELERATED`, ATI's renderer ID or a full screen don't
   get one, as they didn't there), 8 or 16 bits a component (alpha only if
-  asked for). Its contexts say vendor "Apple" and renderer "Generic"
-  (Apple's strings) but Blue's version and extensions, since Blue draws
-  them as it draws ATI's, on the GPU when it's on. `aglQueryRendererInfo`
+  asked for). Blue draws its contexts as it draws ATI's (on the GPU when
+  it's on), but they say what Apple's said: vendor "Apple", renderer
+  "Generic", version "1.1", and the extensions 9.2.2's engine made of the
+  renderer's (see "What Mac OS 9 ships"), `GL_APPLE_specular_vector
+  GL_APPLE_transform_hint GL_APPLE_packed_pixel GL_ARB_transpose_matrix
+  GL_EXT_clip_volume_hint GL_EXT_rescale_normal GL_NV_texgen_reflection
+  GL_ARB_texture_env_add GL_EXT_blend_color GL_EXT_blend_minmax
+  GL_EXT_blend_subtract GL_EXT_texture_env_add GL_EXT_texture_lod_bias
+  GL_EXT_abgr GL_EXT_bgra GL_SGIS_texture_edge_clamp GL_ARB_multitexture `
+  (with its last space); two of those Blue doesn't do (the specular
+  vector, the LOD bias), and its functions answer as for ATI's (the user's
+  decision: only the strings are Apple's). `aglQueryRendererInfo`
   lists both, ATI's first (the order Apple's engine gave isn't known), each
   described as 9.2.2's renderers describe themselves (the generic one:
   window, offscreen, robust, backing store, MP safe, multiscreen,
@@ -123,8 +132,8 @@ Milestone 8:
   `GL_ACCUM_BUFFER_BIT`'s push and pop; without an accumulation buffer
   `glAccum` is `GL_INVALID_OPERATION`.
 - **The library's data:** the generic renderer's strings moved it, so its
-  version is 5: one installed by an older Blue is left alone, with the
-  message to update it.
+  version is 5, and 6 with Apple's version and extensions for it: one
+  installed by an older Blue is left alone, with the message to update it.
 - **Checked against Mesa** (`tests/test_opengl.c`, on Linux): five more
   scenes, as milestone 4's table (pixels differing by more than 2 out of
   6,912, and the most any differs by), and a sixth not against Mesa (its
@@ -1130,9 +1139,16 @@ GLRendererIndex8D32, GLRendererRGB555A8D16 and GLRendererRGB555A8D32.
   buffers; window, offscreen, backing store, MP safe, robust, multiscreen
   and compliant, not accelerated or full screen; single and double
   buffers (its color and depth modes come from a table it imports, not
-  read). The library maps the info's flags to properties as: window 0x1,
-  full screen 0x2, offscreen 0x4, backing store 0x8, MP safe 0x10, robust
-  0x40, accelerated 0x100, multiscreen 0x200, compliant 0x400.
+  read). 9.2.2's engine's `glGetString` (its code + 0x504e8) gives the
+  renderer's vendor, renderer and version as they are; its extensions are
+  the engine's own seven (`GL_APPLE_specular_vector` to
+  `GL_NV_texgen_reflection`, as listed above) and then, in the renderer's
+  order, each of the renderer's that is among the 13 others it knows
+  (`GL_ARB_multitexture` to `GL_EXT_texture_filter_anisotropic`), each
+  followed by a space. The library maps the info's flags to properties
+  as: window 0x1, full screen 0x2, offscreen 0x4, backing store 0x8, MP
+  safe 0x10, robust 0x40, accelerated 0x100, multiscreen 0x200, compliant
+  0x400.
 - **ATI's renderer info** (9.2.2's `gldGetRendererInfo`): no accumulation
   buffer, no stencil, not offscreen; accelerated, full screen, compliant.
   (Blue's ATI renderer goes beyond it, offering a stencil and offscreen
@@ -1612,8 +1628,7 @@ for later games that expect a Radeon; or honest Blue strings, which
 games of the time don't know. **The user decides.** Whatever is chosen,
 `GL_EXTENSIONS` describes what Blue really does. (As built: ATI's
 strings; and since milestone 8, for pixel formats with an accumulation
-buffer, Apple's generic renderer's vendor "Apple" and renderer "Generic",
-with Blue's version and extensions.)
+buffer, Apple's generic renderer's strings, as Apple's engine gave them.)
 
 ### Targets
 
