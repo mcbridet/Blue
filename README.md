@@ -655,10 +655,62 @@ Findings in plan.md, "MacBench's CD-ROM test"). A report of the test
 freezing MacBench on 9.2.2 in a window (the Memory Manager faulting on a
 broken system heap, then the Toolbox) didn't reproduce here.
 
+### Pippin titles
+
+Discs for the Bandai Pippin (Apple's 1996 console design, System 7.5) are
+HFS CDs, and many of their programs run on a Mac, but some link to the
+Pippin's own library, PippinPPC, which Mac OS hasn't got ("could not be
+opened because "PippinPPC" could not be found"). Blue Pippin Library, one
+of the guest tools (below), is Blue's own PippinPPC, with the Pippin's
+twelve functions mapped onto Mac OS 8.5 to 9.2.2 (`src/pippin.c`; plan.md
+has what each does on a Pippin):
+
+- The Pippin's file dialogs are Standard File's, starting in the title's
+  folder: on a Pippin that is at the root of its 120 KB of flash (or a
+  floppy's), here `System Folder:Preferences:Pippin:` and the title's name
+  (its `pipn` resource's, else the application's). Saves and preferences
+  go there, never to the CD. The file chosen comes back with a working
+  directory for its folder as its vRefNum, as the old Standard File's did,
+  since titles such as Marathon take the folder from that.
+  `PippinStandardDeleteFile`, the Pippin's "make room" dialog, is a file
+  chosen in the title's folder, deleted once a caution alert is answered
+  Delete. `MakeWritesPermanent` (writing the flash) flushes the volume;
+  there's no floppy dock; the soft keyboard and the Pippin's extra PRAM do
+  nothing.
+- While a title that links to it runs, Gestalt answers `pipn` (titles
+  check it, and Super Marathon quits without it: "Sorry, but this game is
+  only for the Pippin."), and ShutDwnStart and ShutDwnPower return at once:
+  a Pippin turns off when its title quits, which here would shut Mac OS
+  down.
+
+Super Marathon (Bungie, 1996: Marathon and Marathon 2 for the Pippin)
+plays from its disc on Mac OS 8.5 and 9.2.2 installed on disks, with the
+library installed. Open `M1:marathon.ppc` or `M2:marathon2.ppc`; the
+Pippin's menu offers Begin New Game, Continue Saved Game, Delete Saved
+Game, Preferences and Quit. The Pippin builds don't save at pattern
+buffers: they ask "Save game as:" when a level ends, and the saves land
+in `Preferences:Pippin:marathon.ppc` or `marathon2.ppc`; Continue Saved
+Game opens them there, and Quit goes back to the Finder. The keyboard
+works: in Marathon 2 the up arrow moves forward, Space fires, Tab acts (terminals),
+Return pages through a terminal, Command-Q asks to end the game; Marathon
+1 took Tab and Return held for a second in scripted tests, and its
+movement keys weren't found there (the Preferences screen sets them). The
+mouse works in the menus and dialogs. The Pippin's AppleJack controller
+isn't emulated (its buttons are keys: the titles' `pipp` resources map
+them onto the keyboard).
+
+"1995.1.17 Hanshin Daishinsai" (a Macromedia Director projector, `JISIN`,
+68k, without PippinPPC) runs on 8.5 and 9.2.2: open its disc (its name is
+Japanese, shown in Mac OS Roman without a Japanese system; typing "c" in the
+Finder selects it), then JISIN. It shows its title, then a photo at a
+time, the next at a click. A scripted click doesn't select a desktop icon
+(see plan.md, Findings), which is why opening the disc that way seemed to
+do nothing.
+
 ### Guest tools
 
 Some things only code inside Mac OS can do: Blue Enhancements, Blue
-3D Engine and Blue's OpenGL libraries (below). In a window, Blue offers to install them: before Mac OS
+3D Engine, Blue's OpenGL libraries and Blue Pippin Library (below). In a window, Blue offers to install them: before Mac OS
 starts it looks in the startup disk's System Folder (its folders,
 Extensions whatever its name and Extensions (Disabled) among them) for
 them, and once the Finder is up, if one is missing or isn't this version's
@@ -682,7 +734,7 @@ installed 9.1 to try). The outcome is shown (the box stays through the
 restart, until OK) and printed:
 
 ```
-tools: installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory and Blue OpenGL Utility in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
+tools: installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory, Blue OpenGL Utility and Blue Pippin Library in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
 ```
 
 Mac OS 9 has OpenGL libraries of Apple's with the names Blue's have
@@ -875,9 +927,13 @@ invisible file at its top, `Icon\r`):
   waiting for the frame's turn), the calls, records and primitives, and
   the GPU thread's time drawing and reading back; and a line for each
   update of the window (see docs/opengl-plan.md, milestone 7).
+- **Blue Pippin Library**: PippinPPC, the Bandai Pippin's library, for
+  Pippin titles (see Pippin titles above), put in Extensions. Unlike the
+  others its code is its own, calling Mac OS through InterfaceLib and
+  AppearanceLib; it makes no host calls.
 
 Like the drivers, these are generated code fragments whose logic runs in
-Blue through host calls (`src/tools.c`). Bugdom's setup, for the record:
+Blue through host calls (`src/tools.c`; but for the Pippin library's). Bugdom's setup, for the record:
 QuickDraw 3D 1.6, Game Sprockets, URL Access (part of Mac OS 8.6 and later;
 Bugdom won't load without it) and the 3D engine in
 Extensions; it asks for a registration code, which shareware-era copies
@@ -1725,7 +1781,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           net.c (Ethernet's lanLib,
           libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
           reader: the startup disk's ROM file), share.c (shared folder),
-          rsrc.c (resource forks), tools.c (guest tools), install.c
+          rsrc.c (resource forks), tools.c (guest tools), pippin.c (their
+          PippinPPC, for Pippin titles), install.c
           (installing them from inside Mac OS), clip.c (the clipboard they
           share with the host), rave.c (3D engine), opengl.c +
           opengl_table.h (the guest's OpenGL libraries), glfront.c + gltex.c + gllight.c +

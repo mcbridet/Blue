@@ -136,6 +136,11 @@ Done:
   rasterizer without fused multiply-adds; the fragment builder's many
   exports, own code and zero-filled data; host calls with floats. See
   Findings, "Fused multiply-adds".
+- **Pippin titles** (Task 19; `src/pippin.c`): Blue Pippin Library, a guest
+  tool, is Blue's own PippinPPC (the Bandai Pippin's library) with Apple's
+  twelve exports on Mac OS's calls. Super Marathon's two games play from
+  their disc on installed 8.5 and 9.2.2, and save, load and delete saves
+  through it. See Findings, "PippinPPC" and after.
 
 Where it stops:
 
@@ -888,6 +893,31 @@ the kernel); 8 onwards as the boot progresses.
   index aren't offered. (`raster.c`'s pixels on edges two
   triangles share: fixed, see Findings, "Shared edges in the software
   rasterizer".)
+
+### 19. Pippin titles
+
+- **Status:** done. Blue Pippin Library (`src/pippin.c`, file "Blue
+  Pippin Library", 'shlb' 'syPP', fragment `PippinPPC`, host call number
+  0x108 in its unused stubs only, to tell Blue's copy) is offered and
+  installed with the other guest tools (the Finder icon: the stack with a
+  "P!" puzzle piece). Its code is its own: each export calls InterfaceLib
+  (FindFolder, PBGetCatInfoSync, DirCreate, Standard File, FSpDelete,
+  FlushVol, OpenWD, the Gestalt value calls, the trap table) or
+  AppearanceLib (StandardAlert); `tests/test_pippin.c` runs it in the
+  interpreter against a Mac OS of the test's own (folders, dialogs,
+  Gestalt, the trap table), and checks the exports by the PEF hash table.
+  Super Marathon's Marathon and Marathon 2 launch from the disc and play
+  on 8.5 and 9.2.2 installed on disks (scratch installs: 8.5 from its CD,
+  9.2.2 restored); a game saved at a level's end lands in
+  `Preferences:Pippin:marathon2.ppc` (or `marathon.ppc`), loads with
+  Continue Saved Game, is deleted with Delete Saved Game, and Quit returns
+  to the Finder. The saves were tested with copies of the disc whose first
+  level's player start is at its exit terminal (no monsters, no mission),
+  made in scratch: playing through a level isn't scriptable. The other
+  Pippin disc here, "1995.1.17 Hanshin Daishinsai" (a Director 4
+  projector, 68k), runs on both.
+- **Open:** the AppleJack controller (future.md); titles that use the
+  Pippin's video calls (PippinVideo.h's) or its floppy dock.
 
 ## Findings
 
@@ -2497,3 +2527,85 @@ Facts later tasks need, added as they are found.
   start; little sound plays then).
   Tests: `tests/test_audio.c` (pass-through at the goal, the 0.5% bound, a
   device 0.3% fast or slow for 5 minutes, recovery from 150 ms over).
+- **PippinPPC on a Pippin** (Task 19): the Pippin's System Folder has an
+  enabler ('gbly' "Pippin") whose 'nlib' 777, "PippinPPC" (1,901 bytes),
+  is the library. Its twelve exports import only GetToolboxTrapAddress and
+  CallUniversalProc: each calls the trap $AA6F (Pippin.h's
+  kPippinDispatch) with a D0-dispatched Pascal procInfo, the selector word
+  being the parameters' words << 8 | the selector:
+  `OSErr SavePRAMtoFlash(void)` 0x0000, `OSErr MakeWritesPermanent(void)`
+  0x0001, `OSErr ReadNVExtraPRAM(void *buffer, short count, short offset)`
+  0x0406 and `WriteNVExtraPRAM` 0x0407 (the order from the enabler's own
+  call: 2 bytes at 12, the AppleTalk setting), `void
+  InvokeSoftKeyboard(void)` 0x0009, `OSErr PippinFindFolder(short vRefNum,
+  OSType folderType, Boolean create, short *foundVRefNum, long
+  *foundDirID)` 0x080A (FindFolder's), `PippinStandardGetFile` 0x070B and
+  `PippinStandardPutFile` 0x060C (StandardGetFile's and StandardPutFile's),
+  `OSErr PippinStandardDeleteFile(long *bytesRequested)` 0x020D, `Boolean
+  HasFloppyDock(void)` 0x000E, `Boolean HasMountedFloppy(short *vRefNum)`
+  0x020F, `short GetDriveRefNum(short drive)` 0x0110 (1
+  kPippinStorageDevice, 2 kFloppyStorageDevice: the volume's vRefNum).
+  Pippin.h (the WWDC 1996 CD's "Pippin Video Sources") declares all but 0,
+  6 and 7, and two that aren't exported (Read/WriteAppleTalkBootSetting,
+  0x0011 and 0x0112); the enabler's 'gpch' 777 patches $AA6F for 1, 9 to
+  16, 0x11 and 0x112 and leaves 0, 6 and 7 to the Pippin ROM's. What they
+  do (Pippin Technical Notes "Pippin Standard File" and "Pippin Flash
+  Access", Dev CD Dec 96): a Pippin has 128 KB of flash (120 for titles),
+  a small HFS volume, copied to a RAM disk at startup; MakeWritesPermanent
+  writes it back (up to 8 s; Restart and Shut Down do too). Each title
+  keeps its files in one folder at the root of the flash or a floppy,
+  named by its 'pipn' resource: the enabler's code takes 'pipn' 1's Pascal
+  string at offset 12 (63 characters at most), else CurApName.
+  PippinStandardDeleteFile asks the user to delete files to free
+  *bytesRequested, and returns the bytes deleted there.
+- **Super Marathon on Mac OS** (Task 19): `marathon.ppc` and
+  `marathon2.ppc` import six of the functions, strongly, and at startup
+  ask Gestalt for 'pipn' (gestaltPippinAttr): without it, a fatal "Sorry,
+  but this game is only for the Pippin." With it, preferences go through
+  PippinFindFolder(GetDriveRefNum(kPippinStorageDevice), 'pipn', true, …)
+  rather than FindFolder's 'pref', the dialogs are the Pippin's,
+  MakeWritesPermanent follows a save, Delete Saved Game works (else a
+  beep), the 'pipp' resources 1000 and 1001 are copied into the AppleJack's
+  ADB device's data (there's no such device: nothing), and quitting calls
+  MakeWritesPermanent and ShutDwnStart. Their change_panel_state sends
+  pattern buffers (panel class 7) to its default case, which does nothing;
+  the game is saved when a level changes instead (the shell's state 13,
+  `_change_level`: after the level loads, "Save game as:"; 550 bytes for
+  Marathon 2, 278 for Marathon). Marathon (1) takes the chosen file's
+  folder from sfFile.vRefNum with directory 0, saving and loading, and
+  ignores parID: with an FSSpec's own vRefNum it saved at the volume's
+  root and found nothing to load. The library's dialogs now return a
+  working directory for the file's folder as the vRefNum (OpenWD, procID
+  'ERIK', Standard File's), as SFGetFile's did; Marathon 2 uses the FSSpec
+  either way. No ROM's InterfaceLib has the Gestalt value calls; the
+  System of 8.5 and 9.2.2 adds them ('fovr' 50 "InterfaceLib":
+  NewGestaltValue, SetGestaltValue, DeleteGestaltValue). The value is 0:
+  the Pippin's isn't known, and these titles only look for the selector.
+- **A library's initialization runs in the application's context**: the
+  Code Fragment Manager prepares an application's import libraries in the
+  new process, so NSetTrapAddress from an initialization routine is the
+  application's own patch (see "An application's patches are its own"):
+  the Pippin library's _ShutDown patch is in force only while the title
+  runs. The patch is 68k code in the library's data, put in place with
+  BlockMove (which flushes the 68k emulator's cache, as BlockMoveData
+  doesn't). Quit in Super Marathon's menu goes back to the Finder.
+- **StandardAlert's buttons** (AppearanceLib, Mac OS 8.5): a parameter
+  block with kAlertStdAlertCancelButton as both the default and the cancel
+  button returned paramErr, without an alert; Delete (the OK button) as
+  default and Cancel as the cancel button works.
+- **Desktop icons from scripts**: a scripted click on a disc's icon
+  deselected the startup disk and selected nothing (on the Hanshin disc,
+  as the restored 9.2.2's finding says), so Command-O opened nothing.
+  Typing selects: "c" for that disc, whose Japanese name shows in Mac OS
+  Roman as "ç„ê_ëÅèç-" (the Finder's order ignores the cedilla).
+- **Marathon's keys in instruction time** (with `clock 300`): Marathon 1
+  missed Tab held for 0.1 billion instructions (a third of a second of
+  guest time) and took it held 0.3 billion; Marathon 2 took 0.1 billion.
+- **hfsutils writes images it mounts**: `hmount` opens a writable image
+  read-write, and on a volume whose MDB lacks the "unmounted" bit (drAtrb
+  0x0100) libhfs scavenges: drWrCnt + 1, drLsMod set to the time, the bit
+  set, the volume bitmap written again (drFreeBks and drNxtCNID if they
+  disagreed). Mastered CDs often lack the bit (85.iso did, and its 8.5 CD
+  boot then read 924 fewer blocks and ended elsewhere than its
+  references). Use hfsutils only on APFS clones (`cp -c`), made read-only
+  (`chmod a-w`) when only reading: libhfs then mounts read-only.
