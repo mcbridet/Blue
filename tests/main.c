@@ -18,7 +18,7 @@ int main(int argc, char **argv)
 		{ "cuda", test_cuda },
 		{ "mmio", test_mmio },
 		{ "dbdma", test_dbdma },
-		{ "awacs", test_awacs },
+		{ "burgundy", test_burgundy },
 		{ "audio", test_audio },
 		{ "mic", test_mic },
 		{ "cdimage", test_cdimage },

@@ -1,6 +1,6 @@
 /*
  * Sound input from the host: what the sound chip records from its
- * microphone and sound-in inputs (awacs.h). Frames come from the host's
+ * microphone and sound-in inputs (burgundy.h). Frames come from the host's
  * default input device (audio.h's capture, in real time), opened only while
  * Mac OS records from those inputs and closed a little after it stops, or
  * from a WAV file standing in for the microphone (--mic-file, and scripts'

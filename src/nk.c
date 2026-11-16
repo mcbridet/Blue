@@ -8,7 +8,7 @@
 #include <time.h>
 
 #include "audio.h"
-#include "awacs.h"
+#include "burgundy.h"
 #include "be.h"
 #include "bootinfo.h"
 #include "clip.h"
@@ -19,6 +19,7 @@
 #include "drives.h"
 #include "gltest.h"
 #include "gpu.h"
+#include "hfsread.h"
 #include "install.h"
 #include "jit.h"
 #include "macio.h"
@@ -35,6 +36,7 @@
 #include "ppc_fp.h"
 #include "priv.h"
 #include "putaway.h"
+#include "rsrc.h"
 #include "opengl.h"
 #include "isp.h"
 #include "pad.h"
@@ -477,12 +479,14 @@ struct machine {
 	struct mmio_bus bus;
 	struct macio macio;
 	struct dbdma dbdma;
-	struct awacs awacs;
+	struct burgundy sound;              /* the sound chip */
 	struct audio *audio;            /* host sound output, if open */
 	struct mic *mic;                /* what the sound chip's microphone and sound in hear (mic.h) */
 	struct mic_file *mic_file;      /* ... a WAV file standing in (--mic-file, scripts' mic play), or NULL */
 	FILE *wav;                      /* sound capture (BLUE_SOUND_WAV), if any */
 	uint32_t wav_frames, wav_rate;
+	FILE *in_wav;                   /* ... and of what's recorded (BLUE_SOUND_IN_WAV) */
+	uint32_t in_wav_frames, in_wav_rate;
 	struct via via;
 	struct cuda cuda;
 	struct ohci ohci;               /* USB */
@@ -792,7 +796,7 @@ static void play_sound(void *ctx, const uint8_t *frames, unsigned count, unsigne
 		m->sound_ns = now;
 	}
 	unsigned gl, gr;
-	awacs_gain(&m->awacs, &gl, &gr);
+	burgundy_gain(&m->sound, &gl, &gr);
 	uint8_t out[256 * 4], wav[256 * 4];
 	while (count) {
 		unsigned n = count < 256 ? count : 256;
@@ -809,6 +813,22 @@ static void play_sound(void *ctx, const uint8_t *frames, unsigned count, unsigne
 			m->wav_rate = m->wav_rate ? m->wav_rate : rate;
 			m->wav_frames += (uint32_t)fwrite(wav, 4, n, m->wav);
 		}
+		frames += 4 * n;
+		count -= n;
+	}
+}
+
+/* What input DMA records, to the capture file for it (BLUE_SOUND_IN_WAV) */
+static void recorded_sound(void *ctx, const uint8_t *frames, unsigned count, unsigned rate)
+{
+	struct machine *m = ctx;
+	uint8_t wav[256 * 4];
+	while (count) {
+		unsigned n = count < 256 ? count : 256;
+		for (unsigned k = 0; k < n; k++)
+			put_le32(wav + 4 * k, be16(frames + 4 * k) | (uint32_t)be16(frames + 4 * k + 2) << 16);
+		m->in_wav_rate = m->in_wav_rate ? m->in_wav_rate : rate;
+		m->in_wav_frames += (uint32_t)fwrite(wav, 4, n, m->in_wav);
 		frames += 4 * n;
 		count -= n;
 	}
@@ -1000,6 +1020,39 @@ static void floppy_said(const struct disk *d)
 		       d->media_path);
 }
 
+/*
+ * The startup disk's System version, from its System file's 'vers' 1 (as
+ * 0x0922 for 9.2.2), or 0 if it isn't known: the drive the ROM file came
+ * from, else the first with a System Folder.
+ */
+static unsigned system_version(const struct machine *m, const struct nk_boot_options *opt)
+{
+	enum { TYPE_ZSYS = 0x7A737973, TYPE_VERS = 0x76657273 };
+	for (unsigned k = 0; k < opt->disks && k < m->disks; k++) {
+		bool chosen = opt->rom_from_disk && opt->rom_disk < m->disks;
+		unsigned d = chosen ? opt->rom_disk : k;
+		for (unsigned p = 0; p < m->disk[d].partitions; p++) {
+			if (chosen && p != opt->rom_part)
+				continue;
+			struct hfsread_found found;
+			char err[200];
+			if (!opt->disk[d] || hfsread_system_rsrc_in(opt->disk[d], m->disk[d].part[p].map_entry, TYPE_ZSYS,
+								    &found, err, sizeof err) != 1)
+				continue;
+			unsigned version = 0;
+			struct rsrc r;
+			for (unsigned n = 0; !rsrc_find(found.data, found.size, TYPE_VERS, n, &r); n++)
+				if (r.id == 1 && r.len >= 2)
+					version = (unsigned)r.data[0] << 8 | r.data[1];
+			free(found.data);
+			return version;
+		}
+		if (chosen)
+			break;
+	}
+	return 0;
+}
+
 static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 {
 	const struct nk_config *ci = &m->ci;
@@ -1180,6 +1233,17 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	if (((opt->realtime && !opt->no_net) || getenv("BLUE_NET")) && net_start(&m->net))
 		printf("net: Ethernet behind NAT (DHCP 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3)\n");
 
+	/*
+	 * Mac OS 9.0's sound input component corrupts the system heap at
+	 * startup whenever it finds a chip with input (see bring-up.md), so
+	 * there the sound node says it has output only, and Mac OS records
+	 * nothing.
+	 */
+	unsigned system = system_version(m, opt);
+	bool sound_input = (system & 0xFFF0) != 0x0900;
+	if (!sound_input)
+		printf("sound: no sound input with Mac OS %x.%x.%x (its sound input component's bug)\n", system >> 8,
+		       system >> 4 & 15, system & 15);
 	struct bootinfo_machine hw = {
 		.ram_size = m->ram_size,
 		.pvr = CPU_PVR,
@@ -1199,6 +1263,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		.lanlib_size = lanlib_size,
 		.parcels = parcels ? &m->rom->parcels : NULL,
 		.interrupt_index = rom_interrupt_index(m->rom),
+		.sound_input = sound_input,
 		.boot = boot,
 		.boot_disk = boot_disk,
 		.boot_map_entry = boot_map_entry,
@@ -1238,8 +1303,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->dbdma.interrupt = dma_interrupt;
 	m->dbdma.interrupt_ctx = &m->macio;
 	mmio_add(&m->bus, MACIO_DBDMA, DBDMA_SIZE, &dbdma_mmio_ops, &m->dbdma, "dbdma");
-	awacs_init(&m->awacs, &m->dbdma, TIMEBASE_HZ);
-	m->awacs.log = getenv("BLUE_LOG_SOUND") != NULL;
+	burgundy_init(&m->sound, &m->dbdma, TIMEBASE_HZ);
+	m->sound.log = getenv("BLUE_LOG_SOUND") != NULL;
 	m->audio_log = getenv("BLUE_LOG_AUDIO") != NULL;
 	m->pads_log = getenv("BLUE_LOG_PADS") != NULL;
 	m->window_profile = getenv("BLUE_WINDOW_PROFILE") != NULL;
@@ -1251,17 +1316,24 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	 * at startup for 9.1, more for 9.2.2's two plug-ins, and more again in
 	 * real time with fast start).
 	 */
-	m->awacs.valid = true;
-	m->awacs.sink = play_sound;
-	m->awacs.sink_ctx = m;
-	m->awacs.input = (struct awacs_input){ cd_input_run, cd_input_pull, cd_input_active, m };
-	m->awacs.mic = (struct awacs_input){ NULL, mic_input_pull, NULL, m };
+	m->sound.valid = true;
+	m->sound.sink = play_sound;
+	m->sound.sink_ctx = m;
+	m->sound.input = (struct burgundy_input){ cd_input_run, cd_input_pull, cd_input_active, m };
+	m->sound.mic = (struct burgundy_input){ NULL, mic_input_pull, NULL, m };
 	if (!m->wav && getenv("BLUE_SOUND_WAV") && (m->wav = fopen(getenv("BLUE_SOUND_WAV"), "wb"))) {
 		uint8_t h[44];
 		wav_header(h, 0, 44100);
 		fwrite(h, 1, sizeof h, m->wav);
 	}
-	mmio_add(&m->bus, MACIO_SOUND, AWACS_SIZE, &awacs_mmio_ops, &m->awacs, "sound");
+	if (!m->in_wav && getenv("BLUE_SOUND_IN_WAV") && (m->in_wav = fopen(getenv("BLUE_SOUND_IN_WAV"), "wb"))) {
+		uint8_t h[44];
+		wav_header(h, 0, 44100);
+		fwrite(h, 1, sizeof h, m->in_wav);
+	}
+	if (m->in_wav)
+		m->sound.recorded = recorded_sound;
+	mmio_add(&m->bus, MACIO_SOUND, BURGUNDY_SIZE, &burgundy_mmio_ops, &m->sound, "sound");
 	ohci_init(&m->ohci, &m->mem);
 	m->ohci.log = getenv("BLUE_LOG_USB") != NULL;
 	mmio_add(&m->bus, USB_BASE, OHCI_SIZE, &ohci_mmio_ops, &m->ohci, "usb");
@@ -1491,7 +1563,7 @@ static void fast_start_step(struct machine *m, uint64_t now)
 {
 	uint64_t d = now - m->fast_last_ns;
 	m->fast_last_ns = now;
-	if (!awacs_playing(&m->awacs) && now >= m->fast_pause_ns)
+	if (!burgundy_playing(&m->sound) && now >= m->fast_pause_ns)
 		m->lead_tb += ns_to_tb(d) * (FAST_START_SPEED - 1);
 	if (!m->fast_finder && finder_current(m)) {
 		m->fast_finder = true;
@@ -1606,7 +1678,7 @@ static void nap(struct machine *m, uint64_t deadline, bool idle)
 		until = host_ns_at(m, ev, TIMEBASE_HZ);
 	if (deadline != UINT64_MAX && host_ns_at(m, deadline, TIMEBASE_HZ) < until)
 		until = host_ns_at(m, deadline, TIMEBASE_HZ);
-	bool sound = awacs_playing(&m->awacs), fast = m->fast_start && !sound && now >= m->fast_pause_ns;
+	bool sound = burgundy_playing(&m->sound), fast = m->fast_start && !sound && now >= m->fast_pause_ns;
 	if (fast && until > now)        /* (see fast_start_step()) */
 		until = now + (until - now) / FAST_START_SPEED;
 	if (m->display && m->next_frame_ns < until)
@@ -2155,8 +2227,8 @@ static void mic_sync(struct machine *m, uint64_t now)
 	if (!m->mic)
 		return;
 	bool was = mic_open(m->mic);
-	bool recording = (awacs_recording(&m->awacs) & (AWACS_IN_MIC | AWACS_IN_LINE)) &&
-			 m->awacs.run_recorded >= awacs_rate(&m->awacs) / 10;
+	bool recording = (burgundy_recording(&m->sound) & (BURGUNDY_IN_MIC | BURGUNDY_IN_LINE)) &&
+			 m->sound.run_recorded >= burgundy_rate(&m->sound) / 10;
 	mic_want(m->mic, recording, now);
 	if (mic_open(m->mic) != was) {
 		printf("mic: %s\n", was ? "the microphone is closed (Mac OS stopped recording)" :
@@ -3116,7 +3188,7 @@ static void update_device_time(struct machine *m)
 	video_set_time(&m->video, m->cpu.tb);
 	if (m->dbdma.poll)
 		dbdma_poll(&m->dbdma);
-	awacs_set_time(&m->awacs, m->cpu.tb);
+	burgundy_set_time(&m->sound, m->cpu.tb);
 }
 
 /*
@@ -3129,7 +3201,7 @@ static void update_device_time(struct machine *m)
  */
 static uint64_t device_next_tb(const struct machine *m)
 {
-	if (m->dbdma.poll || awacs_moving(&m->awacs))
+	if (m->dbdma.poll || burgundy_moving(&m->sound))
 		return 0;
 	uint64_t next = video_next_vbl(&m->video), ev = via_next_event(&m->via), usb = ohci_next_event(&m->ohci);
 	if (ev < UINT64_MAX / TIMEBASE_HZ) {
@@ -4176,7 +4248,7 @@ static bool drive_call(struct machine *m, struct disk *d, struct ndrv_call *c)
 	if (!moved)
 		return false;
 	uint64_t ticks = moved * TIMEBASE_HZ / (d->cdrom ? CD_BYTES_PER_SECOND : HD_BYTES_PER_SECOND);
-	if (m->realtime && awacs_playing(&m->awacs) && !m->transfer_due && blue_running(m)) {
+	if (m->realtime && burgundy_playing(&m->sound) && !m->transfer_due && blue_running(m)) {
 		m->disk_charged_tb += ticks;
 		m->transfer_waits++;
 		m->transfer_wait_tb += ticks;
@@ -4375,8 +4447,8 @@ static void audio_report(struct machine *m)
 	struct audio_stats a = { 0 };
 	if (m->audio)
 		audio_take_stats(m->audio, &a);
-	uint64_t frames = m->awacs.frames_played;
-	if (m->audio_log_ns && (frames != m->log_frames || awacs_playing(&m->awacs))) {
+	uint64_t frames = m->sound.frames_played;
+	if (m->audio_log_ns && (frames != m->log_frames || burgundy_playing(&m->sound))) {
 		double s = (double)(now - m->audio_log_ns) * 1e-9, ms = a.rate ? 1000.0 / a.rate : 0;
 		uint64_t naps = m->naps - m->log_naps;
 		printf("audio @%.1f s: %.0f frames/s from the guest (%.1f ms apart at most); queue %.0f-%.0f ms, "
@@ -4813,7 +4885,7 @@ static bool kcall_common(struct machine *m, unsigned n)
 __attribute__((noinline)) static bool kcall_dirty(struct machine *m, unsigned n, uint64_t done)
 {
 	struct ppc_cpu *cpu = &m->cpu;
-	if (m->dbdma.poll || awacs_moving(&m->awacs))
+	if (m->dbdma.poll || burgundy_moving(&m->sound))
 		return false;
 	uint64_t icount = cpu->icount, tb = cpu->tb;
 	cpu->icount += done;
@@ -4985,6 +5057,9 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	m->wav = old.wav;
 	m->wav_frames = old.wav_frames;
 	m->wav_rate = old.wav_rate;
+	m->in_wav = old.in_wav;
+	m->in_wav_frames = old.in_wav_frames;
+	m->in_wav_rate = old.in_wav_rate;
 	m->perf_on = old.perf_on;
 	m->perf = old.perf;
 	m->clock_mips = old.clock_mips;
@@ -5538,13 +5613,13 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		printf(" (%lu drawn with %s)", m.opengl.gpu_frames, gpu_renderer(m.gpu));
 	if (m.isp.calls)
 		printf("\nisp: %lu driver calls, %lu data pushed", m.isp.calls, m.isp.pushes);
-	if (m.awacs.codec_writes)
+	if (m.sound.codec_writes)
 		printf("\nsound: %lu codec writes, %u Hz, %lu frames played, %lu recorded",
-		       m.awacs.codec_writes, awacs_rate(&m.awacs), m.awacs.frames_played, m.awacs.frames_recorded);
-	if (m.awacs.frames_through)
-		printf("\nsound: %lu frames with the CD's audio in them", m.awacs.frames_through);
+		       m.sound.codec_writes, burgundy_rate(&m.sound), m.sound.frames_played, m.sound.frames_recorded);
+	if (m.sound.frames_through)
+		printf("\nsound: %lu frames with the CD's audio in them", m.sound.frames_through);
 	if (m.mic_file || m.mic->opens)
-		printf("\nmic: %lu frames recorded with the microphone's sound in them (%s)", m.awacs.frames_heard,
+		printf("\nmic: %lu frames recorded with the microphone's sound in them (%s)", m.sound.frames_heard,
 		       m.mic_file ? "a sound file standing in" : "the host's");
 	if (m.transfer_waits)
 		printf("\nsound: disk transfers waited out while it played: %lu (%.1f s)", m.transfer_waits,
@@ -5599,6 +5674,13 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		fseek(m.wav, 0, SEEK_SET);
 		fwrite(h, 1, sizeof h, m.wav);
 		fclose(m.wav);
+	}
+	if (m.in_wav) {
+		uint8_t h[44];
+		wav_header(h, m.in_wav_frames, m.in_wav_rate ? m.in_wav_rate : 44100);
+		fseek(m.in_wav, 0, SEEK_SET);
+		fwrite(h, 1, sizeof h, m.in_wav);
+		fclose(m.in_wav);
 	}
 	audio_close(m.audio);
 	mic_close(m.mic);

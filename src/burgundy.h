@@ -17,7 +17,7 @@
  *   0x50 frame count    sample frames since reset, counting all the time
  *
  * Output is 16-bit big-endian stereo frames from DBDMA channel 8, taken at
- * the sample rate of guest time (awacs_set_time()) and handed to a sink;
+ * the sample rate of guest time (burgundy_set_time()) and handed to a sink;
  * input on channel 9 records at the same pace, in the same format.
  *
  * The codec's analog input (`input`) is where the iMac's CD drive plays:
@@ -32,8 +32,8 @@
  * the input gain (register 0: left in bits 4-7, right in 0-3, 1.5 dB steps
  * from 0 dB), samples clipped counting in the clip count.
  */
-#ifndef BLUE_AWACS_H
-#define BLUE_AWACS_H
+#ifndef BLUE_BURGUNDY_H
+#define BLUE_BURGUNDY_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -41,22 +41,25 @@
 #include "dbdma.h"
 #include "mmio.h"
 
-#define AWACS_SIZE 0x1000u
-#define AWACS_DMA_OUT 8u
-#define AWACS_DMA_IN 9u
-#define AWACS_CODEC_REGS 8u
-#define AWACS_CD_REC 4096u              /* the CD's frames kept for recording (MAX_CREDIT's worth) */
+#define BURGUNDY_SIZE 0x1000u
+#define BURGUNDY_DMA_OUT 8u
+#define BURGUNDY_DMA_IN 9u
+#define BURGUNDY_REGS 128u
+#define BURGUNDY_REG_COMMAND 0x00u         /* (bit 1: recalibrate) */
+#define BURGUNDY_REG_ID 0x01u              /* the codec's identity: Burgundy (byte 3: 1), its maker (byte 2) */
+#define BURGUNDY_ID 0x01010000u
+#define BURGUNDY_CD_REC 4096u              /* the CD's frames kept for recording (MAX_CREDIT's worth) */
 
 /* The input selector's inputs (codec register 0) */
-#define AWACS_IN_CD 0x200u
-#define AWACS_IN_MIC 0x400u
-#define AWACS_IN_LINE 0x800u            /* (sound in) */
+#define BURGUNDY_IN_CD 0x200u
+#define BURGUNDY_IN_MIC 0x400u
+#define BURGUNDY_IN_LINE 0x800u            /* (sound in) */
 
 /* Where played frames go: `count` frames of big-endian left/right samples */
-typedef void awacs_sink(void *ctx, const uint8_t *frames, unsigned count, unsigned rate);
+typedef void burgundy_sink(void *ctx, const uint8_t *frames, unsigned count, unsigned rate);
 
 /* The analog input */
-struct awacs_input {
+struct burgundy_input {
 	void (*run)(void *ctx, uint64_t time);          /* brings it to `time` */
 	/* its next `count` frames (left, right) at `rate`; false if it's silent */
 	bool (*pull)(void *ctx, int16_t *frames, unsigned count, unsigned rate);
@@ -64,23 +67,26 @@ struct awacs_input {
 	void *ctx;
 };
 
-struct awacs {
+struct burgundy {
 	uint32_t control;
 	uint32_t codec_control;                 /* last write */
-	uint16_t codec[AWACS_CODEC_REGS];
+	uint32_t reg[BURGUNDY_REGS];            /* the codec's registers (up to 4 bytes each) */
+	uint32_t status;                        /* codec status: the last byte read */
+	unsigned long reads;
 	uint32_t byte_swap;
 	uint32_t clip_count;
 	bool valid;                             /* codec status bit 22, as a running codec's (see nk.c) */
 
 	struct dbdma *dma;
-	awacs_sink *sink;
+	burgundy_sink *sink;
 	void *sink_ctx;
-	struct awacs_input input;               /* (none if pull is NULL) */
-	uint64_t input_mixed;                   /* frames of it played with the DMA's in this awacs_set_time() */
-	struct awacs_input mic;                 /* the microphone and sound in (pull only; none if it's NULL) */
+	struct burgundy_input input;               /* (none if pull is NULL) */
+	uint64_t input_mixed;                   /* frames of it played with the DMA's in this burgundy_set_time() */
+	struct burgundy_input mic;              /* the microphone and sound in (pull only; none if it's NULL) */
+	burgundy_sink *recorded;                /* what input DMA records goes here too, if set */
 
 	/* recording: the CD's frames the codec took while input DMA records it, waiting for it */
-	int16_t cd_rec[AWACS_CD_REC][2];
+	int16_t cd_rec[BURGUNDY_CD_REC][2];
 	unsigned cd_rec_head, cd_rec_count;
 	bool cd_rec_taking;                     /* ... since a few were waiting */
 	uint8_t rec_frame[4];                   /* a frame recorded, ... */
@@ -90,9 +96,10 @@ struct awacs {
 	/* frames since reset at the current rate: base + (time - since) * rate / time_hz */
 	uint64_t time, time_hz;
 	uint64_t since, base;
-	uint64_t frames;                        /* ... as of the last awacs_set_time() */
+	uint64_t frames;                        /* ... as of the last burgundy_set_time() */
 	uint64_t frame_count_zero;              /* frame count register origin */
 	uint32_t out_credit, in_credit;         /* bytes each DMA direction may move now */
+	unsigned out_slot, in_slot;             /* the subframe each one's next frame is for (see subframes()) */
 	uint8_t partial[4];                     /* output bytes short of a whole frame */
 	unsigned npartial;
 
@@ -102,29 +109,29 @@ struct awacs {
 	unsigned long frames_heard;             /* recorded with the microphone's sound in them */
 };
 
-void awacs_init(struct awacs *a, struct dbdma *dma, uint64_t time_hz);
+void burgundy_init(struct burgundy *a, struct dbdma *dma, uint64_t time_hz);
 
 /* Guest time advances to `time` (in time_hz units): the DMA channels move what's due. */
-void awacs_set_time(struct awacs *a, uint64_t time);
+void burgundy_set_time(struct burgundy *a, uint64_t time);
 
 /* Sample rate in Hz, from the control register */
-unsigned awacs_rate(const struct awacs *a);
+unsigned burgundy_rate(const struct burgundy *a);
 
 /* Output gain of each channel (65536 = full scale), from the codec's attenuation */
-void awacs_gain(const struct awacs *a, unsigned *left, unsigned *right);
+void burgundy_gain(const struct burgundy *a, unsigned *left, unsigned *right);
 
 /* Is output DMA running, or the analog input sounding (they need time to pass at a fine grain)? */
-bool awacs_playing(const struct awacs *a);
+bool burgundy_playing(const struct burgundy *a);
 
 /* ... or input DMA? */
-bool awacs_moving(const struct awacs *a);
+bool burgundy_moving(const struct burgundy *a);
 
 /* Whether the analog input is played through to the outputs */
-bool awacs_through(const struct awacs *a);
+bool burgundy_through(const struct burgundy *a);
 
-/* What input DMA records from now (AWACS_IN_ bits; 0 if it isn't moving, or nothing is selected) */
-unsigned awacs_recording(const struct awacs *a);
+/* What input DMA records from now (BURGUNDY_IN_ bits; 0 if it isn't moving, or nothing is selected) */
+unsigned burgundy_recording(const struct burgundy *a);
 
-extern const struct mmio_ops awacs_mmio_ops;
+extern const struct mmio_ops burgundy_mmio_ops;
 
 #endif

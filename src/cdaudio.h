@@ -5,7 +5,7 @@
  * frames at 44.1 kHz. It's paced by guest time: the position at a guest
  * time follows from where and when play started, whenever it's looked at,
  * so instruction-time runs are reproducible. The frames wait in a FIFO for
- * the sound chip's analog input (awacs.h), which takes them at its own
+ * the sound chip's analog input (burgundy.h), which takes them at its own
  * rate (cdaudio_pull()).
  */
 #ifndef BLUE_CDAUDIO_H

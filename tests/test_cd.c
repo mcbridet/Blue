@@ -13,7 +13,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "../src/awacs.h"
+#include "../src/burgundy.h"
 #include "../src/be.h"
 #include "../src/cdaudio.h"
 #include "../src/cdimage.h"
@@ -862,25 +862,25 @@ static void test_through_codec(const struct cdimage *c)
 {
 	static struct mem mem;
 	static struct dbdma dma;
-	static struct awacs snd;
+	static struct burgundy snd;
 	if (mem_init(&mem))
 		return;
 	mem_map(&mem, 0, 0x10000, MEM_RWX);
 	dbdma_init(&dma, &mem, 0x10000);
-	awacs_init(&snd, &dma, GUEST_HZ);
+	burgundy_init(&snd, &dma, GUEST_HZ);
 	snd.sink = sink;
-	snd.input = (struct awacs_input){ input_run, input_pull, input_active, &player };
+	snd.input = (struct burgundy_input){ input_run, input_pull, input_active, &player };
 	cdaudio_init(&player, GUEST_HZ);
 	cdaudio_disc(&player, c);
 	struct cdaudio_range r = { 20, 40 };
-	CHECK(!awacs_playing(&snd));
+	CHECK(!burgundy_playing(&snd));
 	cdaudio_play(&player, 1000, &r, 1, 0, r.start, false, false);
-	CHECK(awacs_playing(&snd));
-	CHECK(awacs_moving(&snd));
+	CHECK(burgundy_playing(&snd));
+	CHECK(burgundy_moving(&snd));
 	heard_frames = 0;
 	for (uint64_t tb = 1000; tb <= 1000 + GUEST_HZ / 10; tb += 4567)
-		awacs_set_time(&snd, tb);
-	awacs_set_time(&snd, 1000 + GUEST_HZ / 10);
+		burgundy_set_time(&snd, tb);
+	burgundy_set_time(&snd, 1000 + GUEST_HZ / 10);
 	CHECK_EQ(heard_frames, (1000 + GUEST_HZ / 10) * (uint64_t)CD_RATE / GUEST_HZ);  /* (the codec's frames) */
 	unsigned z = 0;                                 /* silence until the player is CDAUDIO_LEAD ahead */
 	while (z < heard_frames && !be16(heard + 4 * z))
@@ -896,22 +896,23 @@ static void test_through_codec(const struct cdimage *c)
 	CHECK_EQ(snd.frames_through, heard_frames);
 	CHECK_EQ(snd.frames_played, 0);
 
-	/* the microphone selected: not heard; the CD with loop-through: heard again */
-	awacs_mmio_ops.write(&snd, 0x10, 4, __builtin_bswap32(0x00000400));
+	/* a microphone selected (the CD's channel not among the outputs'): not heard; the CD again: heard */
+	for (unsigned k = 0; k < 4; k++)
+		burgundy_mmio_ops.write(&snd, 0x10, 4, __builtin_bswap32(0x22BC00u | k << 8 | (0x01000100u >> 8 * k & 0xFF)));
 	unsigned before = heard_frames;
-	awacs_set_time(&snd, 1000 + GUEST_HZ / 5);
+	burgundy_set_time(&snd, 1000 + GUEST_HZ / 5);
 	CHECK_EQ(heard_frames, before);
-	awacs_mmio_ops.write(&snd, 0x10, 4, __builtin_bswap32(0x00000233));
-	awacs_mmio_ops.write(&snd, 0x10, 4, __builtin_bswap32(0x000018C0));
-	CHECK(awacs_through(&snd));
-	awacs_set_time(&snd, 1000 + GUEST_HZ / 4);
+	for (unsigned k = 0; k < 4; k++)
+		burgundy_mmio_ops.write(&snd, 0x10, 4, __builtin_bswap32(0x22BC00u | k << 8 | (0x01010101u >> 8 * k & 0xFF)));
+	CHECK(burgundy_through(&snd));
+	burgundy_set_time(&snd, 1000 + GUEST_HZ / 4);
 	CHECK(heard_frames > before + 2000);
 
 	/* the end of the play: nothing more once the last frames are out */
-	awacs_set_time(&snd, 1000 + GUEST_HZ);
-	CHECK(!awacs_playing(&snd));
+	burgundy_set_time(&snd, 1000 + GUEST_HZ);
+	CHECK(!burgundy_playing(&snd));
 	before = heard_frames;
-	awacs_set_time(&snd, 1000 + 2 * GUEST_HZ);
+	burgundy_set_time(&snd, 1000 + 2 * GUEST_HZ);
 	CHECK_EQ(heard_frames, before);
 	mem_free(&mem);
 }

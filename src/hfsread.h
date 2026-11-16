@@ -114,6 +114,10 @@ int hfsread_system_file(const char *const *paths, unsigned count, uint32_t type,
 int hfsread_system_file_in(const char *path, unsigned map_entry, uint32_t type, struct hfsread_found *found,
 			   char *err, size_t errlen);
 
+/* ... and its resource fork, in `found`'s data */
+int hfsread_system_rsrc_in(const char *path, unsigned map_entry, uint32_t type, struct hfsread_found *found,
+			   char *err, size_t errlen);
+
 /*
  * Calls `fn` for each HFS volume in the image at `path` (opened read-only;
  * an image with a partition map has one a partition, in map order) until

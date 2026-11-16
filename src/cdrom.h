@@ -4,7 +4,7 @@
  * calls that AppleCD Audio Player, the Control Strip's CD module, the Audio
  * CD Access file system, QuickTime and games make for the disc's table of
  * contents, its subchannel, playing audio (into the sound chip's input:
- * cdaudio.h, awacs.h), reading audio digitally, and the track play lists
+ * cdaudio.h, burgundy.h), reading audio digitally, and the track play lists
  * the driver plays itself. disk.c hands a CD-ROM drive's calls here first,
  * with the disc in it (NULL: none, as far as Mac OS knows).
  *

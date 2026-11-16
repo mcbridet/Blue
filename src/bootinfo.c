@@ -307,19 +307,18 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	dt_prop_u32(dav, "#size-cells", 0);
 	struct dt_node *sound = dt_add_node(dav, "sound");
 	dt_prop_str(sound, "device_type", "sound");
-	dt_prop_str(sound, "compatible", "awacs");
-	dt_prop_u32(sound, "sub-frame", 0);
-	dt_prop_u32(sound, "vendor-id", 0x106B);        /* Apple's sound port layout 1 (Mac OS's sound */
-	dt_prop_u32(sound, "device-id", 1);             /* component picks its ports by these) */
 	/*
-	 * Output only (bit 0 would be input, which only records silence here).
-	 * Mac OS 9's AWACS input component claims chips with input, and its close
-	 * after the Component Manager's register call corrupts the system heap
-	 * whenever the heap is laid out a certain way: it unlocks its globals, then
-	 * passes a pointer into them to a call that allocates memory (which can
-	 * move them) and writes through it afterwards. Startup then crashes or hangs.
+	 * The iMac's Burgundy: Mac OS 9 picks its sound plug-in by the model, and
+	 * the sound input driver (.AppleSoundInput) comes for "awacs", the family.
 	 */
-	dt_prop_u32(sound, "hardware-types", 2);
+	static const char sound_compatible[] = "burgundy\0awacs";
+	dt_prop(sound, "compatible", sound_compatible, sizeof sound_compatible);
+	dt_prop_str(sound, "model", "343S0177");
+	dt_prop_u32(sound, "sub-frame", 0);
+	dt_prop_u32(sound, "vendor-id", 0x106B);        /* the iMac's sound port layout (Mac OS's sound */
+	dt_prop_u32(sound, "device-id", 1);             /* component picks its ports by these) */
+	if (!hw->sound_input)
+		dt_prop_u32(sound, "hardware-types", 2);        /* (output only; bit 0 is input) */
 
 	/*
 	 * Ethernet, as on the iMac: Paddington's "bmac+", with the PowerPC code
