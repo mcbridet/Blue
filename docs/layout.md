@@ -11,10 +11,10 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           Services, NanoKernel 2's), priv.c (supervisor mode: the skeleton key),
           bootinfo.c + devtree.c (Trampoline replacement, device tree),
           rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
-          dbdma.c, via.c, cuda.c, adb.c, scc.c (serial), awacs.c, ohci.c (USB), pci.c
+          dbdma.c, via.c, cuda.c, adb.c, scc.c (serial), burgundy.c (sound), ohci.c (USB), pci.c
           (configuration space), nvram.c (devices), pad.c (game
           controllers as the keyboard and mouse), settings.c (Blue's
-          settings file: the pads' mappings), wheel.c (the scroll wheel's
+          settings file: the pads' mappings, sound input), wheel.c (the scroll wheel's
           lines), ndrv.c (PEF fragment
           generator: drivers, the guest tools),
           video.c, disk.c (native drivers), floppy.c (floppy images),
@@ -46,7 +46,9 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           window, on the main thread, and what the Mac hands it), density.c (displays'
           pixels per inch, for its scale), ui.cpp (its menu and prompts, with Dear ImGui),
           chooser.c, chooser_mac.m (the host's file chooser, for the menu's Insert...),
-          menubar_mac.m (Blue's menu bar on macOS, without SDL's shortcuts), audio.c (SDL2 sound), png.c,
+          menubar_mac.m (Blue's menu bar on macOS, without SDL's shortcuts), audio.c (SDL2 sound, and the microphone), mic.c (sound input:
+          the host's microphone or a WAV file, opened while Mac OS records), mic_mac.m (macOS's
+          microphone permission), png.c,
           perf.c (host processor counters), env.c (settings' old names),
           icon.c (the window's icon), font.c (its font), hostlib.c (where
           SDL2 and libslirp are loaded from), welcome.c (the window shown

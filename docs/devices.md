@@ -204,28 +204,57 @@ show it either way.
 
 ## Sound
 
-The sound chip (`src/awacs.c`) is an AWACS-family codec on the Mac I/O "davbus", which
-Mac OS drives with its own driver stack from the System file (`.DAVAudio`,
-DAVAudioLib, the GCAwacs hardware plug-in and the 'awgc' sound output and
-port components; Mac OS 9's has a DMA plug-in in DAVAudioLib's place). Output takes 16-bit stereo frames from DMA channel 8 at
-the sample rate of guest time, so guest-visible behaviour never depends on
-the host; input (channel 9) records silence. The codec's analog input
-carries the CD-ROM drives' audio (`src/cdaudio.c`), played through to
-the outputs when the input selector has the CD and loop-through is on
-(or no input was selected), mixed with the DMA's frames or alone,
-resampled to the codec's rate. The codec's attenuation and
-mute bits are applied before the frames go to the host, so the volume
-slider and Mute in Monitors & Sound work. What it took for Mac OS to use
-it: a DecoderInfo address for the chip (Gestalt `snhw` is then `awgc`),
-the device-tree node with `AAPL,interrupt-vectors` (which Mac OS 8.5's
-DAVAudioLib uses) and an interrupt set (`driver-ist`, which Mac OS 9's
-DMA plug-in needs: without one it fails to start, and Mac OS 9 had no
-sound output at all), and a `sound` child whose `vendor-id`/`device-id`
-(Apple, 1) pick a port layout the 'soph' component knows; without them the
-output device opens but never plays. The node declares output hardware
-only (`hardware-types` 2, bit 0 being input), which keeps Mac OS 9's buggy
-input component away (see [Mac OS 9](bring-up.md#mac-os-9)). The codec's status says it's valid
-(bit 22), which Mac OS's sound plug-in polls for (see [Mac OS 9.2.2](bring-up.md#mac-os-922-from-its-cd)).
+The sound chip (`src/burgundy.c`) is a Burgundy, the codec of the original
+iMac, on the Mac I/O "davbus", which Mac OS drives with its own driver stack
+from the System file (`.DAVAudio`, DAVAudioLib, SndHWLib and its
+BurgundyPlugin, and the 'awgc' sound output, input and port components;
+Mac OS 9's has a DMA plug-in in DAVAudioLib's place). Output takes 16-bit
+stereo frames from DMA channel 8, and input puts them in channel 9's
+buffers, at the sample rate of guest time, so guest-visible behaviour never
+depends on the host. Mac OS turns on two of the davbus's subframes, so each
+sample period DMA moves two frames each way: the codec's, and silence.
+
+The codec's own registers (up to four bytes each) are reached through the
+davbus's codec control and status registers, a byte a command: writes
+carry the register, the byte and the register's length; a read shows the
+byte in the status with which byte it is and a count that changes with each
+one, which BurgundyPlugin waits for. Blue keeps the whole register file, so
+what's read is what was written. Its mixer model follows what Mac OS sets:
+
+- **Inputs:** four channels, each with a source, a coarse gain (1.5 dB
+  steps) and a fine volume (0.375 dB steps; Mac OS's 0xDF is 0 dB). Channel
+  1 is the CD, 2 the sound-in jack (External Mic and Sound In), 3 the
+  built-in microphone (the host's sides mixed: it's one microphone), 4 the
+  modem (silent). The gain applies to what's recorded.
+- **Recording:** the channels the capture selects have, mixed. The
+  microphone channels take the host's microphone (`src/mic.c`, below), the
+  CD channel the CD's frames as the codec takes them.
+- **Output:** the DMA's frames, and the channels the output selects have
+  (the CD, when Mac OS monitors it), mixed; then the master volume (0.375 dB
+  steps) and the louder of the enabled outputs' attenuation (speaker, line
+  out, headphones; 1.5 dB steps), so the volume slider and Mute work.
+  Nothing is plugged into the headphone or sound-in jacks.
+- **SRS 3D Surround:** Mac OS writes its filter coefficients and turns it
+  on (it's on by default); Blue keeps them and plays without it.
+
+What it took for Mac OS to use the chip: a DecoderInfo address for it
+(Gestalt `snhw` is then `awgc`), the device-tree node with
+`AAPL,interrupt-vectors` (which Mac OS 8.5's DAVAudioLib uses) and an
+interrupt set (`driver-ist`, which Mac OS 9's DMA plug-in needs: without
+one it fails to start, and Mac OS 9 had no sound output at all), and a
+`sound` child as the iMac's: `compatible` "burgundy" and "awacs" (Mac OS
+8.5 tries GCAwacsPlugin first, which declines a codec that isn't an AWACS
+or a Screamer, then BurgundyPlugin; its sound input driver, `.AppleSoundInput`,
+is matched by "awacs"), `model` "343S0177" (Mac OS 9 picks BurgundyPlugin
+by it), and `vendor-id`/`device-id` (Apple, 1), which pick the iMac's port
+layout in the 'soph' component; without them the output device opens but
+never plays. The codec's status says it's valid (bit 22), which Mac OS's
+sound plug-in polls for (see [Mac OS 9.2.2](bring-up.md#mac-os-922-from-its-cd)).
+On Mac OS 9.0.x (the System file's version on the startup disk) the node
+says the chip has output only (`hardware-types` 2), which keeps that
+version's buggy sound input component away (see [Mac OS 9](bring-up.md#mac-os-9)):
+there, Mac OS records nothing. [findings.md](findings.md) has what
+Mac OS sets for each input.
 
 CD audio from the CD-ROM drives is described in
 [drives.md](drives.md#cds-audio-and-cue-sheets).
@@ -235,6 +264,27 @@ off; a small queue is kept, its frames resampled to play up to 0.5%
 faster or slower as it's fuller or emptier than its goal, so that the
 guest's clock and the device's can't drift apart into growing delay or
 gaps, and a stall of the host is made up within seconds).
+
+The microphone is the host's default sound input, through SDL2's capture
+(`src/audio.c`, `src/mic.c`), in real time only. Blue opens it only while
+Mac OS records from the built-in microphone or the sound-in jack (input DMA
+running with one of their channels captured, for a tenth of a second), and
+closes it two seconds after Mac OS stops; the status bar's Microphone
+light is on while it's open, and the F12 menu says so and turns sound
+input off (Mac OS then records silence; the choice is kept in the settings
+file), as `--no-mic` does. On macOS the system asks the user's permission
+the first time (Info.plist's `NSMicrophoneUsageDescription`); until it's
+given, or if it's refused, Mac OS records silence and Blue says why on one
+line. The host's frames wait in a ring of 16384 (the oldest dropped when
+it's full; silence when it runs dry, until 1024 are waiting again) and
+are resampled to the codec's rate in a straight line between the frames on
+either side, taken up to 0.5% faster or slower as the ring is fuller or
+emptier than 2048, so the host's clock and guest time can't drift apart.
+Guest time takes them at its own pace: the host only fills the ring.
+Instruction-time runs never open the microphone; they record silence, or
+a WAV file given with `--mic-file` (over and over) or scripts' `mic play
+FILE` (once; `mic stop` stops it), which is read as Mac OS records, so runs
+stay reproducible.
 
 ## Networking
 

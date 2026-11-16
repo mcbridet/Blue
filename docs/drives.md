@@ -171,12 +171,13 @@ mounts it as "Audio CD 1", its tracks as documents (on 8.5; AppleCD Audio
 Player opens them, QuickTime's MoviePlayer converts them to AIFF files,
 reading them digitally).
 
-The drive plays audio as the iMac's did: into the sound chip's analog input,
-which Mac OS sets to play the CD through to the outputs (8.5 selects the CD
-and turns loop-through on; with no input selected, as Mac OS 9 leaves it
-here, it plays through too). So CD audio is mixed with Mac OS's own sound
-and follows its volume and mute (Monitors & Sound), as on the real machine,
-and the drive's own volume (AudioControl) comes before. It's paced by guest
+The drive plays audio as the iMac's did: into the sound chip's CD input,
+which Mac OS sets to play through to the outputs (with the CD as the sound
+monitoring source, as it is by default; see [Sound](devices.md#sound)). So
+CD audio is mixed with Mac OS's own sound and follows its volume and mute
+(Monitors & Sound, or the Sound control panel), as on the real machine,
+and the drive's own volume (AudioControl) comes before. With the CD as the
+sound input, Mac OS records it too. It's paced by guest
 time: where the drive is follows from where and when play started, so
 instruction-time runs are reproducible, and `BLUE_SOUND_WAV` records it.
 To play a music CD's or a game's soundtrack, start Mac OS with the cue

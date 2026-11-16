@@ -276,15 +276,99 @@ made to start up.
   `dCtlDriver + 18` (unit 49 `.AppleCD`), so `OpenDriver(".AppleCD")`
   finds it; Apple CD/DVD Driver 1.0.1 (68k DRVRs `.AppleCD` for SCSI and
   ATAPI) finds no drives of its own and leaves it alone.
-- **CD audio, the codec:** Mac OS 8.5's sound driver writes register 0 =
-  0x233 (input: the CD, gain 3) and register 1 = 0x8C0 (loop-through on,
-  the speaker muted); Mac OS 9.1 here writes 0x000 and 0x880 (no input
-  selected, no loop-through: its input component isn't loaded, see
-  [bring-up.md](bring-up.md#mac-os-9)), so the CD plays through when nothing is selected too. Output
-  attenuation 0x249 (9 steps, 13851/65536) applies to the CD as to DMA
-  sound. In instruction time CD audio costs about 1 s per 8 billion
-  instructions with 385 s of it playing (an installed 8.5 boot: 4.85 s
-  against 3.83 s); the player reads 16 sectors at a time.
+- **CD audio, the codec:** with Blue's AWACS model, Mac OS 8.5's sound
+  driver wrote register 0 = 0x233 (input: the CD, gain 3) and register 1 =
+  0x8C0 (loop-through on, the speaker muted), and Mac OS 9.1 0x000 and
+  0x880 (no input selected: its input component wasn't loaded). With the
+  Burgundy, both select the CD's channel for monitoring and play it
+  through (below). In instruction time CD audio costs about 1 s per 8
+  billion instructions with 385 s of it playing (an installed 8.5 boot:
+  4.85 s against 3.83 s); the player reads 16 sectors at a time.
+- **The iMac's sound chip:** a real iMac,1's `/pci/mac-io/davbus/sound`
+  (listed on linuxppc-dev, January 1999, "iMac: sound?") has `compatible`
+  "burgundy" (a listing cut at the first NUL, so perhaps more), `model`
+  "343S0177", `device-id`, `vendor-id`, `sub-frame`, `#input-channels`,
+  `#output-channels`, input and output encodings ("16bit-BE-signed-linear")
+  and frame rates, and no `hardware-types`. Linux's snd-powermac drives it
+  as a Burgundy (`sound/ppc/burgundy.c`); its AWACS (Screamer) iMac cases
+  are the slot-loading iMacs (PowerMac2,x and 4,1).
+- **How Mac OS picks its sound plug-in:** 8.5's SndHWLib loads
+  GCAwacsPlugin, then BurgundyPlugin if that fails. GCAwacsPlugin's
+  initialisation takes the codec status's bits 12-15 (2: AWACS, 3:
+  Screamer) and fails (-2821) for anything else, so a Burgundy's status
+  must show neither. 9.x's SndHWPluginMgrLib picks by the sound node's
+  `model`: 343S0140 and 343S0184 GCAwacsPlugin, 343S0177 BurgundyPlugin,
+  353S0228 DacaPlugin (others for Tumbler, USB and so on); without one, by a
+  `perch` node's `compatible`, else GCAwacsPlugin. Mac OS 8.5's sound input
+  driver, `.AppleSoundInput` (System 'ndrv' -20535), is matched to a node by
+  "awacs": without it, SimpleSound's Add... is disabled (no input device),
+  so the node's `compatible` carries both names.
+- **The port layouts** (the 'soph' 'awgc' component, by `device-id`, with
+  `vendor-id` 0x106B): 1 is the iMac's: inputs Built-in Mic (input 7),
+  External Mic and Sound In (5, the same jack), CD (3) and DVD; outputs the
+  internal speaker, headphones and an external speaker; SRS. 2 is a
+  PowerBook's (Built-in Mic, External Mic, Sound In, Expansion Bay, Zoomed
+  Video, PC Card, no SRS), 3 the Beige G3's sensing, 4 another; other ids
+  fail with -50 (and output never plays). GCAwacsPlugin's
+  SndHWSetActiveInput takes inputs 0 to 4 only (-17 for others), which is
+  why the iMac's layout on an AWACS could select the CD but no microphone;
+  BurgundyPlugin takes 0 to 9.
+- **BurgundyPlugin's codec protocol:** through DAVAudioLib's
+  DAVSetAuxBits (which waits for codec control's bit 24 to clear before
+  and, unless told not to, after) and DAVGetAuxBits (the status, for a
+  subframe). A register is written a byte a command: `0x200000 | reg << 12
+  | (length - 1) << 10 | byte << 8 | value` (BurgySetRegister; register
+  numbers below 0x7B, a table of their lengths in its globals). It's read
+  (SndHWGetHardwareRegister) with `0x100000 | reg << 12 | (length - 1) <<
+  10` for the first byte and the same without 0x100000 for each next one;
+  after each it waits, 1 µs at a time for up to 100, for the status's bit
+  23 to clear and its count (bits 14-15) to change, then takes the byte
+  (bits 4-11) at its place (bits 12-13). Linux writes a byte with
+  0x300000 and reads each byte with 0x100000. At startup the plug-in reads
+  every register into its copy of them; SndHWGetType reads register 0
+  (its byte must be 0 and the status valid) and then register 1, whose top
+  byte must be 1 (Burgundy: type 3; otherwise initialisation fails);
+  SndHWGetManf takes register 1's byte 2 (1 or 2). Recalibration writes 2
+  to register 0 and waits for its bit 0, then the status's bit 0, to
+  clear. SndHWGetInSenseBits reads register 0x18 (0: nothing plugged in).
+  Its only sample rate is 44.1 kHz; the Sound Manager converts others.
+- **What Mac OS sets on the Burgundy** (8.5's Monitors & Sound and 9.2.2's
+  Sound control panel, the same values): the CD: register 0x11 = 0x0A,
+  0x2A = 0x00010001 (captured), 0x13 = 0x33 (gain 4.5 dB), 0x20 =
+  0x00DF00DF, 0x2B = 0x01010101 (played through: bits 0 and 16 with the
+  DMA's 8 and 24); External Mic and Sound In: 0x11 = 0xA0, 0x2A =
+  0x00020002, 0x14 = 0x44 (6 dB), 0x21 = 0x00DF00DF, 0x2B = 0x01000100 (not
+  played through); Built-in Mic: 0x12 = 0x0A, 0x2A = 0x00040004, 0x22 =
+  0x00DFDF00; None: 0x2A = 0. Output: 0x60 = 0x06 (the speaker's left and
+  right), and SndHWSetSystemVolume splits a volume v (0 to 0x100) into
+  (256 - v) × 80/255 × 0.375 dB, as 1.5 dB steps of the outputs'
+  attenuation (0x62 speaker, 0x63 line out, 0x64 headphones; left in the
+  low nibble) and the rest in 0.375 dB steps down from 0xFF in the master
+  volume (0x30: left in byte 0, right in byte 1). The default is master
+  0xFE and attenuation 0xBB (16.9 dB, against AWACS's 13.5 dB at the
+  same slider); full volume 0xFF and 0; Mute and volume 0 put 0 in the
+  master. SRS 3D Surround (on by default) writes 0x40-0x53, two sets of
+  biquad coefficients (0x100000 = 1.0; flat is b = -a, the identity), and
+  0x55 = 1.
+- **Davbus subframes:** with BurgundyPlugin, Mac OS sets the control
+  register's input and output subframe fields (bits 0-3 and 4-7) to 3:
+  subframes 0 and 1, so DMA moves two frames a sample period, the codec's
+  first and silence. GCAwacsPlugin left them 0. Taking one frame a period
+  played everything at half speed (and SimpleSound's recordings came back
+  with every other frame silent).
+- **The sound control panels:** 8.5's Monitors & Sound offers Sound
+  Monitoring Source External Mic, Sound In, CD, Built-in Mic and None
+  (CD by default), Sound Output Quality fixed at 44.100 kHz, and 3D
+  Surround Sound (SRS) on. 9.2.2's Sound control panel's Input lists
+  Built-in Mic, CD, External Mic and Sound In (device "Built-in"), with
+  "Play sound through output device" and a gain; Alerts' New Sound records
+  "from Built-in Mic (Built-in)". SimpleSound (8.5) records with Alert
+  Sounds' Add...
+- **Sound input on Mac OS 9.0.x:** its input component's close routine
+  corrupts the system heap whenever it finds a chip with input
+  ([bring-up.md](bring-up.md#mac-os-9)), so Blue says output only there. 9.1 and 9.2.2 (CD
+  boots, an installed 9.2.2) start up with input declared. 9.0.x with the
+  Burgundy is untested.
 
 - **ID format:** slot << 16 | the slot's use count; the first ID made is
   1 (the blue process). Classes (`NKOpaque.a`): process 1, task 2, timer
@@ -2050,7 +2134,7 @@ made to start up.
   the 8.5 and 9.1 checks' counts change, though not their screens).
   QEMU's `mac99` has no sound device, so it can't show what 9.2.2's sound
   does there.
-- **The codec's valid bit** (`src/awacs.c`, `setup_machine()`): what made
+- **The codec's valid bit** (`src/burgundy.c`, `setup_machine()`): what made
   startup slow with the sound chip's set. Mac OS 9's sound plug-in, once
   it has set the codec up, runs an event (`0x003203C0` in a 9.2.2 CD run
   to a billion instructions) that reads the codec's status for a subframe
@@ -2063,7 +2147,7 @@ made to start up.
   of guest time apart in instruction time; in real time with fast start
   (a guest processor ten times slower in guest time) about 8 ms apart, 17
   s in all: the CD's Finder at 29.7 s of guest time with only the sound
-  chip's set, 22.2 s with all three. With the bit (`awacs.valid`) the plug-in
+  chip's set, 22.2 s with all three. With the bit (the codec's `valid`) the plug-in
   goes on at once. 9.1's plug-in has the same code (`0x003093F8`, 1,000
   polls at startup, 2 s in instruction time), and 8.5's polls too; the bit
   is set for every system (real time, fast start, guest time to the

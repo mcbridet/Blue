@@ -119,16 +119,18 @@ its name is unique (NBP lookups). Two things were in the way of those
   machine's USB controllers, and without any it waits it all out. Blue has
   an empty USB controller ([devices.md](devices.md#usb)), whose root hub the ROM's driver finds at
   once.
-- The input component of Mac OS 9's AWACS sound driver ('sind' 'awgc') has a
+- The input component of Mac OS 9.0's sound driver ('sind' 'awgc') has a
   bug in its close routine, which runs at every startup (the Component
   Manager opens and closes the component to register it): it unlocks its
   globals, passes a pointer into them to a call that allocates memory, which
   can move them, and afterwards writes through that pointer. With some
   layouts of the system heap that corrupts its free list, and startup
   stopped with an address error or hung (with the USB controller, every
-  time). The sound node now says the chip has output hardware only
-  (`hardware-types` 2; input only ever recorded silence), so the input
-  component never claims it.
+  time). On Mac OS 9.0.x (the startup disk's System file says which) the
+  sound node says the chip has output hardware only (`hardware-types` 2),
+  so the input component never claims it, and Mac OS has no sound input
+  there. 9.1 and 9.2.2 start up with input declared (see
+  [Sound](devices.md#sound)); 9.0.x with the Burgundy is untested.
 
 Sound works in Mac OS 9 too: its DMA plug-in for the sound chip needs the
 chip's interrupts as a Driver Services interrupt set, and those sets' DMA
