@@ -710,10 +710,10 @@ the kernel); 8 onwards as the boot progresses.
   cursor follows the pointer in window runs (8.5 and 9.2.2 CDs); fast start
   in real time as main's (8.5 CD 13.8 s of guest time, 9.1 16.2 s, 9.2.2
   13.1 s, 8.6 installed 18.5-18.7 s); host time the same within noise.
-- **Open:** on the restored 9.2.2's first startup (a disk Apple Software
-  Restore left unmounted), quitting the Setup Assistant leaves the desktop
-  without a menu bar, idle (with the VBL interrupt kept off too, and with
-  the old timer); quitting it on a cleanly unmounted restore works.
+- **Open:** none. On the restored 9.2.2's first startup (a disk Apple
+  Software Restore left unmounted), quitting the Setup Assistant left the
+  desktop without a menu bar: not the VBL's doing (see Findings, "The
+  restored 9.2.2's first startup without a menu bar").
 
 ### 18. OpenGL for Mac OS 9 games
 
@@ -2329,12 +2329,67 @@ Facts later tasks need, added as they are found.
   double-clicks didn't select the desktop's icons (main too); typing a name
   in the Finder does (`MacO`, then Command-O opens the CD's window; `apple
   s`, Command-O, opens Apple Software Restore, whose destination is already
-  Macintosh HD). Return, then a click on OK, restores (done by 39
-  billion). Its last dialog's Quit took a click only after a key press;
+  Macintosh HD); the letters must come close together (3 million
+  instructions apart; 20 million apart each starts a new name). Return,
+  then a click on OK (551 364), restores (done by 39 billion). Its last
+  dialog's Quit (494 342) took a click only after a key press, because Mac
+  OS was dozing by then (see "Mac OS 9.2.2's doze and the mouse"); now a
+  `move` there, then a `click` 30 million instructions later, quits it.
   Special > Shut Down (y 125 in the CD's Finder at 800x600, 136 in the
   restored one's, whose Special menu has Burn CD) then powers off with
-  the volume unmounted. The Setup Assistant's first screen quits with
-  Command-Q and a click on Quit.
+  the volume unmounted; or `power`, then a click on Shut Down (541 188).
+  The Setup Assistant's first screen quits with Command-Q and a click on
+  Quit (569 487 at 1024x768).
+- **The restored 9.2.2's first startup without a menu bar** (Task 17's
+  open item): reproduced from a blank disk (a scripted restore, the run
+  stopped with Apple Software Restore's last dialog up, then the disk
+  started and the Setup Assistant quit at its first screen: the desktop and
+  its icons, no menu bar (MBarHeight 0), no Control Strip, the Finder
+  current and answering clicks). It isn't the volume's unmounted bit:
+  setting it on that disk changed nothing, and clearing it on a disk that
+  works broke nothing. The disks differed in 12 blocks: the working one had
+  been mounted by the CD's Finder (after Apple Software Restore's Quit),
+  which made a Desktop Folder and a Trash at its top. Apple Software
+  Restore quits the Finder while it works (the restored volume is mounted
+  meanwhile, but no Finder sees it) and starts it again as it quits; at the
+  first startup the Setup Assistant runs before the Finder (its Launcher
+  extension), and on Quit it puts a Register with Apple alias in the
+  Desktop Folder ("you can register later by double-clicking Register with
+  Apple on the desktop"). Without the folder it quits without showing the
+  menu bar it hid, and makes no alias; the Finder then makes the folder.
+  The working disk with its Desktop Folder renamed (the catalog's key and
+  thread, in place) does the same, so that's the cause; a real Mac would
+  do it too with that disk, and its next startup is fine (checked: the
+  assistant again, quit, menu bar and alias). The VBL was on throughout
+  (no SetInterrupt). Blue's part was the stopped run: see the next.
+- **Mac OS 9.2.2's doze and the mouse:** at Apple Software Restore's last
+  dialog the power manager had been dozing since instruction 41.45 billion
+  (half an hour after the OK click; PowerDispatch 9, then 1 in a loop,
+  CacheDispatch 4, the cursor hidden twice, the display's sync off by
+  SetSync): mouse clicks (the ADB autopoll packets arrived: `00 80`, `80
+  80`) and ADB moves changed nothing, not even MBState; a key woke it at
+  once (PowerDispatch 9 within 40,000 instructions) and clicks worked
+  after. The same on the CD's Finder after 30 minutes' idling (a menu
+  wouldn't open). The ADB Manager's handler for autopoll data (10.2f1's
+  image `0xFFC2B4EA`) tells the power manager of activity (68k
+  `_PowerDispatch` with D0 `$00010001`, UsrActivity) if low memory `$DD5`
+  bit 0 is set: for the keyboard (its device's original address 2) when
+  the packet's first key is a key-down, and for the mouse (original address
+  3) only unless the power manager's globals (PMgrBase `$D18`, + `$112`)
+  say 'SARA', which they do here. So the ADB mouse never counts; on the
+  iMac the mouse is USB, and its HID driver tells the power manager itself.
+  Setting the globals' last-activity time (+ `$1A`) from the host didn't
+  wake it. Now the Cuda (`cuda_poll()`), when it has mouse data (or the
+  cursor was put where the host pointer is) while Mac OS dozes (it napped
+  through PowerDispatch in the last 250 ms of guest time: `cuda_doze()`),
+  first sends a keyboard packet with Option down and up, at most once a
+  second; a modifier alone posts no event. A click 0.3 s after the tap
+  still went unseen (Mac OS was still waking), one 1.8 s after worked:
+  window users move the mouse first. Runs that never doze are unchanged
+  (the CD checks), and a scripted restore with a plain `move` and `click`
+  quits Apple Software Restore; its disk then starts and quits the Setup
+  Assistant to the Finder with its menu bar, the Register with Apple alias
+  and the Control Strip.
 - **MacBench's Floating Point test** (M5; profiles in instruction time
   with `clock 1000`, which runs the same code, `BLUE_JIT_PROFILE=FROM:TO`
   over one part): five parts of about 10 s of guest time, each counting

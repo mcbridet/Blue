@@ -1517,6 +1517,7 @@ static void move_mouse_to(struct machine *m, int x, int y)
 	mem_w16(&m->mem, LM_RAW_MOUSE, (uint16_t)y);
 	mem_w16(&m->mem, LM_RAW_MOUSE + 2, (uint16_t)x);
 	mem_w8(&m->mem, LM_CRSR_NEW, mem_r8(&m->mem, LM_CRSR_COUPLE));
+	cuda_mouse_moved(&m->cuda);
 }
 
 /*
@@ -3672,6 +3673,7 @@ static const char *kernel_call(struct machine *m, unsigned n)
 			break;
 		}
 		if (cpu->gpr[3] <= 7 && !(cpu->gpr[4] & cpu->cr)) {
+			cuda_doze(&m->cuda, cpu->tb / (TIMEBASE_HZ / 1000));   /* (Mac OS 9.2.2's power manager dozing) */
 			tools_idle(m, false);
 			blue_naps(m, UINT64_MAX, true); /* until an interrupt: there's no processor state to lose */
 		}
@@ -4314,6 +4316,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	printf("\nadb: %lu commands, autopoll %s (devices %04X, %u ms), keyboard @%u handler %u, mouse @%u handler %u",
 	       m.cuda.adb.commands, m.cuda.autopoll ? "on" : "off", m.cuda.autopoll_devices, m.cuda.autopoll_ms,
 	       m.cuda.adb.kbd.addr, m.cuda.adb.kbd.handler, m.cuda.adb.mouse.addr, m.cuda.adb.mouse.handler);
+	if (m.cuda.wake_taps)
+		printf("; %lu Option taps waking Mac OS from its doze for the mouse", m.cuda.wake_taps);
 	printf("\nvideo: %lu driver calls, %u opens, %ux%u %u-bit, %lu mode changes, %lu VBLs",
 	       m.video.calls, m.video.open_count, video_width(&m.video), video_height(&m.video),
 	       video_bpp(&m.video), m.video.mode_changes, m.video.vbls);

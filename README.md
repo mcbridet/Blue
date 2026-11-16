@@ -331,14 +331,33 @@ build/blue boot --disk hd922.img --cdrom 922.iso --window --nvram blue.nvram
 In Apple Software Restore (open it from the CD's window), click Switch Disk
 until the destination disk is "Macintosh HD", then Restore, and OK. A
 scripted run restored 671 MB in under 20 billion instructions; the volume is
-then called MacOS9Lives. Then `build/blue boot --disk hd922.img --window
---nvram blue.nvram` starts it, to the Finder (the first time, with the
-Setup Assistant over it), in real time and in instruction time. In
+then called MacOS9Lives. Click Quit when it says so: Apple Software Restore
+quits the Finder while it works, and the Finder, started again then, makes
+the new volume's Desktop Folder and Trash. Then `build/blue boot --disk
+hd922.img --window --nvram blue.nvram` starts it, to the Finder (the first
+time, with the Setup Assistant over it), in real time and in instruction
+time. In
 instruction time its startup used to stop short of the Finder until a key
 was pressed: a Time Manager software interrupt the 68k emulator never took,
 and nothing else to interrupt the native code it then napped in. The
 display's vertical blank interrupts it 60 times a second now, as an iMac's
 does (plan.md, Findings).
+
+A volume Apple Software Restore has restored but not yet given back (Blue
+closed with its last dialog up) has neither folder, and on its first
+startup the Setup Assistant, quit, leaves the desktop without a menu bar:
+it puts its Register with Apple alias in the Desktop Folder as it quits,
+and without one it quits without showing the menu bar again. The Finder
+makes the folder then, so the next startup is as it should be. That's Mac
+OS's own doing, with that disk, on any Mac. What led there: Mac OS 9.2.2's
+power manager dozes after half an hour without user activity (in a
+scripted restore, half an hour after the last click, its last dialog up),
+and it learns of activity from the ADB keyboard's key-downs but not from an
+ADB mouse (the iMac's mouse is USB, and its driver tells the power manager
+itself), so the dialog's Quit took no click until a key was pressed. While
+Mac OS dozes, Blue now has mouse input go after a tap of Option, which
+wakes it (`src/cuda.c`; plan.md, Findings): clicks and moves work after
+half an hour's idling too.
 
 The CD's system and the restored one start up as quickly as before in
 real time, give or take the half second USB's root hub and the sound
@@ -1474,9 +1493,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    written (by protecting them) rather than comparing it with a copy each
    frame, which is most of what showing a 32-bit screen still costs (plan.md,
    Findings, "Showing the screen").
-3. Known problems: on a 9.2.2 that Apple Software Restore has just
-   restored, quitting the Setup Assistant at the first startup leaves the
-   desktop without a menu bar (plan.md, task 17); a "don't ask again" for
+3. Known problems: a "don't ask again" for
    the guest tools' offer, and the offer on an installed 9.1; startup-disk
    selection (the Startup Disk control panel); whether Open Transport's
    stall with a full interrupt set for the Ethernet node is still there.
