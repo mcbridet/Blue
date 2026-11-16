@@ -99,14 +99,15 @@ struct ppc_cpu {
 	uint32_t sc_blue, sc_word;
 	/*
 	 * Kernel calls (twi 31,r31,n) the kernel makes without an exit, while
-	 * the time base is below kcall_until (0: never): kcall(cpu, n), with
-	 * pc at the call (but the time base and instruction count not
-	 * current), makes it, leaving pc where to go on, or returns false
-	 * having changed nothing (the call exits then, as any other). That
+	 * the time base is below kcall_until (0: never): kcall(cpu, n, done),
+	 * with pc at the call, `done` instructions into a run that hasn't
+	 * added them to icount and tb yet (see ppc_mmio()), makes it, leaving
+	 * pc where to go on, or returns false having changed nothing the
+	 * exit wouldn't have (the call exits then, as any other). That
 	 * retires nothing either.
 	 */
 	uint64_t kcall_until;
-	bool (*kcall)(struct ppc_cpu *cpu, unsigned n);
+	bool (*kcall)(struct ppc_cpu *cpu, unsigned n, uint64_t done);
 	/*
 	 * The mmio hook, for device registers (NULL for none): a load or store
 	 * that faults (DSI) is offered to it first, by the interpreter and by

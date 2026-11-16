@@ -82,7 +82,7 @@ struct jit_state {
 	uint64_t remaining;
 	bool (*step)(struct ppc_cpu *, uint32_t, uint32_t);
 	void (*settle)(struct ppc_cpu *);
-	bool (*kcall)(struct ppc_cpu *, unsigned);
+	bool (*kcall)(struct ppc_cpu *, unsigned, uint64_t);
 	void (*code_store)(struct jit_state *, uint32_t, uint64_t, uint32_t);
 	unsigned (*mmio)(struct ppc_cpu *, uint32_t, uint32_t, uint32_t, uint32_t, uint64_t);
 	void *link_site;                /* EXIT_LINK: the branch to point at the next block */

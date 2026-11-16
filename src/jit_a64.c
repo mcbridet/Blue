@@ -2700,6 +2700,7 @@ static int kernel_call(struct tx *t, uint32_t insn)
 	st32(t, 0, OFF(pc));
 	emit(t, a64_logic(1, A64_ORR, 0, 0, A64_ZR, R_CPU, A64_LSL, 0));
 	mov32(t, 1, insn & 0xFFFF);
+	emit(t, a64_addsub_imm(1, 1, 0, 2, R_BUDGET, t->k));    /* instructions left, this one included */
 	call_c(t, (unsigned)offsetof(struct jit_state, kcall));
 	fixed_load(t, NFIXED);
 	uint32_t *declined = fwd(t, a64_cbz(0, false, 0, 0));

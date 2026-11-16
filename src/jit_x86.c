@@ -2839,6 +2839,7 @@ static int kernel_call(struct tx *t, uint32_t insn)
 	x86_store_imm(B, 4, x86_m(R_CPU, OFF(pc)), t->pc);
 	x86_mov_rr(B, 1, X86_RDI, R_CPU);
 	x86_mov_ri(B, X86_RSI, insn & 0xFFFF);
+	x86_lea(B, 1, X86_RDX, x86_m(R_BUDGET, -(int32_t)t->k));       /* (instructions left, this one included) */
 	x86_call_m(B, ST(kcall));
 	fixed_load(t, NFIXED);
 	x86_test_ri(B, 0, X86_RAX, 0xFF);

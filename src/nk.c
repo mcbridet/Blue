@@ -3848,10 +3848,20 @@ static const char *kernel_call(struct machine *m, unsigned n)
  * their common cases, RunAlternateContext with no interrupt pending, and
  * ReturnFromException resuming (verdict 0) or ending the alternate
  * context (32-255), which can't fail; anything else exits.
+ *
+ * With the devices to be brought up to date (after an exit that may have
+ * touched them, such as the idle hook's, or at a sync point), the exit
+ * would do that first, at this instruction; so that's done here, at the
+ * instruction count and time base the exit would have (`done` added),
+ * and the call goes on in place if that changed no interrupt and nothing
+ * else is waiting for the main loop; otherwise it exits, the devices now
+ * up to date, as the exit would have had them (and not due again: their
+ * next event is later). Not while a DMA channel or sound moves (the next
+ * device event is then now: the exit would bring them up to date again).
  */
-static bool kcall_in_place(struct ppc_cpu *cpu, unsigned n)
+static bool kcall_common(struct machine *m, unsigned n)
 {
-	struct machine *m = (struct machine *)((char *)cpu - offsetof(struct machine, cpu));
+	struct ppc_cpu *cpu = &m->cpu;
 	uint32_t r3 = cpu->gpr[3];
 	bool common;
 	if (n == 1)
@@ -3867,13 +3877,43 @@ static bool kcall_in_place(struct ppc_cpu *cpu, unsigned n)
 	return true;
 }
 
+__attribute__((noinline)) static bool kcall_dirty(struct machine *m, unsigned n, uint64_t done)
+{
+	struct ppc_cpu *cpu = &m->cpu;
+	if (m->dbdma.poll || awacs_moving(&m->awacs))
+		return false;
+	uint64_t icount = cpu->icount, tb = cpu->tb;
+	cpu->icount += done;
+	cpu->tb += done * cpu->tb_step;
+	update_device_time(m);
+	bool changed = update_interrupts(m, false);
+	m->dev_dirty = false;
+	m->dev_next_tb = device_next_tb(m);
+	bool other = changed || m->preempt || device_stop(m) || m->mp.swi || m->mp.yield ||
+		     (m->mp_kernel && blue_interruptible(m) && mp_due(&m->mp, cpu->tb));
+	cpu->icount = icount;
+	cpu->tb = tb;
+	if (other)
+		return false;
+	in_place(m, m->in_place_on);                    /* (as for the run the loop would start next) */
+	return kcall_common(m, n);
+}
+
+static bool kcall_in_place(struct ppc_cpu *cpu, unsigned n, uint64_t done)
+{
+	struct machine *m = (struct machine *)((char *)cpu - offsetof(struct machine, cpu));
+	return m->dev_dirty ? kcall_dirty(m, n, done) : kcall_common(m, n);
+}
+
 /*
  * What the engines may do in place (see ppc.h) in the main loop's runs
  * (`on`): what changes nothing else the kernel would do at the exit, so
- * not once devices are to be updated or Multiprocessing Services' tick is
- * due, nor with a task switch, a software interrupt or a preemption
- * waiting, nor with `clock` (each exit sets the time base then). Kernel
- * calls only while the blue task runs (the others' stop the run).
+ * not once devices are due to change by themselves or Multiprocessing
+ * Services' tick is due, nor with a task switch, a software interrupt or
+ * a preemption waiting, nor with `clock` (each exit sets the time base
+ * then). Kernel calls only while the blue task runs (the others' stop the
+ * run); with the devices to be brought up to date, kernel calls only
+ * (kcall_in_place() does that first).
  */
 static void in_place(struct machine *m, bool on)
 {
@@ -3881,12 +3921,12 @@ static void in_place(struct machine *m, bool on)
 	const struct mp_object *task = m->mp_kernel ? mp_lookup(&m->mp, m->mp.current, MP_TASK) : NULL;
 	m->in_place_on = on;
 	cpu->sc_until = cpu->kcall_until = 0;
-	if (!on || m->clock_mips || m->dev_dirty || m->mp.swi || m->mp.yield || m->preempt)
+	if (!on || m->clock_mips || m->mp.swi || m->mp.yield || m->preempt)
 		return;
-	uint64_t until = m->dev_next_tb;
+	uint64_t until = m->dev_dirty ? UINT64_MAX : m->dev_next_tb;
 	if (m->mp_kernel && m->mp.next_tb < until)
 		until = m->mp.next_tb;
-	if (task) {
+	if (task && !m->dev_dirty) {
 		cpu->sc_until = until;
 		cpu->sc_blue = blue_running(m) ? NK2_FLAG_BLUE : 0;
 		cpu->sc_word = task->task.label;
