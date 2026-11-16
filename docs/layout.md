@@ -50,7 +50,9 @@ tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
           icons.py (the icons, from art/), fonts.py (the window's font,
           from third_party/fonts/), package-macos.sh (Blue.app and its
           disk image), macos-deps.sh (its libraries, from their sources),
-          package-linux.sh (the AppImage), jit-timing.sh (the JIT's speed
+          package-linux.sh (the AppImage), third-party-sources.sh
+          (Blue-third-party-sources.tar.gz: the packages' libraries'
+          sources, in one archive), jit-timing.sh (the JIT's speed
           here, into a log), check-links.py (the docs' links)
 art/      blue.svg (the icon's master), finder-icons.txt (the Finder
           icons' pixel art), png/ (the icon at each size), Info.plist
@@ -61,7 +63,8 @@ docs/     the documentation (README.md lists it): how Blue works,
           nk2-reference.md (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2
           does), images/ (the README's screenshots)
 site/     the website (index.html, style.css, main.js, its icons)
-.github/  workflows/ci.yml (build, test, package and release),
+.github/  workflows/ci.yml (build, test, package, the sources archive,
+          and release),
           workflows/pages.yml (publishes site/)
 third_party/imgui/  Dear ImGui 1.93.0 (MIT; its core files only, as released)
 third_party/fonts/  ChicagoFLF 2.1 (public domain; its notice in README there)

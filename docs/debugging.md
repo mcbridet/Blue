@@ -256,5 +256,8 @@ The rest of `tools/`:
   [building.md](building.md#testing-the-guests-opengl)).
 - `tools/icons.py` and `tools/fonts.py` make the icons and the window's
   font (see [building.md](building.md#icons-and-desktop-files)).
+- `tools/package-macos.sh`, `tools/macos-deps.sh`, `tools/package-linux.sh`
+  and `tools/third-party-sources.sh` make the packages and the sources
+  archive (see [building.md](building.md#packaging)).
 - `tools/check-links.py` checks the links in the README and `docs/`.
 - `tools/qemu-ref/`: see [qemu-reference.md](qemu-reference.md).
