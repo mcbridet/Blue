@@ -97,7 +97,6 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **Runs on** | macOS 11 and later, and Linux: Apple silicon, ARM64 and x86-64 | macOS, Linux and Windows | macOS, Linux and Windows | PowerPC Macs, with Mac OS X 10.0 to 10.4 |
 | **How** | Apple's code, unmodified, on a native kernel in place of the NanoKernel | Apple's code on a patched ROM, with a kernel of its own | A whole Power Mac emulated, firmware and all | Mac OS 9 as a program in Mac OS X, on a real PowerPC |
 | **Speed** | A JIT on every host: about 18 times a Power Mac G3/300 in MacBench 5's processor test, on an Apple M5 | A JIT on Intel and AMD; none on Apple silicon | A JIT, with every device and the memory management unit emulated | The PowerPC's own, up to a Power Mac G5 |
-| **AltiVec** | Not yet | Yes, as a G4 (7400) | Yes, as a G4 | On G4 and G5 Macs |
 | **What you need** | A Mac OS CD or disk image | A Mac OS CD or disk image, and a ROM file found elsewhere | A Mac OS CD or disk image | Mac OS 9 installed beside Mac OS X |
 | **3D** | QuickDraw 3D, RAVE (as an ATI Rage 128) and OpenGL, drawn on your GPU | Software only | Software only | Programs that draw straight to the screen or the hardware often fail |
 | **Restart and Startup Disk** | Both work | Restarting can freeze or crash it; Startup Disk doesn't work | Neither works | Mac OS X's own |
@@ -107,7 +106,6 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **Disk images** | Dropped on the window or inserted from the menu: CD images in most formats, compressed `.dmg` and Disk Copy images, floppies | Uncompressed images, and one at a time dropped in as a CD | Raw and QEMU's own formats, changed from a menu | Mac OS X's |
 | **Shared folders** | A folder of yours as a disk, its changes written back when Mac OS shuts down or puts it away, and offered again with yours | A folder as a live disk, though programs can't run from it | Separate experimental drivers | Mac OS X's disks, directly |
 | **Networking** | TCP/IP through its NAT; no port forwarding yet | TCP/IP through its NAT, with port forwarding; AppleTalk with extra setup, on some hosts | TCP/IP through its NAT, with port forwarding; AppleTalk through bridged networking, run as root | Mac OS X's, AppleTalk included |
-| **USB devices** | Not yet | No | Passed through from the host | Through Mac OS X |
 | **Game controllers** | Gamepads, as keys or through InputSprocket | No | A USB gamepad, passed through | Unreliable |
 | **Pippin titles** | Yes | No | No | No |
 
@@ -247,11 +245,9 @@ Blue starts up from the first drive that has a System Folder with a "Mac
 OS ROM" file in it, in the order you gave them. The new disk is empty, so
 the Mac starts up from the CD.
 
-**Most Mac OS CDs:** open "Mac OS Install" on the CD and follow it.
-Choose Macintosh HD as the destination, and when you reach the Install
-screen, click **Options** and turn off **"Update Apple Hard Disk
-Drivers"**: the driver updater only knows Apple's own drives, and fails
-on Blue's. The installation takes a few minutes at most.
+**Most Mac OS CDs:** open "Mac OS Install" on the CD and follow it,
+with Macintosh HD as the destination. The installation takes a few
+minutes at most.
 
 **Restore CDs,** which install with Apple Software Restore instead:
 open Apple Software Restore from the CD's window. Click Switch Disk until
@@ -866,10 +862,8 @@ version runs in Rosetta 2 without the JIT.
 
 ### What isn't there
 
-Blue doesn't have everything a real iMac had, yet:
+Blue doesn't do everything a Mac of the time could:
 
-- **AltiVec,** the G4's vector instructions: programs that need a G4
-  don't run.
 - **Modems, serial ports, infrared and printing.**
 - **USB and FireWire devices** of any kind (game controllers reach Mac OS
   as the keyboard and mouse, and through InputSprocket: see
@@ -880,7 +874,7 @@ Blue doesn't have everything a real iMac had, yet:
 - **Old World Macs:** Blue is an original iMac, and can't start the ROMs
   of earlier Power Macs or 68k Macs.
 
-[docs/future.md](docs/future.md) has ideas for most of these, and
+[docs/future.md](docs/future.md) has ideas for some of these, and
 [docs/roadmap.md](docs/roadmap.md) what's next.
 
 ## Troubleshooting and FAQ
@@ -919,12 +913,6 @@ window shows the command to use. See
   from a drive it can write to.
 - If you used `--rom`, leave it out: Blue then uses the CD's own ROM file,
   which is the one that version of Mac OS needs.
-
-### The installer stops, or complains about drivers
-
-Turn off "Update Apple Hard Disk Drivers" in the installer's Options (see
-[Install Mac OS](#2-install-mac-os)). Drive Setup lists no drives: that's
-expected, and you don't need it.
 
 ### There's no menu bar after restoring Mac OS 9.2.2
 
