@@ -25,6 +25,7 @@ sha256() {
 
 [ $# -ge 2 ] || die "usage: $0 OUT.tar.gz DIR..."
 case $1 in /*) out=$1 ;; *) out=$PWD/$1 ;; esac
+mkdir -p "$(dirname "$out")"
 shift
 version=$(sed -n 's/^#define BLUE_VERSION "\(.*\)"/\1/p' "$root/src/version.h")
 [ -n "$version" ] || die "no BLUE_VERSION in src/version.h"
