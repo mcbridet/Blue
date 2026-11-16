@@ -11,6 +11,7 @@
 #include "gltest.h"
 #include "hfs.h"
 #include "opengl.h"
+#include "pippin.h"
 #include "rave.h"
 #include "rsrc.h"
 
@@ -510,6 +511,7 @@ static void icon_resources(struct rsrc *r, unsigned icon)
 }
 
 static int gl_files(struct hfs_file files[TOOLS_GL_FILES]);
+static int pippin_file(struct hfs_file *file);
 
 int tools_files(struct hfs_file files[TOOLS_FILES])
 {
@@ -546,7 +548,27 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 	files[TOOLS_3D_ENGINE] = (struct hfs_file){
 		"Blue 3D Engine", FOURCC('s', 'h', 'l', 'b'), FOURCC('t', 'n', 's', 'l'), HAS_CUSTOM_ICON, 40, 160,
 		engine, engine_rsrc, (uint32_t)engine_len, (uint32_t)engine_rsrc_len };
-	return gl_files(files + TOOLS_GL_FIRST);
+	if (gl_files(files + TOOLS_GL_FIRST))
+		return -1;
+	return pippin_file(&files[TOOLS_PIPPIN]);
+}
+
+/* The Pippin library (pippin.h), under the fragment name of the Pippin's */
+static int pippin_file(struct hfs_file *file)
+{
+	static uint8_t frag[PIPPIN_LIBRARY_MAX], rsrc[4096];
+	struct ndrv_layout layout;
+	size_t len = pippin_build(frag, sizeof frag, &layout);
+	uint8_t cfrg[128];
+	size_t cfrg_len = make_cfrg(cfrg, CFRG_LIBRARY, 0, "PippinPPC", 0);
+	struct rsrc res[1 + ICON_RESOURCES] = { { FOURCC('c', 'f', 'r', 'g'), 0, cfrg, (uint32_t)cfrg_len } };
+	icon_resources(res + 1, FINDER_ICON_PIPPIN);
+	size_t rsrc_len = rsrc_build(res, 1 + ICON_RESOURCES, rsrc, sizeof rsrc);
+	if (!len || !rsrc_len)
+		return -1;
+	*file = (struct hfs_file){ "Blue Pippin Library", FOURCC('s', 'h', 'l', 'b'), FOURCC('s', 'y', 'P', 'P'),
+				   HAS_CUSTOM_ICON, 40, 260, frag, rsrc, (uint32_t)len, (uint32_t)rsrc_len };
+	return 0;
 }
 
 /* The OpenGL libraries (opengl.h), as tools_files() */

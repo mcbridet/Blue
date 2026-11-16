@@ -32,6 +32,7 @@ int main(int argc, char **argv)
 		{ "install", test_install },
 		{ "share", test_share },
 		{ "tools", test_tools },
+		{ "pippin", test_pippin },
 		{ "clip", test_clip },
 		{ "raster", test_raster },
 		{ "rave", test_rave },
