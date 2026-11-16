@@ -153,10 +153,10 @@ page ager every 3 s). Two runs are identical. The menu-bar clock shows the
 guest time (`--fixed-time` and the guest time since, in the host's time
 zone, as for 8.5), and 9.1 reads NVRAM through its own driver for the
 `nvram` node (`nvram: 320 reads, 0 writes` at the end; it writes what it
-changed when it shuts down or restarts). Installing 9.1 from the CD
-onto a disk image is left to the user (in a window); scripted, its
-installer got as far as its Important Information page with a new 2 GB
-image as the destination. In real time with fast start the Finder is up
+changed when it shuts down or restarts). 9.1 installs from the CD onto a
+blank disk image with its installer, scripted (see Findings, "Installing
+9.1"), and the installed system starts up and takes the guest tools. In
+real time with fast start the Finder is up
 after 16 s of guest time (1.3 s on the host; it was 41 s before the
 startup disk was found at once), against 13.8 s for the 8.5 CD: what's
 left is mostly AppleTalk on Ethernet (5 s) and the CD's transfers.
@@ -551,8 +551,7 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 13. Installing the guest tools
 
-- **Status:** done (8.5, 8.6, 9.2.2; 9.1 by the same path, tried as far
-  as its CD allows: no installed 9.1 image). In
+- **Status:** done (8.5, 8.6, 9.1, 9.2.2). In
   window runs, Blue looks for the guest tools in the startup disk's
   System Folder before Mac OS starts (`install_check()` in
   `src/install.c`: the System Folder's folders, whatever their names, for
@@ -593,8 +592,14 @@ the kernel); 8 onwards as the boot progresses.
   covers the file's contents, the check, the menu's offer and both jobs.
   Checked on the restored 9.2.2 (set up): Don't Ask Again wrote the file,
   the next startup offered nothing, `tools offer` and Install installed
-  the tools, deleted the file and restarted. Open: 9.1 on an installed
-  disk.
+  the tools, deleted the file and restarted. 9.1, installed from its CD
+  (Findings, "Installing 9.1"): offered once the Finder was up (the Setup
+  Assistant in front), Install and Restart put the five tools in
+  Extensions and Apple's OpenGL libraries in Extensions (Disabled), Mac OS
+  restarted (through the Cuda), the check then found them current;
+  Enhancements ran and switched to 1024x768 for a `resize`, and Blue GL
+  Test (from a tools volume made with `BLUE_TOOLS_GL_TEST=1`) drew its
+  triangle scene through Blue's OpenGL. Open: none.
 
 ### 14. Clipboard
 
@@ -2341,6 +2346,24 @@ Facts later tasks need, added as they are found.
   and the sound plug-ins' fades 0.1-0.2 s more. The restored system, set
   up: 13.0-13.1 s (main 12.8-13.0), and the host asleep 36.4-37.0 s of 40
   (main 35.4-35.8).
+- **Installing 9.1** (instruction time, `--fixed-time 1000000000`): a
+  blank 2 GB disk (`disk create`) first, the CD second. In the CD's
+  Finder, typing `mac os i` (3 million instructions apart) and Command-O
+  opens Mac OS Install (by instruction 5 billion). Then, at 800x600:
+  Continue (594 443), Select (594 443; Macintosh HD is already the
+  destination, "None Installed", 2046 MB available, 368 MB needed),
+  Continue on Important Information and on the license (594 443), Agree
+  (530 366), Options... (314 443), the "Update Apple Hard Disk Drivers"
+  checkbox (217 226), OK (551 389), Start (594 443) at 11.2 billion. Mac
+  OS 9.1 then Internet Access, and "The installation process has
+  finished" by 40 billion (268 MB written, 52 MB read). Its Quit (532 348)
+  took no click, nor Return, at 40-45 billion, but took the second of two
+  clicks 0.3 billion apart, and Return at 50 billion: Energy Saver had put
+  the screen to sleep (no doze: 9.1 makes no PowerDispatch calls), and the
+  first input only wakes it, as on a Mac. `power`, then Shut Down (541
+  188), and the volume is unmounted cleanly (HFS, attributes 0x0100). The
+  installed disk starts up alone, with its own ROM file, to the Finder and
+  the Mac OS Setup Assistant (Command-Q, then Quit at 541 197).
 - **Scripting the 9.2.2 restore** (instruction time): scripted clicks and
   double-clicks didn't select the desktop's icons (main too); typing a name
   in the Finder does (`MacO`, then Command-O opens the CD's window; `apple

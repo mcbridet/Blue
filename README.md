@@ -253,8 +253,17 @@ when it writes them to the chip, as on an iMac: changes since startup are
 lost when Blue quits otherwise (closing the window, or Turn off in its
 menu). The end-of-run statistics count the chip's reads and writes.
 
-Not done yet: installing 9.1 onto a disk image with its installer and
-starting up from that.
+9.1 installs onto a disk image with its own installer, as 9.0 does
+(`build/blue disk create hd91.img 2G "Macintosh HD"`, then the CD and the
+disk; Mac OS Install from the CD's window: Continue, Select with Macintosh
+HD as the destination, Continue, Continue, Agree, then Options... to turn
+off "Update Apple Hard Disk Drivers", and Start). A scripted run installed
+it (268 MB written) by instruction 40 billion; the installed system starts
+up from the disk alone (`rom: "Macintosh HD:System Folder:Mac OS ROM"`) to
+the Finder with the Mac OS Setup Assistant, and takes the guest tools (see
+Guest tools). By then the screen has gone to sleep, as Energy Saver puts
+it after a while without input, and the first click or key press only
+wakes it: the installer's last dialog takes the second.
 
 ### Mac OS 9.2.2 (from its CD)
 
@@ -695,10 +704,9 @@ can ask to save their work first, or stop the restart (the tools are in
 place then, and load at the next restart). Afterwards the tools load as
 any extension does: Blue Enhancements runs, programs find the 3D engine
 and Blue's OpenGL, and nothing is offered. If anything goes wrong, Mac
-OS doesn't restart, and the box says what. This works on Mac OS 8.5, 8.6
-and 9.2.2 installed on disk images (9.1 by the same path; there was no
-installed 9.1 to try). The outcome is shown (the box stays through the
-restart, until OK) and printed:
+OS doesn't restart, and the box says what. This works on Mac OS 8.5, 8.6,
+9.1 and 9.2.2 installed on disk images. The outcome is shown (the box stays
+through the restart, until OK) and printed:
 
 ```
 tools: installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory and Blue OpenGL Utility in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
@@ -1512,7 +1520,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    written (by protecting them) rather than comparing it with a copy each
    frame, which is most of what showing a 32-bit screen still costs (plan.md,
    Findings, "Showing the screen").
-3. Known problems: the guest tools' offer on an installed 9.1; startup-disk
+3. Known problems: startup-disk
    selection (the Startup Disk control panel); whether Open Transport's
    stall with a full interrupt set for the Ethernet node is still there.
 4. Later: host ports forwarded to the guest (so it can serve); the shared
