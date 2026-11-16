@@ -148,6 +148,14 @@ int cdimage_add_file(struct cdimage *c, const char *name, char *why, size_t len)
 		return -1;
 	}
 	c->nfiles++;
+	for (unsigned k = 0; k + 1 < c->nfiles; k++)    /* (named again: the one already open) */
+		if (c->files[k].path && !strcmp(c->files[k].path, f->path)) {
+			close(f->fd);
+			free(f->path);
+			memset(f, 0, sizeof *f);
+			c->nfiles--;
+			return (int)k;
+		}
 	if (fstat(f->fd, &st)) {
 		snprintf(why, len, "%s: %s", name, strerror(errno));
 		return -1;
