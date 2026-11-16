@@ -132,8 +132,7 @@ static const char version[] = "1.2 Blue";
  * The generic renderer's strings, as Mac OS 9.2.2's: its gldGetString()'s
  * vendor, renderer and version as they are, and the extensions its engine
  * made of its list (the engine's own seven, then each of the renderer's it
- * knows, each followed by a space). Two are what Blue doesn't do
- * (GL_APPLE_specular_vector, GL_EXT_texture_lod_bias), as on Apple's.
+ * knows, each followed by a space)
  */
 static const char generic_vendor[] = "Apple";
 static const char generic_renderer[] = "Generic";
@@ -145,11 +144,12 @@ static const char generic_extensions[] = "GL_APPLE_specular_vector GL_APPLE_tran
 					 "GL_EXT_texture_lod_bias GL_EXT_abgr GL_EXT_bgra GL_SGIS_texture_edge_clamp "
 					 "GL_ARB_multitexture ";
 /* (Mac OS 9.2.2's engine's, in its order, but only those Blue does) */
-static const char extensions[] = "GL_APPLE_transform_hint GL_APPLE_packed_pixel GL_ARB_transpose_matrix "
-				 "GL_EXT_clip_volume_hint GL_EXT_rescale_normal GL_NV_texgen_reflection "
-				 "GL_ARB_multitexture GL_ARB_texture_env_add GL_EXT_blend_color GL_EXT_blend_minmax "
-				 "GL_EXT_blend_subtract GL_EXT_compiled_vertex_array GL_EXT_texture_env_add "
-				 "GL_EXT_abgr GL_EXT_bgra GL_SGIS_texture_edge_clamp";
+static const char extensions[] = "GL_APPLE_specular_vector GL_APPLE_transform_hint GL_APPLE_packed_pixel "
+				 "GL_ARB_transpose_matrix GL_EXT_clip_volume_hint GL_EXT_rescale_normal "
+				 "GL_NV_texgen_reflection GL_ARB_multitexture GL_ARB_texture_env_add GL_EXT_blend_color "
+				 "GL_EXT_blend_minmax GL_EXT_blend_subtract GL_EXT_compiled_vertex_array "
+				 "GL_EXT_texture_env_add GL_EXT_texture_lod_bias GL_EXT_abgr GL_EXT_bgra "
+				 "GL_SGIS_texture_edge_clamp";
 /* aglErrorString()'s, as Apple's */
 static const char agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE][32] = {
 	"invalid pixel format attribute", "invalid renderer property", "invalid pixel format",
@@ -171,7 +171,7 @@ static const char agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE][32] = {
  * calls write into (see "callouts").
  */
 #define DATA_MAGIC 0x7379474Cu          /* 'syGL' */
-#define DATA_VERSION 6u
+#define DATA_VERSION 7u
 enum { D_MAGIC = 0, D_VERSION = 4, D_CURRENT = OPENGL_DATA_CURRENT, D_RECORD = OPENGL_DATA_RECORD,
        D_RECORD_END = D_RECORD + 4, D_STRINGS = 20 };
 #define FORMATS 16

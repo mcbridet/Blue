@@ -3,7 +3,8 @@
  * (coverage of whole-pixel geometry, depth, texture orientation, clears,
  * points, lines and bitmaps, copies, reading back), and within a tolerance
  * on a random scene (edges and filtering may round differently) and on
- * OpenGL's points and lines, logic ops and stipples. Skipped
+ * OpenGL's points and lines, logic ops and stipples; LOD biases' levels,
+ * exactly. Skipped
  * without OpenGL, unless BLUE_TEST_GPU=1.
  */
 #include <stdlib.h>
@@ -652,6 +653,86 @@ static void test_gl(struct gpu *g)
 	CHECK(drawn > 400);
 }
 
+/*
+ * GL_EXT_texture_lod_bias: squares whose level of detail is the same at
+ * every pixel (32 texels over 12, 6 and 20 pixels), on either unit or both,
+ * and a line, biased up and down: the same levels as raster.c's, exactly
+ */
+static void test_lod_bias(struct gpu *g)
+{
+	static const uint32_t colors[6] = { 0xFFFF0000u, 0xFF00FF00u, 0xFF0000FFu, 0xFFFFFF00u, 0xFF00FFFFu,
+					    0xFFFF00FFu };
+	static uint32_t texels[32 * 32 + 16 * 16 + 8 * 8 + 4 * 4 + 2 * 2 + 1];
+	struct raster_texture tx = { .levels = 6 };
+	uint32_t *t = texels;
+	for (unsigned k = 0; k < 6; k++) {
+		tx.width[k] = tx.height[k] = 32u >> k;
+		tx.texels[k] = t;
+		for (unsigned i = 0; i < tx.width[k] * tx.height[k]; i++)
+			*t++ = colors[k];
+	}
+	enum { N = 6 };
+	static const float bias[N][2] = { { 0, 0 }, { 1, 0 }, { -1.2f, 0 }, { 0, 2.3f }, { 0.6f, -0.7f }, { 9, 0 } };
+	struct raster_state s[N];
+	for (unsigned k = 0; k < N; k++) {
+		s[k] = plain();
+		s[k].blend = RASTER_BLEND_NONE;
+		s[k].all_fragments = true;
+		s[k].gl_points = true;
+		for (unsigned u = 0; u < 2; u++) {
+			s[k].unit[u].texture = &tx;
+			s[k].unit[u].min_filter = RASTER_NEAREST_MIPMAP_NEAREST;
+			s[k].unit[u].mag_filter = RASTER_NEAREST;
+			s[k].unit[u].lod_bias = bias[k][u];
+		}
+		s[k].stages = 1;                /* (unit 0's texture, unit 1's, or both added) */
+		s[k].stage[0].op[0] = s[k].stage[0].op[1] = k == 4 ? RASTER_OP_ADD : RASTER_OP_REPLACE;
+		s[k].stage[0].arg[0][0] = s[k].stage[0].arg[1][0] = k == 3 ? RASTER_TEXTURE0 + 1 : RASTER_TEXTURE0;
+		s[k].stage[0].arg[0][1] = s[k].stage[0].arg[1][1] = RASTER_TEXTURE0 + 1;
+	}
+	struct raster_cmd c[1 + 2 * 3 * N + N];
+	memset(c, 0, sizeof c);
+	c[0] = clear_cmd(0xFF203040u, 1);
+	unsigned n = 1;
+	static const float size[3] = { 12, 6, 20 };
+	for (unsigned k = 0; k < N; k++)
+		for (unsigned j = 0; j < 3; j++) {
+			float x = 1 + 21 * (float)j, y = 1 + 7.5f * (float)k, d = size[j] < 7 ? size[j] : 7;
+			struct raster_vertex v[4] = { vertex(x, y, 0, 1, 1, 1), vertex(x + size[j], y, 0, 1, 1, 1),
+						      vertex(x + size[j], y + d, 0, 1, 1, 1), vertex(x, y + d, 0, 1, 1, 1) };
+			for (int q = 0; q < 4; q++)
+				for (unsigned u = 0; u < 2; u++) {
+					v[q].tex[u][0] = q == 1 || q == 2 ? 1.0f : 0.0f;
+					v[q].tex[u][1] = (q >= 2 ? d : 0) / size[j];
+					v[q].tex[u][2] = 1;
+				}
+			c[n++] = tri_cmd(k, v[0], v[1], v[2], true);
+			c[n++] = tri_cmd(k, v[0], v[2], v[3], true);
+		}
+	for (unsigned k = 0; k < N; k++) {             /* (lines: 32 texels along 24 pixels) */
+		c[n].kind = RASTER_CMD_LINE;
+		c[n].state = k;
+		c[n].textured = true;
+		c[n].v[0] = vertex(1, 46.5f - (float)k, 0, 1, 1, 1);
+		c[n].v[1] = vertex(25, 46.5f - (float)k, 0, 1, 1, 1);
+		for (unsigned u = 0; u < 2; u++) {
+			c[n].v[0].tex[u][1] = c[n].v[1].tex[u][1] = 0.5f;
+			c[n].v[1].tex[u][0] = 1;
+			c[n].v[0].tex[u][2] = c[n].v[1].tex[u][2] = 1;
+		}
+		n++;
+	}
+	both(g, s, c, n);
+	if (getenv("BLUE_GPU_DEBUG"))
+		printf("gpu: LOD bias: %u pixels differ\n", differing(0));
+	CHECK_EQ(differing(0), 0);
+	unsigned seen = 0;                      /* (the levels drawn) */
+	for (unsigned k = 0; k < W * H; k++)
+		for (unsigned l = 0; l < 6; l++)
+			seen |= cpu_color[k] == colors[l] ? 1u << l : 0;
+	CHECK(seen == 0x3F);
+}
+
 /* A failed job: everything after it is refused, and freeing still works */
 static void test_failure(void)
 {
@@ -696,6 +777,7 @@ void test_gpu(void)
 	test_blend_factors(g);
 	test_pipeline(g);
 	test_gl(g);
+	test_lod_bias(g);
 	CHECK(!gpu_failed(g));
 	gpu_close(g);
 	test_failure();

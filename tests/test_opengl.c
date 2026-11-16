@@ -397,8 +397,11 @@ static void test_agl(void)
 	CHECK(!strcmp((const char *)mem_ptr(&mem, CALL(glGetString, 0x1F00)), "ATI Technologies Inc."));
 	CHECK(!strcmp((const char *)mem_ptr(&mem, CALL(glGetString, 0x1F02)), "1.2 Blue"));
 	const char *ext = (const char *)mem_ptr(&mem, CALL(glGetString, 0x1F03));
-	CHECK(!strncmp(ext, "GL_APPLE_transform_hint ", 24) && strstr(ext, " GL_ARB_multitexture ") &&
-	      !strstr(ext, "GL_APPLE_specular_vector") && !strstr(ext, "GL_EXT_texture_lod_bias"));
+	CHECK(!strcmp(ext, "GL_APPLE_specular_vector GL_APPLE_transform_hint GL_APPLE_packed_pixel "
+			   "GL_ARB_transpose_matrix GL_EXT_clip_volume_hint GL_EXT_rescale_normal GL_NV_texgen_reflection "
+			   "GL_ARB_multitexture GL_ARB_texture_env_add GL_EXT_blend_color GL_EXT_blend_minmax "
+			   "GL_EXT_blend_subtract GL_EXT_compiled_vertex_array GL_EXT_texture_env_add "
+			   "GL_EXT_texture_lod_bias GL_EXT_abgr GL_EXT_bgra GL_SGIS_texture_edge_clamp"));
 	CALL(glGetIntegerv, GL_VIEWPORT, OUT);
 	CHECK(mem_r32(&mem, OUT + 8) == 32 && mem_r32(&mem, OUT + 12) == 24);
 	CALL(glClear, 0x8000);
@@ -889,18 +892,24 @@ static const struct op scene_blend[] = {
 /* Textures: (glTexImage2D's arguments: target, level, internal format, width, height, then the image's number) */
 #define TEXDATA 0x120000u       /* (the image, in the guest's memory) */
 #define TEX(name, w, h, image) { "glTexImage2D", { 0x0DE1, 0, 0x8058, w, h, image } }
+#define TEXLEVEL(level, w, h, image) { "glTexImage2D", { 0x0DE1, level, 0x8058, w, h, image } }
 #define TEXP(pname, v) { "glTexParameteri", { 0x0DE1, pname, v } }
 #define TC(s, t) { "glTexCoord2f", { s, t } }
-enum { IMAGE_CHECKER, IMAGE_GRADIENT, IMAGES };
+enum { IMAGE_CHECKER, IMAGE_GRADIENT, IMAGE_LEVEL0, IMAGES = IMAGE_LEVEL0 + 6 };
 
-/* An image's RGBA bytes (8 x 8 at most) */
+/* An image's RGBA bytes (8 x 8 at most; IMAGE_LEVEL0 + k, a color of its own, 32 x 32) */
 static const uint8_t *image(unsigned k, int w, int h)
 {
-	static uint8_t rgba[IMAGES][8 * 8 * 4];
+	static const uint8_t level[6][3] = { { 255, 0, 0 }, { 0, 255, 0 }, { 0, 0, 255 }, { 255, 255, 0 },
+					     { 0, 255, 255 }, { 255, 0, 255 } };
+	static uint8_t rgba[IMAGES][32 * 32 * 4];
 	uint8_t *p = rgba[k];
 	for (int y = 0; y < h; y++)
 		for (int x = 0; x < w; x++, p += 4) {
-			if (k == IMAGE_CHECKER) {       /* (four colors, alpha falling) */
+			if (k >= IMAGE_LEVEL0) {
+				memcpy(p, level[k - IMAGE_LEVEL0], 3);
+				p[3] = 255;
+			} else if (k == IMAGE_CHECKER) {        /* (four colors, alpha falling) */
 				p[0] = (x + y) & 1 ? 230 : 40;
 				p[1] = x < w / 2 ? 200 : 60;
 				p[2] = y < h / 2 ? 50 : 210;
@@ -1929,6 +1938,39 @@ static const struct op scene_texlines[] = {
 };
 
 /*
+ * GL_EXT_texture_lod_bias: a texture whose levels (32 x 32 to 1 x 1) are
+ * each a color of their own, on squares whose level of detail is the same
+ * at every pixel (32 texels over 12 pixels: 1.415; 6, 20, 40), biased up
+ * and down (into the next level, past the last, under 0: magnified), a
+ * magnified quad biased past GL_LINEAR's 0.5 into minifying; unit 1's
+ * bias, with unit 0 off
+ */
+#define BIAS(b) { "glTexEnvf", { 0x8500, 0x8501, b } }
+#define TSQUARE(x, y, w, h) BEGIN(GL_QUADS), TC(0, 0), V2(x, y), TC(1, 0), V2((x) + (w), y), \
+	TC(1, (double)(h) / (w)), V2((x) + (w), (y) + (h)), TC(0, (double)(h) / (w)), V2(x, (y) + (h)), END
+static const struct op scene_lodbias[] = {
+	ORTHO, CLEAR(0.2, 0.2, 0.2), EN(GL_TEXTURE_2D), { "glBindTexture", { 0x0DE1, 1 } },
+	TEXLEVEL(0, 32, 32, IMAGE_LEVEL0), TEXLEVEL(1, 16, 16, IMAGE_LEVEL0 + 1), TEXLEVEL(2, 8, 8, IMAGE_LEVEL0 + 2),
+	TEXLEVEL(3, 4, 4, IMAGE_LEVEL0 + 3), TEXLEVEL(4, 2, 2, IMAGE_LEVEL0 + 4), TEXLEVEL(5, 1, 1, IMAGE_LEVEL0 + 5),
+	TEXP(GL_TEXTURE_MIN_FILTER, 0x2700), TEXP(GL_TEXTURE_MAG_FILTER, GL_NEAREST),      /* (nearest mipmap, nearest) */
+	{ "glTexEnvi", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE } },
+	TSQUARE(2, 2, 12, 12), BIAS(1), TSQUARE(16, 2, 12, 12), BIAS(2.3), TSQUARE(30, 2, 12, 12),
+	BIAS(-1), TSQUARE(44, 2, 12, 12), BIAS(-3), TSQUARE(58, 2, 12, 12), BIAS(0.2), TSQUARE(72, 2, 12, 12),
+	BIAS(20), TSQUARE(2, 18, 12, 12), BIAS(-0.6), TSQUARE(16, 18, 12, 12), BIAS(-2), TSQUARE(30, 18, 6, 6),
+	BIAS(0.5), TSQUARE(44, 18, 20, 20), BIAS(0),
+	TEXP(GL_TEXTURE_MAG_FILTER, GL_LINEAR), TSQUARE(2, 40, 40, 16), BIAS(1), TSQUARE(50, 40, 40, 16), BIAS(0),
+	TEXP(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	DIS(GL_TEXTURE_2D), { "glActiveTextureARB", { GL_TEXTURE0_ARB + 1 } }, EN(GL_TEXTURE_2D),
+	{ "glBindTexture", { 0x0DE1, 1 } }, { "glTexEnvi", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE } }, BIAS(2),
+	BEGIN(GL_QUADS), { "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB + 1, 0, 0 } }, V2(66, 58),
+	{ "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB + 1, 1, 0 } }, V2(78, 58),
+	{ "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB + 1, 1, 1 } }, V2(78, 70),
+	{ "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB + 1, 0, 1 } }, V2(66, 70), END,
+	BIAS(0), DIS(GL_TEXTURE_2D), { "glActiveTextureARB", { GL_TEXTURE0_ARB } },
+	{ NULL, { 0 } },
+};
+
+/*
  * The accumulation buffer (the generic renderer's: not Mesa's, which has
  * none for framebuffer objects): two images averaged, scaled, moved, the
  * result returned within a scissor box, cleared in part
@@ -1962,7 +2004,7 @@ static const struct {
 	{ "pixels", scene_pixels, 4, 2 }, { "texture3d", scene_texture3d, 4, 2 }, { "glu", scene_glu, 40, 40 },
 	{ "eval", scene_eval, 0, 0 }, { "eval_lit", scene_eval_lit, 0, 0 }, { "logicop", scene_logicop, 0, 0 },
 	{ "stipple", scene_stipple, 48, 48 }, { "lines", scene_lines, 4, 0 }, { "smoothlines", scene_smooth_lines, 400, 100 },
-	{ "texlines", scene_texlines, 64, 0 }, { "accum", scene_accum, 0, 0 },
+	{ "texlines", scene_texlines, 64, 0 }, { "accum", scene_accum, 0, 0 }, { "lodbias", scene_lodbias, 0, 0 },
 };
 #define SCENES (sizeof scenes / sizeof scenes[0])
 

@@ -225,6 +225,7 @@ void glf_light_model(struct gl_state *st, uint32_t pname, const float *v)
 	case GL_LIGHT_MODEL_AMBIENT: memcpy(st->light_model_ambient, v, 4 * sizeof *v); break;
 	case GL_LIGHT_MODEL_LOCAL_VIEWER: st->local_viewer = v[0] != 0; break;
 	case GL_LIGHT_MODEL_TWO_SIDE: st->two_side = v[0] != 0; break;
+	case GL_LIGHT_MODEL_SPECULAR_VECTOR_APPLE: st->specular_vector = v[0] != 0; break;
 	case GL_LIGHT_MODEL_COLOR_CONTROL:
 		if (v[0] != GL_SINGLE_COLOR && v[0] != GL_SEPARATE_SPECULAR_COLOR) {
 			glf_error(st, GL_INVALID_ENUM);
@@ -449,6 +450,7 @@ unsigned glf_get_lighting(struct gl_state *st, uint32_t pname, double *v)
 	case GL_LIGHT_MODEL_AMBIENT: return values(v, st->light_model_ambient, 4);
 	case GL_LIGHT_MODEL_LOCAL_VIEWER: v[0] = st->local_viewer; return 1;
 	case GL_LIGHT_MODEL_TWO_SIDE: v[0] = st->two_side; return 1;
+	case GL_LIGHT_MODEL_SPECULAR_VECTOR_APPLE: v[0] = st->specular_vector; return 1;
 	case GL_LIGHT_MODEL_COLOR_CONTROL: v[0] = st->separate_specular ? GL_SEPARATE_SPECULAR_COLOR : GL_SINGLE_COLOR;
 		return 1;
 	case GL_COLOR_MATERIAL_FACE: v[0] = st->color_material_face; return 1;
@@ -478,6 +480,13 @@ static void normalize(float v[3])
 	if (len > 0)
 		for (int k = 0; k < 3; k++)
 			v[k] /= len;
+}
+
+static void cross3(const float a[3], const float b[3], float out[3])
+{
+	out[0] = a[1] * b[2] - a[2] * b[1];
+	out[1] = a[2] * b[0] - a[0] * b[2];
+	out[2] = a[0] * b[1] - a[1] * b[0];
 }
 
 static float clampf(float v)
@@ -539,19 +548,28 @@ static void light_face(const struct gl_state *st, const struct gl_material *m, c
 			continue;
 		for (int k = 0; k < 3; k++)
 			c[k] += f * ndotl * m->diffuse[k] * l->diffuse[k];
-		float h[3];
+		float e[3] = { 0, 0, 1 };              /* (toward the eye) */
 		if (st->local_viewer) {
-			float e[3] = { -eye[0], -eye[1], -eye[2] };
+			e[0] = -eye[0];
+			e[1] = -eye[1];
+			e[2] = -eye[2];
 			normalize(e);
+		}
+		float ndoth;
+		if (st->specular_vector) {     /* (GL_APPLE_specular_vector: the light's reflection, 2 n x (n x l) + l) */
+			float nl[3], r[3];
+			cross3(n, vp, nl);
+			cross3(n, nl, r);
+			for (int k = 0; k < 3; k++)
+				r[k] = 2 * r[k] + vp[k];
+			ndoth = dot3(r, e);
+		} else {
+			float h[3];
 			for (int k = 0; k < 3; k++)
 				h[k] = vp[k] + e[k];
-		} else {
-			h[0] = vp[0];
-			h[1] = vp[1];
-			h[2] = vp[2] + 1;
+			normalize(h);
+			ndoth = dot3(n, h);
 		}
-		normalize(h);
-		float ndoth = dot3(n, h);
 		if (ndoth > 0) {
 			float p = f * power(ndoth, m->shininess);
 			for (int k = 0; k < 3; k++)

@@ -782,6 +782,9 @@ static void textures(struct gl_state *st, struct raster_state *s)
 		r->clamp_s = t->wrap_s != GL_REPEAT;           /* (GL_CLAMP as GL_CLAMP_TO_EDGE: see glfront.h) */
 		r->clamp_t = t->wrap_t != GL_REPEAT;
 		r->clamp_r = t->wrap_r != GL_REPEAT;
+		float bias = st->units[u].lod_bias;
+		r->lod_bias = bias < -GLF_MAX_LOD_BIAS ? -GLF_MAX_LOD_BIAS : bias > GLF_MAX_LOD_BIAS ? GLF_MAX_LOD_BIAS :
+			      bias == bias ? bias : 0;
 		env_stage(&s->stage[n++], u, st->units[u].env_mode, t->level[t->base_level].base,
 			  st->units[u].env_color);
 	}
@@ -1622,6 +1625,7 @@ unsigned glf_get(struct gl_state *st, uint32_t pname, double *v)
 	case GL_MAX_VIEWPORT_DIMS: v[0] = v[1] = GLF_MAX_SIZE; return 2;
 	case GL_ACTIVE_TEXTURE_ARB: v[0] = GL_TEXTURE0_ARB + st->active_texture; return 1;
 	case GL_MAX_TEXTURE_UNITS_ARB: v[0] = GLF_TEXTURE_UNITS; return 1;
+	case GL_MAX_TEXTURE_LOD_BIAS_EXT: v[0] = GLF_MAX_LOD_BIAS; return 1;
 	case GL_CURRENT_COLOR: return values(v, st->color, 4);
 	case GL_CURRENT_SECONDARY_COLOR_EXT: return values(v, st->secondary_color, 4);
 	case GL_CURRENT_NORMAL: return values(v, st->normal, 3);

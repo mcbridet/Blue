@@ -87,6 +87,7 @@ struct raster_unit {
 	bool clamp_s, clamp_t, clamp_r;         /* to the edge texels (else repeating) */
 	bool projective;                        /* coordinates divided by the unit's q/w (else by 1/w: q is 1) */
 	float anisotropy;                       /* the most the GPU may use, where it has some (1 or 0: none) */
+	float lod_bias;                         /* added to triangles' and lines' levels of detail */
 };
 
 /*
@@ -271,7 +272,10 @@ unsigned raster_gl_fragments(const struct raster_state *s, const struct raster_c
 void raster_lerp_vertex(struct raster_vertex *out, const struct raster_vertex *a, const struct raster_vertex *b,
 			float t);
 
-/* A level of detail for a unit's texture along a line (log2 of texels per pixel; 0 if it doesn't change) */
+/*
+ * A level of detail for a unit's texture along a line (log2 of texels per
+ * pixel; if it doesn't change, far below any bias: magnified)
+ */
 float raster_line_lod(const struct raster_unit *u, unsigned unit, const struct raster_vertex *v0,
 		      const struct raster_vertex *v1);
 

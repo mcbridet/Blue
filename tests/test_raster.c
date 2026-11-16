@@ -4,7 +4,8 @@
  * recorded commands on helper threads, at once or in background batches,
  * which must give exactly the pixels of drawing them one at a time.
  * OpenGL's points and lines (as Mesa's llvmpipe draws them, but for its
- * ties), their stipple and coverage; logic ops; the polygon stipple.
+ * ties), their stipple and coverage; logic ops; the polygon stipple; the
+ * levels a LOD bias picks.
  */
 #include <math.h>
 #include <stdlib.h>
@@ -774,6 +775,102 @@ static void test_polygon_stipple(void)
 	CHECK_EQ(px[4], 5000);
 }
 
+/* ---- GL_EXT_texture_lod_bias ---- */
+
+/* A 32 x 32 texture whose 6 levels are each a color of their own */
+static const uint32_t level_color[6] = { 0xFFFF0000u, 0xFF00FF00u, 0xFF0000FFu, 0xFFFFFF00u, 0xFF00FFFFu,
+					 0xFFFF00FFu };
+static uint32_t level_texels[32 * 32 + 16 * 16 + 8 * 8 + 4 * 4 + 2 * 2 + 1];
+
+static struct raster_texture levels_texture(void)
+{
+	struct raster_texture tx = { .levels = 6 };
+	uint32_t *p = level_texels;
+	for (unsigned k = 0; k < 6; k++) {
+		tx.width[k] = tx.height[k] = 32u >> k;
+		tx.texels[k] = p;
+		for (unsigned i = 0; i < tx.width[k] * tx.height[k]; i++)
+			*p++ = level_color[k];
+	}
+	return tx;
+}
+
+/* A state drawing unit 0's texture as it is, nearest texels of the nearest level, biased */
+static struct raster_state biased(const struct raster_texture *tx, float bias)
+{
+	struct raster_state s = plain();
+	s.blend = RASTER_BLEND_NONE;
+	s.all_fragments = true;
+	s.gl_points = true;
+	s.unit[0].texture = tx;
+	s.unit[0].min_filter = RASTER_NEAREST_MIPMAP_NEAREST;
+	s.unit[0].mag_filter = RASTER_NEAREST;
+	s.unit[0].lod_bias = bias;
+	s.stages = 1;
+	s.stage[0].arg[0][0] = s.stage[0].arg[1][0] = RASTER_TEXTURE0;
+	return s;
+}
+
+/* A square at (x, y), `size` pixels, the whole texture across it (or one texel's place: constant) */
+static void textured_square(const struct raster_state *s, float x, float y, float size, bool constant)
+{
+	struct raster_target t = target(color_a, depth_a);
+	struct raster_vertex v[4] = { vertex(x, y, 0, 1, 1, 1), vertex(x + size, y, 0, 1, 1, 1),
+				      vertex(x + size, y + size, 0, 1, 1, 1), vertex(x, y + size, 0, 1, 1, 1) };
+	for (int k = 0; k < 4; k++) {
+		v[k].tex[0][0] = constant ? 0.3f : (k == 1 || k == 2 ? 1.0f : 0.0f);
+		v[k].tex[0][1] = constant ? 0.6f : (k >= 2 ? 1.0f : 0.0f);
+		v[k].tex[0][2] = 1;
+	}
+	raster_triangle(&t, s, &v[0], &v[1], &v[2], true);
+	raster_triangle(&t, s, &v[0], &v[2], &v[3], true);
+}
+
+/*
+ * The bias added to the level of detail before the level is chosen (and
+ * whether it's magnified): 32 texels over 12 pixels is 1.415; where the
+ * coordinates don't change (and for points) it's magnified, biased or not
+ */
+static void test_lod_bias(void)
+{
+	struct raster_texture tx = levels_texture();
+	static const struct {
+		float bias;
+		unsigned level;
+	} cases[] = { { 0, 1 }, { 1, 2 }, { 2.3f, 4 }, { -1, 0 }, { -3, 0 }, { 0.2f, 2 }, { 20, 5 } };
+	for (unsigned k = 0; k < sizeof cases / sizeof cases[0]; k++) {
+		struct raster_state s = biased(&tx, cases[k].bias);
+		raster_clear(&(struct raster_target){ W, H, color_a, depth_a, NULL }, 0, 0, W, H, true, 0, true, 1);
+		textured_square(&s, 4, 4, 12, false);
+		CHECK_EQ(color_a[10 * W + 10], level_color[cases[k].level]);
+		textured_square(&s, 30, 4, 12, true);
+		CHECK_EQ(color_a[10 * W + 36], level_color[0]);
+	}
+	/* a line: 32 texels along 24 pixels, 0.415 (minified, level 0), and 2 more */
+	for (int b = 0; b < 2; b++) {
+		struct raster_state s = biased(&tx, b ? 2.0f : 0.0f);
+		struct raster_target t = target(color_a, depth_a);
+		raster_clear(&t, 0, 0, W, H, true, 0, true, 1);
+		struct raster_vertex v[2] = { vertex(4, 30.5f, 0, 1, 1, 1), vertex(28, 30.5f, 0, 1, 1, 1) };
+		v[0].tex[0][1] = v[1].tex[0][1] = 0.5f;
+		v[1].tex[0][0] = 1;
+		v[0].tex[0][2] = v[1].tex[0][2] = 1;
+		struct raster_cmd c;
+		memset(&c, 0, sizeof c);
+		c.kind = RASTER_CMD_LINE;
+		c.textured = true;
+		c.v[0] = v[0];
+		c.v[1] = v[1];
+		raster_run(&t, &s, &c, 1);
+		CHECK_EQ(color_a[30 * W + 16], level_color[b ? 2 : 0]);
+		/* a point: magnified */
+		c.kind = RASTER_CMD_POINT;
+		c.v[0] = vertex(40.5f, 30.5f, 0, 1, 1, 1);
+		raster_run(&t, &s, &c, 1);
+		CHECK_EQ(color_a[30 * W + 40], level_color[0]);
+	}
+}
+
 void test_raster(void)
 {
 	test_gl_lines();
@@ -781,6 +878,7 @@ void test_raster(void)
 	test_gl_smooth();
 	test_logic();
 	test_polygon_stipple();
+	test_lod_bias();
 	test_coverage();
 	test_shared_edges();
 	test_depth();

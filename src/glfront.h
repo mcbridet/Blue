@@ -57,6 +57,8 @@ enum { GL_FLAT = 0x1D00, GL_SMOOTH };
 enum { GL_MODELVIEW = 0x1700, GL_PROJECTION, GL_TEXTURE };
 enum { GL_TEXTURE0_ARB = 0x84C0 };
 enum { GL_TEXTURE_ENV_MODE = 0x2200, GL_TEXTURE_ENV_COLOR = 0x2201, GL_TEXTURE_ENV = 0x2300 };
+/* GL_EXT_texture_lod_bias's */
+enum { GL_TEXTURE_FILTER_CONTROL_EXT = 0x8500, GL_TEXTURE_LOD_BIAS_EXT = 0x8501, GL_MAX_TEXTURE_LOD_BIAS_EXT = 0x84FD };
 enum { GL_MODULATE = 0x2100, GL_DECAL = 0x2101, GL_ADD = 0x0104, GL_REPLACE = 0x1E01 };   /* (and GL_BLEND) */
 enum { GL_TEXTURE_MAG_FILTER = 0x2800, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T };
 enum { GL_NEAREST = 0x2600, GL_LINEAR, GL_NEAREST_MIPMAP_NEAREST = 0x2700, GL_LINEAR_MIPMAP_NEAREST,
@@ -88,7 +90,8 @@ enum { GL_AMBIENT = 0x1200, GL_DIFFUSE, GL_SPECULAR, GL_POSITION, GL_SPOT_DIRECT
        GL_SPOT_CUTOFF, GL_CONSTANT_ATTENUATION, GL_LINEAR_ATTENUATION, GL_QUADRATIC_ATTENUATION };
 enum { GL_EMISSION = 0x1600, GL_SHININESS, GL_AMBIENT_AND_DIFFUSE, GL_COLOR_INDEXES };
 enum { GL_LIGHT_MODEL_LOCAL_VIEWER = 0x0B51, GL_LIGHT_MODEL_TWO_SIDE, GL_LIGHT_MODEL_AMBIENT,
-       GL_LIGHT_MODEL_COLOR_CONTROL = 0x81F8, GL_SINGLE_COLOR, GL_SEPARATE_SPECULAR_COLOR };
+       GL_LIGHT_MODEL_COLOR_CONTROL = 0x81F8, GL_SINGLE_COLOR, GL_SEPARATE_SPECULAR_COLOR,
+       GL_LIGHT_MODEL_SPECULAR_VECTOR_APPLE = 0x85B0 };
 enum { GL_FOG_INDEX = 0x0B61, GL_FOG_DENSITY, GL_FOG_START, GL_FOG_END, GL_FOG_MODE, GL_FOG_COLOR,
        GL_EXP = 0x0800, GL_EXP2 };
 enum { GL_S = 0x2000, GL_T, GL_R, GL_Q, GL_TEXTURE_GEN_MODE = 0x2500, GL_OBJECT_PLANE, GL_EYE_PLANE,
@@ -114,6 +117,7 @@ enum { GL_COLOR_INDEX = 0x1900, GL_STENCIL_INDEX, GL_DEPTH_COMPONENT, GL_RED, GL
 #define GLF_TEXTURE_UNITS RASTER_UNITS
 #define GLF_MAX_TEXTURE_SIZE 1024
 #define GLF_TEXTURE_LEVELS 11                   /* (1024 down to 1) */
+#define GLF_MAX_LOD_BIAS (GLF_TEXTURE_LEVELS - 1)       /* (GL_MAX_TEXTURE_LOD_BIAS_EXT: the deepest level) */
 #define GLF_MAX_3D_TEXTURE_SIZE 128             /* (3D textures': 8 levels) */
 #define GLF_LIGHTS 8
 #define GLF_CLIP_PLANES 6
@@ -201,6 +205,7 @@ struct gl_unit {
 	struct gl_texture *bound[GLF_TARGETS];
 	uint32_t env_mode;
 	float env_color[4];                     /* r, g, b, a */
+	float lod_bias;                         /* (GL_TEXTURE_LOD_BIAS_EXT as given: clamped where it's used) */
 };
 
 /* Lighting (gllight.c): a light, in eye coordinates as it was given; a face's material */
@@ -342,6 +347,7 @@ struct gl_state {
 	struct gl_material material[2];         /* the front's, the back's */
 	float light_model_ambient[4];
 	bool local_viewer, two_side, separate_specular;
+	bool specular_vector;                   /* (GL_APPLE_specular_vector's model) */
 	uint32_t color_material_face, color_material_mode;
 	uint32_t fog_mode;
 	float fog_density, fog_start, fog_end, fog_color[4];

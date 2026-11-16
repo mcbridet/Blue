@@ -64,7 +64,8 @@ static const char vertex_source[] =
  * VOLUME0 and VOLUME1 (3D textures), and the stages' code between the head
  * and the tail (see stage_code()); COVER (alpha times the coverage:
  * OpenGL's smooth points and lines), STIPPLE (the polygon stipple; rows go
- * up from the bottom of the target, as OpenGL's do).
+ * up from the bottom of the target, as OpenGL's do), LOD_BIAS (the units'
+ * biases added to the GPU's levels of detail).
  */
 static const char fragment_head[] =
 	"smooth in float v_invw;\n"
@@ -89,6 +90,14 @@ static const char fragment_head[] =
 	"uniform sampler3D u_texture1;\n"
 	"#else\n"
 	"uniform sampler2D u_texture1;\n"
+	"#endif\n"
+	"#ifdef LOD_BIAS\n"
+	"uniform vec2 u_lod_bias;\n"
+	"#define BIAS0 , u_lod_bias.x\n"
+	"#define BIAS1 , u_lod_bias.y\n"
+	"#else\n"
+	"#define BIAS0\n"
+	"#define BIAS1\n"
 	"#endif\n"
 	"uniform vec4 u_constant[STAGES];\n"
 	"uniform int u_fog_mode;\n"
@@ -123,9 +132,9 @@ static const char fragment_head[] =
 	"	float d0 = w;\n"
 	"#endif\n"
 	"#ifdef VOLUME0\n"
-	"	vec4 t0 = texture(u_texture0, vec3(v_tex0.xy, v_texr.x) * d0);\n"
+	"	vec4 t0 = texture(u_texture0, vec3(v_tex0.xy, v_texr.x) * d0 BIAS0);\n"
 	"#else\n"
-	"	vec4 t0 = texture(u_texture0, v_tex0.xy * d0);\n"
+	"	vec4 t0 = texture(u_texture0, v_tex0.xy * d0 BIAS0);\n"
 	"#endif\n"
 	"#endif\n"
 	"#ifdef UNIT1\n"
@@ -135,9 +144,9 @@ static const char fragment_head[] =
 	"	float d1 = w;\n"
 	"#endif\n"
 	"#ifdef VOLUME1\n"
-	"	vec4 t1 = texture(u_texture1, vec3(v_tex1.xy, v_texr.y) * d1);\n"
+	"	vec4 t1 = texture(u_texture1, vec3(v_tex1.xy, v_texr.y) * d1 BIAS1);\n"
 	"#else\n"
-	"	vec4 t1 = texture(u_texture1, v_tex1.xy * d1);\n"
+	"	vec4 t1 = texture(u_texture1, v_tex1.xy * d1 BIAS1);\n"
 	"#endif\n"
 	"#endif\n";
 
@@ -202,7 +211,7 @@ enum { MODE_COLOR, MODE_TEXTURED, MODE_BITMAP, MODE_PIXELS };
 
 /* What a program draws: what it's made for (all but the stages of textured drawing zero) */
 struct program_key {
-	uint8_t mode, perspective_z, units, projective, volume, stages, cover, stipple;
+	uint8_t mode, perspective_z, units, projective, volume, stages, cover, stipple, lod_bias;
 	struct raster_stage stage[RASTER_STAGES];       /* (but for their constants, which are uniforms) */
 };
 
@@ -211,7 +220,7 @@ struct program {
 	GLuint id;
 	GLint size, texture0, texture1, constant, fog_mode, fog_coord, fog_color, fog_start, fog_end, fog_density,
 	      alpha_test, alpha_ref, transparent, pix_origin, pix_inv, pix_size, pix_kind, pix_bit, pix_color, pix_z,
-	      stipple;
+	      stipple, lod_bias;
 };
 
 /* per vertex: x, y, z, 1/w, the colors (r, g, b, a), fog, each unit's s/w, t/w, q/w, then each's r/w, coverage */
@@ -398,12 +407,12 @@ static struct program *program_of(struct gpu *g, const struct program_key *key)
 
 	struct gl *gl = &g->gl;
 	char defines[512], code[4096];
-	snprintf(defines, sizeof defines, "#define MODE %u\n%s%s%s%s%s%s%s%s%s", key->mode,
+	snprintf(defines, sizeof defines, "#define MODE %u\n%s%s%s%s%s%s%s%s%s%s", key->mode,
 		 key->perspective_z ? "#define PERSPECTIVE_Z\n" : "", key->units & 1 ? "#define UNIT0\n" : "",
 		 key->units & 2 ? "#define UNIT1\n" : "", key->projective & 1 ? "#define PROJECTIVE0\n" : "",
 		 key->projective & 2 ? "#define PROJECTIVE1\n" : "", key->volume & 1 ? "#define VOLUME0\n" : "",
 		 key->volume & 2 ? "#define VOLUME1\n" : "", key->cover ? "#define COVER\n" : "",
-		 key->stipple ? "#define STIPPLE\n" : "");
+		 key->stipple ? "#define STIPPLE\n" : "", key->lod_bias ? "#define LOD_BIAS\n" : "");
 	stage_code(key, code, sizeof code);
 	debug(g, "program %u: %s%s", g->nprograms, defines, code);
 	GLuint vs = compile(g, GL_VERTEX_SHADER, "", vertex_source, "", "");
@@ -452,6 +461,7 @@ static struct program *program_of(struct gpu *g, const struct program_key *key)
 	U(pix_color, "u_pix_color");
 	U(pix_z, "u_pix_z");
 	U(stipple, "u_stipple");
+	U(lod_bias, "u_lod_bias");
 #undef U
 	gl->UseProgram(p->id);
 	gl->Uniform1i(p->texture0, 0);
@@ -475,6 +485,7 @@ static void key_of(const struct raster_state *s, const struct range *r, struct p
 	for (unsigned u = 0; u < RASTER_UNITS; u++) {
 		k->projective |= (uint8_t)(k->units >> u & 1 && s->unit[u].projective ? 1u << u : 0);
 		k->volume |= (uint8_t)(k->units >> u & 1 && s->unit[u].texture->depth[0] ? 1u << u : 0);
+		k->lod_bias |= (uint8_t)(k->units >> u & 1 && s->unit[u].lod_bias != 0);
 	}
 	k->stages = (uint8_t)(s->stages < RASTER_STAGES ? s->stages : RASTER_STAGES);
 	for (unsigned j = 0; j < k->stages; j++) {
@@ -966,6 +977,8 @@ static bool set_state(struct gpu *g, const struct gpu_target *t, const struct ra
 	gl->Uniform2f(p->size, (float)t->width, (float)t->height);
 	if (key.stipple)
 		gl->Uniform1uiv(p->stipple, 32, s->polygon_stipple);
+	if (key.lod_bias)
+		gl->Uniform2f(p->lod_bias, s->unit[0].lod_bias, s->unit[1].lod_bias);
 	unsigned units = key.units;
 	if (key.stages && p->constant >= 0) {
 		GLfloat constant[RASTER_STAGES * 4];

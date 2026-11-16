@@ -170,6 +170,7 @@ void glf_pop_attrib(struct gl_state *st)
 		memcpy(st->light_model_ambient, o->light_model_ambient, sizeof st->light_model_ambient);
 		st->local_viewer = o->local_viewer;
 		st->two_side = o->two_side;
+		st->specular_vector = o->specular_vector;
 		st->separate_specular = o->separate_specular;
 		st->color_material_face = o->color_material_face;
 		st->color_material_mode = o->color_material_mode;
@@ -252,6 +253,7 @@ void glf_pop_attrib(struct gl_state *st)
 		for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++) {
 			st->units[u].env_mode = o->units[u].env_mode;
 			memcpy(st->units[u].env_color, o->units[u].env_color, sizeof st->units[u].env_color);
+			st->units[u].lod_bias = o->units[u].lod_bias;
 		}
 		memcpy(st->texgen, o->texgen, sizeof st->texgen);
 		caps(st, o, GLF_CAP_TEXTURE_1D, 2);

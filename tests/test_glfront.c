@@ -15,7 +15,7 @@
  * feedback where Mesa's depart from OpenGL 1.2's; evaluators' maps, errors,
  * values, normals and current values. The line stipple's counter, the
  * polygon stipple through the pixel store, logic ops' state, the
- * accumulation buffer.
+ * accumulation buffer; Apple's specular vector, the LOD bias's state.
  */
 #include <math.h>
 #include <stdlib.h>
@@ -2064,6 +2064,108 @@ static void test_accum(void)
 	target.accum_bits = 0;
 }
 
+/*
+ * GL_APPLE_specular_vector: the specular term by the light's reflection, (2
+ * n x (n x l) + l) . p, p toward the eye ((0, 0, 1), or from the vertex with
+ * a local viewer); in the light model's state, pushed and popped with it
+ */
+static double spec_vector(const double n[3], const double l[3], const double p[3], double shininess)
+{
+	double c[3] = { n[1] * l[2] - n[2] * l[1], n[2] * l[0] - n[0] * l[2], n[0] * l[1] - n[1] * l[0] };
+	double r[3] = { n[1] * c[2] - n[2] * c[1], n[2] * c[0] - n[0] * c[2], n[0] * c[1] - n[1] * c[0] };
+	double s = 0;
+	for (int k = 0; k < 3; k++)
+		s += (2 * r[k] + l[k]) * p[k];
+	return s > 0 ? pow(s, shininess) : 0;
+}
+
+static void test_specular_vector(void)
+{
+	start();
+	struct gl_vertex v;
+	double got[4];
+	CHECK_EQ(glf_get(&st, GL_LIGHT_MODEL_SPECULAR_VECTOR_APPLE, got), 1);
+	CHECK_EQ(got[0], 0);
+	glf_enable(&st, GL_LIGHTING, true);
+	glf_enable(&st, GL_LIGHT0, true);                       /* (from +z, white specular) */
+	const float white[4] = { 1, 1, 1, 1 }, shine[1] = { 2 }, on[1] = { 1 }, off[1] = { 0 };
+	const float sep[1] = { (float)GL_SEPARATE_SPECULAR_COLOR };
+	glf_material(&st, GL_FRONT, GL_SPECULAR, white);
+	glf_material(&st, GL_FRONT, GL_SHININESS, shine);
+	glf_light_model(&st, GL_LIGHT_MODEL_COLOR_CONTROL, sep);
+	const float n[3] = { 0, 0.6f, 0.8f };
+	memcpy(st.normal, n, sizeof n);
+	shade_at(0, 0, 0, &v);                                  /* (the half vector's: (n . (0, 0, 1))^2) */
+	CHECK(near(v.secondary[0][0], 0.64f, 1e-6f));
+	glf_light_model(&st, GL_LIGHT_MODEL_SPECULAR_VECTOR_APPLE, on);
+	CHECK_EQ(glf_get(&st, GL_LIGHT_MODEL_SPECULAR_VECTOR_APPLE, got), 1);
+	CHECK_EQ(got[0], 1);
+	const double nd[3] = { 0, 0.6, 0.8 }, z[3] = { 0, 0, 1 };
+	shade_at(0, 0, 0, &v);                                  /* (r = (0, 0.96, 0.28): 0.28^2) */
+	CHECK(near(v.secondary[0][0], (float)spec_vector(nd, z, z, 2), 1e-6f));
+	CHECK(near(v.secondary[0][0], 0.0784f, 1e-6f));
+	/* a local viewer, a positional light */
+	glf_light_model(&st, GL_LIGHT_MODEL_LOCAL_VIEWER, on);
+	const float pos[4] = { 2, 1, 3, 1 };
+	glf_light(&st, GL_LIGHT0, GL_POSITION, pos);
+	shade_at(1, 0, -2, &v);
+	double l[3] = { 1, 1, 5 }, p[3] = { -1, 0, 2 };
+	for (double *u = l; u; u = u == l ? p : NULL) {
+		double d = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+		for (int k = 0; k < 3; k++)
+			u[k] /= d;
+	}
+	CHECK(near(v.secondary[0][0], (float)spec_vector(nd, l, p, 2), 1e-6f));
+	CHECK(v.secondary[0][0] > 0.01f);
+	/* pushed and popped with the lighting bits; off again, the half vector's */
+	glf_push_attrib(&st, 0x40);                             /* GL_LIGHTING_BIT */
+	glf_light_model(&st, GL_LIGHT_MODEL_SPECULAR_VECTOR_APPLE, off);
+	glf_pop_attrib(&st);
+	CHECK_EQ(glf_get(&st, GL_LIGHT_MODEL_SPECULAR_VECTOR_APPLE, got), 1);
+	CHECK_EQ(got[0], 1);
+	glf_light_model(&st, GL_LIGHT_MODEL_LOCAL_VIEWER, off);
+	glf_light(&st, GL_LIGHT0, GL_POSITION, (const float[4]){ 0, 0, 1, 0 });
+	glf_light_model(&st, GL_LIGHT_MODEL_SPECULAR_VECTOR_APPLE, off);
+	shade_at(0, 0, 0, &v);
+	CHECK(near(v.secondary[0][0], 0.64f, 1e-6f));
+	CHECK_EQ(error(), GL_NO_ERROR);
+}
+
+/*
+ * GL_EXT_texture_lod_bias's state: per unit, through glTexEnv and
+ * glGetTexEnv (as given: clamped where it's drawn), its errors, the
+ * maximum, pushed and popped with the texture bits
+ */
+static void test_lod_bias_state(void)
+{
+	start();
+	double got[4];
+	const float bias[1] = { 2.5f }, far[1] = { -40 }, mode[1] = { (float)GL_REPLACE };
+	CHECK_EQ(glf_get(&st, GL_MAX_TEXTURE_LOD_BIAS_EXT, got), 1);
+	CHECK_EQ(got[0], 10);
+	CHECK_EQ(glf_get_tex_env(&st, GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, got), 1);
+	CHECK_EQ(got[0], 0);
+	glf_tex_env(&st, GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, bias);
+	glf_active_texture(&st, 0x84C1);                        /* GL_TEXTURE1_ARB */
+	glf_tex_env(&st, GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, far);
+	CHECK_EQ(glf_get_tex_env(&st, GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, got), 1);
+	CHECK(got[0] == -40);
+	glf_active_texture(&st, 0x84C0);
+	CHECK_EQ(glf_get_tex_env(&st, GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, got), 1);
+	CHECK(got[0] == 2.5);
+	CHECK_EQ(error(), GL_NO_ERROR);
+	glf_tex_env(&st, GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_ENV_MODE, mode);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	glf_tex_env(&st, GL_TEXTURE_ENV, GL_TEXTURE_LOD_BIAS_EXT, bias);
+	CHECK_EQ(error(), GL_INVALID_ENUM);
+	CHECK_EQ(glf_get_tex_env(&st, GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_ENV_MODE, got), 0);
+	glf_push_attrib(&st, 0x40000);                          /* GL_TEXTURE_BIT */
+	glf_tex_env(&st, GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, far);
+	glf_pop_attrib(&st);
+	CHECK_EQ(glf_get_tex_env(&st, GL_TEXTURE_FILTER_CONTROL_EXT, GL_TEXTURE_LOD_BIAS_EXT, got), 1);
+	CHECK(got[0] == 2.5);
+}
+
 void test_glfront(void)
 {
 	test_sincos();
@@ -2094,6 +2196,8 @@ void test_glfront(void)
 	test_evaluators();
 	test_stipple_logic();
 	test_accum();
+	test_specular_vector();
+	test_lod_bias_state();
 	surface_free(&surf);
 	glf_detach(&st, NULL);
 }

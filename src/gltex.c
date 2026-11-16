@@ -759,12 +759,17 @@ void glf_tex_parameter(struct gl_state *st, uint32_t target, uint32_t pname, con
 void glf_tex_env(struct gl_state *st, uint32_t target, uint32_t pname, const float *v)
 {
 	struct gl_unit *u = &st->units[st->active_texture];
-	uint32_t e = (uint32_t)v[0];
+	if (target == GL_TEXTURE_FILTER_CONTROL_EXT && pname == GL_TEXTURE_LOD_BIAS_EXT) {
+		u->lod_bias = v[0];
+		st->raster_stale = true;
+		return;
+	}
 	if (target != GL_TEXTURE_ENV) {
 		glf_error(st, GL_INVALID_ENUM);
 		return;
 	}
 	if (pname == GL_TEXTURE_ENV_MODE) {
+		uint32_t e = v[0] >= 0 && v[0] < 65536 ? (uint32_t)v[0] : 0;
 		if (e != GL_MODULATE && e != GL_DECAL && e != GL_BLEND && e != GL_REPLACE && e != GL_ADD) {
 			glf_error(st, GL_INVALID_ENUM);
 			return;
@@ -805,6 +810,10 @@ unsigned glf_get_tex_parameter(struct gl_state *st, uint32_t target, uint32_t pn
 unsigned glf_get_tex_env(struct gl_state *st, uint32_t target, uint32_t pname, double *v)
 {
 	const struct gl_unit *u = &st->units[st->active_texture];
+	if (target == GL_TEXTURE_FILTER_CONTROL_EXT && pname == GL_TEXTURE_LOD_BIAS_EXT) {
+		v[0] = u->lod_bias;
+		return 1;
+	}
 	if (target != GL_TEXTURE_ENV)
 		return 0;
 	if (pname == GL_TEXTURE_ENV_MODE) {
