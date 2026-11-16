@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,7 +60,8 @@ static size_t make_cfrg(uint8_t *p, unsigned usage, uint32_t stack, const char *
 enum {
 	IMP_WAIT_NEXT_EVENT, IMP_GET_MAIN_DEVICE, IMP_DM_SET_DISPLAY_MODE, IMP_V1_COUNT,
 	IMP_CALL_UNIVERSAL_PROC = IMP_V1_COUNT, IMP_TEMP_NEW_HANDLE, IMP_HLOCK, IMP_DISPOSE_HANDLE,
-	IMP_GET_CURRENT_PROCESS, IMP_GET_FRONT_PROCESS, IMP_SAME_PROCESS, IMP_POST_EVENT, IMP_COUNT
+	IMP_GET_CURRENT_PROCESS, IMP_GET_FRONT_PROCESS, IMP_SAME_PROCESS, IMP_POST_EVENT, IMP_V2_COUNT,
+	IMP_FIND_WINDOW = IMP_V2_COUNT, IMP_TEST_CONTROL, IMP_COUNT
 };
 
 static const struct ndrv_import helper_imports[IMP_COUNT] = {
@@ -74,14 +76,17 @@ static const struct ndrv_import helper_imports[IMP_COUNT] = {
 	[IMP_GET_FRONT_PROCESS] = { "InterfaceLib", "GetFrontProcess" },
 	[IMP_SAME_PROCESS] = { "InterfaceLib", "SameProcess" },
 	[IMP_POST_EVENT] = { "InterfaceLib", "PostEvent" },
+	[IMP_FIND_WINDOW] = { "InterfaceLib", "FindWindow" },
+	[IMP_TEST_CONTROL] = { "InterfaceLib", "TestControl" },
 };
 
 /*
- * Entry points: main, then its patches: two traps, and a GetNextEvent filter
+ * Entry points: main, then its patches: two traps, a GetNextEvent filter
  * (the low-memory hook jGNEFilter), which is called by a few instructions of
- * 68k code (see patch()) in each application just before it gets an event.
+ * 68k code (see patch()) in each application just before it gets an event,
+ * and another trap.
  */
-enum { E_MAIN, E_ZERO_SCRAP, E_PUT_SCRAP, E_EVENT_FILTER, E_COUNT };
+enum { E_MAIN, E_ZERO_SCRAP, E_PUT_SCRAP, E_EVENT_FILTER, E_V2_COUNT, E_TRACK_CONTROL = E_V2_COUNT, E_COUNT };
 #define PATCHES (E_COUNT - 1)
 #define PATCH(e) ((e) - E_ZERO_SCRAP)
 static const struct {
@@ -91,6 +96,7 @@ static const struct {
 	{ 0xA9FC, 0x30 },               /* long ZeroScrap(void) */
 	{ 0xA9FE, 0xFF0 },              /* long PutScrap(long length, ResType type, const void *source) */
 	{ 0, 0xC0 },                    /* void filter(EventRecord *) */
+	{ 0xA968, 0xFE0 },              /* short TrackControl(ControlHandle, Point, ControlActionUPP) */
 };
 #define TOOL_TRAP_TABLE 0x0E00u         /* in low memory: 1024 entries */
 #define LM_JGNE_FILTER 0x029Au
@@ -98,10 +104,10 @@ static const struct {
 /*
  * Its data (after the entry TVectors): what it is and its version (which
  * goes up when the fragment changes, so that one installed by an older
- * version is told apart: see current()), then the rest.
+ * version is told apart: see copy_version()), then the rest.
  */
 #define HELPER_MAGIC 0x73794870u        /* 'syHp' */
-#define HELPER_VERSION 2u
+#define HELPER_VERSION 3u
 #define DATA_EVENT 8u                   /* EventRecord */
 #define DATA_DEPTH 24u                  /* depth mode, in and out of DMSetDisplayMode */
 #define DATA_PSN 28u                    /* two ProcessSerialNumbers, */
@@ -112,25 +118,28 @@ static const struct {
 #define DESCRIPTOR_SIZE 32u
 #define DATA_FILTER (DATA_DESCRIPTOR + DESCRIPTOR_SIZE * PATCHES)       /* the filter's 68k code */
 #define FILTER_SIZE 24u
-#define DATA_SIZE (DATA_FILTER + FILTER_SIZE)
+#define DATA_WINDOW (DATA_FILTER + FILTER_SIZE) /* FindWindow's window */
+#define DATA_TRACKER (DATA_WINDOW + 4u) /* the process calling TrackControl */
+#define DATA_SIZE (DATA_TRACKER + 8u)
 
 /* Version 1 (before the clipboard): the first three imports, main only, and this data */
 #define V1_DATA_EVENT 0u
 #define V1_DATA_DEPTH 16u
 #define V1_DATA_SIZE 24u
 
-static size_t build_helper(uint8_t *out, size_t size, struct ndrv_layout *layout, bool v1)
+/* (version 2, before scrolling: the imports and entries before IMP_V2_COUNT and E_V2_COUNT, and the data's start) */
+static size_t build_helper(uint8_t *out, size_t size, struct ndrv_layout *layout, unsigned version)
 {
 	static const uint8_t data[DATA_SIZE] = { 's', 'y', 'H', 'p', 0, 0, 0, HELPER_VERSION };
 	static const uint8_t v1_data[V1_DATA_SIZE];
 	const struct ndrv_spec spec = {
 		.kind = FRAG_APPLICATION,
-		.entries = v1 ? 1 : E_COUNT,
+		.entries = version == 1 ? 1 : version == 2 ? E_V2_COUNT : E_COUNT,
 		.hostcall = HOSTCALL_TOOLS_HELPER,
 		.imports = helper_imports,
-		.import_count = v1 ? IMP_V1_COUNT : IMP_COUNT,
-		.extra = v1 ? v1_data : data,
-		.extra_len = v1 ? sizeof v1_data : sizeof data,
+		.import_count = version == 1 ? IMP_V1_COUNT : version == 2 ? IMP_V2_COUNT : IMP_COUNT,
+		.extra = version == 1 ? v1_data : data,
+		.extra_len = version == 1 ? sizeof v1_data : sizeof data,
 	};
 	return ndrv_build(&spec, out, size, layout);
 }
@@ -138,11 +147,13 @@ static size_t build_helper(uint8_t *out, size_t size, struct ndrv_layout *layout
 void helper_init(struct helper *h)
 {
 	static uint8_t scratch[4096];
-	struct ndrv_layout v1;
+	struct ndrv_layout old;
 	memset(h, 0, sizeof *h);
-	build_helper(scratch, sizeof scratch, &h->layout, false);
-	build_helper(scratch, sizeof scratch, &v1, true);
-	h->v1_extra = v1.extra;
+	build_helper(scratch, sizeof scratch, &h->layout, HELPER_VERSION);
+	build_helper(scratch, sizeof scratch, &old, 1);
+	h->v1_extra = old.extra;
+	build_helper(scratch, sizeof scratch, &old, 2);
+	h->v2_extra = old.extra;
 }
 
 #define EVERY_EVENT 0xFFFFu
@@ -158,21 +169,47 @@ enum {
 	STEP_CURRENT, STEP_FRONT, STEP_SAME,    /* ... the host's text for the scrap: is this the front process? */
 	STEP_ALLOCATED, STEP_LOCKED, STEP_ZEROED, STEP_PUT_TEXT, STEP_PUT_UTXT, STEP_DISPOSED,
 	STEP_FRONT_ASKED,                       /* main: which process is in front (helper.want_front) */
+	STEP_W_CURRENT, STEP_W_FRONT, STEP_W_SAME,      /* the wheel's lines: is this the front process? */
+	STEP_W_FOUND,                           /* ... the window under the pointer */
+	STEP_W_TESTED,                          /* ... a scroll bar's arrows, each end tested */
+	STEP_T_TRACKER,                         /* TrackControl, given the wheel's click: the process calling it */
+	STEP_T_ACTION,                          /* ... the program's action procedure called, a line at a time */
 };
 /* The patches' other state words: which one, and its parameters */
 enum { S_ENTRY = 1, S_PARAM };
 
-/* Whether the copy making this call is this version's: one without the version where this one has it is older */
+/* Which version of Blue's the copy making this call is (an older one doesn't have its data where this one has) */
+static unsigned copy_version(const struct helper *h, const struct ndrv_call *c)
+{
+	uint32_t data = c->toc + h->layout.extra, v2 = c->toc + h->v2_extra;
+	if (mem_ok(c->mem, data, 8, MEM_R) && mem_r32(c->mem, data) == HELPER_MAGIC &&
+	    mem_r32(c->mem, data + 4) >= HELPER_VERSION)
+		return HELPER_VERSION;
+	if (mem_ok(c->mem, v2, 8, MEM_R) && mem_r32(c->mem, v2) == HELPER_MAGIC && mem_r32(c->mem, v2 + 4) == 2)
+		return 2;
+	return 1;
+}
+
 static bool current(const struct helper *h, const struct ndrv_call *c)
 {
-	uint32_t data = c->toc + h->layout.extra;
-	return mem_ok(c->mem, data, 8, MEM_R) && mem_r32(c->mem, data) == HELPER_MAGIC &&
-	       mem_r32(c->mem, data + 4) >= HELPER_VERSION;
+	return copy_version(h, c) == HELPER_VERSION;
 }
 
 static uint32_t helper_data(const struct helper *h, const struct ndrv_call *c)
 {
-	return c->toc + (current(h, c) ? h->layout.extra : h->v1_extra);
+	unsigned v = copy_version(h, c);
+	return c->toc + (v == HELPER_VERSION ? h->layout.extra : v == 2 ? h->v2_extra : h->v1_extra);
+}
+
+/* An older copy's: where its event record and depth are (version 2's are where this one's are, in its data) */
+static uint32_t old_event(const struct helper *h, const struct ndrv_call *c)
+{
+	return helper_data(h, c) + (copy_version(h, c) == 1 ? V1_DATA_EVENT : DATA_EVENT);
+}
+
+static uint32_t old_depth(const struct helper *h, const struct ndrv_call *c)
+{
+	return helper_data(h, c) + (copy_version(h, c) == 1 ? V1_DATA_DEPTH : DATA_DEPTH);
 }
 
 static bool guest_range(struct mem *m, uint32_t addr, uint32_t len, unsigned need)
@@ -193,8 +230,7 @@ static bool guest_range(struct mem *m, uint32_t addr, uint32_t len, unsigned nee
 static void wait_next_event(struct helper *h, struct ndrv_call *c)
 {
 	ndrv_set_state(c, 0, STEP_WAITED);
-	ndrv_callout(c, ndrv_import(c, &h->layout, IMP_WAIT_NEXT_EVENT), EVERY_EVENT,
-		     helper_data(h, c) + (current(h, c) ? DATA_EVENT : V1_DATA_EVENT), SLEEP_TICKS, 0);
+	ndrv_callout(c, ndrv_import(c, &h->layout, IMP_WAIT_NEXT_EVENT), EVERY_EVENT, old_event(h, c), SLEEP_TICKS, 0);
 }
 
 /*
@@ -255,22 +291,25 @@ static bool patch(struct helper *h, struct ndrv_call *c, bool on)
 
 /*
  * main(): an older copy gets on with what it knows, at its own data's
- * addresses. This one patches the Scrap Manager and filters events, for
- * every application, if there's a clipboard to share.
+ * addresses. This one patches the Scrap Manager, TrackControl and filters
+ * events, for every application, if there's a clipboard to share or a
+ * wheel to scroll with.
  */
-static void helper_main(struct helper *h, struct ndrv_call *c, struct clip *clip)
+static void helper_main(struct helper *h, struct ndrv_call *c, struct clip *clip, struct wheel *w)
 {
 	h->running = true;
 	h->launches++;
-	if (!current(h, c)) {
+	unsigned v = copy_version(h, c);
+	if (v != HELPER_VERSION) {
 		h->old = true;
-		printf("enhancements: the guest's Blue Enhancements is older than this version of Blue (no clipboard): "
-		       "update it (Blue offers to, in a window), or by hand from a volume made with \"blue tools create\"\n");
+		printf("enhancements: the guest's Blue Enhancements is older than this version of Blue (no %s): "
+		       "update it (Blue offers to, in a window), or by hand from a volume made with \"blue tools create\"\n",
+		       v == 1 ? "clipboard or scrolling" : "scrolling");
 		fflush(stdout);
-	} else if (clip->enabled && !h->patched && patch(h, c, true)) {
+	} else if ((clip->enabled || w->enabled) && !h->patched && patch(h, c, true)) {
 		h->patched = true;
 		h->patched_toc = c->toc;
-		clip->listening = true;
+		clip->listening = clip->enabled;
 	}
 	wait_next_event(h, c);
 }
@@ -300,25 +339,38 @@ static void call_scrap(struct helper *h, struct ndrv_call *c, unsigned entry, ui
 	c->out[4] = from;
 }
 
+static bool wheel_event(struct helper *h, struct ndrv_call *c, struct wheel *w);
+
 /*
  * The patches. ZeroScrap and PutScrap tell the host what applications put
  * in the scrap. Each application has a scrap of its own (which the Process
  * Manager hands on when another comes to the front), and some read it in
  * low memory rather than with GetScrap: so the host's newer text, if any,
  * goes into the front application's scrap before it gets its next event.
+ * The wheel's lines go to the front application then too, as a click on a
+ * scroll bar's arrow, which TrackControl's patch holds down for them (see
+ * wheel_event()).
  */
-static void patch_call(struct helper *h, struct ndrv_call *c, struct clip *clip)
+static void patch_call(struct helper *h, struct ndrv_call *c, struct clip *clip, struct wheel *w)
 {
-	h->scrap_calls += c->entry != E_EVENT_FILTER;
+	h->scrap_calls += c->entry == E_ZERO_SCRAP || c->entry == E_PUT_SCRAP;
 	ndrv_set_state(c, S_ENTRY, c->entry);
 	for (unsigned k = 0; k < 3; k++)
 		ndrv_set_state(c, S_PARAM + k, c->arg[k]);
 	if (c->entry == E_ZERO_SCRAP)
 		clip_mac_zero(clip);
-	if (c->entry == E_EVENT_FILTER && clip->pending && !h->delivering) {
+	if (c->entry == E_EVENT_FILTER && wheel_event(h, c, w))
+		return;
+	if (c->entry == E_EVENT_FILTER && clip->pending && !h->delivering && !h->scrolling) {
 		h->delivering = true;
 		ndrv_set_state(c, 0, STEP_CURRENT);
 		ndrv_callout(c, ndrv_import(c, &h->layout, IMP_GET_CURRENT_PROCESS), helper_data(h, c) + DATA_PSN,
+			     0, 0, 0);
+		return;
+	}
+	if (c->entry == E_TRACK_CONTROL && h->click.armed && c->arg[0] == h->click.control) {
+		ndrv_set_state(c, 0, STEP_T_TRACKER);
+		ndrv_callout(c, ndrv_import(c, &h->layout, IMP_GET_CURRENT_PROCESS), helper_data(h, c) + DATA_TRACKER,
 			     0, 0, 0);
 		return;
 	}
@@ -403,7 +455,416 @@ static void deliver(struct helper *h, struct ndrv_call *c, struct clip *clip, ui
 	call_original(h, c);
 }
 
-/* After a wait: the clipboard's news for the front application, a mode to switch to, or another wait */
+/* ---- the wheel -------------------------------------------------------------- */
+
+/*
+ * The wheel's lines scroll the window under the pointer, in the program in
+ * front, as period tools did it (USB Overdrive's, say): by its scroll bar
+ * (up and down, or across for a wheel turned sideways), as a click on the
+ * arrow at one end would. A key wakes the program (WHEEL_WAKE_KEY); as it
+ * gets that event (or a null event) the filter finds the window
+ * (FindWindow), its scroll bars that way, and the arrows' parts at their
+ * ends (TestControl), and makes the event a mouse-down on the arrow; the
+ * program's own handling of it calls TrackControl, whose patch, seeing
+ * the click, calls the action procedure the program gives it once for each
+ * line (as holding the button down on the arrow would) instead of tracking
+ * the mouse, and says the arrow was clicked. The program's procedure (its
+ * own, or the control's) runs in its own click handling, then, with
+ * whatever that sets up. A program with no action procedure gets a line a
+ * click. Without a scroll bar under the pointer the lines are the arrow
+ * keys (wheel.h); a scroll bar with nowhere to go takes them.
+ */
+#define LM_MOUSE 0x0830u                /* the pointer, in global coordinates (v, h) */
+#define LM_WINDOW_LIST 0x09D6u          /* the current application's windows, front first */
+#define LM_CUR_AP_NAME 0x0910u
+#define NULL_EVENT 0
+#define MOUSE_DOWN 1
+#define KEY_DOWN 3
+#define KEY_UP 4
+#define IN_CONTENT 3                    /* FindWindow's */
+#define UP_BUTTON 20                    /* kControlUpButtonPart (a horizontal scroll bar's left arrow) */
+#define DOWN_BUTTON 21
+#define ACTION_PROC_INFO 0x2C0u         /* pascal void (ControlHandle, short) */
+#define NO_PROC(p) ((p) == 0 || (p) == 0xFFFFFFFFu)     /* (TrackControl's: none, or the control's own) */
+/* (EventRecord, WindowRecord, CGrafPort, PixMap and ControlRecord) */
+#define EV_MESSAGE 2
+#define EV_WHERE 10
+#define EV_MODIFIERS 14
+#define W_VISIBLE 110
+#define W_HILITED 111
+#define W_CONTROLS 140
+#define W_NEXT 144
+#define PORT_PIXMAP 2
+#define PORT_VERSION 6
+#define PORT_BOUNDS 8
+#define PIXMAP_BOUNDS 6
+#define C_NEXT 0
+#define C_RECT 8
+#define C_VISIBLE 16
+#define C_HILITE 17
+#define C_MIN 20
+#define C_MAX 22
+#define C_ACTION 32
+
+static int16_t r16s(struct mem *m, uint32_t at)
+{
+	return (int16_t)mem_r16(m, at);
+}
+
+static void scroll_log(const struct helper *h, struct mem *m, const char *fmt, ...)
+{
+	if (!h->log_wheel)
+		return;
+	const uint8_t *name = mem_ptr(m, LM_CUR_AP_NAME);
+	printf("wheel: %.*s: ", name[0] < 31 ? name[0] : 31, name + 1);
+	va_list ap;
+	va_start(ap, fmt);
+	vprintf(fmt, ap);
+	va_end(ap);
+	printf("\n");
+	fflush(stdout);
+}
+
+static const char *way(unsigned axis, int32_t lines)
+{
+	return axis ? (lines > 0 ? "up" : "down") : (lines > 0 ? "right" : "left");
+}
+
+/*
+ * The program's active window (in its list, visible and highlighted, as
+ * the one in front is): where its port's coordinates are from the screen's
+ */
+static bool scroll_window(struct mem *m, uint32_t window, int16_t *dv, int16_t *dh)
+{
+	uint32_t w = mem_ok(m, LM_WINDOW_LIST, 4, MEM_R) ? mem_r32(m, LM_WINDOW_LIST) : 0;
+	for (unsigned n = 0; w && w != window && n < 256 && mem_ok(m, w, W_NEXT + 4, MEM_R); n++)
+		w = mem_r32(m, w + W_NEXT);
+	if (!w || w != window || !mem_ok(m, w, W_NEXT + 4, MEM_R) || !mem_r8(m, w + W_VISIBLE) ||
+	    !mem_r8(m, w + W_HILITED))
+		return false;
+	uint32_t bounds = w + PORT_BOUNDS;
+	if ((mem_r16(m, w + PORT_VERSION) & 0xC000) == 0xC000) {        /* (a CGrafPort: its PixMap's) */
+		uint32_t pm = mem_r32(m, w + PORT_PIXMAP);
+		if (!mem_ok(m, pm, 4, MEM_R) || !mem_ok(m, mem_r32(m, pm), PIXMAP_BOUNDS + 8, MEM_R))
+			return false;
+		bounds = mem_r32(m, pm) + PIXMAP_BOUNDS;
+	}
+	*dv = r16s(m, bounds);
+	*dh = r16s(m, bounds + 2);
+	return true;
+}
+
+/*
+ * The window's scroll bars one way (axis 1: up and down) that might be the
+ * one to scroll, by shape (long, and as wide as a scroll bar is: Mac OS's
+ * are 16, Appearance's small ones 11) and with somewhere to scroll to: the
+ * one under the pointer first, then those beside it (to its right first),
+ * then the rest; their arrows are tested later. Returns how many there are
+ * (`shaped`: whether there were any of that shape, scrollable or not).
+ */
+static unsigned scroll_bars(struct helper *h, struct mem *m, uint32_t window, int16_t v, int16_t x, unsigned axis)
+{
+	int32_t score[HELPER_BARS];
+	unsigned n = 0;
+	h->shaped = false;
+	uint32_t handle = mem_r32(m, window + W_CONTROLS);
+	for (unsigned k = 0; handle && k < 128 && mem_ok(m, handle, 4, MEM_R); k++) {
+		uint32_t ctl = mem_r32(m, handle);
+		if (!mem_ok(m, ctl, C_ACTION + 4, MEM_R))
+			break;
+		int32_t top = r16s(m, ctl + C_RECT), left = r16s(m, ctl + C_RECT + 2);
+		int32_t bottom = r16s(m, ctl + C_RECT + 4), right = r16s(m, ctl + C_RECT + 6);
+		int32_t across = axis ? right - left : bottom - top, along = axis ? bottom - top : right - left;
+		int32_t at = axis ? v : x, beside = axis ? x : v;
+		int32_t from = axis ? top : left, to = axis ? bottom : right, side = axis ? left : top;
+		int32_t far = axis ? right : bottom;
+		uint32_t next = mem_r32(m, ctl + C_NEXT);
+		if (!mem_r8(m, ctl + C_VISIBLE) || across < 10 || across > 24 || along < 2 * across) {
+			handle = next;
+			continue;
+		}
+		h->shaped = true;
+		if (mem_r8(m, ctl + C_HILITE) == 255 || r16s(m, ctl + C_MAX) <= r16s(m, ctl + C_MIN)) {
+			handle = next;
+			continue;
+		}
+		int32_t s = at >= from && at < to ? (beside >= side && beside < far ? 0 :
+						     beside < side ? 1 + side - beside : 20000 + beside - far) :
+						    40000 + (at < from ? from - at : at - to);
+		unsigned j = n < HELPER_BARS ? n++ : HELPER_BARS;
+		while (j > 0 && score[j - 1] > s) {
+			if (j < HELPER_BARS) {
+				score[j] = score[j - 1];
+				h->bar[j] = h->bar[j - 1];
+			}
+			j--;
+		}
+		if (j < HELPER_BARS) {
+			score[j] = s;
+			h->bar[j] = handle;
+		}
+		handle = next;
+	}
+	return n;
+}
+
+/*
+ * Where a scroll bar's arrow might be, in its window's coordinates (v, h):
+ * the up (or left) one at the start, or else the second from the end, as
+ * Mac OS 9's Smart Scrolling puts them both together; the down one at the
+ * end, or else the second from the start. An arrow is as long as the bar
+ * is wide.
+ */
+#define ARROW_PLACES 2
+
+static uint32_t arrow_point(struct mem *m, uint32_t handle, unsigned axis, unsigned part, unsigned place)
+{
+	uint32_t ctl = mem_r32(m, handle);
+	int32_t top = r16s(m, ctl + C_RECT), left = r16s(m, ctl + C_RECT + 2);
+	int32_t bottom = r16s(m, ctl + C_RECT + 4), right = r16s(m, ctl + C_RECT + 6);
+	int32_t from = axis ? top : left, to = axis ? bottom : right, across = axis ? right - left : bottom - top;
+	bool end = (part == DOWN_BUTTON) == (place == 0);
+	int32_t at = end ? to - across / 2 - (place ? across : 0) : from + across / 2 + (place ? across : 0);
+	int32_t mid = axis ? (left + right) / 2 : (top + bottom) / 2;
+	return (uint32_t)(uint16_t)(axis ? at : mid) << 16 | (uint16_t)(axis ? mid : at);
+}
+
+/* Done looking: the event goes on to the program (as it is, or as the click) */
+static void scroll_finish(struct helper *h, struct ndrv_call *c)
+{
+	h->scrolling = false;
+	call_original(h, c);
+}
+
+static void scroll_axis(struct helper *h, struct ndrv_call *c, struct wheel *w);
+
+/* The arrow's next place, or the next scroll bar's first, to be tested (or, with none left, what becomes of the lines) */
+static void scroll_test(struct helper *h, struct ndrv_call *c, struct wheel *w)
+{
+	if (h->bar_at >= h->bars) {
+		int32_t lines = h->lines[h->axis];
+		/* (a scroll bar with nowhere to go: nothing; no scroll bar: the arrow keys) */
+		if (h->shaped) {
+			scroll_log(h, c->mem, "%d lines %s: nowhere to scroll", lines < 0 ? -lines : lines, way(h->axis, lines));
+		} else {
+			scroll_log(h, c->mem, "%d lines %s: no scroll bar under the pointer (the arrow keys)",
+				   lines < 0 ? -lines : lines, way(h->axis, lines));
+			wheel_unscrolled(w, h->axis ? 0 : lines, h->axis ? lines : 0);
+		}
+		h->lines[h->axis] = 0;
+		scroll_axis(h, c, w);
+		return;
+	}
+	if (h->place == ARROW_PLACES) {
+		h->place = 0;
+		h->bar_at++;
+		scroll_test(h, c, w);
+		return;
+	}
+	ndrv_set_state(c, 0, STEP_W_TESTED);
+	ndrv_callout(c, ndrv_import(c, &h->layout, IMP_TEST_CONTROL), h->bar[h->bar_at],
+		     arrow_point(c->mem, h->bar[h->bar_at], h->axis, h->part, h->place), 0, 0);
+}
+
+/* The next way to scroll (up and down first), or done */
+static void scroll_axis(struct helper *h, struct ndrv_call *c, struct wheel *w)
+{
+	struct mem *m = c->mem;
+	h->axis = h->lines[1] ? 1 : 0;
+	if (!h->lines[h->axis]) {
+		scroll_finish(h, c);
+		return;
+	}
+	int16_t dv, dh;
+	if (!scroll_window(m, h->window, &dv, &dh)) {
+		scroll_log(h, m, "the window under the pointer isn't the one in front: nowhere to scroll");
+		h->lines[0] = h->lines[1] = 0;
+		scroll_finish(h, c);
+		return;
+	}
+	h->bars = scroll_bars(h, m, h->window, (int16_t)((int16_t)(h->point >> 16) + dv),
+			      (int16_t)((int16_t)h->point + dh), h->axis);
+	h->bar_at = 0;
+	h->place = 0;
+	h->part = (h->lines[h->axis] > 0) == (h->axis == 1) ? UP_BUTTON : DOWN_BUTTON;
+	scroll_test(h, c, w);
+}
+
+/*
+ * A scroll bar found: the event becomes a click on the arrow (in the
+ * screen's coordinates), which TrackControl's patch takes; the other way's
+ * lines wait for the next
+ */
+static void scroll_click(struct helper *h, struct ndrv_call *c, struct wheel *w)
+{
+	struct mem *m = c->mem;
+	uint32_t handle = h->bar[h->bar_at], ctl = mem_r32(m, handle), data = helper_data(h, c);
+	int32_t lines = h->lines[h->axis];
+	int16_t dv, dh;
+	scroll_window(m, h->window, &dv, &dh);
+	h->click = (struct helper_click){
+		.armed = true,
+		.psn = { mem_r32(m, data + DATA_PSN), mem_r32(m, data + DATA_PSN + 4) },
+		.control = handle,
+		.part = h->part,
+		.axis = h->axis,
+		.lines = lines,
+		.again = h->retry,
+	};
+	h->retry = false;
+	uint32_t at = arrow_point(m, handle, h->axis, h->part, h->place);
+	mem_w16(m, h->event, MOUSE_DOWN);
+	mem_w32(m, h->event + EV_MESSAGE, 0);
+	mem_w16(m, h->event + EV_WHERE, (uint16_t)((int16_t)(at >> 16) - dv));
+	mem_w16(m, h->event + EV_WHERE + 2, (uint16_t)((int16_t)at - dh));
+	mem_w16(m, h->event + EV_MODIFIERS, 0);         /* (the button down, no keys) */
+	scroll_log(h, m, "%d lines %s: a click on the scroll bar (%d,%d,%d,%d)'s %s arrow", lines < 0 ? -lines : lines,
+		   way(h->axis, lines), r16s(m, ctl + C_RECT), r16s(m, ctl + C_RECT + 2), r16s(m, ctl + C_RECT + 4),
+		   r16s(m, ctl + C_RECT + 6), h->click.part == UP_BUTTON ? (h->axis ? "up" : "left") :
+		   (h->axis ? "down" : "right"));
+	h->lines[h->axis] = 0;
+	wheel_again(w, h->lines[0], h->lines[1]);
+	h->lines[0] = h->lines[1] = 0;
+	scroll_finish(h, c);
+}
+
+/*
+ * The filter: the key that woke the program for the wheel is taken away
+ * (a null event, then); a click the program didn't take to TrackControl is
+ * forgotten (its lines tried once more); and lines waiting go to the
+ * program in front, in a null event's place. True if it's on that.
+ */
+static bool wheel_event(struct helper *h, struct ndrv_call *c, struct wheel *w)
+{
+	struct mem *m = c->mem;
+	uint32_t ev = c->arg[0];
+	if (!mem_ok(m, ev, 16, MEM_RW))
+		return false;
+	uint16_t what = mem_r16(m, ev);
+	if ((what == KEY_DOWN || what == KEY_UP) && mem_r8(m, ev + EV_MESSAGE + 2) == WHEEL_WAKE_KEY) {
+		if (what == KEY_DOWN)
+			wheel_woken(w);
+		mem_w16(m, ev, NULL_EVENT);
+		mem_w32(m, ev + EV_MESSAGE, 0);
+	}
+	if (h->click.armed && !h->scrolling) {
+		h->click.armed = false;
+		scroll_log(h, m, "the program didn't track its click on the scroll bar%s",
+			   h->click.again ? "" : " (once more)");
+		if (!h->click.again) {
+			wheel_again(w, h->click.axis ? 0 : h->click.lines, h->click.axis ? h->click.lines : 0);
+			h->retry = true;
+		}
+	}
+	if (mem_r16(m, ev) != NULL_EVENT || (!w->lines[0] && !w->lines[1]) || h->delivering || h->scrolling)
+		return false;
+	h->scrolling = true;
+	h->event = ev;
+	ndrv_set_state(c, 0, STEP_W_CURRENT);
+	ndrv_callout(c, ndrv_import(c, &h->layout, IMP_GET_CURRENT_PROCESS), helper_data(h, c) + DATA_PSN, 0, 0, 0);
+	return true;
+}
+
+/* Scrolling: a step after a callout */
+static void scroll(struct helper *h, struct ndrv_call *c, struct wheel *w, uint32_t result)
+{
+	struct mem *m = c->mem;
+	uint32_t data = helper_data(h, c), step = ndrv_state(c, 0);
+	switch (step) {
+	case STEP_W_CURRENT:
+		ndrv_set_state(c, 0, STEP_W_FRONT);
+		ndrv_callout(c, ndrv_import(c, &h->layout, IMP_GET_FRONT_PROCESS), data + DATA_PSN + 8, 0, 0, 0);
+		return;
+	case STEP_W_FRONT:
+		ndrv_set_state(c, 0, STEP_W_SAME);
+		ndrv_callout(c, ndrv_import(c, &h->layout, IMP_SAME_PROCESS), data + DATA_PSN, data + DATA_PSN + 8,
+			     data + DATA_SAME, 0);
+		return;
+	case STEP_W_SAME:
+		/* (another program's: the lines wait for the one in front, which gets events too) */
+		if (result || !mem_r8(m, data + DATA_SAME) || !mem_ok(m, LM_MOUSE, 4, MEM_R) ||
+		    !wheel_take(w, WHEEL_MAX, &h->lines[0], &h->lines[1], c->tb)) {
+			scroll_finish(h, c);
+			return;
+		}
+		h->point = mem_r32(m, LM_MOUSE);
+		mem_w32(m, data + DATA_WINDOW, 0);
+		ndrv_set_state(c, 0, STEP_W_FOUND);
+		ndrv_callout(c, ndrv_import(c, &h->layout, IMP_FIND_WINDOW), h->point, data + DATA_WINDOW, 0, 0);
+		return;
+	case STEP_W_FOUND:
+		h->window = mem_r32(m, data + DATA_WINDOW);
+		if ((int16_t)result != IN_CONTENT || !h->window) {
+			scroll_log(h, m, "the pointer isn't in a window's contents (FindWindow: %d): the arrow keys",
+				   (int16_t)result);
+			wheel_unscrolled(w, h->lines[0], h->lines[1]);
+			h->lines[0] = h->lines[1] = 0;
+			scroll_finish(h, c);
+			return;
+		}
+		scroll_axis(h, c, w);
+		return;
+	case STEP_W_TESTED:
+		if ((int16_t)result != (int16_t)h->part) {
+			h->place++;
+			scroll_test(h, c, w);
+			return;
+		}
+		scroll_click(h, c, w);
+		return;
+	default:
+		scroll_finish(h, c);
+		return;
+	}
+}
+
+/*
+ * TrackControl, called with the wheel's click on the control (in the
+ * program it went to): the arrow held down for the lines, the program's
+ * action procedure (or the control's) called for each, and the arrow said
+ * to have been clicked; without a procedure, a line (the rest wait for
+ * another click)
+ */
+static void track_click(struct helper *h, struct ndrv_call *c, struct wheel *w, uint32_t result)
+{
+	struct mem *m = c->mem;
+	uint32_t data = helper_data(h, c), step = ndrv_state(c, 0);
+	struct helper_click *k = &h->click;
+	if (step == STEP_T_TRACKER) {
+		if (result || !k->armed || mem_r32(m, data + DATA_TRACKER) != k->psn[0] ||
+		    mem_r32(m, data + DATA_TRACKER + 4) != k->psn[1]) {
+			call_original(h, c);
+			return;
+		}
+		k->armed = false;
+		uint32_t proc = ndrv_state(c, S_PARAM + 2);
+		if (proc == 0xFFFFFFFFu && mem_ok(m, mem_r32(m, k->control), C_ACTION + 4, MEM_R))
+			proc = mem_r32(m, mem_r32(m, k->control) + C_ACTION);
+		k->proc = NO_PROC(proc) ? 0 : proc;
+		k->count = (unsigned)(k->lines < 0 ? -k->lines : k->lines);
+		if (!k->proc) {
+			int32_t rest = k->lines > 0 ? k->lines - 1 : k->lines + 1;
+			wheel_again(w, k->axis ? 0 : rest, k->axis ? rest : 0);
+			k->count = 1;
+		}
+		w->scrolled += k->count;
+		scroll_log(h, m, "TrackControl: %u %s, %s", k->count, k->count == 1 ? "line" : "lines",
+			   k->proc ? "by the program's action procedure" : "by the program (no action procedure)");
+		if (!k->proc) {
+			ndrv_finish(c, k->part);
+			return;
+		}
+	}
+	if (k->count) {
+		k->count--;
+		ndrv_set_state(c, 0, STEP_T_ACTION);
+		ndrv_callout(c, ndrv_import(c, &h->layout, IMP_CALL_UNIVERSAL_PROC), k->proc, ACTION_PROC_INFO,
+			     k->control, k->part);
+		return;
+	}
+	ndrv_finish(c, k->part);
+}
+
 static void look(struct helper *h, struct ndrv_call *c, struct video *v, struct clip *clip, bool old)
 {
 	uint32_t mode, depth;
@@ -424,19 +885,19 @@ static void look(struct helper *h, struct ndrv_call *c, struct video *v, struct 
 	wait_next_event(h, c);
 }
 
-void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct clip *clip)
+void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct clip *clip, struct wheel *w)
 {
 	struct mem *m = c->mem;
 	uint32_t data = helper_data(h, c);
 	bool old = !current(h, c);
 
 	if (c->entry == E_MAIN) {
-		helper_main(h, c, clip);
+		helper_main(h, c, clip, w);
 		return;
 	}
 	if (c->entry != NDRV_ENTRY_RESUME) {
 		if (c->entry < E_COUNT && !old)
-			patch_call(h, c, clip);
+			patch_call(h, c, clip, w);
 		else
 			ndrv_finish(c, 0);
 		return;
@@ -445,7 +906,7 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct 
 	uint32_t step = ndrv_state(c, 0);
 	switch (step) {
 	case STEP_WAITED: {
-		uint32_t ev = data + (old ? V1_DATA_EVENT : DATA_EVENT);
+		uint32_t ev = old_event(h, c);
 		if (h->quit || (mem_r16(m, ev) == HIGH_LEVEL_EVENT && mem_r32(m, ev + 2) == FOURCC('a', 'e', 'v', 't') &&
 				mem_r32(m, ev + 10) == FOURCC('q', 'u', 'i', 't'))) {
 			/* the Process Manager asks us to quit (shutting down), or Blue does (to replace us):
@@ -479,7 +940,7 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct 
 		return;
 	case STEP_GOT_DEVICE: {
 		/* DMSetDisplayMode(device, mode, &depthMode, reserved, displayState) */
-		uint32_t depth_at = data + (old ? V1_DATA_DEPTH : DATA_DEPTH);
+		uint32_t depth_at = old_depth(h, c);
 		mem_w32(m, depth_at, ndrv_state(c, 2));
 		ndrv_set_state(c, 0, STEP_SWITCHED);
 		ndrv_callout(c, ndrv_import(c, &h->layout, IMP_DM_SET_DISPLAY_MODE), result, ndrv_state(c, 1),
@@ -508,9 +969,17 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct 
 		ndrv_finish(c, result);
 		return;
 	}
+	case STEP_T_TRACKER:
+	case STEP_T_ACTION:
+		track_click(h, c, w, result);
+		return;
 	default:
 		if (step >= STEP_CURRENT && step <= STEP_DISPOSED) {
 			deliver(h, c, clip, result);
+			return;
+		}
+		if (step >= STEP_W_CURRENT && step <= STEP_W_TESTED) {
+			scroll(h, c, w, result);
 			return;
 		}
 		ndrv_finish(c, 0);
@@ -540,7 +1009,7 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 {
 	static uint8_t helper[8192], helper_rsrc[4096], engine[8192], engine_rsrc[4096];
 	struct ndrv_layout layout;
-	size_t helper_len = build_helper(helper, sizeof helper, &layout, false);
+	size_t helper_len = build_helper(helper, sizeof helper, &layout, HELPER_VERSION);
 	size_t engine_len = rave_build_engine(engine, sizeof engine, &layout);
 
 	uint8_t cfrg[128], size_res[10];

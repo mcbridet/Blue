@@ -40,18 +40,21 @@
  * which here would shut Mac OS down. (An application's patches are its own:
  * the Process Manager swaps them in and out with it.)
  *
- * And the title has an AppleJack, the Pippin's controller, for Blue's game
- * controllers (pad.h): the AppleJack's driver's data (AJGlobalData, whose
- * mapping of its switches to keys and clicks titles change), filled in with
- * the title's first 'pipp' resource (as a Pippin loads one as a title
- * starts; else with the driver's own mapping), found as titles find an
- * AppleJack's: CountADBs counts one more ADB device than there are, and
- * GetIndADB gives that one as an AppleJack (original address 3, its data
- * area a cursor device record whose refCon points at the AJGlobalData;
- * these patches the title's too). The library tells Blue where that is, and
- * the title's process, with host calls (PIPPIN_ENTRY_ATTACH, and _DETACH as
- * the title quits): Blue maps the pads by the switches' mapping there, and
- * keeps their switchStates as the pads have them.
+ * And the title has AppleJacks, the Pippin's controllers, for Blue's game
+ * controllers (pad.h): two of the AppleJack driver's data (AJGlobalData,
+ * whose mapping of its switches to keys and clicks titles change), one
+ * after the other, each filled in with the title's first 'pipp' resource
+ * (as a Pippin loads one as a title starts; else with the driver's own
+ * mapping), found as titles find an AppleJack's: CountADBs counts as many
+ * more ADB devices than there are as there are AppleJacks now (a word after
+ * the two AJGlobalData: one, or two while two pads are plugged in, Blue's
+ * to change), and GetIndADB gives those as AppleJacks (original address 3,
+ * now 15 and 14; each data area a cursor device record whose refCon points
+ * at its AJGlobalData; these patches the title's too). The library tells
+ * Blue where the first is, and the title's process, with host calls
+ * (PIPPIN_ENTRY_ATTACH, and _DETACH as the title quits): Blue maps the pads
+ * by each one's mapping there, and keeps their switchStates as the pads
+ * have them.
  */
 #ifndef BLUE_PIPPIN_H
 #define BLUE_PIPPIN_H
@@ -72,7 +75,9 @@ extern const char *const pippin_exports[PIPPIN_EXPORTS];
 /* The host calls (entries after the exports): r3 the AJGlobalData, r4 (attaching) the title's process */
 #define PIPPIN_ENTRY_ATTACH (PIPPIN_FIRST_EXPORT + PIPPIN_EXPORTS)
 #define PIPPIN_ENTRY_DETACH (PIPPIN_ENTRY_ATTACH + 1)
-#define PIPPIN_ADB_ADDRESS 15           /* (the AppleJack's, as GetIndADB gives it) */
+#define PIPPIN_ADB_ADDRESS 15           /* (the first AppleJack's, as GetIndADB gives it; the second's 14) */
+#define PIPPIN_APPLEJACKS 2
+#define PIPPIN_AJ_COUNT 184             /* (where the count is, from the first AJGlobalData) */
 
 /* The library's imports (InterfaceLib's, then AppearanceLib's), in its order */
 enum {

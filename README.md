@@ -285,8 +285,8 @@ command line, so it stays the startup disk.
 Once the Finder is up, Blue offers to install its guest tools on the
 startup disk. Click **Install and Restart**: Mac OS writes the tools into
 its Extensions folder and restarts, and from then on the screen follows
-the window's size, the clipboard is shared, and 3D games are accelerated.
-See [The guest tools](#the-guest-tools).
+the window's size, the clipboard is shared, the scroll wheel scrolls, and
+3D games are accelerated. See [The guest tools](#the-guest-tools).
 
 ### Keeping your settings
 
@@ -296,6 +296,20 @@ panel. Without it, the Mac starts each time with blank settings. Use the
 same file every time you start a particular Mac, and give each
 installation its own. Mac OS 9.1 and later write their settings when they
 shut down or restart, so shut down from Mac OS to keep changes.
+
+Blue keeps its own settings, those you choose in its menu, in a settings
+file: for now, your [game controllers' mappings](#game-controllers). It's
+in `~/Library/Application Support/Blue/settings.ini` on macOS, and
+`~/.config/blue/settings.ini` on Linux (or in `$XDG_CONFIG_HOME/blue/`).
+It's plain text, `name = value` lines under a `[section]`, which you can
+read and edit (with Blue closed): `[controller]` has the mapping for all
+controllers, a line for each button, stick and trigger (`a = Return`,
+`lefttrigger = Control-Click`, `rightstickmode = Mouse`), and
+`[controller ID]` sections a kind of controller's own, by its SDL GUID.
+Blue writes it whole each time something changes, to a new file it then
+puts in the old one's place. Runs without a window, in instruction time
+or with an input script leave it alone; `--settings FILE` uses another
+file (in any run), and `--settings none` none.
 
 ## Using Blue
 
@@ -360,7 +374,8 @@ F12 or Esc closes it again.
 - **Capture the mouse** sets whether the mouse is captured while Mac OS
   hides its pointer, as games do (see [Keyboard and mouse](#keyboard-and-mouse)).
 - **Controllers** lists the game controllers connected, and which mapping
-  they follow; its checkbox turns them off (see
+  they follow; its checkbox turns them off, and **Mappings…** sets what
+  their buttons, sticks and triggers do (see
   [Game controllers](#game-controllers)).
 
 While the menu is open, the Mac's clock stops, so it's behind by that
@@ -388,7 +403,7 @@ that it installs there for you:
 
 | Guest tool | What it does |
 |---|---|
-| Blue Enhancements | The screen follows the window's size, and the clipboard is shared with your computer. |
+| Blue Enhancements | The screen follows the window's size, the clipboard is shared with your computer, and the scroll wheel scrolls the window under the pointer. |
 | Blue 3D Engine | Accelerates QuickDraw 3D and RAVE games, which see an ATI Rage 128. |
 | Blue OpenGL Library, Memory and Utility | OpenGL for Mac OS 9 games, drawn on your GPU. |
 | Blue Pippin Library | Lets Bandai Pippin titles run, and game controllers play them as the Pippin's AppleJack (see [Pippin titles](#pippin-titles)). |
@@ -455,10 +470,16 @@ Blue's: it opens the menu, and Mac OS never sees it. (On a Mac laptop,
 you may need to hold fn as you press F12.)
 
 The Mac has a one-button mouse: the left button is its button, and the
-right button Control-clicks, for contextual menus. The scroll wheel presses
-the arrow keys (a press for each step of the wheel), which scroll most
-windows of the time: Mac OS 8 and 9 didn't know scroll wheels. In a game
-that has the mouse (below), the right button and the wheel do nothing.
+right button Control-clicks, for contextual menus. Mac OS 8 and 9 didn't
+know scroll wheels, so with Blue Enhancements (one of the
+[guest tools](#the-guest-tools)) the wheel, and a trackpad's two-finger
+scrolling, scroll as the tools of the time made them: the window under
+the pointer, in the application in front, scrolls by its scroll bar, as
+clicks on the scroll bar's arrows would scroll it, a line for each step
+of the wheel (sideways too). Where there's no scroll bar under the
+pointer (the desktop, a game), and without Blue Enhancements, the wheel
+presses the arrow keys instead, a press for each line. In a game that has
+the mouse (below), the right button and the wheel do nothing.
 
 The Mac's pointer follows yours. When Mac OS hides its pointer for a
 moment, as games do, Blue captures the mouse, so that its movements go to
@@ -488,12 +509,28 @@ whatever the pad's labels say.
 | Right trigger | Clicks |
 | Left trigger | Control-clicks (a contextual menu) |
 
+That's Blue's mapping, and you can change it: **Mappings…** under
+Controllers in Blue's menu (F12) shows what each button, stick and
+trigger does, for all controllers, or for a kind of controller plugged
+in, which can have a mapping of its own. Click one to choose a key
+(**Press a Key…**, then the key, with Command, Shift, Option or Control
+held for a key with modifiers; a modifier alone is held as long as the
+button is), a click (with modifiers too), a double-click, **Click Lock**
+(the mouse button stays down until pressed again) or nothing; each stick
+is either the mouse or four keys of its own. **Restore Defaults** puts
+Blue's mapping back. Blue keeps your mappings between runs, in its
+[settings file](#keeping-your-settings).
+
 While a [Pippin title](#pippin-titles) runs in front, the pad is the
 Pippin's AppleJack controller instead, and the title's own mapping of its
 buttons applies, as on a Pippin: the D-pad and left stick are its D-pad;
 A, B, X and Y its red, green, yellow and blue buttons; the shoulders and
 triggers its left and right fire buttons; Back, Guide (Home, PS) and
-Start its three buttons below; and the right stick its trackball.
+Start its three buttons below; and the right stick its trackball. With
+two pads plugged in, the title has two AppleJacks, as a Pippin with two
+controllers had: the second pad is the second, for titles that play two
+on one Pippin. Your own mappings are for Mac OS, not for Pippin titles,
+which have theirs.
 
 Games that use InputSprocket (Apple Game Sprockets' input library, which
 most Mac action games of the late 1990s do)
@@ -510,7 +547,9 @@ InputSprocket itself is Apple's, not Blue's: games that use it come with
 it, to install with them.
 
 **Controllers** in Blue's menu (F12) lists the pads connected and which
-mapping they follow, and turns them off. A pad's input reaches Blue only
+mapping they follow, and turns them off; Mappings… changes Blue's mapping
+(not a Pippin title's, nor a game's own InputSprocket controls). A pad's
+input reaches Blue only
 while its window is in front. How it all works is in
 [docs/input.md](docs/input.md).
 
@@ -684,8 +723,9 @@ in Blue. Titles that need the Pippin's own library get Blue Pippin
 Library, one of the guest tools. Their saved games and preferences go in
 `System Folder:Preferences:Pippin:`, under the title's name. A game
 controller plays them as the Pippin's AppleJack controller, by the
-title's own mapping of its buttons (see
-[Game controllers](#game-controllers)); the keyboard and mouse work too.
+title's own mapping of its buttons, and a second one as its second
+AppleJack (see [Game controllers](#game-controllers)); the keyboard and
+mouse work too.
 More in [docs/software.md](docs/software.md#pippin-titles).
 
 A Pippin disc doesn't start the Mac by itself: a Pippin's system is in
@@ -736,6 +776,7 @@ The options of `blue boot`:
 | `--floppy-drive` | Adds an empty floppy drive. (A window, or real time, has one anyway.) |
 | `--share FOLDER` | Shows a folder on your computer as a disk (one folder). |
 | `--nvram FILE` | Keeps the Mac's NVRAM (settings, the startup disk) in this file. |
+| `--settings FILE` | Keeps Blue's own settings (the game controllers' mappings) in this file, in any run; `--settings none` keeps none (see [Keeping your settings](#keeping-your-settings)). |
 | `--ram MB` | The Mac's memory, from 8 to 1024 MB (128 unless you say). |
 | `--rom FILE` | Starts this ROM file, or 4 MB ROM image, instead of the startup disk's. |
 
@@ -972,7 +1013,8 @@ once Blue Game Controllers is installed (Install Guest Tools… in Blue's
 menu), and if InputSprocket is (it comes with the game); look for the pad
 in the game's controls dialog. Other games get the pad as keys, which
 their own key settings may not use: set the game's keys to the arrows,
-Return, Space and Tab, or use the keyboard.
+Return, Space and Tab, change the pad's mapping to the game's keys
+(Mappings… under Controllers), or use the keyboard.
 
 ### The CD came out when Mac OS restarted
 

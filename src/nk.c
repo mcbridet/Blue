@@ -41,11 +41,13 @@
 #include "rave.h"
 #include "rtas.h"
 #include "scc.h"
+#include "settings.h"
 #include "share.h"
 #include "startup.h"
 #include "tools.h"
 #include "via.h"
 #include "video.h"
+#include "wheel.h"
 
 /* Mac OS low-memory globals */
 #define LOWMEM_VIA 0x01D4u
@@ -562,14 +564,20 @@ struct machine {
 	struct pad pad;
 	bool pads_off;                  /* ... the menu turned them off */
 	bool pad_window[PAD_MAX];       /* ... each one the window's (in scripted runs, a virtual one the script plugged in) */
+	char pad_guid[PAD_MAX][33];     /* ... each one's SDL GUID ("": none, a script's without a window) */
+	struct settings *settings;      /* Blue's mappings of them (settings.h) */
+	char settings_path[1024];       /* ... kept here ("": not kept) */
 	struct {
 		bool attached;          /* a Pippin title runs, with Blue Pippin Library (pippin.h) */
 		bool front;             /* ... in front, last seen (see pippin_front()) */
-		uint32_t aj;            /* ... its AppleJack's data (AJGlobalData) */
+		uint32_t aj;            /* ... its first AppleJack's data (AJGlobalData) */
+		unsigned applejacks;    /* ... how many the library has (an older one's: one) */
+		unsigned now;           /* ... and the title has now, as the library was told */
 		uint32_t psn[2];        /* ... its process */
 		char name[32];
-		uint8_t map[4 * PAD_AJ_SWITCHES];       /* ... the AppleJack's mapping, as last seen */
+		uint8_t map[PIPPIN_APPLEJACKS][4 * PAD_AJ_SWITCHES];   /* ... the AppleJacks' mappings, as last seen */
 	} pippin;
+	struct wheel wheel;             /* the scroll wheel's lines (wheel.h) */
 	struct isp isp;                 /* games reading them through InputSprocket (isp.h) */
 	bool isp_used, isp_front;       /* ... one does, in front, last seen */
 	bool realtime;                  /* guest time follows the host clock */
@@ -985,6 +993,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	mem_map(&m->mem, FB_BASE, FB_SIZE, MEM_RW);
 	video_init(&m->video, &m->mem, FB_BASE, FB_SIZE, TIMEBASE_HZ);
 	helper_init(&m->helper);
+	m->helper.log_wheel = getenv("BLUE_LOG_WHEEL") != NULL;
 	isp_init(&m->isp, TIMEBASE_HZ);
 	m->isp.log = getenv("BLUE_LOG_PADS") != NULL;
 	clip_guest_reset(&m->clip);
@@ -1874,25 +1883,54 @@ static bool isp_front(const struct machine *m, const char **name)
 	       (!m->helper.running || !m->helper.front_known || (m->helper.front[0] == psn[0] && m->helper.front[1] == psn[1]));
 }
 
+/* A Pippin title's AppleJack k's data (0: none to be had) */
+static uint32_t applejack_data(const struct machine *m, unsigned k)
+{
+	uint32_t aj = m->pippin.aj + PAD_AJ_SIZE * k;
+	return m->pippin.attached && k < m->pippin.applejacks && mem_ok(&m->mem, aj, PAD_AJ_SIZE, MEM_RW) ? aj : 0;
+}
+
 /* The mapping, and whether presses count, before the pads change */
 static void pads_ready(struct machine *m)
 {
 	struct pad *p = &m->pad;
 	p->quiet = m->paused || m->prompting;
 	p->mapping = m->pads_off ? PAD_MAP_OFF : PAD_MAP_DEFAULT;
+	p->applejacks = m->pippin.now;
 	bool isp = isp_front(m, NULL);
 	for (unsigned k = 0; k < PAD_MAX; k++)
 		p->slot[k].taken = isp ? isp_taken(&m->isp, k) : 0;
-	if (!m->pads_off && !isp && pippin_front(m) && mem_ok(&m->mem, m->pippin.aj, PAD_AJ_SIZE, MEM_R) &&
-	    pad_pipp(mem_ptr(&m->mem, m->pippin.aj), PAD_AJ_SIZE, p->pippin))
+	uint32_t aj = applejack_data(m, 0), second = applejack_data(m, 1);
+	if (!m->pads_off && !isp && pippin_front(m) && aj && pad_pipp(mem_ptr(&m->mem, aj), PAD_AJ_SIZE, p->pippin[0])) {
 		p->mapping = PAD_MAP_PIPPIN;
+		if (!second || !pad_pipp(mem_ptr(&m->mem, second), PAD_AJ_SIZE, p->pippin[1]))
+			memcpy(p->pippin[1], p->pippin[0], sizeof p->pippin[1]);
+	}
 }
 
-/* ... and after: the AppleJack's switches as they are now (0 while down) */
+/*
+ * ... and after: how many AppleJacks a Pippin title has (two while two pads
+ * are plugged in, if its library has them), and their switches as they are
+ * now (0 while down)
+ */
 static void pads_done(struct machine *m)
 {
-	if (m->pippin.attached && mem_ok(&m->mem, m->pippin.aj, PAD_AJ_SIZE, MEM_RW))
-		mem_w32(&m->mem, m->pippin.aj + PAD_AJ_STATES, ~pad_applejack(&m->pad));
+	if (!m->pippin.attached)
+		return;
+	unsigned now = m->pippin.applejacks > 1 && pad_count(&m->pad) > 1 ? 2 : 1;
+	uint32_t aj = applejack_data(m, 0);
+	if (now != m->pippin.now && aj && mem_ok(&m->mem, aj + PIPPIN_AJ_COUNT, 2, MEM_RW)) {
+		mem_w16(&m->mem, aj + PIPPIN_AJ_COUNT, (uint16_t)now);
+		if (m->pippin.now)
+			printf("pippin: %s has %s\n", m->pippin.name, now > 1 ? "two AppleJacks: the second pad is the second" :
+			       "one AppleJack");
+		fflush(stdout);
+		m->pippin.now = now;
+	}
+	m->pad.applejacks = m->pippin.now;
+	for (unsigned k = 0; k < PIPPIN_APPLEJACKS; k++)
+		if ((aj = applejack_data(m, k)) != 0)
+			mem_w32(&m->mem, aj + PAD_AJ_STATES, ~pad_applejack(&m->pad, k));
 }
 
 /* What the menu shows of them */
@@ -1913,11 +1951,113 @@ static void pads_state(struct machine *m)
 		snprintf(s.mapping, sizeof s.mapping, "off: they do nothing in Mac OS");
 	else if (isp_front(m, &game))
 		snprintf(s.mapping, sizeof s.mapping, "%s's, through InputSprocket (the rest by Blue's mapping)", game);
+	else if (pippin_front(m) && m->pippin.now > 1)
+		snprintf(s.mapping, sizeof s.mapping, "as the Pippin's AppleJacks (the second pad the second), by %s's "
+			 "mapping", m->pippin.name);
 	else if (pippin_front(m))
 		snprintf(s.mapping, sizeof s.mapping, "as the Pippin's AppleJack, by %s's mapping", m->pippin.name);
 	else
-		snprintf(s.mapping, sizeof s.mapping, "Blue's mapping: the arrows, Return, Space, Tab, the mouse...");
+		snprintf(s.mapping, sizeof s.mapping, "Blue's mapping%s", s.count ? ", as Mappings... shows it" :
+			 ": the arrows, Return, Space, Tab, the mouse...");
+	/* the mappings: for all of them, and for each type plugged in */
+	snprintf(s.type[0].name, sizeof s.type[0].name, "All controllers");
+	s.type[s.types++].map = m->settings->all;
+	for (unsigned k = 0; k < PAD_MAX; k++) {
+		const struct pad_slot *slot = &m->pad.slot[k];
+		const char *id = m->pad_guid[k][0] ? m->pad_guid[k] : slot->name;
+		bool seen = !slot->connected;
+		for (unsigned j = 1; j < s.types && !seen; j++)
+			seen = !strcmp(s.type[j].id, id);
+		if (seen || s.types == UI_PAD_TYPES)
+			continue;
+		struct ui_pad_type *t = &s.type[s.types++];
+		snprintf(t->id, sizeof t->id, "%s", id);
+		snprintf(t->name, sizeof t->name, "%s", slot->name);
+		t->map = *settings_pad_map(m->settings, m->pad_guid[k], slot->name, &t->own);
+	}
+	if (m->settings_path[0])
+		snprintf(s.kept, sizeof s.kept, "Kept in %s", m->settings_path);
+	else if (m->scripted || !m->realtime || !m->display)
+		snprintf(s.kept, sizeof s.kept, "For this run only (runs with an input script or in instruction time "
+			 "keep them only with --settings FILE)");
+	else
+		snprintf(s.kept, sizeof s.kept, "For this run only (no settings file)");
 	display_pads_state(m->display, &s);
+}
+
+/* Each pad's mapping, Blue's (its type's, or the one for all) */
+static void pads_mapped(struct machine *m)
+{
+	for (unsigned k = 0; k < PAD_MAX; k++)
+		if (m->pad.slot[k].connected)
+			pad_set_map(&m->pad, k, settings_pad_map(m->settings, m->pad_guid[k], m->pad.slot[k].name, NULL));
+}
+
+/* A change to a mapping in the menu: made, kept in the settings file (if there's one), and in force */
+static void pad_edit(struct machine *m, const struct display_event *ev)
+{
+	const char *id = ev->path ? ev->path : "";
+	const char *guid = NULL, *name = NULL;
+	for (unsigned k = 0; k < PAD_MAX && id[0] && !name; k++) {
+		const struct pad_slot *slot = &m->pad.slot[k];
+		if (slot->connected && !strcmp(id, m->pad_guid[k][0] ? m->pad_guid[k] : slot->name)) {
+			guid = m->pad_guid[k];
+			name = slot->name;
+		}
+	}
+	if (id[0] && !name)
+		return;                 /* (unplugged meanwhile) */
+	bool own = !id[0];
+	struct pad_map map = id[0] ? *settings_pad_map(m->settings, guid, name, &own) : m->settings->all;
+	const char *what = NULL;
+	char text[64];
+	switch ((enum ui_pad_change)ev->button) {
+	case UI_PAD_SET:
+		if ((unsigned)ev->value >= PAD_CONTROLS || !own)
+			return;
+		map.control[ev->value] = (struct pad_switch){ (uint8_t)(ev->x >> 24), (uint8_t)(ev->x >> 16),
+							      (uint8_t)(ev->x >> 8), (uint8_t)ev->x };
+		pad_action_name(&map.control[ev->value], text, sizeof text);
+		printf("pads: %s: %s is %s\n", id[0] ? name : "all controllers", pad_control_name((unsigned)ev->value), text);
+		break;
+	case UI_PAD_STICK:
+		if ((unsigned)ev->value > 1 || !own)
+			return;
+		map.stick[ev->value] = ev->x == PAD_STICK_MOUSE ? PAD_STICK_MOUSE : PAD_STICK_KEYS;
+		printf("pads: %s: the %s stick is %s\n", id[0] ? name : "all controllers", ev->value ? "right" : "left",
+		       ev->x == PAD_STICK_MOUSE ? "the mouse" : "keys");
+		break;
+	case UI_PAD_OWN:
+		if (!id[0])
+			return;
+		own = ev->x != 0;
+		map = m->settings->all;
+		printf("pads: %s has %s\n", name, own ? "a mapping of its own" : "the mapping for all controllers");
+		break;
+	case UI_PAD_RESTORE:
+		if (!own)
+			return;
+		map = pad_default_map;
+		printf("pads: %s: Blue's default mapping\n", id[0] ? name : "all controllers");
+		break;
+	default:
+		return;
+	}
+	if (!id[0])
+		m->settings->all = map;
+	else if (!settings_set_pad_map(m->settings, guid, name, own ? &map : NULL))
+		what = "Blue keeps mappings for at most 32 kinds of controller";
+	char err[1200] = "";
+	if (!what && m->settings_path[0] && settings_save(m->settings, m->settings_path, err, sizeof err))
+		what = err;
+	if (what) {
+		printf("pads: the mapping can't be kept: %s\n", what);
+		snprintf(m->menu_status, sizeof m->menu_status, "The mapping can't be kept: %s", what);
+		menu_state(m);
+	}
+	fflush(stdout);
+	pads_mapped(m);
+	pads_state(m);
 }
 
 /* A Pippin title's AppleJack mapping, as it changes it */
@@ -1928,21 +2068,26 @@ static void pippin_watch(struct machine *m)
 		{ "B (green)", 15 }, { "X (yellow)", 9 }, { "Y (blue)", 8 }, { "left shoulder (left fire)", 17 },
 		{ "right shoulder (right fire)", 16 }, { "Back", 0 }, { "Guide", 1 }, { "Start", 2 },
 	};
-	uint32_t aj = m->pippin.aj;
-	struct pad_switch map[PAD_AJ_SWITCHES];
-	if (!mem_ok(&m->mem, aj, PAD_AJ_SIZE, MEM_R) ||
-	    !memcmp(mem_ptr(&m->mem, aj + PAD_AJ_MAP), m->pippin.map, sizeof m->pippin.map))
-		return;
-	memcpy(m->pippin.map, mem_ptr(&m->mem, aj + PAD_AJ_MAP), sizeof m->pippin.map);
-	if (!pad_pipp(mem_ptr(&m->mem, aj), PAD_AJ_SIZE, map))
-		return;
-	printf("pippin: %s's AppleJack mapping:", m->pippin.name);
-	for (size_t k = 0; k < sizeof shown / sizeof shown[0]; k++) {
-		char what[48];
-		pad_switch_text(&map[shown[k].sw], what, sizeof what);
-		printf("%s %s %s", k ? "," : "", shown[k].name, what);
+	for (unsigned j = 0; j < m->pippin.applejacks; j++) {
+		uint32_t aj = applejack_data(m, j);
+		struct pad_switch map[PAD_AJ_SWITCHES];
+		if (!aj || !memcmp(mem_ptr(&m->mem, aj + PAD_AJ_MAP), m->pippin.map[j], sizeof m->pippin.map[j]))
+			continue;
+		memcpy(m->pippin.map[j], mem_ptr(&m->mem, aj + PAD_AJ_MAP), sizeof m->pippin.map[j]);
+		if (!pad_pipp(mem_ptr(&m->mem, aj), PAD_AJ_SIZE, map))
+			continue;
+		if (j && !memcmp(m->pippin.map[j], m->pippin.map[0], sizeof m->pippin.map[j])) {
+			printf("pippin: %s's second AppleJack mapping: the same\n", m->pippin.name);
+			continue;
+		}
+		printf("pippin: %s's %sAppleJack mapping:", m->pippin.name, j ? "second " : "");
+		for (size_t k = 0; k < sizeof shown / sizeof shown[0]; k++) {
+			char what[48];
+			pad_switch_text(&map[shown[k].sw], what, sizeof what);
+			printf("%s %s %s", k ? "," : "", shown[k].name, what);
+		}
+		printf("\n");
 	}
-	printf("\n");
 	fflush(stdout);
 }
 
@@ -1955,13 +2100,25 @@ static void pippin_call(struct machine *m, struct ndrv_call *c)
 		m->pippin.attached = true;
 		m->pippin.front = false;
 		m->pippin.aj = aj;
+		/* (an older library's has one: its 68k code after it) */
+		m->pippin.applejacks = mem_ok(&m->mem, aj, PIPPIN_AJ_COUNT + 2, MEM_RW) &&
+				       mem_r32(&m->mem, aj + PAD_AJ_SIZE) == PAD_AJ_SIGNATURE ? PIPPIN_APPLEJACKS : 1;
+		m->pippin.now = 0;
 		m->pippin.psn[0] = mem_r32(&m->mem, c->arg[1]);
 		m->pippin.psn[1] = mem_r32(&m->mem, c->arg[1] + 4);
 		memset(m->pippin.map, 0, sizeof m->pippin.map);
 		const uint8_t *name = mem_ptr(&m->mem, LM_CUR_AP_NAME);
 		snprintf(m->pippin.name, sizeof m->pippin.name, "%.*s", name[0] < 31 ? name[0] : 31, name + 1);
 		m->helper.front_known = false;
-		printf("pippin: %s runs, with an AppleJack for game controllers (its data at 0x%08X)\n", m->pippin.name, aj);
+		if (m->pippin.applejacks > 1)
+			printf("pippin: %s runs, with AppleJacks for game controllers (their data at 0x%08X and 0x%08X)\n",
+			       m->pippin.name, aj, aj + PAD_AJ_SIZE);
+		else
+			printf("pippin: %s runs, with an AppleJack for game controllers (its data at 0x%08X)\n",
+			       m->pippin.name, aj);
+		m->pippin.now = 1;
+		if (m->pippin.applejacks > 1)
+			mem_w16(&m->mem, aj + PIPPIN_AJ_COUNT, 1);
 		pads_done(m);
 		pads_state(m);
 	} else if (c->entry == PIPPIN_ENTRY_DETACH && m->pippin.attached && aj == m->pippin.aj) {
@@ -2019,15 +2176,19 @@ static void pads_sync(struct machine *m)
 }
 
 /* A pad plugged in (slot k, or -1: the first free) or out, the window's or a script's */
-static void pad_plugged(struct machine *m, int k, const char *name, bool window)
+static void pad_plugged(struct machine *m, int k, const char *name, const char *guid, bool window)
 {
 	pads_ready(m);
 	k = pad_plug(&m->pad, k, name);
 	if (k < 0)
 		return;
 	m->pad_window[k] = window;
-	printf("pad %d: %s plugged in\n", k, m->pad.slot[k].name);
+	snprintf(m->pad_guid[k], sizeof m->pad_guid[k], "%s", guid ? guid : "");
+	bool own;
+	pad_set_map(&m->pad, (unsigned)k, settings_pad_map(m->settings, m->pad_guid[k], m->pad.slot[k].name, &own));
+	printf("pad %d: %s plugged in%s\n", k, m->pad.slot[k].name, own ? " (with a mapping of its own)" : "");
 	fflush(stdout);
+	pads_done(m);
 	pads_state(m);
 }
 
@@ -2519,12 +2680,47 @@ static void stay_paused(struct machine *m)
 #define ADB_RIGHT 0x3C
 #define ADB_DOWN 0x3D
 #define ADB_UP 0x3E
-#define WHEEL_MAX 8                     /* (presses for a turn of the wheel, at most) */
+#define WHEEL_WAIT (TIMEBASE_HZ / 4)           /* (how long the wheel's lines wait for the program in front) */
 
-static void wheel_key(struct machine *m, uint8_t key)
+/*
+ * The scroll wheel (wheel.h): its lines for Blue Enhancements to scroll the
+ * window under the pointer by, as the program in front next looks for an
+ * event; those it doesn't scroll by (or doesn't take: a program that
+ * doesn't look), and all of them without it, as the arrow keys, a press a
+ * line
+ */
+static void wheel_keys_now(struct machine *m)
 {
-	adb_key(&m->cuda.adb, key, true);
-	adb_key(&m->cuda.adb, key, false);
+	int32_t d[2];
+	if (!wheel_keys(&m->wheel, &d[0], &d[1]))
+		return;
+	for (unsigned k = 0; k < 2; k++) {
+		uint8_t key = k ? (d[k] > 0 ? ADB_UP : ADB_DOWN) : (d[k] > 0 ? ADB_RIGHT : ADB_LEFT);
+		for (int32_t n = d[k] < 0 ? -d[k] : d[k]; n > 0; n--) {
+			adb_key(&m->cuda.adb, key, true);
+			adb_key(&m->cuda.adb, key, false);
+		}
+	}
+}
+
+static void wheel_in(struct machine *m, int32_t dx, int32_t dy)
+{
+	bool scroll = m->wheel.enabled && m->helper.running && m->helper.patched && !m->helper.old;
+	wheel_turn(&m->wheel, dx, dy, m->cpu.tb, scroll);
+	if (wheel_wake(&m->wheel)) {
+		adb_key(&m->cuda.adb, WHEEL_WAKE_KEY, true);
+		adb_key(&m->cuda.adb, WHEEL_WAKE_KEY, false);
+	}
+	wheel_keys_now(m);
+}
+
+static void wheel_sync(struct machine *m)
+{
+	if (!m->helper.running || !m->helper.patched)
+		wheel_expire(&m->wheel, m->cpu.tb, 0);
+	else
+		wheel_expire(&m->wheel, m->cpu.tb, WHEEL_WAIT);
+	wheel_in(m, 0, 0);
 }
 
 /* The window's input, for the guest (or the menu) */
@@ -2554,7 +2750,10 @@ static void display_input(struct machine *m, uint64_t now)
 			follow_cursor(m, now);          /* (resumed: it may be captured again) */
 			break;
 		case DISPLAY_EVENT_MENU_ACTION:
-			menu_action(m, ev.action, ev.path, now);
+			if (ev.action == UI_PAD_EDIT)
+				pad_edit(m, &ev);
+			else
+				menu_action(m, ev.action, ev.path, now);
 			break;
 		/* (a script drives scripted runs: the host's input would change what they do) */
 		case DISPLAY_EVENT_KEY:
@@ -2602,17 +2801,14 @@ static void display_input(struct machine *m, uint64_t now)
 			adb_mouse_button(&m->cuda.adb, ev.down);
 			fast_start_input(m, -1, ev.down);
 			break;
-		case DISPLAY_EVENT_WHEEL:       /* as the arrow keys, a press a step (where the Mac's cursor shows) */
+		case DISPLAY_EVENT_WHEEL:       /* (where the Mac's cursor shows) */
 			if (m->scripted || m->mouse_captured || m->paused)
 				break;
-			for (int k = 0; k < (ev.dy < 0 ? -ev.dy : ev.dy) && k < WHEEL_MAX; k++)
-				wheel_key(m, ev.dy > 0 ? ADB_UP : ADB_DOWN);
-			for (int k = 0; k < (ev.dx < 0 ? -ev.dx : ev.dx) && k < WHEEL_MAX; k++)
-				wheel_key(m, ev.dx > 0 ? ADB_RIGHT : ADB_LEFT);
+			wheel_in(m, ev.dx, ev.dy);
 			break;
 		case DISPLAY_EVENT_PAD_ADDED:   /* (a scripted run's are the script's own virtual ones: see pad_script()) */
 			if (!m->scripted || ev.value)
-				pad_plugged(m, ev.pad, ev.path, true);
+				pad_plugged(m, ev.pad, ev.path, ev.guid, true);
 			break;
 		case DISPLAY_EVENT_PAD_REMOVED:
 			if (ev.pad >= 0 && ev.pad < PAD_MAX && m->pad_window[ev.pad])
@@ -2760,6 +2956,12 @@ static int script_load(struct script *s, const char *path)
 			e.a = !strcmp(what, "eject") ? 1 : !strcmp(what, "refresh") ? 2 : !strcmp(what, "file") ? 3 : 0;
 			if (e.a == 3)
 				script_text(rest + n, e.arg, sizeof e.arg);
+		} else if (strcmp(e.cmd, "wheel") == 0) {
+			/* wheel DX DY: lines (or parts of one) right and up, in the host's units */
+			double dx = 0, dy = 0;
+			sscanf(rest, " %lf %lf", &dx, &dy);
+			e.a = (int)lround(dx * WHEEL_LINE);
+			e.b = (int)lround(dy * WHEEL_LINE);
 		} else if (strcmp(e.cmd, "pad") == 0) {
 			/* pad N plug [NAME], pad N unplug, pad N button NAME down|up, pad N axis NAME VALUE */
 			e.a = -1;
@@ -2831,7 +3033,7 @@ static void pad_script(struct machine *m, int n, const char *arg)
 			while (*label == ' ')
 				label++;
 			if (in)
-				pad_plugged(m, n, *label ? label : "Scripted controller", false);
+				pad_plugged(m, n, *label ? label : "Scripted controller", NULL, false);
 			else if (!m->pad_window[n])
 				pad_unplugged(m, (unsigned)n);
 			return;
@@ -2862,6 +3064,8 @@ static void script_run(struct machine *m, struct script *s)
 			move_mouse_to(m, e->a, e->b);
 		} else if (strcmp(e->cmd, "motion") == 0) {    /* as the mouse moved, captured (see follow_cursor()) */
 			adb_mouse_move(&m->cuda.adb, e->a, e->b);
+		} else if (strcmp(e->cmd, "wheel") == 0) {     /* the scroll wheel turned: lines right and up */
+			wheel_in(m, e->a, e->b);
 		} else if (strcmp(e->cmd, "press") == 0) {
 			move_mouse_to(m, e->a, e->b);
 			adb_mouse_button(&m->cuda.adb, true);
@@ -4106,7 +4310,7 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		video_driver_call(&m->video, &c);
 		break;
 	case HOSTCALL_TOOLS_HELPER:
-		helper_call(&m->helper, &c, &m->video, &m->clip);
+		helper_call(&m->helper, &c, &m->video, &m->clip, &m->wheel);
 		break;
 	case HOSTCALL_TOOLS_RAVE:
 		if (m->frame_due && cpu->pc == m->frame_pc && cpu->gpr[1] == m->frame_sp)
@@ -4881,11 +5085,15 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	m->mouse_captured = old.mouse_captured;
 	m->mouse_released = old.mouse_released;
 	m->clip = old.clip;             /* (the host's side: start_machine() starts Mac OS's again) */
+	m->wheel.enabled = old.wheel.enabled;
 	m->scripted = old.scripted;
 	m->pad = old.pad;               /* (the pads stay; what they held went with the keyboard and mouse) */
 	pad_forget(&m->pad);
 	m->pads_off = old.pads_off;
 	memcpy(m->pad_window, old.pad_window, sizeof m->pad_window);
+	memcpy(m->pad_guid, old.pad_guid, sizeof m->pad_guid);
+	m->settings = old.settings;
+	memcpy(m->settings_path, old.settings_path, sizeof m->settings_path);
 	m->tools_offer = old.tools_offer;
 	if (old.prompting && old.prompt_news)   /* (the installer's news stays: Mac OS restarting is in it) */
 		m->prompting = m->prompt_news = true;
@@ -4968,6 +5176,25 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		return 1;
 	m.scripted = opt->input_script != NULL;
 	pad_init(&m.pad, &(struct pad_output){ &m, pad_key, pad_click, pad_motion });
+	/* the settings file: a window's in real time (without a script), unless told which (settings.h) */
+	m.settings = malloc(sizeof *m.settings);
+	if (!m.settings)
+		return 1;
+	settings_init(m.settings);
+	if (opt->settings && strcmp(opt->settings, "none"))
+		snprintf(m.settings_path, sizeof m.settings_path, "%s", opt->settings);
+	else if (!opt->settings && opt->window && opt->realtime && !opt->input_script &&
+		 !settings_default_path(m.settings_path, sizeof m.settings_path))
+		m.settings_path[0] = '\0';
+	if (m.settings_path[0]) {
+		char err[1200];
+		if (settings_load(m.settings, m.settings_path, err, sizeof err)) {
+			printf("settings: %s: Blue's own instead, and the file left as it is\n", err);
+			m.settings_path[0] = '\0';
+		} else if (err[0]) {
+			printf("settings: %s\n", err);
+		}
+	}
 	/*
 	 * CD-ROM drives' discs can be swapped (Mac OS ejects them) where someone
 	 * can swap them: in a window or real time, with an empty drive, or when
@@ -4998,9 +5225,12 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 	printf("boot: emulator entry 0x%08X, emulator data 0x%08X, dispatch table 0x%08X, %u MB RAM\n",
 	       m.cpu.pc, m.cpu.gpr[3], m.cpu.gpr[4], m.ram_size >> 20);
 
-	for (size_t k = 0; k < script.count; k++)       /* (a script's clipboard stands in for the host's) */
+	for (size_t k = 0; k < script.count; k++) {     /* (a script's clipboard stands in for the host's) */
 		m.clip.enabled |= strcmp(script.ev[k].cmd, "clipboard") == 0 ||
 				  strcmp(script.ev[k].cmd, "print-clipboard") == 0;
+		m.wheel.enabled |= strcmp(script.ev[k].cmd, "wheel") == 0;
+	}
+	m.wheel.enabled |= opt->window && opt->realtime && !m.scripted;
 
 	m.start_ns = host_ns();
 	m.idle_sleep = opt->realtime && !opt->no_idle;
@@ -5084,6 +5314,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		if (sync) {
 			script_run(&m, &script);
 			pads_sync(&m);
+			wheel_sync(&m);
 			if (m.install.phase == INSTALL_WAIT_FINDER && finder_current(&m))
 				install_finder(&m.install, cpu->tb);    /* (at idle calls it may well be another's turn) */
 			follow_window(&m);
@@ -5392,6 +5623,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 	if (m.helper.launches && m.clip.enabled)
 		printf("; clipboard: %lu scrap calls, %lu texts to Mac OS, %lu from it", m.helper.scrap_calls,
 		       m.clip.to_mac, m.clip.to_host);
+	if (m.wheel.scrolled || m.wheel.pressed)
+		printf("\nwheel: %lu lines scrolled, %lu as the arrow keys", m.wheel.scrolled, m.wheel.pressed);
 	if (m.rave.calls)
 		printf("\n3d engine: %lu calls, %lu contexts, %lu textures, %lu frames, %lu triangles (%lu back-facing)",
 		       m.rave.calls, m.rave.contexts, m.rave.textures, m.rave.frames, m.rave.triangles, m.rave.backfacing);

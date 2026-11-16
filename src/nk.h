@@ -126,6 +126,7 @@ struct nk_boot_options {
 	double max_seconds;     /* stop after this much host time (0: no limit) */
 	int64_t fixed_time;     /* real-time clock starts here (Unix time) instead of the host's */
 	const char *input_script;       /* scripted input: "<insns> <command> [args]" lines */
+	const char *settings;           /* the settings file (settings.h): "none", or NULL for a window's own rule */
 };
 
 int nk_boot(const struct rom *rom, const struct nk_boot_options *opt);

@@ -5,7 +5,9 @@
  * right one, X the left, Y the top, whatever the pad's labels say), and go
  * to the ADB keyboard and mouse, by one of these mappings:
  *
- *   Blue's default   the D-pad and left stick the arrow keys, A Return, B
+ *   Blue's           each pad's own (pad_set_map(): the one for its type
+ *                    the user chose, see settings.h), else Blue's default:
+ *                    the D-pad and left stick the arrow keys, A Return, B
  *                    Command-period, X Space, Y Tab, Start Esc, Back
  *                    Command, the left and right shoulders Shift and
  *                    Option, the right trigger the mouse button and the
@@ -20,7 +22,10 @@
  *                    bottom, right, left and top); the shoulders and
  *                    triggers its left and right fire buttons; Back, Guide
  *                    and Start its three system buttons (left, middle,
- *                    right); and the right stick its trackball, the mouse
+ *                    right); and the right stick its trackball, the mouse.
+ *                    A title has two AppleJacks while two pads are
+ *                    plugged in (pad.applejacks): the second pad is the
+ *                    second, each by its own mapping
  *   off              nothing
  *
  * A game that reads a pad through InputSprocket (isp.h) takes the controls
@@ -48,9 +53,14 @@ enum pad_button {
 };
 enum pad_axis { PAD_LEFT_X, PAD_LEFT_Y, PAD_RIGHT_X, PAD_RIGHT_Y, PAD_LEFT_TRIGGER, PAD_RIGHT_TRIGGER, PAD_AXES };
 
-/* A control: a button, or what the left stick and the triggers make buttons of */
-enum { PAD_STICK_UP = PAD_BUTTONS, PAD_STICK_DOWN, PAD_STICK_LEFT, PAD_STICK_RIGHT, PAD_LT, PAD_RT, PAD_CONTROLS };
-#define PAD_TAKEN_RIGHT_STICK (1u << PAD_CONTROLS)      /* (pad_slot.taken: the right stick, the mouse) */
+/* A control: a button, or what the sticks and the triggers make buttons of */
+enum {
+	PAD_STICK_UP = PAD_BUTTONS, PAD_STICK_DOWN, PAD_STICK_LEFT, PAD_STICK_RIGHT, PAD_LT, PAD_RT,
+	PAD_RSTICK_UP, PAD_RSTICK_DOWN, PAD_RSTICK_LEFT, PAD_RSTICK_RIGHT, PAD_CONTROLS
+};
+#define PAD_LEFT_STICK_DIRECTIONS (0xFu << PAD_STICK_UP)
+#define PAD_RIGHT_STICK_DIRECTIONS (0xFu << PAD_RSTICK_UP)
+#define PAD_TAKEN_RIGHT_STICK PAD_RIGHT_STICK_DIRECTIONS        /* (pad_slot.taken: the right stick, the mouse) */
 
 /*
  * The AppleJack's driver's data, AJGlobalData (Apple's Pippin Technical
@@ -87,6 +97,41 @@ extern const struct pad_switch pad_applejack_defaults[PAD_AJ_SWITCHES];
 /* What a mapping does with a control (for the menu and logs): "Command-Q", "the mouse button" */
 void pad_switch_text(const struct pad_switch *s, char *out, size_t size);
 
+/*
+ * Blue's mapping of a pad: what each control does (a key, with modifiers or
+ * not, held as long as the control is; a modifier key; a click, a double-
+ * click, the mouse button locked down until pressed again; or nothing),
+ * and whether each stick is the mouse or four controls of its own.
+ */
+enum { PAD_STICK_KEYS, PAD_STICK_MOUSE };
+struct pad_map {
+	struct pad_switch control[PAD_CONTROLS];
+	uint8_t stick[2];               /* the left stick's and the right one's: PAD_STICK_* */
+};
+extern const struct pad_map pad_default_map;    /* Blue's own (above) */
+
+/*
+ * The names of the controls (SDL's for the buttons and triggers; the
+ * sticks' directions "leftstickup" and so on), of the sticks' ways
+ * ("leftstickmode", "rightstickmode": "Keys" or "Mouse"), and of what a
+ * control does: a key by its name on a US keyboard ("Return", "Q",
+ * "Period", "Up Arrow", "F5"), after modifiers ("Command-Shift-Z"); a
+ * modifier key alone ("Shift"); "Click" (after modifiers: "Control-Click"),
+ * "Double-Click", "Click Lock", "Nothing". Parsing ignores case, and takes
+ * a key's character too ("Command-.").
+ */
+const char *pad_control_name(unsigned control);
+int pad_control_named(const char *name);
+void pad_action_name(const struct pad_switch *s, char *out, size_t size);
+bool pad_action_parse(const char *text, struct pad_switch *s);
+bool pad_maps_equal(const struct pad_map *a, const struct pad_map *b);
+
+/* The keys a control can be, by virtual key code: their names (NULL: none), and a key the ADB keyboard sent */
+const char *pad_key_name(uint8_t virtual_key);
+uint8_t pad_virtual_key(uint8_t adb_key);       /* (0xFF: none) */
+/* ... as a control's action: a key with the modifiers held (bits of PAD_MOD_*), or a modifier key alone */
+struct pad_switch pad_key_action(uint8_t virtual_key, uint8_t modifiers);
+
 /* An ADB keyboard's key code for a virtual key code (0xFF: none) */
 uint8_t pad_adb_key(uint8_t virtual_key);
 
@@ -113,13 +158,17 @@ struct pad_slot {
 	uint32_t down;                  /* controls down (bit k: control k) */
 	uint32_t taken;                 /* ... and those a game reads itself (set before each change), which do nothing */
 	struct pad_switch held[PAD_CONTROLS];   /* ... and what each does meanwhile */
+	struct pad_map map;             /* Blue's mapping, for this pad */
 };
+
+#define PAD_APPLEJACKS 2                /* a Pippin title's, at most */
 
 struct pad {
 	struct pad_output out;
 	/* set before each change: the mapping, a Pippin title's, and whether presses are let through */
 	enum pad_mapping mapping;
-	struct pad_switch pippin[PAD_AJ_SWITCHES];
+	struct pad_switch pippin[PAD_APPLEJACKS][PAD_AJ_SWITCHES];
+	unsigned applejacks;            /* ... the AppleJacks the title has (0 or 1: one) */
 	bool quiet;                     /* (the menu or a prompt is up: presses do nothing) */
 	struct pad_slot slot[PAD_MAX];
 	uint8_t keys[128];              /* how many controls hold each ADB key down */
@@ -131,24 +180,29 @@ struct pad {
 
 void pad_init(struct pad *p, const struct pad_output *out);
 
-/* A pad plugged in (in `slot`, or -1: the first free): its slot, or -1 if all are taken */
+/* A pad plugged in (in `slot`, or -1: the first free): its slot, or -1 if all are taken (its mapping Blue's default) */
 int pad_plug(struct pad *p, int slot, const char *name);
 /* ... and out: what it held goes up */
 void pad_unplug(struct pad *p, unsigned slot);
 unsigned pad_count(const struct pad *p);
 
+/* Blue's mapping for a pad (NULL: the default); controls down keep what they did */
+void pad_set_map(struct pad *p, unsigned slot, const struct pad_map *map);
+
 void pad_button(struct pad *p, unsigned slot, unsigned button, bool down);
 void pad_axis(struct pad *p, unsigned slot, unsigned axis, int value);     /* (-32768 to 32767; triggers 0 up) */
 
-/* The right stick moves the mouse as time passes: `now` on a clock of `hz` */
+/* The sticks that are the mouse move it as time passes: `now` on a clock of `hz` */
 void pad_tick(struct pad *p, uint64_t now, uint64_t hz);
 #define PAD_MOUSE_SPEED 900             /* the mouse's counts a second, the stick all the way over */
 
 /* ... the mouse's speed, in counts a second (a Fixed), a stick's axis at `value` makes (0 in its dead zone) */
 int32_t pad_stick_speed(int value);
 
-/* The AppleJack's switches down (bit n: switch n), on any pad */
-uint32_t pad_applejack(const struct pad *p);
+/* The AppleJack a pad is (0 or 1: the second pad plugged in is the second, if the title has two) */
+unsigned pad_applejack_of(const struct pad *p, unsigned slot);
+/* ... and an AppleJack's switches down (bit n: switch n), on the pads that are it */
+uint32_t pad_applejack(const struct pad *p, unsigned applejack);
 
 /* The keyboard and mouse were reset (the Mac restarted): what's held is forgotten, not let go */
 void pad_forget(struct pad *p);

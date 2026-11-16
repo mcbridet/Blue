@@ -481,34 +481,40 @@ static void test_custom_modes(void)
  * The helper as the guest drives it: main, then resumptions after each
  * callout; and its patches, called meanwhile by applications (on other stacks)
  */
+static struct wheel wheel;
+
 static void helper_step(struct helper *h, struct clip *clip, struct ndrv_call *c, uint32_t entry, uint32_t result)
 {
 	*c = (struct ndrv_call){ .mem = &mem, .entry = entry, .toc = TOC, .frame = FRAME };
 	c->arg[0] = result;
-	helper_call(h, c, &video, clip);
+	helper_call(h, c, &video, clip, &wheel);
 }
 
 static void patch_step(struct helper *h, struct clip *clip, struct ndrv_call *c, uint32_t entry, uint32_t arg0)
 {
 	*c = (struct ndrv_call){ .mem = &mem, .entry = entry, .toc = TOC, .frame = FRAME + 0x100 };
 	c->arg[0] = arg0;
-	helper_call(h, c, &video, clip);
+	helper_call(h, c, &video, clip, &wheel);
 }
 
 /* Its imports' TVectors (TVECTORS + 8 * k), and its data: this version's copy, or an older one */
 enum { IMP_WNE, IMP_GET_MAIN_DEVICE, IMP_DM_SET_DISPLAY_MODE, IMP_CALL_UNIVERSAL_PROC, IMP_TEMP_NEW_HANDLE, IMP_HLOCK,
-       IMP_DISPOSE_HANDLE, IMP_GET_CURRENT_PROCESS, IMP_GET_FRONT_PROCESS, IMP_SAME_PROCESS, IMP_POST_EVENT };
+       IMP_DISPOSE_HANDLE, IMP_GET_CURRENT_PROCESS, IMP_GET_FRONT_PROCESS, IMP_SAME_PROCESS, IMP_POST_EVENT,
+       IMP_FIND_WINDOW, IMP_TEST_CONTROL };
 #define IMPORT(k) (TVECTORS + 8u * (k))
 
-static void helper_load(struct helper *h, bool current)
+/* (version: 1, 2, or 3, this one's) */
+static void helper_load(struct helper *h, unsigned version)
 {
 	helper_init(h);
+	memset(&wheel, 0, sizeof wheel);
 	memset(mem_ptr(&mem, TOC), 0, 0x1000);
 	for (unsigned k = 0; k < NDRV_MAX_IMPORTS && (k == 0 || h->layout.import[k]); k++)
 		mem_w32(&mem, TOC + h->layout.import[k], IMPORT(k));
-	if (current) {                                          /* 'syHp', version 2 */
-		mem_w32(&mem, TOC + h->layout.extra, FOURCC('s', 'y', 'H', 'p'));
-		mem_w32(&mem, TOC + h->layout.extra + 4, 2);
+	uint32_t data = TOC + (version == 3 ? h->layout.extra : h->v2_extra);
+	if (version > 1) {                                      /* 'syHp', its version */
+		mem_w32(&mem, data, FOURCC('s', 'y', 'H', 'p'));
+		mem_w32(&mem, data + 4, version);
 	}
 }
 
@@ -526,7 +532,7 @@ static void test_helper(void)
 {
 	struct helper h;
 	struct clip clip = { 0 };
-	helper_load(&h, true);
+	helper_load(&h, 3);
 	video_init(&video, &mem, FB, FB_SIZE, 16600000);
 	const uint32_t event = TOC + h.layout.extra + 8;
 	struct ndrv_call c;
@@ -564,7 +570,7 @@ static void test_helper_v1(void)
 {
 	struct helper h;
 	struct clip clip = { .enabled = true };
-	helper_load(&h, false);
+	helper_load(&h, 1);
 	video_init(&video, &mem, FB, FB_SIZE, 16600000);
 	const uint32_t event = TOC + h.v1_extra;
 	struct ndrv_call c;
@@ -610,7 +616,7 @@ static void test_helper_clipboard(void)
 {
 	struct helper h;
 	struct clip clip = { .enabled = true };
-	helper_load(&h, true);
+	helper_load(&h, 3);
 	video_init(&video, &mem, FB, FB_SIZE, 16600000);
 	const uint32_t event = TOC + h.layout.extra + 8;
 	struct ndrv_call c;
@@ -640,7 +646,7 @@ static void test_helper_clipboard(void)
 	memcpy(mem_ptr(&mem, SCRAP_TEXT), "caf\x8E\rok", 7);
 	c = (struct ndrv_call){ .mem = &mem, .entry = 2, .toc = TOC, .frame = FRAME + 0x100,
 				.arg = { 7, FOURCC('T', 'E', 'X', 'T'), SCRAP_TEXT } };
-	helper_call(&h, &c, &video, &clip);
+	helper_call(&h, &c, &video, &clip, &wheel);
 	CHECK_EQ(c.tvector, IMPORT(IMP_CALL_UNIVERSAL_PROC));
 	CHECK(c.out[0] == 0x2222 && c.out[1] == 0xFF0 && c.out[2] == 7 && c.out[4] == SCRAP_TEXT);
 	CHECK(!clip.got);
@@ -711,6 +717,290 @@ static void test_helper_clipboard(void)
 	clip_free(&clip);
 }
 
+/* One installed by the version before (version 2: the clipboard, no scrolling): it switches modes, at its data's addresses */
+static void test_helper_v2(void)
+{
+	struct helper h;
+	struct clip clip = { .enabled = true };
+	helper_load(&h, 2);
+	video_init(&video, &mem, FB, FB_SIZE, 16600000);
+	const uint32_t event = TOC + h.v2_extra + 8;
+	struct ndrv_call c;
+
+	CHECK(h.v2_extra != h.layout.extra && h.v2_extra != h.v1_extra);
+	mem_w32(&mem, ZERO_SCRAP_ENTRY, 0x1111);
+	helper_step(&h, &clip, &c, 0, 0);                       /* (says to install it again) */
+	CHECK(h.running && h.old && !h.patched && !clip.listening);
+	CHECK_EQ(mem_r32(&mem, ZERO_SCRAP_ENTRY), 0x1111);
+	CHECK(c.tvector == IMPORT(IMP_WNE) && c.out[1] == event);
+	memset(mem_ptr(&mem, event), 0, 16);
+	video_request_size(&video, 800, 512);
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c.tvector, IMPORT(IMP_GET_MAIN_DEVICE));
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0x5000);
+	CHECK(c.tvector == IMPORT(IMP_DM_SET_DISPLAY_MODE) && c.out[2] == TOC + h.v2_extra + 24);
+	helper_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(h.switches, 1);
+	patch_step(&h, &clip, &c, 3, event);                    /* (its patches, were they in: left alone) */
+	CHECK(c.done);
+	quit(&h, &clip, event);
+	clip_free(&clip);
+}
+
+/*
+ * The wheel: in the program in front, the window under the pointer (a
+ * test's: a window, its port, two scroll bars), the scroll bar's arrow
+ * found and clicked; TrackControl's patch, given the click, holds it down
+ * for the lines with the program's action procedure
+ */
+#define LM_MOUSE 0x830u
+#define LM_WINDOW_LIST 0x9D6u
+#define WINDOW 0x70000u
+#define BAR 0x71000u                    /* the vertical scroll bar (a ControlRecord), then the horizontal one */
+#define HANDLES 0x72000u                /* their master pointers */
+#define EVENT 0x73000u
+#define ACTION 0x7400u                  /* the program's action procedure (its address only) */
+#define TRACK_CONTROL_ENTRY (0xE00 + 4 * 0x168)
+
+static void bar(unsigned k, int16_t top, int16_t left, int16_t bottom, int16_t right, int16_t max, uint32_t next)
+{
+	uint32_t c = BAR + 0x100 * k;
+	memset(mem_ptr(&mem, c), 0, 0x100);
+	mem_w32(&mem, HANDLES + 4 * k, c);
+	mem_w32(&mem, c, next);
+	mem_w32(&mem, c + 4, WINDOW);
+	mem_w16(&mem, c + 8, (uint16_t)top);
+	mem_w16(&mem, c + 10, (uint16_t)left);
+	mem_w16(&mem, c + 12, (uint16_t)bottom);
+	mem_w16(&mem, c + 14, (uint16_t)right);
+	mem_w8(&mem, c + 16, 1);                                /* visible */
+	mem_w16(&mem, c + 22, (uint16_t)max);
+}
+
+/* The test's window: at (40, 10) on the screen, a scroll bar 200 high on its right and one 200 wide below */
+static void wheel_window(void)
+{
+	memset(mem_ptr(&mem, WINDOW), 0, 160);
+	mem_w32(&mem, LM_WINDOW_LIST, WINDOW);
+	mem_w16(&mem, WINDOW + 8, (uint16_t)-40);               /* portBits.bounds: the window's place */
+	mem_w16(&mem, WINDOW + 10, (uint16_t)-10);
+	mem_w8(&mem, WINDOW + 110, 1);                          /* visible, */
+	mem_w8(&mem, WINDOW + 111, 1);                          /* ... in front */
+	mem_w32(&mem, WINDOW + 140, HANDLES);
+	bar(0, -1, 200, 200, 216, 10, HANDLES + 4);
+	bar(1, 199, -1, 215, 200, 0, 0);                        /* (nowhere to go) */
+	mem_w32(&mem, LM_MOUSE, 140u << 16 | 100);              /* (in its contents) */
+}
+
+static void null_event(void)
+{
+	memset(mem_ptr(&mem, EVENT), 0, 16);
+	mem_w32(&mem, EVENT + 6, 1234);                         /* (when) */
+}
+
+/* The filter, in the program in front (or not), up to FindWindow's callout */
+static void wheel_front(struct helper *h, struct clip *clip, struct ndrv_call *c, bool front)
+{
+	patch_step(h, clip, c, 3, EVENT);
+	CHECK_EQ(c->tvector, IMPORT(IMP_GET_CURRENT_PROCESS));
+	uint32_t psn = c->out[0];
+	mem_w32(&mem, psn, 0);
+	mem_w32(&mem, psn + 4, 0x2B);
+	patch_step(h, clip, c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c->tvector, IMPORT(IMP_GET_FRONT_PROCESS));
+	patch_step(h, clip, c, NDRV_ENTRY_RESUME, 0);
+	CHECK_EQ(c->tvector, IMPORT(IMP_SAME_PROCESS));
+	mem_w8(&mem, c->out[2], front);
+	patch_step(h, clip, c, NDRV_ENTRY_RESUME, 0);
+}
+
+/* ... FindWindow: the window (inContent) */
+static void found_window(struct helper *h, struct clip *clip, struct ndrv_call *c, int16_t part)
+{
+	CHECK_EQ(c->tvector, IMPORT(IMP_FIND_WINDOW));
+	CHECK_EQ(c->out[0], mem_r32(&mem, LM_MOUSE));
+	mem_w32(&mem, c->out[1], WINDOW);
+	patch_step(h, clip, c, NDRV_ENTRY_RESUME, (uint32_t)(uint16_t)part);
+}
+
+/* ... TestControl, at (v, h) on the bar: its answer */
+static void tested(struct helper *h, struct clip *clip, struct ndrv_call *c, unsigned k, int16_t v, int16_t x,
+		   int16_t part)
+{
+	CHECK_EQ(c->tvector, IMPORT(IMP_TEST_CONTROL));
+	CHECK_EQ(c->out[0], HANDLES + 4 * k);
+	CHECK_EQ(c->out[1], (uint32_t)(uint16_t)v << 16 | (uint16_t)x);
+	patch_step(h, clip, c, NDRV_ENTRY_RESUME, (uint32_t)(uint16_t)part);
+}
+
+/* The event made a click at (v, h) on the screen, and on to the program */
+static void clicked(struct ndrv_call *c, int16_t v, int16_t x)
+{
+	CHECK(c->done);
+	CHECK_EQ(mem_r16(&mem, EVENT), 1);                      /* mouseDown */
+	CHECK_EQ(mem_r32(&mem, EVENT + 2), 0);
+	CHECK_EQ(mem_r32(&mem, EVENT + 6), 1234);
+	CHECK_EQ(mem_r16(&mem, EVENT + 10), (uint16_t)v);
+	CHECK_EQ(mem_r16(&mem, EVENT + 12), (uint16_t)x);
+	CHECK_EQ(mem_r16(&mem, EVENT + 14), 0);                 /* (the button down) */
+}
+
+/* The program's TrackControl, with its action procedure: the process it's called in, then the procedure's calls */
+static void track(struct helper *h, struct clip *clip, struct ndrv_call *c, unsigned k, uint32_t proc, int16_t part,
+		  unsigned lines)
+{
+	*c = (struct ndrv_call){ .mem = &mem, .entry = 4, .toc = TOC, .frame = FRAME + 0x100,
+				 .arg = { HANDLES + 4 * k, 0x00500060, proc } };
+	helper_call(h, c, &video, clip, &wheel);
+	CHECK_EQ(c->tvector, IMPORT(IMP_GET_CURRENT_PROCESS));
+	mem_w32(&mem, c->out[0], 0);
+	mem_w32(&mem, c->out[0] + 4, 0x2B);
+	patch_step(h, clip, c, NDRV_ENTRY_RESUME, 0);
+	for (unsigned n = 0; n < lines; n++) {
+		CHECK_EQ(c->tvector, IMPORT(IMP_CALL_UNIVERSAL_PROC));
+		CHECK(c->out[0] == (proc == 0xFFFFFFFFu ? ACTION + 0x10 : proc) && c->out[1] == 0x2C0 &&
+		      c->out[2] == HANDLES + 4 * k && c->out[3] == (uint32_t)part);
+		patch_step(h, clip, c, NDRV_ENTRY_RESUME, 0);
+	}
+	CHECK(c->done && c->result == (uint32_t)part);
+}
+
+static void test_helper_wheel(void)
+{
+	struct helper h;
+	struct clip clip = { 0 };
+	helper_load(&h, 3);
+	wheel.enabled = true;
+	video_init(&video, &mem, FB, FB_SIZE, 16600000);
+	struct ndrv_call c;
+
+	/* main: patches TrackControl too, and filters events, for the wheel alone */
+	mem_w32(&mem, TRACK_CONTROL_ENTRY, 0x4444);
+	mem_w32(&mem, JGNE_FILTER, 0);
+	helper_step(&h, &clip, &c, 0, 0);
+	CHECK(h.patched && !clip.listening);
+	check_descriptor(mem_r32(&mem, TRACK_CONTROL_ENTRY), 0xFE0, TOC + h.layout.entry[4]);
+	uint32_t filter = mem_r32(&mem, JGNE_FILTER);
+	CHECK_EQ(mem_r16(&mem, filter + 16), 0x4E75);           /* (no filter before it) */
+
+	/* TrackControl, but for the wheel's click: the routine patched over */
+	*(&c) = (struct ndrv_call){ .mem = &mem, .entry = 4, .toc = TOC, .frame = FRAME + 0x100,
+				    .arg = { HANDLES, 0x00500060, ACTION } };
+	helper_call(&h, &c, &video, &clip, &wheel);
+	CHECK(c.tvector == IMPORT(IMP_CALL_UNIVERSAL_PROC) && c.out[0] == 0x4444 && c.out[1] == 0xFE0 &&
+	      c.out[2] == HANDLES && c.out[3] == 0x00500060 && c.out[4] == ACTION);
+	patch_step(&h, &clip, &c, NDRV_ENTRY_RESUME, 21);
+	CHECK(c.done && c.result == 21);
+
+	/* three lines down: the bar's down arrow at its end, clicked, held for three lines */
+	wheel_window();
+	null_event();
+	wheel_turn(&wheel, 0, -3 * WHEEL_LINE, 0, true);
+	CHECK(wheel_wake(&wheel) && !wheel_wake(&wheel));
+	wheel_front(&h, &clip, &c, true);
+	found_window(&h, &clip, &c, 3);
+	tested(&h, &clip, &c, 0, 192, 208, 21);
+	clicked(&c, 232, 218);
+	CHECK(!wheel.lines[0] && !wheel.lines[1]);
+	track(&h, &clip, &c, 0, ACTION, 21, 3);
+	CHECK_EQ(wheel.scrolled, 3);
+	patch_step(&h, &clip, &c, 3, EVENT);                    /* (taken: nothing more) */
+	CHECK(c.done);
+
+	/* the key that woke the program: a null event to it; two lines up, Mac OS 9's arrows together at the end:
+	 * the up arrow found second from it; the control's own action procedure (TrackControl given -1) */
+	memset(mem_ptr(&mem, EVENT), 0, 16);
+	mem_w16(&mem, EVENT, 3);
+	mem_w32(&mem, EVENT + 2, WHEEL_WAKE_KEY << 8 | 0x10);
+	mem_w32(&mem, EVENT + 6, 1234);
+	wheel_turn(&wheel, 0, 2 * WHEEL_LINE, 0, true);
+	CHECK(wheel.woke);                                      /* (the first's key, yet to come) */
+	mem_w32(&mem, BAR + 32, ACTION + 0x10);
+	wheel_front(&h, &clip, &c, true);
+	CHECK(!wheel.woke);
+	found_window(&h, &clip, &c, 3);
+	tested(&h, &clip, &c, 0, 7, 208, 22);                   /* (the page up part, there) */
+	tested(&h, &clip, &c, 0, 176, 208, 20);
+	clicked(&c, 216, 218);
+	track(&h, &clip, &c, 0, 0xFFFFFFFFu, 20, 2);
+	CHECK_EQ(wheel.scrolled, 5);
+
+	/* a program without an action procedure: a line a click (the rest wait for the next) */
+	null_event();
+	wheel_turn(&wheel, 0, -2 * WHEEL_LINE, 0, true);
+	wheel_front(&h, &clip, &c, true);
+	found_window(&h, &clip, &c, 3);
+	tested(&h, &clip, &c, 0, 192, 208, 21);
+	clicked(&c, 232, 218);
+	mem_w32(&mem, BAR + 32, 0);
+	track(&h, &clip, &c, 0, 0xFFFFFFFFu, 21, 0);
+	CHECK(wheel.scrolled == 6 && wheel.lines[1] == -1);
+	wheel.lines[1] = 0;
+
+	/* sideways, where the bar has nowhere to go: taken, nothing done */
+	null_event();
+	wheel_turn(&wheel, 2 * WHEEL_LINE, 0, 0, true);
+	wheel_front(&h, &clip, &c, true);
+	found_window(&h, &clip, &c, 3);
+	CHECK(c.done && mem_r16(&mem, EVENT) == 0);
+	int32_t dx, dy;
+	CHECK(!wheel_keys(&wheel, &dx, &dy) && !wheel.lines[0]);
+
+	/* the desktop, and a window without scroll bars: the arrow keys */
+	null_event();
+	wheel_turn(&wheel, 0, -WHEEL_LINE, 0, true);
+	wheel_front(&h, &clip, &c, true);
+	found_window(&h, &clip, &c, 0);
+	CHECK(c.done && mem_r16(&mem, EVENT) == 0);
+	CHECK(wheel_keys(&wheel, &dx, &dy) && dx == 0 && dy == -1);
+	mem_w32(&mem, WINDOW + 140, 0);
+	wheel_turn(&wheel, 0, -WHEEL_LINE, 0, true);
+	wheel_front(&h, &clip, &c, true);
+	found_window(&h, &clip, &c, 3);
+	CHECK(c.done && wheel_keys(&wheel, &dx, &dy) && dy == -1);
+	mem_w32(&mem, WINDOW + 140, HANDLES);
+
+	/* a window in back (not highlighted): nowhere */
+	mem_w8(&mem, WINDOW + 111, 0);
+	wheel_turn(&wheel, 0, -WHEEL_LINE, 0, true);
+	wheel_front(&h, &clip, &c, true);
+	found_window(&h, &clip, &c, 3);
+	CHECK(c.done && !wheel_keys(&wheel, &dx, &dy) && !wheel.lines[1]);
+	mem_w8(&mem, WINDOW + 111, 1);
+
+	/* a program in back: the lines wait (for the one in front) */
+	wheel_turn(&wheel, 0, -WHEEL_LINE, 0, true);
+	wheel_front(&h, &clip, &c, false);
+	CHECK(c.done && wheel.lines[1] == -1);
+
+	/* a real event: left alone, the lines wait */
+	memset(mem_ptr(&mem, EVENT), 0, 16);
+	mem_w16(&mem, EVENT, 1);
+	patch_step(&h, &clip, &c, 3, EVENT);
+	CHECK(c.done && wheel.lines[1] == -1);
+
+	/* a click the program doesn't take to TrackControl: its lines tried once more, then let go */
+	null_event();
+	wheel_front(&h, &clip, &c, true);
+	found_window(&h, &clip, &c, 3);
+	tested(&h, &clip, &c, 0, 192, 208, 21);
+	clicked(&c, 232, 218);
+	null_event();
+	wheel_front(&h, &clip, &c, true);                       /* (again) */
+	found_window(&h, &clip, &c, 3);
+	tested(&h, &clip, &c, 0, 192, 208, 21);
+	clicked(&c, 232, 218);
+	null_event();
+	patch_step(&h, &clip, &c, 3, EVENT);
+	CHECK(c.done && mem_r16(&mem, EVENT) == 0 && !wheel.lines[1]);
+	/* ... and TrackControl afterwards: the routine patched over */
+	*(&c) = (struct ndrv_call){ .mem = &mem, .entry = 4, .toc = TOC, .frame = FRAME + 0x100,
+				    .arg = { HANDLES, 0x00500060, ACTION } };
+	helper_call(&h, &c, &video, &clip, &wheel);
+	CHECK(c.tvector == IMPORT(IMP_CALL_UNIVERSAL_PROC) && c.out[0] == 0x4444);
+	CHECK_EQ(wheel.scrolled, 6);
+}
+
 void test_tools(void)
 {
 	test_rsrc();
@@ -729,6 +1019,8 @@ void test_tools(void)
 	test_custom_modes();
 	test_helper();
 	test_helper_v1();
+	test_helper_v2();
 	test_helper_clipboard();
+	test_helper_wheel();
 	mem_free(&mem);
 }
