@@ -253,7 +253,8 @@ void glf_pop_attrib(struct gl_state *st)
 		for (unsigned u = 0; u < GLF_TEXTURE_UNITS; u++) {
 			st->units[u].env_mode = o->units[u].env_mode;
 			memcpy(st->units[u].env_color, o->units[u].env_color, sizeof st->units[u].env_color);
-			st->units[u].lod_bias = o->units[u].lod_bias;
+			st->lod_bias[u] = o->lod_bias[u];
+			st->combine[u] = o->combine[u];
 		}
 		memcpy(st->texgen, o->texgen, sizeof st->texgen);
 		caps(st, o, GLF_CAP_TEXTURE_1D, 2);

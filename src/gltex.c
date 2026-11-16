@@ -112,6 +112,16 @@ void glf_textures_init(struct gl_state *st)
 		for (int k = 0; k < GLF_TARGETS; k++)
 			st->units[u].bound[k] = &st->defaults[k];
 		st->units[u].env_mode = GL_MODULATE;
+		struct gl_combine *cb = &st->combine[u];
+		for (int g = 0; g < 2; g++) {
+			cb->function[g] = GL_MODULATE;
+			cb->source[g][0] = GL_TEXTURE;
+			cb->source[g][1] = GL_PREVIOUS_EXT;
+			cb->source[g][2] = GL_CONSTANT_EXT;
+			for (int k = 0; k < 3; k++)
+				cb->operand[g][k] = g || k == 2 ? GL_SRC_ALPHA : GL_SRC_COLOR;
+			cb->scale[g] = 1;
+		}
 	}
 	st->pack.alignment = st->unpack.alignment = 4;
 }
@@ -735,8 +745,8 @@ void glf_tex_parameter(struct gl_state *st, uint32_t target, uint32_t pname, con
 	case GL_TEXTURE_PRIORITY:
 		t->priority = v[0] > 0 ? (v[0] < 1 ? v[0] : 1) : 0;
 		return;
-	case GL_TEXTURE_MIN_LOD: t->min_lod = v[0]; return;
-	case GL_TEXTURE_MAX_LOD: t->max_lod = v[0]; return;
+	case GL_TEXTURE_MIN_LOD: t->min_lod = v[0]; break;
+	case GL_TEXTURE_MAX_LOD: t->max_lod = v[0]; break;
 	case GL_TEXTURE_BASE_LEVEL:
 	case GL_TEXTURE_MAX_LEVEL:
 		if (v[0] < 0) {
@@ -760,7 +770,7 @@ void glf_tex_env(struct gl_state *st, uint32_t target, uint32_t pname, const flo
 {
 	struct gl_unit *u = &st->units[st->active_texture];
 	if (target == GL_TEXTURE_FILTER_CONTROL_EXT && pname == GL_TEXTURE_LOD_BIAS_EXT) {
-		u->lod_bias = v[0];
+		st->lod_bias[st->active_texture] = v[0];
 		st->raster_stale = true;
 		return;
 	}
@@ -768,17 +778,56 @@ void glf_tex_env(struct gl_state *st, uint32_t target, uint32_t pname, const flo
 		glf_error(st, GL_INVALID_ENUM);
 		return;
 	}
-	if (pname == GL_TEXTURE_ENV_MODE) {
-		uint32_t e = v[0] >= 0 && v[0] < 65536 ? (uint32_t)v[0] : 0;
-		if (e != GL_MODULATE && e != GL_DECAL && e != GL_BLEND && e != GL_REPLACE && e != GL_ADD) {
-			glf_error(st, GL_INVALID_ENUM);
-			return;
-		}
-		u->env_mode = e;
-	} else if (pname == GL_TEXTURE_ENV_COLOR) {
-		for (int k = 0; k < 4; k++)
-			u->env_color[k] = v[k] > 0 ? (v[k] < 1 ? v[k] : 1) : 0;
-	} else {
+	uint32_t e = v[0] >= 0 && v[0] < 65536 ? (uint32_t)v[0] : 0;
+	struct gl_combine *cb = &st->combine[st->active_texture];
+	unsigned g = 0, k = 0;                  /* (combine's: rgb's or alpha's; which argument) */
+	bool ok;
+	switch (pname) {
+	case GL_TEXTURE_ENV_MODE:
+		ok = e == GL_MODULATE || e == GL_DECAL || e == GL_BLEND || e == GL_REPLACE || e == GL_ADD ||
+		     e == GL_COMBINE_EXT;
+		if (ok)
+			u->env_mode = e;
+		break;
+	case GL_TEXTURE_ENV_COLOR:
+		for (int j = 0; j < 4; j++)
+			u->env_color[j] = v[j] > 0 ? (v[j] < 1 ? v[j] : 1) : 0;
+		ok = true;
+		break;
+	case GL_COMBINE_RGB_EXT: case GL_COMBINE_ALPHA_EXT:
+		ok = e == GL_REPLACE || e == GL_MODULATE || e == GL_ADD || e == GL_ADD_SIGNED_EXT ||
+		     e == GL_INTERPOLATE_EXT;
+		if (ok)
+			cb->function[pname == GL_COMBINE_ALPHA_EXT] = e;
+		break;
+	case GL_SOURCE0_ALPHA_EXT: case GL_SOURCE0_ALPHA_EXT + 1: case GL_SOURCE0_ALPHA_EXT + 2:
+		g = 1;
+		/* fall through */
+	case GL_SOURCE0_RGB_EXT: case GL_SOURCE0_RGB_EXT + 1: case GL_SOURCE0_RGB_EXT + 2:
+		k = (pname - GL_SOURCE0_RGB_EXT) & 7u;
+		ok = e == GL_TEXTURE || e == GL_CONSTANT_EXT || e == GL_PRIMARY_COLOR_EXT || e == GL_PREVIOUS_EXT;
+		if (ok)
+			cb->source[g][k] = e;
+		break;
+	case GL_OPERAND0_ALPHA_EXT: case GL_OPERAND0_ALPHA_EXT + 1: case GL_OPERAND0_ALPHA_EXT + 2:
+		g = 1;
+		/* fall through */
+	case GL_OPERAND0_RGB_EXT: case GL_OPERAND0_RGB_EXT + 1: case GL_OPERAND0_RGB_EXT + 2:
+		k = (pname - GL_OPERAND0_RGB_EXT) & 7u;
+		ok = e >= (g ? GL_SRC_ALPHA : GL_SRC_COLOR) && e <= GL_ONE_MINUS_SRC_ALPHA;
+		if (ok)
+			cb->operand[g][k] = e;
+		break;
+	case GL_RGB_SCALE_EXT: case GL_ALPHA_SCALE:     /* (others: GL_INVALID_ENUM, as Apple's engine has it) */
+		ok = v[0] == 1 || v[0] == 2 || v[0] == 4;
+		if (ok)
+			cb->scale[pname == GL_ALPHA_SCALE] = v[0];
+		break;
+	default:
+		ok = false;
+		break;
+	}
+	if (!ok) {
 		glf_error(st, GL_INVALID_ENUM);
 		return;
 	}
@@ -811,21 +860,34 @@ unsigned glf_get_tex_env(struct gl_state *st, uint32_t target, uint32_t pname, d
 {
 	const struct gl_unit *u = &st->units[st->active_texture];
 	if (target == GL_TEXTURE_FILTER_CONTROL_EXT && pname == GL_TEXTURE_LOD_BIAS_EXT) {
-		v[0] = u->lod_bias;
+		v[0] = st->lod_bias[st->active_texture];
 		return 1;
 	}
 	if (target != GL_TEXTURE_ENV)
 		return 0;
-	if (pname == GL_TEXTURE_ENV_MODE) {
-		v[0] = u->env_mode;
-		return 1;
-	}
-	if (pname == GL_TEXTURE_ENV_COLOR) {
+	const struct gl_combine *cb = &st->combine[st->active_texture];
+	switch (pname) {
+	case GL_TEXTURE_ENV_MODE: v[0] = u->env_mode; return 1;
+	case GL_TEXTURE_ENV_COLOR:
 		for (int k = 0; k < 4; k++)
 			v[k] = u->env_color[k];
 		return 4;
+	case GL_COMBINE_RGB_EXT: case GL_COMBINE_ALPHA_EXT: v[0] = cb->function[pname == GL_COMBINE_ALPHA_EXT]; return 1;
+	case GL_SOURCE0_RGB_EXT: case GL_SOURCE0_RGB_EXT + 1: case GL_SOURCE0_RGB_EXT + 2:
+		v[0] = cb->source[0][pname - GL_SOURCE0_RGB_EXT];
+		return 1;
+	case GL_SOURCE0_ALPHA_EXT: case GL_SOURCE0_ALPHA_EXT + 1: case GL_SOURCE0_ALPHA_EXT + 2:
+		v[0] = cb->source[1][pname - GL_SOURCE0_ALPHA_EXT];
+		return 1;
+	case GL_OPERAND0_RGB_EXT: case GL_OPERAND0_RGB_EXT + 1: case GL_OPERAND0_RGB_EXT + 2:
+		v[0] = cb->operand[0][pname - GL_OPERAND0_RGB_EXT];
+		return 1;
+	case GL_OPERAND0_ALPHA_EXT: case GL_OPERAND0_ALPHA_EXT + 1: case GL_OPERAND0_ALPHA_EXT + 2:
+		v[0] = cb->operand[1][pname - GL_OPERAND0_ALPHA_EXT];
+		return 1;
+	case GL_RGB_SCALE_EXT: case GL_ALPHA_SCALE: v[0] = cb->scale[pname == GL_ALPHA_SCALE]; return 1;
+	default: return 0;
 	}
-	return 0;
 }
 
 unsigned glf_get_tex_level_parameter(struct gl_state *st, uint32_t target, int32_t level, uint32_t pname, double *v)

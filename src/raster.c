@@ -784,6 +784,19 @@ static bool lod_needed(const struct raster_unit *u)
 	       linear_filter(u->min_filter) != (u->mag_filter == RASTER_LINEAR);
 }
 
+/*
+ * A unit's level of detail from a primitive's (LOD_NONE where its
+ * coordinates don't change): biased, then clamped to the texture's minimum
+ * and maximum (GL_TEXTURE_MIN_LOD, GL_TEXTURE_MAX_LOD)
+ */
+static float unit_lod(const struct raster_lod *l, float lod)
+{
+	lod += l->bias;
+	if (l->clamped)
+		lod = lod < l->min ? l->min : lod > l->max ? l->max : lod;
+	return lod;
+}
+
 /* (at that level of detail, if lod_needed()) */
 static void unit_setup_lod(const struct raster_unit *u, float lod, struct sampler *sm)
 {
@@ -806,10 +819,10 @@ static void unit_setup_lod(const struct raster_unit *u, float lod, struct sample
 	sampler_init(sm, u, level, linear);
 }
 
-static void unit_setup(const struct raster_unit *u, unsigned unit, const struct raster_vertex *v[3], float area2,
-		       struct sampler *sm)
+static void unit_setup(const struct raster_unit *u, const struct raster_lod *l, unsigned unit,
+		       const struct raster_vertex *v[3], float area2, struct sampler *sm)
 {
-	unit_setup_lod(u, lod_needed(u) ? triangle_lod(u, unit, v, area2) + u->lod_bias : 0, sm);
+	unit_setup_lod(u, lod_needed(u) ? unit_lod(l, triangle_lod(u, unit, v, area2)) : 0, sm);
 }
 
 /*
@@ -904,7 +917,7 @@ static bool tri_setup(const struct raster_target *t, const struct prepared *p, c
 	T->sh.stage = p->stage;
 	for (unsigned k = 0; k < RASTER_UNITS; k++)
 		if (T->sh.units >> k & 1)
-			unit_setup(&s->unit[k], k, v, area2, &T->sh.sm[k]);
+			unit_setup(&s->unit[k], &s->lod[k], k, v, area2, &T->sh.sm[k]);
 	return true;
 }
 
@@ -1297,10 +1310,10 @@ static void gl_draw(struct raster_target *t, const struct prepared *p, const int
 	d.sh.units = textured ? p->units : 0;
 	d.sh.stage = p->stage;
 	for (unsigned k = 0; k < RASTER_UNITS; k++)
-		if (d.sh.units >> k & 1)        /* (points: magnified, biased or not; lines: by the texels along */
-			unit_setup_lod(&s->unit[k], line && lod_needed(&s->unit[k]) ?        /* them a pixel) */
-				       raster_line_lod(&s->unit[k], k, &c->v[0], &c->v[1]) + s->unit[k].lod_bias : 0,
-				       &d.sh.sm[k]);
+		if (d.sh.units >> k & 1)        /* (lines: by the texels along them a pixel; points: unchanging) */
+			unit_setup_lod(&s->unit[k], !lod_needed(&s->unit[k]) ? 0 :
+				       unit_lod(&s->lod[k], line ? raster_line_lod(&s->unit[k], k, &c->v[0], &c->v[1]) :
+						LOD_NONE), &d.sh.sm[k]);
 	d.flags = (textured ? F_TEX : 0) | (s->fog_mode != RASTER_FOG_NONE ? F_FOG : 0) | (s->smooth ? F_COVER : 0);
 	attribs(&c->v[0], d.sh.L, d.a0);
 	attribs(line ? &c->v[1] : &c->v[0], d.sh.L, d.a1);

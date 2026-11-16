@@ -401,7 +401,8 @@ static void test_agl(void)
 			   "GL_ARB_transpose_matrix GL_EXT_clip_volume_hint GL_EXT_rescale_normal GL_NV_texgen_reflection "
 			   "GL_ARB_multitexture GL_ARB_texture_env_add GL_EXT_blend_color GL_EXT_blend_minmax "
 			   "GL_EXT_blend_subtract GL_EXT_compiled_vertex_array GL_EXT_texture_env_add "
-			   "GL_EXT_texture_lod_bias GL_EXT_abgr GL_EXT_bgra GL_SGIS_texture_edge_clamp"));
+			   "GL_EXT_texture_env_combine GL_EXT_texture_lod_bias GL_EXT_abgr GL_EXT_bgra "
+			   "GL_SGIS_texture_edge_clamp"));
 	CALL(glGetIntegerv, GL_VIEWPORT, OUT);
 	CHECK(mem_r32(&mem, OUT + 8) == 32 && mem_r32(&mem, OUT + 12) == 24);
 	CALL(glClear, 0x8000);
@@ -1615,7 +1616,7 @@ static const struct op scene_lists[] = {
  * image stenciled by
  */
 enum { GL_RGBA_T = 0x1908, GL_RGB_T = 0x1907, GL_LUMINANCE_T = 0x1909, GL_RED_SCALE = 0x0D14, GL_BLUE_SCALE = 0x0D1A,
-       GL_BLUE_BIAS = 0x0D1B, GL_ALPHA_SCALE = 0x0D1C, GL_COLOR_T = 0x1800, GL_DEPTH_COMPONENT_T = 0x1902,
+       GL_BLUE_BIAS = 0x0D1B, GL_COLOR_T = 0x1800, GL_DEPTH_COMPONENT_T = 0x1902,
        GL_STENCIL_INDEX_T = 0x1901 };
 #define RPOS(x, y) { "glRasterPos2f", { x, y } }
 #define DRAWPIX(w, h, format, type, image) { "glDrawPixels", { w, h, format, type, image } }
@@ -1971,6 +1972,148 @@ static const struct op scene_lodbias[] = {
 };
 
 /*
+ * GL_TEXTURE_MIN_LOD and _MAX_LOD (and GL_TEXTURE_BASE_LEVEL and
+ * _MAX_LEVEL): the levels-in-colors texture on 12-pixel squares (1.415),
+ * its level of detail clamped from above and below, biased too, on a
+ * square whose coordinates don't change, on a magnified quad clamped into
+ * minifying; then from level 1 to 3 only, and from 2
+ */
+#define TEXPF(pname, v) { "glTexParameterf", { 0x0DE1, pname, v } }
+#define LODS(lo, hi) TEXPF(0x813A, lo), TEXPF(0x813B, hi)
+#define UNCHANGING(x, y) BEGIN(GL_QUADS), TC(0.3, 0.6), V2(x, y), V2((x) + 12, y), V2((x) + 12, (y) + 12), \
+	V2(x, (y) + 12), END
+static const struct op scene_lodrange[] = {
+	ORTHO, CLEAR(0.2, 0.2, 0.2), EN(GL_TEXTURE_2D), { "glBindTexture", { 0x0DE1, 1 } },
+	TEXLEVEL(0, 32, 32, IMAGE_LEVEL0), TEXLEVEL(1, 16, 16, IMAGE_LEVEL0 + 1), TEXLEVEL(2, 8, 8, IMAGE_LEVEL0 + 2),
+	TEXLEVEL(3, 4, 4, IMAGE_LEVEL0 + 3), TEXLEVEL(4, 2, 2, IMAGE_LEVEL0 + 4), TEXLEVEL(5, 1, 1, IMAGE_LEVEL0 + 5),
+	TEXP(GL_TEXTURE_MIN_FILTER, 0x2700), TEXP(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	{ "glTexEnvi", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE } },
+	LODS(2.7, 1000), TSQUARE(2, 2, 12, 12), LODS(-1000, 0.3), TSQUARE(16, 2, 12, 12),
+	LODS(-1000, 1.3), BIAS(2), TSQUARE(30, 2, 12, 12), BIAS(0), LODS(1.2, 1.2), TSQUARE(44, 2, 12, 12),
+	LODS(4.6, 1000), TSQUARE(58, 2, 12, 12), LODS(0.8, 2), BIAS(-3), TSQUARE(72, 2, 12, 12), BIAS(0),
+	LODS(2.2, 1000), UNCHANGING(2, 18), LODS(-1000, 1000), UNCHANGING(16, 18),
+	TEXP(GL_TEXTURE_MAG_FILTER, GL_LINEAR), LODS(1.2, 1000), TSQUARE(30, 18, 40, 16), LODS(-1000, 1000),
+	TEXP(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	TEXP(0x813C, 1), TEXP(0x813D, 3), TSQUARE(2, 40, 12, 12), BIAS(4), TSQUARE(16, 40, 12, 12), BIAS(0),  /* (BASE_LEVEL, MAX_LEVEL) */
+	TEXP(0x813C, 2), TSQUARE(30, 40, 12, 12), LODS(0.6, 1000), TSQUARE(44, 40, 12, 12),
+	DIS(GL_TEXTURE_2D),
+	{ NULL, { 0 } },
+};
+
+/*
+ * GL_EXT_texture_env_combine (as Apple's 9.2.2 takes it: its five
+ * functions, four sources, the operands, scales of 1, 2 and 4): unit 0's
+ * checkered texture (alpha falling) and a primary color changing linearly
+ * across each 16-pixel square, combined by each function for r, g, b and
+ * for a, from each source, through each operand, scaled; textures of each
+ * base format (alpha, luminance, intensity, luminance and alpha, RGB);
+ * then the built-in modulate again. List 50 sets the defaults.
+ */
+#define ENVI(pname, v) { "glTexEnvi", { GL_TEXTURE_ENV, pname, v } }
+#define ENVF(pname, v) { "glTexEnvf", { GL_TEXTURE_ENV, pname, v } }
+#define MTC(u, s, t) { "glMultiTexCoord2fARB", { GL_TEXTURE0_ARB + (u), s, t } }
+#define CQUAD(x, y) BEGIN(GL_QUADS), C4(0.9, 0.1, 0.3, 0.8), MTC(0, 0, 0), MTC(1, 0, 1), V2(x, y), \
+	C4(0.3, 0.6, 0.5, 0.4), MTC(0, 1, 0), MTC(1, 1, 1), V2((x) + 16, y), C4(0.3, 0.9, 1, 0.1), MTC(0, 1, 1), \
+	MTC(1, 1, 0), V2((x) + 16, (y) + 16), C4(0.9, 0.4, 0.8, 0.5), MTC(0, 0, 1), MTC(1, 0, 0), V2(x, (y) + 16), END
+#define DEFAULTS { "glCallList", { 50 } }
+#define RGB_FN(f) ENVI(GL_COMBINE_RGB_EXT, f)
+#define A_FN(f) ENVI(GL_COMBINE_ALPHA_EXT, f)
+#define SRC(k, s) ENVI(GL_SOURCE0_RGB_EXT + (k), s)
+#define ASRC(k, s) ENVI(GL_SOURCE0_ALPHA_EXT + (k), s)
+#define OPND(k, o) ENVI(GL_OPERAND0_RGB_EXT + (k), o)
+#define AOPND(k, o) ENVI(GL_OPERAND0_ALPHA_EXT + (k), o)
+#define COMBINE_DEFAULTS { "glNewList", { 50, GL_COMPILE } }, ENVI(GL_TEXTURE_ENV_MODE, GL_COMBINE_EXT), \
+	RGB_FN(GL_MODULATE), A_FN(GL_MODULATE), SRC(0, GL_TEXTURE), SRC(1, GL_PREVIOUS_EXT), SRC(2, GL_CONSTANT_EXT), \
+	ASRC(0, GL_TEXTURE), ASRC(1, GL_PREVIOUS_EXT), ASRC(2, GL_CONSTANT_EXT), OPND(0, GL_SRC_COLOR), \
+	OPND(1, GL_SRC_COLOR), OPND(2, GL_SRC_ALPHA), AOPND(0, GL_SRC_ALPHA), AOPND(1, GL_SRC_ALPHA), \
+	AOPND(2, GL_SRC_ALPHA), ENVF(GL_RGB_SCALE_EXT, 1), ENVF(GL_ALPHA_SCALE, 1), ENDLIST
+#define TEXFMT(internal) { "glTexImage2D", { 0x0DE1, 0, internal, 8, 8, IMAGE_CHECKER } }
+static const struct op scene_combine[] = {
+	ORTHO, CLEAR(0.2, 0.2, 0.2), COMBINE_DEFAULTS, EN(GL_TEXTURE_2D), { "glBindTexture", { 0x0DE1, 1 } },
+	TEX(1, 8, 8, IMAGE_CHECKER), TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST), TEXP(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	{ "glTexEnvfv", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, 0.3, 0.7, 0.5, 0.6 } },
+	DEFAULTS, RGB_FN(GL_REPLACE), A_FN(GL_REPLACE), CQUAD(0, 4),
+	DEFAULTS, CQUAD(16, 4),
+	DEFAULTS, RGB_FN(GL_ADD), A_FN(GL_ADD), CQUAD(32, 4),
+	DEFAULTS, RGB_FN(GL_ADD_SIGNED_EXT), A_FN(GL_ADD_SIGNED_EXT), CQUAD(48, 4),
+	DEFAULTS, RGB_FN(GL_INTERPOLATE_EXT), A_FN(GL_INTERPOLATE_EXT), CQUAD(64, 4),
+	DEFAULTS, ENVF(GL_RGB_SCALE_EXT, 2), ENVF(GL_ALPHA_SCALE, 4), CQUAD(80, 4),
+	DEFAULTS, RGB_FN(GL_REPLACE), A_FN(GL_REPLACE), SRC(0, GL_CONSTANT_EXT), ASRC(0, GL_PRIMARY_COLOR_EXT),
+	CQUAD(0, 20),
+	DEFAULTS, RGB_FN(GL_REPLACE), A_FN(GL_REPLACE), SRC(0, GL_PRIMARY_COLOR_EXT), ASRC(0, GL_CONSTANT_EXT),
+	CQUAD(16, 20),
+	DEFAULTS, RGB_FN(GL_REPLACE), A_FN(GL_REPLACE), OPND(0, GL_ONE_MINUS_SRC_COLOR),
+	AOPND(0, GL_ONE_MINUS_SRC_ALPHA), CQUAD(32, 20),
+	DEFAULTS, RGB_FN(GL_REPLACE), OPND(0, GL_SRC_ALPHA), CQUAD(48, 20),
+	DEFAULTS, RGB_FN(GL_REPLACE), OPND(0, GL_ONE_MINUS_SRC_ALPHA), A_FN(GL_REPLACE), ASRC(0, GL_PREVIOUS_EXT),
+	CQUAD(64, 20),
+	DEFAULTS, RGB_FN(GL_INTERPOLATE_EXT), SRC(0, GL_CONSTANT_EXT), SRC(1, GL_TEXTURE),
+	OPND(1, GL_ONE_MINUS_SRC_COLOR), SRC(2, GL_PRIMARY_COLOR_EXT), OPND(2, GL_ONE_MINUS_SRC_COLOR), CQUAD(80, 20),
+	DEFAULTS, SRC(1, GL_CONSTANT_EXT), OPND(1, GL_SRC_ALPHA), ENVF(GL_RGB_SCALE_EXT, 2), A_FN(GL_ADD_SIGNED_EXT),
+	ASRC(0, GL_PRIMARY_COLOR_EXT), ASRC(1, GL_CONSTANT_EXT), AOPND(1, GL_ONE_MINUS_SRC_ALPHA),
+	ENVF(GL_ALPHA_SCALE, 2), CQUAD(0, 36),
+	DEFAULTS, RGB_FN(GL_ADD), SRC(0, GL_PRIMARY_COLOR_EXT), OPND(0, GL_SRC_ALPHA), SRC(1, GL_CONSTANT_EXT),
+	OPND(1, GL_ONE_MINUS_SRC_COLOR), AOPND(0, GL_ONE_MINUS_SRC_ALPHA), ASRC(1, GL_CONSTANT_EXT), CQUAD(16, 36),
+	DEFAULTS, RGB_FN(GL_ADD_SIGNED_EXT), OPND(1, GL_ONE_MINUS_SRC_ALPHA), ENVF(GL_RGB_SCALE_EXT, 4),
+	A_FN(GL_INTERPOLATE_EXT), ASRC(0, GL_PRIMARY_COLOR_EXT), ASRC(1, GL_CONSTANT_EXT), ASRC(2, GL_TEXTURE),
+	AOPND(2, GL_ONE_MINUS_SRC_ALPHA), CQUAD(32, 36),
+	DEFAULTS, RGB_FN(GL_INTERPOLATE_EXT), SRC(1, GL_PRIMARY_COLOR_EXT), SRC(2, GL_TEXTURE), OPND(2, GL_SRC_COLOR),
+	CQUAD(48, 36),
+	DEFAULTS, RGB_FN(GL_MODULATE), SRC(1, GL_TEXTURE), OPND(1, GL_ONE_MINUS_SRC_COLOR), A_FN(GL_ADD),
+	ASRC(1, GL_TEXTURE), CQUAD(64, 36),
+	DEFAULTS, RGB_FN(GL_ADD), SRC(1, GL_CONSTANT_EXT), OPND(1, GL_ONE_MINUS_SRC_ALPHA), A_FN(GL_REPLACE),
+	ASRC(0, GL_CONSTANT_EXT), AOPND(0, GL_ONE_MINUS_SRC_ALPHA), ENVF(GL_ALPHA_SCALE, 4), CQUAD(80, 36),
+	{ "glBindTexture", { 0x0DE1, 2 } }, TEXFMT(0x803C), TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST),    /* (alpha) */
+	DEFAULTS, CQUAD(0, 52),
+	{ "glBindTexture", { 0x0DE1, 3 } }, TEXFMT(0x8040), TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST),    /* (luminance) */
+	DEFAULTS, RGB_FN(GL_ADD), CQUAD(16, 52),
+	{ "glBindTexture", { 0x0DE1, 4 } }, TEXFMT(0x804B), TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST),    /* (intensity) */
+	DEFAULTS, RGB_FN(GL_INTERPOLATE_EXT), SRC(2, GL_TEXTURE), CQUAD(32, 52),
+	{ "glBindTexture", { 0x0DE1, 5 } }, TEXFMT(0x8045), TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST),    /* (L, A) */
+	DEFAULTS, RGB_FN(GL_REPLACE), OPND(0, GL_SRC_ALPHA), A_FN(GL_REPLACE), CQUAD(48, 52),
+	{ "glBindTexture", { 0x0DE1, 6 } }, TEXFMT(0x8051), TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST),    /* (RGB) */
+	DEFAULTS, A_FN(GL_REPLACE), CQUAD(64, 52),
+	{ "glBindTexture", { 0x0DE1, 1 } }, ENVI(GL_TEXTURE_ENV_MODE, GL_MODULATE), CQUAD(80, 52),
+	DIS(GL_TEXTURE_2D),
+	{ NULL, { 0 } },
+};
+
+/*
+ * ... on two units: unit 1's (a gradient, flipped) combined with unit 0's
+ * result (GL_PREVIOUS_EXT), the primary color and its own constant; unit 0
+ * built in and unit 1 combining, and the other way; unit 0 off (unit 1's
+ * previous the primary color)
+ */
+#define UNIT(u) { "glActiveTextureARB", { GL_TEXTURE0_ARB + (u) } }
+static const struct op scene_combine2[] = {
+	ORTHO, CLEAR(0.2, 0.2, 0.2), COMBINE_DEFAULTS,
+	UNIT(0), EN(GL_TEXTURE_2D), { "glBindTexture", { 0x0DE1, 1 } }, TEX(1, 8, 8, IMAGE_CHECKER),
+	TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST), TEXP(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	{ "glTexEnvfv", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, 0.3, 0.7, 0.5, 0.6 } }, DEFAULTS,
+	UNIT(1), EN(GL_TEXTURE_2D), { "glBindTexture", { 0x0DE1, 2 } }, TEX(2, 8, 8, IMAGE_GRADIENT),
+	TEXP(GL_TEXTURE_MIN_FILTER, GL_NEAREST), TEXP(GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+	{ "glTexEnvfv", { GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, 0.9, 0.2, 0.6, 0.35 } },
+	DEFAULTS, RGB_FN(GL_ADD), SRC(0, GL_PREVIOUS_EXT), SRC(1, GL_TEXTURE), A_FN(GL_ADD), CQUAD(0, 4),
+	DEFAULTS, RGB_FN(GL_INTERPOLATE_EXT), SRC(1, GL_PREVIOUS_EXT), SRC(2, GL_PREVIOUS_EXT), A_FN(GL_REPLACE),
+	ASRC(0, GL_PREVIOUS_EXT), CQUAD(16, 4),
+	DEFAULTS, SRC(0, GL_PREVIOUS_EXT), SRC(1, GL_CONSTANT_EXT), OPND(1, GL_ONE_MINUS_SRC_COLOR),
+	A_FN(GL_ADD_SIGNED_EXT), ASRC(0, GL_PREVIOUS_EXT), ASRC(1, GL_TEXTURE), CQUAD(32, 4),
+	DEFAULTS, RGB_FN(GL_REPLACE), SRC(0, GL_PREVIOUS_EXT), OPND(0, GL_ONE_MINUS_SRC_ALPHA), A_FN(GL_REPLACE),
+	ASRC(0, GL_PRIMARY_COLOR_EXT), CQUAD(48, 4),
+	DEFAULTS, RGB_FN(GL_ADD_SIGNED_EXT), SRC(0, GL_PRIMARY_COLOR_EXT), SRC(1, GL_CONSTANT_EXT),
+	ENVF(GL_RGB_SCALE_EXT, 2), ASRC(0, GL_CONSTANT_EXT), ENVF(GL_ALPHA_SCALE, 2), CQUAD(64, 4),
+	DEFAULTS, RGB_FN(GL_INTERPOLATE_EXT), SRC(0, GL_PREVIOUS_EXT), SRC(1, GL_CONSTANT_EXT), SRC(2, GL_TEXTURE),
+	OPND(2, GL_ONE_MINUS_SRC_COLOR), A_FN(GL_INTERPOLATE_EXT), ASRC(1, GL_PRIMARY_COLOR_EXT),
+	ASRC(2, GL_PREVIOUS_EXT), AOPND(2, GL_ONE_MINUS_SRC_ALPHA), CQUAD(80, 4),
+	UNIT(0), ENVI(GL_TEXTURE_ENV_MODE, GL_REPLACE), UNIT(1), DEFAULTS, CQUAD(0, 24),
+	UNIT(0), DEFAULTS, RGB_FN(GL_ADD_SIGNED_EXT), UNIT(1), ENVI(GL_TEXTURE_ENV_MODE, GL_ADD), CQUAD(16, 24),
+	UNIT(0), DIS(GL_TEXTURE_2D), UNIT(1), DEFAULTS, RGB_FN(GL_REPLACE), SRC(0, GL_PREVIOUS_EXT),
+	OPND(0, GL_SRC_ALPHA), CQUAD(32, 24),
+	DIS(GL_TEXTURE_2D), UNIT(0),
+	{ NULL, { 0 } },
+};
+
+/*
  * The accumulation buffer (the generic renderer's: not Mesa's, which has
  * none for framebuffer objects): two images averaged, scaled, moved, the
  * result returned within a scissor box, cleared in part
@@ -2005,6 +2148,7 @@ static const struct {
 	{ "eval", scene_eval, 0, 0 }, { "eval_lit", scene_eval_lit, 0, 0 }, { "logicop", scene_logicop, 0, 0 },
 	{ "stipple", scene_stipple, 48, 48 }, { "lines", scene_lines, 4, 0 }, { "smoothlines", scene_smooth_lines, 400, 100 },
 	{ "texlines", scene_texlines, 64, 0 }, { "accum", scene_accum, 0, 0 }, { "lodbias", scene_lodbias, 0, 0 },
+	{ "lodrange", scene_lodrange, 0, 0 }, { "combine", scene_combine, 0, 0 }, { "combine2", scene_combine2, 0, 0 },
 };
 #define SCENES (sizeof scenes / sizeof scenes[0])
 

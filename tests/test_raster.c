@@ -5,7 +5,7 @@
  * which must give exactly the pixels of drawing them one at a time.
  * OpenGL's points and lines (as Mesa's llvmpipe draws them, but for its
  * ties), their stipple and coverage; logic ops; the polygon stipple; the
- * levels a LOD bias picks.
+ * levels a LOD bias and range pick.
  */
 #include <math.h>
 #include <stdlib.h>
@@ -805,7 +805,7 @@ static struct raster_state biased(const struct raster_texture *tx, float bias)
 	s.unit[0].texture = tx;
 	s.unit[0].min_filter = RASTER_NEAREST_MIPMAP_NEAREST;
 	s.unit[0].mag_filter = RASTER_NEAREST;
-	s.unit[0].lod_bias = bias;
+	s.lod[0].bias = bias;
 	s.stages = 1;
 	s.stage[0].arg[0][0] = s.stage[0].arg[1][0] = RASTER_TEXTURE0;
 	return s;
@@ -871,6 +871,51 @@ static void test_lod_bias(void)
 	}
 }
 
+/*
+ * GL_TEXTURE_MIN_LOD and _MAX_LOD: the level of detail (biased) clamped to
+ * them, where the coordinates don't change and for points too (from below)
+ */
+static void test_lod_range(void)
+{
+	struct raster_texture tx = levels_texture();
+	static const struct {
+		float bias, min, max;
+		unsigned level, constant;               /* (a 12 pixel square's level, an unchanging one's) */
+	} cases[] = { { 0, 2.7f, 1000, 3, 3 }, { 0, -1000, 0.3f, 0, 0 }, { 2, -1000, 1.3f, 1, 0 },
+		      { 0, 1.2f, 1.2f, 1, 1 }, { 0, 4.6f, 1000, 5, 5 }, { -3, 0.8f, 2, 1, 1 } };
+	for (unsigned k = 0; k < sizeof cases / sizeof cases[0]; k++) {
+		struct raster_state s = biased(&tx, cases[k].bias);
+		s.lod[0].clamped = true;
+		s.lod[0].min = cases[k].min;
+		s.lod[0].max = cases[k].max;
+		struct raster_target t = target(color_a, depth_a);
+		raster_clear(&t, 0, 0, W, H, true, 0, true, 1);
+		textured_square(&s, 4, 4, 12, false);
+		CHECK_EQ(color_a[10 * W + 10], level_color[cases[k].level]);
+		textured_square(&s, 30, 4, 12, true);
+		CHECK_EQ(color_a[10 * W + 36], level_color[cases[k].constant]);
+		struct raster_cmd c;                    /* (a point: as the unchanging square) */
+		memset(&c, 0, sizeof c);
+		c.kind = RASTER_CMD_POINT;
+		c.textured = true;
+		c.v[0] = vertex(40.5f, 30.5f, 0, 1, 1, 1);
+		c.v[0].tex[0][2] = 1;
+		raster_run(&t, &s, &c, 1);
+		CHECK_EQ(color_a[30 * W + 40], level_color[cases[k].constant]);
+		c.kind = RASTER_CMD_LINE;               /* (a line: 0.415, clamped) */
+		c.v[0] = vertex(4, 30.5f, 0, 1, 1, 1);
+		c.v[1] = vertex(28, 30.5f, 0, 1, 1, 1);
+		c.v[0].tex[0][1] = c.v[1].tex[0][1] = 0.5f;
+		c.v[1].tex[0][0] = 1;
+		c.v[0].tex[0][2] = c.v[1].tex[0][2] = 1;
+		raster_run(&t, &s, &c, 1);
+		float l = 0.415f + cases[k].bias;
+		l = l < cases[k].min ? cases[k].min : l > cases[k].max ? cases[k].max : l;
+		unsigned want = l > 0 ? (unsigned)(l + 0.5f) : 0;
+		CHECK_EQ(color_a[30 * W + 16], level_color[want < 5 ? want : 5]);
+	}
+}
+
 void test_raster(void)
 {
 	test_gl_lines();
@@ -879,6 +924,7 @@ void test_raster(void)
 	test_logic();
 	test_polygon_stipple();
 	test_lod_bias();
+	test_lod_range();
 	test_coverage();
 	test_shared_edges();
 	test_depth();

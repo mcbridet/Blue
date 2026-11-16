@@ -148,8 +148,8 @@ static const char extensions[] = "GL_APPLE_specular_vector GL_APPLE_transform_hi
 				 "GL_ARB_transpose_matrix GL_EXT_clip_volume_hint GL_EXT_rescale_normal "
 				 "GL_NV_texgen_reflection GL_ARB_multitexture GL_ARB_texture_env_add GL_EXT_blend_color "
 				 "GL_EXT_blend_minmax GL_EXT_blend_subtract GL_EXT_compiled_vertex_array "
-				 "GL_EXT_texture_env_add GL_EXT_texture_lod_bias GL_EXT_abgr GL_EXT_bgra "
-				 "GL_SGIS_texture_edge_clamp";
+				 "GL_EXT_texture_env_add GL_EXT_texture_env_combine GL_EXT_texture_lod_bias "
+				 "GL_EXT_abgr GL_EXT_bgra GL_SGIS_texture_edge_clamp";
 /* aglErrorString()'s, as Apple's */
 static const char agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE][32] = {
 	"invalid pixel format attribute", "invalid renderer property", "invalid pixel format",
@@ -171,7 +171,7 @@ static const char agl_errors[AGL_ERRORS - AGL_BAD_ATTRIBUTE][32] = {
  * calls write into (see "callouts").
  */
 #define DATA_MAGIC 0x7379474Cu          /* 'syGL' */
-#define DATA_VERSION 7u
+#define DATA_VERSION 8u
 enum { D_MAGIC = 0, D_VERSION = 4, D_CURRENT = OPENGL_DATA_CURRENT, D_RECORD = OPENGL_DATA_RECORD,
        D_RECORD_END = D_RECORD + 4, D_STRINGS = 20 };
 #define FORMATS 16

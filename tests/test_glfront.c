@@ -15,7 +15,8 @@
  * feedback where Mesa's depart from OpenGL 1.2's; evaluators' maps, errors,
  * values, normals and current values. The line stipple's counter, the
  * polygon stipple through the pixel store, logic ops' state, the
- * accumulation buffer; Apple's specular vector, the LOD bias's state.
+ * accumulation buffer; Apple's specular vector, the LOD bias's state,
+ * combine's, the LOD range into the raster state.
  */
 #include <math.h>
 #include <stdlib.h>
@@ -2166,6 +2167,98 @@ static void test_lod_bias_state(void)
 	CHECK(got[0] == 2.5);
 }
 
+/* A unit with a 1 x 1 texture enabled (complete as it is) */
+static void one_texel(void)
+{
+	const uint8_t px[4] = { 10, 20, 30, 40 };
+	glf_bind_texture(&st, GL_TEXTURE_2D_T, 1);
+	glf_tex_image(&st, GL_TEXTURE_2D_T, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+	glf_enable(&st, GL_TEXTURE_2D, true);
+}
+
+static void env(uint32_t pname, float v)
+{
+	glf_tex_env(&st, GL_TEXTURE_ENV, pname, &v);
+}
+
+static double get_env(uint32_t pname)
+{
+	double v[4] = { -1, -1, -1, -1 };
+	CHECK_EQ(glf_get_tex_env(&st, GL_TEXTURE_ENV, pname, v), 1);
+	return v[0];
+}
+
+/*
+ * GL_EXT_texture_env_combine's state: its defaults, set and got back, the
+ * values Apple's engine refuses (GL_INVALID_ENUM, scales too), the stage it
+ * makes, pushed and popped with the texture bits
+ */
+static void test_combine_state(void)
+{
+	start();
+	CHECK(get_env(GL_COMBINE_RGB_EXT) == GL_MODULATE && get_env(GL_COMBINE_ALPHA_EXT) == GL_MODULATE);
+	CHECK(get_env(GL_SOURCE0_RGB_EXT) == GL_TEXTURE && get_env(GL_SOURCE0_RGB_EXT + 1) == GL_PREVIOUS_EXT &&
+	      get_env(GL_SOURCE0_RGB_EXT + 2) == GL_CONSTANT_EXT && get_env(GL_SOURCE0_ALPHA_EXT + 2) == GL_CONSTANT_EXT);
+	CHECK(get_env(GL_OPERAND0_RGB_EXT) == GL_SRC_COLOR && get_env(GL_OPERAND0_RGB_EXT + 1) == GL_SRC_COLOR &&
+	      get_env(GL_OPERAND0_RGB_EXT + 2) == GL_SRC_ALPHA && get_env(GL_OPERAND0_ALPHA_EXT) == GL_SRC_ALPHA);
+	CHECK(get_env(GL_RGB_SCALE_EXT) == 1 && get_env(GL_ALPHA_SCALE) == 1);
+	one_texel();
+	env(GL_TEXTURE_ENV_MODE, GL_COMBINE_EXT);
+	env(GL_COMBINE_RGB_EXT, GL_INTERPOLATE_EXT);
+	env(GL_SOURCE0_RGB_EXT + 1, GL_PRIMARY_COLOR_EXT);
+	env(GL_OPERAND0_RGB_EXT, GL_ONE_MINUS_SRC_COLOR);
+	env(GL_OPERAND0_RGB_EXT + 1, GL_SRC_ALPHA);
+	env(GL_OPERAND0_RGB_EXT + 2, GL_ONE_MINUS_SRC_ALPHA);
+	env(GL_RGB_SCALE_EXT, 2);
+	env(GL_COMBINE_ALPHA_EXT, GL_ADD_SIGNED_EXT);
+	env(GL_SOURCE0_ALPHA_EXT, GL_PREVIOUS_EXT);
+	env(GL_OPERAND0_ALPHA_EXT + 1, GL_ONE_MINUS_SRC_ALPHA);
+	env(GL_ALPHA_SCALE, 4);
+	CHECK_EQ(error(), GL_NO_ERROR);
+	CHECK(get_env(GL_TEXTURE_ENV_MODE) == GL_COMBINE_EXT && get_env(GL_COMBINE_RGB_EXT) == GL_INTERPOLATE_EXT &&
+	      get_env(GL_RGB_SCALE_EXT) == 2 && get_env(GL_SOURCE0_ALPHA_EXT) == GL_PREVIOUS_EXT);
+	const struct raster_stage *s = &glf_raster_state(&st, &target)->stage[0];
+	CHECK(s->op[0] == RASTER_OP_INTERPOLATE && s->op[1] == RASTER_OP_ADD_SIGNED);
+	CHECK(s->arg[0][0] == (RASTER_TEXTURE0 | RASTER_INVERT) && s->arg[0][1] == (RASTER_COLOR0 | RASTER_ALPHA) &&
+	      s->arg[0][2] == (RASTER_CONSTANT | RASTER_ALPHA | RASTER_INVERT));
+	CHECK(s->arg[1][0] == (RASTER_PREVIOUS | RASTER_ALPHA) &&
+	      s->arg[1][1] == (RASTER_PREVIOUS | RASTER_ALPHA | RASTER_INVERT));
+	CHECK(s->shift[0] == 1 && s->shift[1] == 2 && s->clamp[0] && s->clamp[1]);
+	/* refused: a function, a source (no other unit's texture), an operand, a scale */
+	static const struct {
+		uint32_t pname;
+		float v;
+	} bad[] = { { GL_COMBINE_RGB_EXT, GL_DECAL }, { GL_COMBINE_ALPHA_EXT, 0x84E7 /* GL_SUBTRACT_ARB */ },
+		    { GL_SOURCE0_RGB_EXT, 0x84C1 /* GL_TEXTURE1_ARB */ }, { GL_OPERAND0_ALPHA_EXT, GL_SRC_COLOR },
+		    { GL_OPERAND0_RGB_EXT, GL_ZERO }, { GL_RGB_SCALE_EXT, 3 }, { GL_ALPHA_SCALE, 0.5f },
+		    { GL_SOURCE0_RGB_EXT + 3, GL_TEXTURE } };
+	for (unsigned k = 0; k < sizeof bad / sizeof bad[0]; k++) {
+		env(bad[k].pname, bad[k].v);
+		CHECK_EQ(error(), GL_INVALID_ENUM);
+	}
+	CHECK(get_env(GL_COMBINE_RGB_EXT) == GL_INTERPOLATE_EXT && get_env(GL_RGB_SCALE_EXT) == 2);
+	glf_push_attrib(&st, 0x40000);                          /* GL_TEXTURE_BIT */
+	env(GL_COMBINE_RGB_EXT, GL_REPLACE);
+	env(GL_ALPHA_SCALE, 1);
+	glf_pop_attrib(&st);
+	CHECK(get_env(GL_COMBINE_RGB_EXT) == GL_INTERPOLATE_EXT && get_env(GL_ALPHA_SCALE) == 4);
+}
+
+/* GL_TEXTURE_MIN_LOD and _MAX_LOD into the raster state (not as at first: clamping) */
+static void test_lod_range_state(void)
+{
+	start();
+	one_texel();
+	const struct raster_state *s = glf_raster_state(&st, &target);
+	CHECK(s->unit[0].texture && !s->lod[0].clamped);
+	const float lo[1] = { 1.5f }, hi[1] = { 3 };
+	glf_tex_parameter(&st, GL_TEXTURE_2D_T, 0x813A, lo);            /* GL_TEXTURE_MIN_LOD */
+	glf_tex_parameter(&st, GL_TEXTURE_2D_T, 0x813B, hi);            /* GL_TEXTURE_MAX_LOD */
+	s = glf_raster_state(&st, &target);
+	CHECK(s->lod[0].clamped && s->lod[0].min == 1.5f && s->lod[0].max == 3);
+	CHECK_EQ(error(), GL_NO_ERROR);
+}
+
 void test_glfront(void)
 {
 	test_sincos();
@@ -2198,6 +2291,8 @@ void test_glfront(void)
 	test_accum();
 	test_specular_vector();
 	test_lod_bias_state();
+	test_combine_state();
+	test_lod_range_state();
 	surface_free(&surf);
 	glf_detach(&st, NULL);
 }

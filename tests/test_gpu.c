@@ -3,8 +3,8 @@
  * (coverage of whole-pixel geometry, depth, texture orientation, clears,
  * points, lines and bitmaps, copies, reading back), and within a tolerance
  * on a random scene (edges and filtering may round differently) and on
- * OpenGL's points and lines, logic ops and stipples; LOD biases' levels,
- * exactly. Skipped
+ * OpenGL's points and lines, logic ops and stipples; the levels LOD biases
+ * and ranges pick, exactly. Skipped
  * without OpenGL, unless BLUE_TEST_GPU=1.
  */
 #include <stdlib.h>
@@ -683,7 +683,7 @@ static void test_lod_bias(struct gpu *g)
 			s[k].unit[u].texture = &tx;
 			s[k].unit[u].min_filter = RASTER_NEAREST_MIPMAP_NEAREST;
 			s[k].unit[u].mag_filter = RASTER_NEAREST;
-			s[k].unit[u].lod_bias = bias[k][u];
+			s[k].lod[u].bias = bias[k][u];
 		}
 		s[k].stages = 1;                /* (unit 0's texture, unit 1's, or both added) */
 		s[k].stage[0].op[0] = s[k].stage[0].op[1] = k == 4 ? RASTER_OP_ADD : RASTER_OP_REPLACE;
@@ -733,6 +733,88 @@ static void test_lod_bias(struct gpu *g)
 	CHECK(seen == 0x3F);
 }
 
+/*
+ * GL_TEXTURE_MIN_LOD and _MAX_LOD (the GPU's sampler's): squares whose
+ * coordinates change (32 texels over 12 pixels) and don't, and points, with
+ * levels of detail clamped from above and below, biased too, on either
+ * unit: raster.c's levels, exactly
+ */
+static void test_lod_range(struct gpu *g)
+{
+	static const uint32_t colors[6] = { 0xFFFF0000u, 0xFF00FF00u, 0xFF0000FFu, 0xFFFFFF00u, 0xFF00FFFFu,
+					    0xFFFF00FFu };
+	static uint32_t texels[32 * 32 + 16 * 16 + 8 * 8 + 4 * 4 + 2 * 2 + 1];
+	struct raster_texture tx = { .levels = 6 };
+	uint32_t *t = texels;
+	for (unsigned k = 0; k < 6; k++) {
+		tx.width[k] = tx.height[k] = 32u >> k;
+		tx.texels[k] = t;
+		for (unsigned i = 0; i < tx.width[k] * tx.height[k]; i++)
+			*t++ = colors[k];
+	}
+	enum { N = 5 };
+	static const struct {
+		unsigned unit;
+		float bias, min, max;
+	} clamp[N] = { { 0, 0, 2.7f, 1000 }, { 0, 2, -1000, 1.3f }, { 1, 0, 1.2f, 1.2f }, { 0, -3, 0.8f, 2 },
+		       { 1, 0, 4.6f, 1000 } };
+	struct raster_state s[N];
+	for (unsigned k = 0; k < N; k++) {
+		s[k] = plain();
+		s[k].blend = RASTER_BLEND_NONE;
+		s[k].all_fragments = true;
+		s[k].gl_points = true;
+		struct raster_unit *u = &s[k].unit[clamp[k].unit];
+		u->texture = &tx;
+		u->min_filter = RASTER_NEAREST_MIPMAP_NEAREST;
+		u->mag_filter = RASTER_NEAREST;
+		struct raster_lod *l = &s[k].lod[clamp[k].unit];
+		l->bias = clamp[k].bias;
+		l->clamped = true;
+		l->min = clamp[k].min;
+		l->max = clamp[k].max;
+		s[k].stages = 1;
+		s[k].stage[0].arg[0][0] = s[k].stage[0].arg[1][0] = (uint8_t)(RASTER_TEXTURE0 + clamp[k].unit);
+	}
+	struct raster_cmd c[1 + 5 * N];
+	memset(c, 0, sizeof c);
+	c[0] = clear_cmd(0xFF203040u, 1);
+	unsigned n = 1;
+	for (unsigned k = 0; k < N; k++)
+		for (int constant = 0; constant < 2; constant++) {
+			float x = 2 + 16 * (float)constant, y = 2 + 9 * (float)k;
+			struct raster_vertex v[4] = { vertex(x, y, 0, 1, 1, 1), vertex(x + 12, y, 0, 1, 1, 1),
+						      vertex(x + 12, y + 7, 0, 1, 1, 1), vertex(x, y + 7, 0, 1, 1, 1) };
+			for (int q = 0; q < 4; q++)
+				for (unsigned u = 0; u < 2; u++) {
+					v[q].tex[u][0] = constant ? 0.3f : q == 1 || q == 2 ? 1.0f : 0.0f;
+					v[q].tex[u][1] = constant ? 0.6f : q >= 2 ? 7.0f / 12 : 0.0f;
+					v[q].tex[u][2] = 1;
+				}
+			c[n++] = tri_cmd(k, v[0], v[1], v[2], true);
+			c[n++] = tri_cmd(k, v[0], v[2], v[3], true);
+			if (constant) {
+				c[n].kind = RASTER_CMD_POINT;
+				c[n].state = k;
+				c[n].textured = true;
+				c[n].v[0] = vertex(40.5f, y + 3.5f, 0, 1, 1, 1);
+				c[n].v[0].tex[0][2] = c[n].v[0].tex[1][2] = 1;
+				n++;
+			}
+		}
+	for (unsigned k = 0; k < N; k++)
+		s[k].width = 3;
+	both(g, s, c, n);
+	if (getenv("BLUE_GPU_DEBUG"))
+		printf("gpu: LOD ranges: %u pixels differ\n", differing(0));
+	CHECK_EQ(differing(0), 0);
+	unsigned seen = 0;
+	for (unsigned k = 0; k < W * H; k++)
+		for (unsigned l = 0; l < 6; l++)
+			seen |= cpu_color[k] == colors[l] ? 1u << l : 0;
+	CHECK(seen == 0x2B);                    /* (levels 0, 1, 3 and 5) */
+}
+
 /* A failed job: everything after it is refused, and freeing still works */
 static void test_failure(void)
 {
@@ -778,6 +860,7 @@ void test_gpu(void)
 	test_pipeline(g);
 	test_gl(g);
 	test_lod_bias(g);
+	test_lod_range(g);
 	CHECK(!gpu_failed(g));
 	gpu_close(g);
 	test_failure();

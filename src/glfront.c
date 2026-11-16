@@ -741,6 +741,33 @@ static void env_stage(struct raster_stage *s, unsigned unit, uint32_t mode, uint
 		s->constant[k + 1] = color[k];
 }
 
+/* GL_EXT_texture_env_combine's: the stage as the unit's functions, sources, operands and scales have it */
+static void combine_stage(struct raster_stage *s, unsigned unit, const struct gl_combine *cb, const float color[4])
+{
+	memset(s, 0, sizeof *s);
+	for (int g = 0; g < 2; g++) {
+		uint32_t f = cb->function[g];
+		s->op[g] = f == GL_REPLACE ? RASTER_OP_REPLACE : f == GL_ADD ? RASTER_OP_ADD :
+			   f == GL_ADD_SIGNED_EXT ? RASTER_OP_ADD_SIGNED : f == GL_INTERPOLATE_EXT ? RASTER_OP_INTERPOLATE :
+			   RASTER_OP_MODULATE;
+		for (int k = 0; k < 3; k++) {
+			uint32_t src = cb->source[g][k], op = cb->operand[g][k];
+			unsigned a = src == GL_TEXTURE ? RASTER_TEXTURE0 + unit : src == GL_CONSTANT_EXT ? RASTER_CONSTANT :
+				     src == GL_PRIMARY_COLOR_EXT ? RASTER_COLOR0 : RASTER_PREVIOUS;
+			if (op == GL_SRC_ALPHA || op == GL_ONE_MINUS_SRC_ALPHA)
+				a |= RASTER_ALPHA;
+			if (op == GL_ONE_MINUS_SRC_COLOR || op == GL_ONE_MINUS_SRC_ALPHA)
+				a |= RASTER_INVERT;
+			s->arg[g][k] = (uint8_t)a;
+		}
+		s->shift[g] = cb->scale[g] == 4 ? 2 : cb->scale[g] == 2 ? 1 : 0;
+		s->clamp[g] = true;
+	}
+	s->constant[0] = color[3];
+	for (int k = 0; k < 3; k++)
+		s->constant[k + 1] = color[k];
+}
+
 /* The texture a unit would draw with (enabled and bound; complete or not) */
 static const struct gl_texture *unit_candidate(const struct gl_state *st, unsigned unit)
 {
@@ -782,11 +809,20 @@ static void textures(struct gl_state *st, struct raster_state *s)
 		r->clamp_s = t->wrap_s != GL_REPEAT;           /* (GL_CLAMP as GL_CLAMP_TO_EDGE: see glfront.h) */
 		r->clamp_t = t->wrap_t != GL_REPEAT;
 		r->clamp_r = t->wrap_r != GL_REPEAT;
-		float bias = st->units[u].lod_bias;
-		r->lod_bias = bias < -GLF_MAX_LOD_BIAS ? -GLF_MAX_LOD_BIAS : bias > GLF_MAX_LOD_BIAS ? GLF_MAX_LOD_BIAS :
-			      bias == bias ? bias : 0;
-		env_stage(&s->stage[n++], u, st->units[u].env_mode, t->level[t->base_level].base,
-			  st->units[u].env_color);
+		struct raster_lod *l = &s->lod[u];
+		float bias = st->lod_bias[u];
+		l->bias = bias < -GLF_MAX_LOD_BIAS ? -GLF_MAX_LOD_BIAS : bias > GLF_MAX_LOD_BIAS ? GLF_MAX_LOD_BIAS :
+			  bias == bias ? bias : 0;
+		if (t->min_lod > -1000 || t->max_lod < 1000) {         /* (GL_TEXTURE_MIN_LOD's, _MAX_LOD's: not as at first) */
+			l->clamped = true;
+			l->min = t->min_lod;
+			l->max = t->max_lod;
+		}
+		if (st->units[u].env_mode == GL_COMBINE_EXT)
+			combine_stage(&s->stage[n++], u, &st->combine[u], st->units[u].env_color);
+		else
+			env_stage(&s->stage[n++], u, st->units[u].env_mode, t->level[t->base_level].base,
+				  st->units[u].env_color);
 	}
 	s->stages = n;
 	st->textured = n > 0;

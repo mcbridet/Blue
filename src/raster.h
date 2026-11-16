@@ -87,7 +87,17 @@ struct raster_unit {
 	bool clamp_s, clamp_t, clamp_r;         /* to the edge texels (else repeating) */
 	bool projective;                        /* coordinates divided by the unit's q/w (else by 1/w: q is 1) */
 	float anisotropy;                       /* the most the GPU may use, where it has some (1 or 0: none) */
-	float lod_bias;                         /* added to triangles' and lines' levels of detail */
+};
+
+/*
+ * A unit's level of detail's bias, added to triangles' and lines', then
+ * (if clamped) its least and most (in raster_state's last part: the state
+ * drawn by each pixel keeps its place, where the host's loads reach it)
+ */
+struct raster_lod {
+	float bias;
+	bool clamped;
+	float min, max;
 };
 
 /*
@@ -170,6 +180,7 @@ struct raster_state {
 	 */
 	bool polygon_stippled;
 	uint32_t polygon_stipple[32];
+	struct raster_lod lod[RASTER_UNITS];
 };
 
 /* RAVE's texture operations (see raster_rave_stages()) */

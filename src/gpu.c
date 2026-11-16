@@ -280,6 +280,7 @@ struct gpu {
 	unsigned nprograms, last_program;
 	GLuint vao, vbo;
 	GLuint sampler[6][2][8][5];     /* by min and mag filter, clamping (s * 4 + t * 2 + r), anisotropy (1 << k) */
+	GLuint lod_sampler[RASTER_UNITS];       /* (each unit's with its own least and most level of detail) */
 	GLuint bitmap_sampler;
 	GLuint blank;                   /* (bound when drawing without a texture: drivers want one) */
 	GLenum blend_eq;                /* as last set (changing them costs, on some drivers) */
@@ -485,7 +486,7 @@ static void key_of(const struct raster_state *s, const struct range *r, struct p
 	for (unsigned u = 0; u < RASTER_UNITS; u++) {
 		k->projective |= (uint8_t)(k->units >> u & 1 && s->unit[u].projective ? 1u << u : 0);
 		k->volume |= (uint8_t)(k->units >> u & 1 && s->unit[u].texture->depth[0] ? 1u << u : 0);
-		k->lod_bias |= (uint8_t)(k->units >> u & 1 && s->unit[u].lod_bias != 0);
+		k->lod_bias |= (uint8_t)(k->units >> u & 1 && s->lod[u].bias != 0);
 	}
 	k->stages = (uint8_t)(s->stages < RASTER_STAGES ? s->stages : RASTER_STAGES);
 	for (unsigned j = 0; j < k->stages; j++) {
@@ -518,9 +519,10 @@ static bool has_extension(struct gpu *g, const char *name)
 /*
  * A unit's sampler: its filters and clamping, and as much anisotropic
  * filtering as it allows, where there's some (made the first time it's
- * needed). The GPU picks mipmap levels per pixel.
+ * needed); with a least or most level of detail, the unit's own, set each
+ * time (that's seldom). The GPU picks mipmap levels per pixel.
  */
-static GLuint sampler_of(struct gpu *g, const struct raster_unit *u)
+static GLuint sampler_of(struct gpu *g, const struct raster_unit *u, const struct raster_lod *l, unsigned unit)
 {
 	static const GLint filter[6] = { GL_NEAREST, GL_LINEAR, GL_NEAREST_MIPMAP_NEAREST, GL_LINEAR_MIPMAP_NEAREST,
 					 GL_NEAREST_MIPMAP_LINEAR, GL_LINEAR_MIPMAP_LINEAR };
@@ -530,18 +532,23 @@ static GLuint sampler_of(struct gpu *g, const struct raster_unit *u)
 	unsigned aniso = 0;
 	while (aniso < 4 && most >= (float)(2u << aniso))
 		aniso++;
-	GLuint *s = &g->sampler[min][mag][clamp][aniso];
-	if (*s)
+	GLuint *s = l->clamped && unit < RASTER_UNITS ? &g->lod_sampler[unit] : &g->sampler[min][mag][clamp][aniso];
+	if (*s && !l->clamped)
 		return *s;
 	struct gl *gl = &g->gl;
-	gl->GenSamplers(1, s);
+	if (!*s)
+		gl->GenSamplers(1, s);
 	gl->SamplerParameteri(*s, GL_TEXTURE_MIN_FILTER, filter[min]);
 	gl->SamplerParameteri(*s, GL_TEXTURE_MAG_FILTER, filter[mag]);
 	gl->SamplerParameteri(*s, GL_TEXTURE_WRAP_S, clamp & 4 ? GL_CLAMP_TO_EDGE : GL_REPEAT);
 	gl->SamplerParameteri(*s, GL_TEXTURE_WRAP_T, clamp & 2 ? GL_CLAMP_TO_EDGE : GL_REPEAT);
 	gl->SamplerParameteri(*s, GL_TEXTURE_WRAP_R, clamp & 1 ? GL_CLAMP_TO_EDGE : GL_REPEAT);
-	if (aniso)
+	if (aniso || (l->clamped && g->anisotropy >= 1))
 		gl->SamplerParameterf(*s, GL_TEXTURE_MAX_ANISOTROPY, (float)(1u << aniso));
+	if (l->clamped) {
+		gl->SamplerParameterf(*s, GL_TEXTURE_MIN_LOD, l->min);
+		gl->SamplerParameterf(*s, GL_TEXTURE_MAX_LOD, l->max);
+	}
 	return *s;
 }
 
@@ -978,7 +985,7 @@ static bool set_state(struct gpu *g, const struct gpu_target *t, const struct ra
 	if (key.stipple)
 		gl->Uniform1uiv(p->stipple, 32, s->polygon_stipple);
 	if (key.lod_bias)
-		gl->Uniform2f(p->lod_bias, s->unit[0].lod_bias, s->unit[1].lod_bias);
+		gl->Uniform2f(p->lod_bias, s->lod[0].bias, s->lod[1].bias);
 	unsigned units = key.units;
 	if (key.stages && p->constant >= 0) {
 		GLfloat constant[RASTER_STAGES * 4];
@@ -1000,7 +1007,7 @@ static bool set_state(struct gpu *g, const struct gpu_target *t, const struct ra
 		gl->ActiveTexture(GL_TEXTURE0 + k);
 		if (units >> k & 1) {
 			gl->BindTexture(key.volume >> k & 1 ? GL_TEXTURE_3D : GL_TEXTURE_2D, texture_of(g, s->unit[k].texture));
-			gl->BindSampler(k, sampler_of(g, &s->unit[k]));
+			gl->BindSampler(k, sampler_of(g, &s->unit[k], &s->lod[k], k));
 		} else if (k == 0 && image) {
 			gl->BindTexture(GL_TEXTURE_2D, texture_of(g, image));
 			gl->BindSampler(k, g->bitmap_sampler);
@@ -1406,6 +1413,9 @@ static void cleanup(struct gpu *g)
 		for (GLuint *s = &g->sampler[0][0][0][0]; s < &g->sampler[0][0][0][0] + sizeof g->sampler / sizeof *s; s++)
 			if (*s)
 				gl->DeleteSamplers(1, s);
+		for (unsigned k = 0; k < RASTER_UNITS; k++)
+			if (g->lod_sampler[k])
+				gl->DeleteSamplers(1, &g->lod_sampler[k]);
 		if (g->bitmap_sampler)
 			gl->DeleteSamplers(1, &g->bitmap_sampler);
 		if (g->blank)

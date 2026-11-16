@@ -59,6 +59,11 @@ enum { GL_TEXTURE0_ARB = 0x84C0 };
 enum { GL_TEXTURE_ENV_MODE = 0x2200, GL_TEXTURE_ENV_COLOR = 0x2201, GL_TEXTURE_ENV = 0x2300 };
 /* GL_EXT_texture_lod_bias's */
 enum { GL_TEXTURE_FILTER_CONTROL_EXT = 0x8500, GL_TEXTURE_LOD_BIAS_EXT = 0x8501, GL_MAX_TEXTURE_LOD_BIAS_EXT = 0x84FD };
+/* GL_EXT_texture_env_combine's */
+enum { GL_COMBINE_EXT = 0x8570, GL_COMBINE_RGB_EXT, GL_COMBINE_ALPHA_EXT, GL_RGB_SCALE_EXT, GL_ADD_SIGNED_EXT,
+       GL_INTERPOLATE_EXT, GL_CONSTANT_EXT, GL_PRIMARY_COLOR_EXT, GL_PREVIOUS_EXT, GL_SOURCE0_RGB_EXT = 0x8580,
+       GL_SOURCE0_ALPHA_EXT = 0x8588, GL_OPERAND0_RGB_EXT = 0x8590, GL_OPERAND0_ALPHA_EXT = 0x8598,
+       GL_ALPHA_SCALE = 0x0D1C };
 enum { GL_MODULATE = 0x2100, GL_DECAL = 0x2101, GL_ADD = 0x0104, GL_REPLACE = 0x1E01 };   /* (and GL_BLEND) */
 enum { GL_TEXTURE_MAG_FILTER = 0x2800, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T };
 enum { GL_NEAREST = 0x2600, GL_LINEAR, GL_NEAREST_MIPMAP_NEAREST = 0x2700, GL_LINEAR_MIPMAP_NEAREST,
@@ -200,12 +205,20 @@ struct gl_pixel_store {
 	int32_t image_height, skip_images;      /* (3D images') */
 };
 
-/* A texture unit's */
+/*
+ * A texture unit's GL_COMBINE_EXT (GL_EXT_texture_env_combine's): for r, g
+ * and b [0] and for a [1], the function, its sources and operands, the scale
+ */
+struct gl_combine {
+	uint32_t function[2], source[2][3], operand[2][3];
+	float scale[2];
+};
+
+/* A texture unit's (and, at gl_state's end, its gl_combine and LOD bias) */
 struct gl_unit {
 	struct gl_texture *bound[GLF_TARGETS];
 	uint32_t env_mode;
 	float env_color[4];                     /* r, g, b, a */
-	float lod_bias;                         /* (GL_TEXTURE_LOD_BIAS_EXT as given: clamped where it's used) */
 };
 
 /* Lighting (gllight.c): a light, in eye coordinates as it was given; a face's material */
@@ -403,6 +416,13 @@ struct gl_state {
 	struct gl_eval *eval;
 	int32_t grid1_n, grid2_n[2];
 	float grid1[2], grid2[4];
+	/*
+	 * each texture unit's GL_COMBINE_EXT and GL_TEXTURE_LOD_BIAS_EXT (as
+	 * given: clamped where it's used); last, so that what's drawn by on every
+	 * vertex is where it was (the host's loads reach so far from the start)
+	 */
+	struct gl_combine combine[GLF_TEXTURE_UNITS];
+	float lod_bias[GLF_TEXTURE_UNITS];
 };
 
 /* Where a context's drawing goes: its buffers (NULL: nowhere), their size, the pixel format's bits */

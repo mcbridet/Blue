@@ -133,6 +133,8 @@ typedef struct __GLsync *GLsync;
 #define GL_TEXTURE_BASE_LEVEL 0x813C
 #define GL_TEXTURE_MAX_LEVEL 0x813D
 #define GL_TEXTURE_MAX_ANISOTROPY 0x84FE       /* (GL_EXT_texture_filter_anisotropic) */
+#define GL_TEXTURE_MIN_LOD 0x813A
+#define GL_TEXTURE_MAX_LOD 0x813B
 #define GL_NEAREST 0x2600
 #define GL_LINEAR 0x2601
 #define GL_NEAREST_MIPMAP_NEAREST 0x2700
