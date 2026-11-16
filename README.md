@@ -16,6 +16,7 @@
   <a href="https://github.com/mcbridet/Blue/releases/latest">Download</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="#how-it-works">How it works</a> ·
+  <a href="#license">License</a> ·
   <a href="#documentation">Documentation</a>
 </p>
 
@@ -24,6 +25,7 @@
   <a href="https://github.com/mcbridet/Blue/releases/latest"><img src="https://img.shields.io/github/v/release/mcbridet/Blue?color=0095b6&label=release" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/runs_on-macOS_%7C_Linux-0095b6" alt="Runs on macOS and Linux">
   <img src="https://img.shields.io/badge/CPU-AArch64_%7C_x86--64-0095b6" alt="AArch64 and x86-64">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--2.0--only-0095b6" alt="License: GPL-2.0-only"></a>
 </p>
 
 <p align="center">
@@ -92,6 +94,15 @@ PPC apps, Toolbox, drivers    → Blue's user-mode PowerPC JIT and interpreter
 Native kernel + an iMac's devices + drivers + loader   ← Blue, portable C
 macOS and Linux hosts, AArch64 and x86-64
 ```
+
+## License
+
+Blue is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License, version 2 only (GPL-2.0-only), as
+published by the Free Software Foundation. It comes with no warranty: see
+[LICENSE](LICENSE). The code it includes or bundles from others, and their
+licences, are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+Blue includes no Apple software, and isn't affiliated with Apple.
 
 ## Documentation
 
