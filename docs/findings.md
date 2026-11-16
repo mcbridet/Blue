@@ -2595,3 +2595,40 @@ made to start up.
   terminal, and (but with `--headless`) over a black screen in a 640 x
   480 window at the display's own scale, with Copy Command (the Pippin's)
   and Quit; exit status 1.
+- **AppleCD Player and two CD-ROM drives** (CD images): the AppleCD
+  Player in the 8.5 CD's CD Extras opens `.AppleCD` by name, so with two
+  CD-ROM drives it sees only the first (each drive's driver is named
+  `.AppleCD`); it plays an audio CD by itself as soon as it opens. To hear
+  a test CD with the 8.5 CD as the startup disk, the test CD goes first on
+  the command line: 8.5's Start Manager still starts from the 8.5 CD, the
+  first drive with a System Folder. On the 8.5 CD's System an ISO 9660 data
+  track isn't mounted (it has no ISO 9660 File Access): Mac OS offers to
+  initialize it.
+- **What other tools make of CD images** (CD images): MAME's chdman (0.289)
+  stores a CD's audio big-endian (Nero, Alcohol and CloneCD images keep it
+  little-endian, as a `.bin` does); it drops a cue sheet's last sector if
+  the file ends partway through it, so its CHD is a sector shorter than the
+  cue sheet. Its Nero reader takes each track's offset in the file as the
+  sum of the earlier tracks' bytes from index 1, leaving out pregaps the
+  file holds, so audio after a track with a stored pregap goes in shifted
+  (the table of contents is right); Blue reads `DAOX`'s offsets as given.
+  Nero images from MAME's tests have mode code 0 with 2352-byte sectors, so
+  Blue takes a track's kind from the code and its sector size from the
+  block. ffmpeg's own Vorbis encoder (this ffmpeg has no libvorbis) loses
+  the right channel of a 660 Hz tone almost entirely (stb_vorbis and
+  ffmpeg decode it alike), and its last granule leaves 24 to 40 frames of
+  padding; libmp3lame's MP3s are as long as their LAME header says, a few
+  dozen frames more than the source: so a lossy rip's track can be a
+  sector longer than the CD's.
+- **What macOS makes and calls corrupt** (compressed images): `hdiutil`'s
+  ULMO chunks are xz streams of LZMA2 alone, without a check; UDCO's are
+  ADC; UDZO's zlib with a header; ULFO's LZFSE with `bvx2`/`bvxn` blocks.
+  Its `-layout` default for a folder is a GUID partition table, whose HFS+
+  partition Mac OS 8.5 to 9 reads but not the table (Blue gives each such
+  partition a drive). An early UDIF made as Disk Copy 6.3 made them (the
+  block table in `blkx` resources after the data, each partition's
+  offsets from its own data offset) is "corrupt" to `hdiutil imageinfo`,
+  and 7-Zip lists it but takes the offsets as the data fork's; Blue's
+  reading of it is checked against the image it was made from. macOS 27
+  keeps a file's resource fork in its `com.apple.ResourceFork` attribute,
+  and `NAME/..namedfork/rsrc` reads it (an NDIF image's `bcem` resource).
