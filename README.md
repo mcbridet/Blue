@@ -647,10 +647,9 @@ which also lists the `BLUE_*` environment variables.
 | 9.1 | Yes | |
 | 9.2 to 9.2.2 | Yes | |
 
-Each starts up from its CD and installs onto a disk image. Blue's machine
-is an original iMac, which covers Mac OS from 8.5 to 9.2.2. Earlier
-versions aren't supported, and Mac OS X, which has no NanoKernel, can't
-run on Blue.
+Blue's machine is an original iMac, which covers Mac OS from 8.5 to
+9.2.2. Earlier versions aren't supported, and Mac OS X, which has no
+NanoKernel, can't run on Blue.
 
 ### Your computer
 
