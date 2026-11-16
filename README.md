@@ -103,7 +103,7 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **Disk images** | Dropped on the window or inserted from the menu: CD images in most formats, compressed `.dmg` and Disk Copy images, floppies | Uncompressed images, and one at a time dropped in as a CD | Raw and QEMU's own formats, changed from a menu | Mac OS X's |
 | **A shared folder** | A folder of yours as a disk, its changes written back when Mac OS shuts down | A folder as a live disk, though programs can't run from it | Separate experimental drivers | Mac OS X's disks, directly |
 | **Connections into the Mac** | Not yet | Through port forwarding | Through port forwarding | — |
-| **AppleTalk** | Not yet | With extra setup, on some hosts | Through bridged networking, run as root | Through Mac OS X's network |
+| **Networking** | TCP/IP through its NAT | TCP/IP through its NAT; AppleTalk with extra setup, on some hosts | TCP/IP through its NAT; AppleTalk through bridged networking, run as root | Mac OS X's, AppleTalk included |
 | **USB devices** | Not yet | No | Passed through from the host | Through Mac OS X |
 | **Game controllers** | Not yet | No | A USB gamepad, passed through | Unreliable |
 | **Pippin titles** | Yes | No | No | No |
