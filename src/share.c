@@ -78,6 +78,8 @@ struct share {
 	int overlay;
 	uint64_t *written;              /* a bit per sector written to the overlay */
 	uint64_t written_sectors;
+	bool written_back;              /* what Mac OS changed is in the folder (until the volume is made again) */
+	bool gone;                      /* there's no volume: it couldn't be made again */
 	bool log;
 	struct disk_backend disk;
 };
@@ -402,6 +404,33 @@ static size_t mac_name(const char *name, uint8_t *out, size_t max)
 	return n < max ? n : max;
 }
 
+/*
+ * Whether a folder's entry goes on the volume (`st` filled in): 1; 0 if
+ * it's left out without a word (dot files, AppleDouble folders, other
+ * kinds of files); -1 if it's left out, `why` saying why.
+ */
+static int eligible(const char *dir_path, const char *name, unsigned depth, struct stat *st, const char **why)
+{
+	char path[PATH_MAX];
+	*why = NULL;
+	if (name[0] == '.' || !strcmp(name, "__MACOSX"))
+		return 0;
+	if (snprintf(path, sizeof path, "%s/%s", dir_path, name) >= (int)sizeof path || lstat(path, st))
+		return 0;
+	if (S_ISLNK(st->st_mode))
+		*why = stat(path, st) ? "a symbolic link to nothing" : S_ISDIR(st->st_mode) ? "a symbolic link to a folder" :
+										 NULL;
+	if (!*why && !S_ISDIR(st->st_mode) && !S_ISREG(st->st_mode))
+		return 0;
+	if (!*why && S_ISREG(st->st_mode) && (uint64_t)st->st_size > HFS_MAX_FORK)
+		*why = "over 2 GB, too big for HFS";
+	if (!*why && access(path, S_ISDIR(st->st_mode) ? R_OK | X_OK : R_OK))
+		*why = "can't be read";
+	if (!*why && S_ISDIR(st->st_mode) && depth >= MAX_DEPTH)
+		*why = "folders nested too deep";
+	return *why ? -1 : 1;
+}
+
 /* Adds what's in folder k: its files and folders, in the catalog's order */
 static void scan_folder(struct share *s, unsigned k, unsigned depth)
 {
@@ -417,25 +446,12 @@ static void scan_folder(struct share *s, unsigned k, unsigned depth)
 	size_t n = 0, cap = 0;
 	struct dirent *de;
 	while ((de = readdir(dir))) {
-		const char *name = de->d_name;
+		const char *name = de->d_name, *why;
 		struct stat st;
-		if (name[0] == '.' || !strcmp(name, "__MACOSX"))
+		int ok = eligible(dir_path, name, depth, &st, &why);
+		if (!ok)
 			continue;
-		if (snprintf(path, sizeof path, "%s/%s", dir_path, name) >= (int)sizeof path || lstat(path, &st))
-			continue;
-		const char *why = NULL;
-		if (S_ISLNK(st.st_mode))
-			why = stat(path, &st) ? "a symbolic link to nothing" :
-			      S_ISDIR(st.st_mode) ? "a symbolic link to a folder" : NULL;
-		if (!why && !S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode))
-			continue;
-		if (!why && S_ISREG(st.st_mode) && (uint64_t)st.st_size > HFS_MAX_FORK)
-			why = "over 2 GB, too big for HFS";
-		if (!why && access(path, S_ISDIR(st.st_mode) ? R_OK | X_OK : R_OK))
-			why = "can't be read";
-		if (!why && S_ISDIR(st.st_mode) && depth >= MAX_DEPTH)
-			why = "folders nested too deep";
-		if (!why && n >= MAX_ITEMS)
+		if (ok > 0 && n >= MAX_ITEMS)
 			why = "more than 65535 items in the folder";
 		if (why) {
 			char rel[PATH_MAX];
@@ -518,6 +534,8 @@ static int scan(struct share *s, const struct stat *st)
 		e->name[1] = '_';
 	e->folder = true;
 	host_dates(s, e, st);           /* (the volume's too: created when the folder was, on macOS) */
+	s->items[0].ino = st->st_ino;
+	s->items[0].mtime_ns = mtime_ns(st);
 	hfs_to_utf8(e->name + 1, e->name[0], s->volume, sizeof s->volume);
 	s->next_id = HFS_FIRST_ID;
 	for (unsigned k = 0; k < s->n; k++)
@@ -708,6 +726,52 @@ static int share_write(void *ctx, const void *buf, size_t len, uint64_t at)
 	return 0;
 }
 
+/* The volume from the folder (`st`, its stat): its metadata, and where its forks are; Mac OS has written nothing */
+static int make(struct share *s, const struct stat *st)
+{
+	if (scan(s, st) || build(s))
+		return -1;
+	if (!(s->written = calloc((s->layout.size / SECTOR + 63) / 64, 8)))
+		return -1;
+	s->disk = (struct disk_backend){ s->dir, s, s->layout.size, share_read, share_write };
+	return 0;
+}
+
+/* What the volume was made of goes (the overlay's file stays) */
+static void unmake(struct share *s)
+{
+	for (unsigned k = 0; k < OPEN_FILES; k++) {
+		if (s->open[k].fd >= 0)
+			close(s->open[k].fd);
+		s->open[k].fd = -1;
+	}
+	for (unsigned k = 0; k < s->n; k++) {
+		free(s->items[k].path);
+		free(s->items[k].ad_path);
+	}
+	hfs_layout_free(&s->layout);
+	free(s->items);
+	free(s->entries);
+	free(s->spans);
+	free(s->written);
+	s->items = NULL;
+	s->entries = NULL;
+	s->spans = NULL;
+	s->written = NULL;
+	s->n = s->cap = s->nspans = s->next_open = s->skipped = 0;
+	s->written_sectors = 0;
+}
+
+/* Says what the volume holds */
+static void say_made(const struct share *s, const char *how)
+{
+	unsigned files = 0;
+	for (unsigned k = 1; k < s->n; k++)
+		files += !s->entries[k].folder;
+	printf("share: %s as \"%s\"%s: %u files, %u folders, %llu MB free\n", s->dir, s->volume, how, files,
+	       s->n - 1 - files, (unsigned long long)((uint64_t)s->layout.free_blocks * s->layout.block_size >> 20));
+}
+
 struct share *share_open(const char *dir, int64_t start)
 {
 	struct share *s = calloc(1, sizeof *s);
@@ -724,25 +788,19 @@ struct share *share_open(const char *dir, int64_t start)
 		fprintf(stderr, "share: %s: %s\n", dir, errno ? strerror(errno) : "not a folder");
 		goto fail;
 	}
-	if (!(s->dir = strdup(real)) || scan(s, &st) || build(s))
-		goto fail;
-
 	const char *tmp = getenv("TMPDIR");
 	char overlay[PATH_MAX];
 	snprintf(overlay, sizeof overlay, "%s/blue-share-XXXXXX", tmp && tmp[0] ? tmp : "/tmp");
-	s->overlay = mkstemp(overlay);
-	uint64_t sectors = s->layout.size / SECTOR;
-	if (s->overlay < 0 || unlink(overlay) || !(s->written = calloc((sectors + 63) / 64, 8))) {
+	if (!(s->dir = strdup(real)))
+		goto fail;
+	if ((s->overlay = mkstemp(overlay)) < 0 || unlink(overlay)) {
 		fprintf(stderr, "share: no room for Mac OS's changes in %s\n", tmp && tmp[0] ? tmp : "/tmp");
 		goto fail;
 	}
-	s->disk = (struct disk_backend){ s->dir, s, s->layout.size, share_read, share_write };
+	if (make(s, &st))
+		goto fail;
 	s->log = getenv("BLUE_LOG_SHARE") != NULL;
-	unsigned files = 0;
-	for (unsigned k = 1; k < s->n; k++)
-		files += !s->entries[k].folder;
-	printf("share: %s as \"%s\": %u files, %u folders, %llu MB free\n", s->dir, s->volume, files, s->n - 1 - files,
-	       (unsigned long long)((uint64_t)s->layout.free_blocks * s->layout.block_size >> 20));
+	say_made(s, "");
 	return s;
 fail:
 	share_close(s);
@@ -751,7 +809,147 @@ fail:
 
 const struct disk_backend *share_disk(struct share *s)
 {
-	return &s->disk;
+	return s->gone ? NULL : &s->disk;
+}
+
+const char *share_name(const struct share *s)
+{
+	return s->volume;
+}
+
+const char *share_folder(const struct share *s)
+{
+	return s->dir;
+}
+
+bool share_put_away(struct share *s)
+{
+	uint8_t mdb[SECTOR];
+	return !s->gone && s->written && written(s, 1024 / SECTOR) && !share_read(s, mdb, SECTOR, 1024) &&
+	       (be16(mdb + 10) & HFS_UNMOUNTED);
+}
+
+int share_rebuild(struct share *s, int64_t start)
+{
+	struct stat st;
+	unmake(s);
+	s->written_back = false;
+	s->gone = true;
+	s->clock = hfs_mac_time(start ? start : (int64_t)time(NULL));
+	errno = 0;
+	if (stat(s->dir, &st) || !S_ISDIR(st.st_mode)) {
+		printf("share: %s: %s: \"%s\" isn't offered again\n", s->dir, errno ? strerror(errno) : "not a folder",
+		       s->volume);
+		return -1;
+	}
+	if (ftruncate(s->overlay, 0) || make(s, &st)) {
+		printf("share: \"%s\" couldn't be made again: it isn't offered again\n", s->volume);
+		unmake(s);
+		return -1;
+	}
+	s->gone = false;
+	say_made(s, " again");
+	return 0;
+}
+
+bool share_host_changed(const struct share *s)
+{
+	struct stat st;
+	if (s->gone)
+		return !stat(s->dir, &st) && S_ISDIR(st.st_mode);
+	unsigned *children = calloc(s->n, sizeof *children);
+	bool changed = !children;
+	for (unsigned k = 1; children && k < s->n; k++)
+		children[s->entries[k].parent]++;
+	for (unsigned k = 0; !changed && k < s->n; k++) {
+		const struct item *it = &s->items[k];
+		char path[PATH_MAX];
+		if (host_path(s, it->path, path, sizeof path) || stat(path, &st) || (uint64_t)st.st_ino != it->ino) {
+			changed = true;
+		} else if (!s->entries[k].folder) {
+			changed = (uint64_t)st.st_size != it->size || mtime_ns(&st) != it->mtime_ns;
+		} else if (mtime_ns(&st) != it->mtime_ns) {
+			/* something in the folder came or went, or was renamed: what Mac OS sees, or only what it doesn't? */
+			DIR *dir = opendir(path);
+			struct dirent *de;
+			unsigned count = 0, depth = 1;
+			for (const char *p = it->path; *p; p++)
+				depth += *p == '/';
+			while (dir && (de = readdir(dir))) {
+				struct stat est;
+				const char *why;
+				count += eligible(path, de->d_name, depth, &est, &why) > 0;
+			}
+			if (dir)
+				closedir(dir);
+			changed = !dir || count != children[k];
+		}
+	}
+	free(children);
+	return changed;
+}
+
+/* ---- the drive's icons ---------------------------------------------------------- */
+
+/* A disk with a folder on it (characters as floppy.c's drawings): the volume's and the drive's */
+static const char *const share32[32] = {
+	"................................",
+	"................................",
+	"................................",
+	"................................",
+	"................................",
+	"................................",
+	"................................",
+	"................................",
+	"................................",
+	"....KKKKKKKKKKKKKKKKKKKKKKKK....",
+	"...KWWWWWWWWWWWWWWWWWWWWWWWLK...",
+	"..KWLLLLLLLLLLLLLLLLLLLLLLLLGK..",
+	".KKKKKKKKKKKKKKKKKKKKKKKKKKKKKK.",
+	".KWWWWWWWWWWWWWWWWWWWWWWWWWWWWK.",
+	".KWLLLLLLLLLLLLLLLLLLLLLLLLLLGK.",
+	".KWLLKKKKLLLLLLLLLLLLLLLLLLLLGK.",
+	".KWLKccccKKKKKLLLLLLLLLLLLLLLGK.",
+	".KWLKcccccccccKLLLLLLLLLLLLLLGK.",
+	".KWLKcccccccccKLLLLLLLLLLLZZLGK.",
+	".KWLKcccccccccKLLLLLLLLLLLLLLGK.",
+	".KWLKKKKKKKKKKKLLLLLLLLLLLLLLGK.",
+	".KWLLLLLLLLLLLLLLLLLLLLLLLLLLGK.",
+	".KGGGGGGGGGGGGGGGGGGGGGGGGGGGGK.",
+	".KKKKKKKKKKKKKKKKKKKKKKKKKKKKKK.",
+	"................................",
+	"................................",
+	"................................",
+	"................................",
+	"................................",
+	"................................",
+	"................................",
+	"................................",
+};
+
+static const char *const share16[16] = {
+	"................",
+	"................",
+	"................",
+	"................",
+	"..KKKKKKKKKKKK..",
+	".KWLLLLLLLLLLGK.",
+	"KKKKKKKKKKKKKKKK",
+	"KWWWWWWWWWWWWWWK",
+	"KWKKKLLLLLLLLLGK",
+	"KWKccKKKLLLLLLGK",
+	"KWKccccKLLLLZZGK",
+	"KWKKKKKKLLLLLLGK",
+	"KGGGGGGGGGGGGGGK",
+	"KKKKKKKKKKKKKKKK",
+	"................",
+	"................",
+};
+
+void share_icons(uint8_t *media_icn, uint8_t *drive_icn, uint8_t *media_icns, uint8_t *drive_icns)
+{
+	floppy_icon_family(share32, share16, media_icn, media_icns);
+	floppy_icon_family(share32, share16, drive_icn, drive_icns);
 }
 
 /* ---- writing back -------------------------------------------------------------- */
@@ -1528,37 +1726,27 @@ static int keep_image(struct sync *y)
 
 static void free_share(struct share *s)
 {
-	for (unsigned k = 0; k < OPEN_FILES; k++)
-		if (s->open[k].fd >= 0)
-			close(s->open[k].fd);
-	for (unsigned k = 0; k < s->n; k++) {
-		free(s->items[k].path);
-		free(s->items[k].ad_path);
-	}
+	unmake(s);
 	if (s->overlay >= 0)
 		close(s->overlay);
-	hfs_layout_free(&s->layout);
-	free(s->items);
-	free(s->entries);
-	free(s->spans);
-	free(s->written);
 	free(s->dir);
 	free(s);
 }
 
-int share_close(struct share *s)
+/*
+ * What Mac OS changed, written back if it put the volume away; otherwise
+ * (`end`: the run's over) kept as an image. Returns 0, or -1 if something
+ * couldn't be written back (it is then in the recovery folder).
+ */
+static int write_back(struct share *s, bool end)
 {
-	if (!s)
-		return 0;
-	if (!s->written || !s->written_sectors) {
-		if (s->written)
+	if (s->gone || !s->written_sectors) {
+		if (!s->gone && end)
 			printf("share: Mac OS didn't change \"%s\"\n", s->volume);
-		free_share(s);
 		return 0;
 	}
 	struct sync y = { .s = s };
-	uint8_t mdb[SECTOR];
-	bool clean = written(s, 1024 / SECTOR) && !share_read(s, mdb, SECTOR, 1024) && (be16(mdb + 10) & HFS_UNMOUNTED);
+	bool clean = share_put_away(s);
 	bool readable = !read_final(&y);
 	int rc = 0;
 	if (readable)
@@ -1596,6 +1784,22 @@ int share_close(struct share *s)
 	free(y.nodes);
 	free(y.by_id);
 	free(y.fate);
+	return rc;
+}
+
+int share_write_back(struct share *s)
+{
+	if (s->written_back || !share_put_away(s))
+		return 0;
+	s->written_back = true;
+	return write_back(s, false);
+}
+
+int share_close(struct share *s)
+{
+	if (!s)
+		return 0;
+	int rc = s->written && !s->written_back ? write_back(s, true) : 0;
 	free_share(s);
 	return rc;
 }

@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 
 #include "dmg.h"
+#include "share.h"
 
 #define FLOPPY_MAX (2880u * 1024)       /* (the biggest floppy's) */
 
@@ -126,4 +127,52 @@ void drives_menu(const struct drives *dr, const char *const *queue, unsigned que
 		size_t n = strlen(out->next);
 		snprintf(out->next + n, sizeof out->next - n, "%s%.60s", k ? ", " : "", file_name(queue[k]));
 	}
+	if (dr->share && dr->folder) {
+		snprintf(out->share, sizeof out->share, "%.63s", share_name(dr->folder));
+		unsigned open = disk_files_open(dr->share);
+		if (open)
+			snprintf(out->share_why_not, sizeof out->share_why_not, "Mac OS has %u file%s open on \"%.63s\": "
+				 "close %s (or quit the programs using %s), then refresh it", open, open == 1 ? "" : "s",
+				 out->share, open == 1 ? "it" : "them", open == 1 ? "it" : "them");
+		out->share_changed = share_host_changed(dr->folder);
+	}
+}
+
+bool drives_share_ejected(struct drives *dr, int64_t now)
+{
+	struct share *s = dr->folder;
+	bool put_away = !disk_volume_held(dr->share) && share_put_away(s);
+	if (!put_away)
+		printf("share: Mac OS ejected \"%s\" without putting it away: nothing was written back, and it goes back "
+		       "in as Mac OS left it\n", share_name(s));
+	else
+		printf("share: Mac OS put \"%s\" away\n", share_name(s));
+	if (put_away)
+		share_write_back(s);
+	if (put_away && share_rebuild(s, now))
+		return true;
+	disk_insert_backend(dr->share, share_disk(s));
+	return put_away;
+}
+
+bool drives_share_remake(struct drives *dr, int64_t now, char *why, size_t len)
+{
+	struct share *s = dr->folder;
+	struct disk *d = dr->share;
+	if (d->media && disk_in_use(d)) {
+		snprintf(why, len, "Mac OS is using \"%.63s\"", share_name(s));
+		return false;
+	}
+	bool put_away = d->media && share_put_away(s);
+	if (d->media && (disk_volume_held(d) || (d->part[0].mounted && !put_away))) {
+		snprintf(why, len, "Mac OS hasn't put \"%.63s\" away", share_name(s));
+		return false;
+	}
+	if (put_away)
+		share_write_back(s);
+	if (d->media)
+		disk_eject(d);
+	if (!share_rebuild(s, now))
+		disk_insert_backend(d, share_disk(s));
+	return true;
 }

@@ -32,10 +32,12 @@
 #include "perf.h"
 #include "ppc_fp.h"
 #include "priv.h"
+#include "putaway.h"
 #include "opengl.h"
 #include "rave.h"
 #include "rtas.h"
 #include "scc.h"
+#include "share.h"
 #include "startup.h"
 #include "tools.h"
 #include "via.h"
@@ -594,6 +596,9 @@ struct machine {
 	char cd_path[NK_MAX_DISKS][1024];               /* ("": nothing) */
 	struct drives drives;                           /* the drives with removable media (see drives.h) */
 	struct disk *menu_drives[UI_DRIVES];            /* (those the menu shows, in its order) */
+	bool share_swap;                /* the shared folder's disk comes and goes (see nk_boot()) */
+	struct putaway putaway;         /* ... Mac OS asked to put it away (see share_refresh()) */
+	bool share_refreshing;          /* ... for Refresh, which offers it again */
 	struct net net;                 /* Ethernet */
 	uint8_t lanlib[4096];
 	uint64_t net_poll_ns;           /* host time the host network was last serviced */
@@ -987,9 +992,11 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	for (unsigned k = 0; k < opt->disks + (opt->share != NULL) && k < NK_MAX_DISKS; k++) {
 		struct disk *d = &m->disk[k];
 		bool swap = k < opt->disks && opt->cdrom[k] && m->cd_swap;
-		if (swap ? disk_open_cdrom(d, &m->mem, m->cd_path[k][0] ? m->cd_path[k] : NULL) :
-		    k < opt->disks ? disk_open(d, &m->mem, opt->disk[k], opt->cdrom[k], opt->cdrom[k]) :
-				     disk_open_backend(d, &m->mem, opt->share))
+		if (k == opt->disks && m->share_swap)
+			disk_open_removable(d, &m->mem, share_disk(opt->share));
+		else if (swap ? disk_open_cdrom(d, &m->mem, m->cd_path[k][0] ? m->cd_path[k] : NULL) :
+			 k < opt->disks ? disk_open(d, &m->mem, opt->disk[k], opt->cdrom[k], opt->cdrom[k]) :
+					  disk_open_backend(d, &m->mem, share_disk(opt->share)))
 			return -1;
 		m->disks = k + 1;
 		d->log = opt->log_hostcalls;
@@ -998,11 +1005,12 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		disk_ndrv_size[k] = disk_build_ndrv(d, m->disk_ndrv[k], sizeof m->disk_ndrv[k],
 						    HOSTCALL_DISK_DRIVER + k);
 		if (d->removable && !d->media)
-			printf("disk %u: a CD-ROM drive, empty\n", k);
+			printf("disk %u: %s, empty\n", k, d->cdrom ? "a CD-ROM drive" : "the shared folder's drive");
 		for (unsigned p = 0; p < d->partitions && (d->media || !d->removable); p++) {
 			printf("disk %u: %s%s, %llu MB at %llu%s%s\n", k, d->path,
-			       d->removable ? " (a CD: read-only, ejectable)" :
-			       d->backend && !d->cdrom && !d->packed ? " (shared folder)" :
+			       d->removable && d->cdrom ? " (a CD: read-only, ejectable)" :
+			       d->backend && !d->cdrom && !d->packed ? (d->removable ? " (shared folder, ejectable)" :
+										" (shared folder)") :
 			       d->read_only ? " (read-only)" : "",
 			       (unsigned long long)(d->part[p].size >> 20),
 			       (unsigned long long)d->part[p].offset, d->part[p].name[0] ? ", partition " : "",
@@ -1047,8 +1055,12 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	}
 	m->drives.floppy = m->has_floppy ? &m->floppy : NULL;
 	for (unsigned k = 0; k < m->disks && m->drives.cds < DRIVES_MAX_CDS; k++)
-		if (m->disk[k].removable)
+		if (m->disk[k].removable && m->disk[k].cdrom)
 			m->drives.cd[m->drives.cds++] = &m->disk[k];
+	if (opt->share && m->share_swap) {
+		m->drives.share = &m->disk[opt->disks];
+		m->drives.folder = opt->share;
+	}
 
 	/*
 	 * NVRAM, before the tree. ROM files with parcels get Open Firmware's
@@ -1694,12 +1706,107 @@ static void floppy_next(struct machine *m)
 	drive_insert(m, path, DRIVES_FLOPPY, NULL);
 }
 
+static void menu_state(struct machine *m);
+
+/*
+ * The shared folder's volume, where its disk comes and goes (share_swap:
+ * see nk_boot()): when Mac OS ejects it, what it changed is written back
+ * and it's offered again, made from the folder as it is then (see
+ * drives_share_ejected()). Refresh (in the menu, and scripts' "share
+ * refresh") asks Mac OS to put it away (putaway.h), unless it has files
+ * open on it; "share eject" asks it even then (Mac OS then refuses).
+ */
+static void share_ejected(struct machine *m)
+{
+	drives_share_ejected(&m->drives, guest_clock_now(&m->clock, NULL));
+	fflush(stdout);
+}
+
+/* What came of Refresh, said (and in the menu, opened again for it, if it was asked for there) */
+static void share_news(struct machine *m, bool menu, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+
+static void share_news(struct machine *m, bool menu, const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(m->menu_status, sizeof m->menu_status, fmt, ap);
+	va_end(ap);
+	printf("share: %s\n", m->menu_status);
+	fflush(stdout);
+	if (menu && m->display && !m->paused && !m->prompting) {
+		m->paused = true;
+		follow_cursor(m, host_ns());
+		menu_state(m);
+		display_menu(m->display, true);
+		printf("paused (F12 resumes)\n");
+	}
+}
+
+/* True if it goes ahead: Mac OS asked to put it away, or (not mounted) the volume made again now */
+static bool share_refresh(struct machine *m, bool refresh, bool menu)
+{
+	struct disk *d = m->drives.share;
+	char why[300];
+	if (!d) {
+		printf("share: there's no shared folder whose disk Mac OS can put away (see --share)\n");
+		return false;
+	}
+	const char *name = share_name(m->drives.folder);
+	if (m->putaway.phase != PUTAWAY_OFF) {
+		share_news(m, menu, "Mac OS is putting \"%s\" away already", name);
+		return false;
+	}
+	if (d->media && disk_in_use(d)) {
+		unsigned open = disk_files_open(d);
+		if (refresh && open) {
+			share_news(m, menu, "Mac OS has %u file%s open on \"%s\": close %s (or quit the programs using "
+				   "%s), then refresh it", open, open == 1 ? "" : "s", name, open == 1 ? "it" : "them",
+				   open == 1 ? "it" : "them");
+			return false;
+		}
+		putaway_ask(&m->putaway, d->part[0].drive_num, m->cpu.tb);
+		m->share_refreshing = menu;
+		printf("share: asking Mac OS to put \"%s\" away\n", name);
+		return true;
+	}
+	if (!refresh) {
+		printf("share: Mac OS hasn't mounted \"%s\": there's nothing to put away\n", name);
+		return false;
+	}
+	if (!drives_share_remake(&m->drives, guest_clock_now(&m->clock, NULL), why, sizeof why)) {
+		share_news(m, menu, "%s", why);
+		return false;
+	}
+	return true;
+}
+
+/* The put-away code has finished (or gave up waiting for Mac OS) */
+static void share_put_away_done(struct machine *m)
+{
+	struct putaway *p = &m->putaway;
+	const char *name = share_name(m->drives.folder);
+	char why[300];
+	bool menu = m->share_refreshing;
+	p->phase = PUTAWAY_OFF;
+	if (!p->ran)
+		share_news(m, menu, "Mac OS didn't put \"%s\" away: %s", name, p->why);
+	else if (!p->unmounted && p->error == PUTAWAY_FILES_OPEN)
+		share_news(m, menu, "Mac OS has files open on \"%s\", so it can't put it away: close them (or quit the "
+			   "programs using them), then refresh it", name);
+	else if (!p->unmounted)
+		share_news(m, menu, "Mac OS couldn't put \"%s\" away (error %d)", name, p->error);
+	else if (p->error && !drives_share_remake(&m->drives, guest_clock_now(&m->clock, NULL), why, sizeof why))
+		share_news(m, menu, "%s", why);         /* (unmounted, but not ejected) */
+}
+
 /* What the menu shows of the drives with removable media */
 static void drives_state(struct machine *m)
 {
 	struct ui_drives dr;
 	drives_menu(&m->drives, m->floppy_queue, m->floppy_queued, &dr, m->menu_drives);
-	display_drives_state(m->display, dr.count ? &dr : NULL);
+	if (m->putaway.phase != PUTAWAY_OFF && dr.share[0])
+		snprintf(dr.share_why_not, sizeof dr.share_why_not, "Mac OS is putting \"%s\" away", dr.share);
+	display_drives_state(m->display, dr.count || dr.share[0] ? &dr : NULL);
 }
 
 /* What the menu shows: whether the mouse will be captured when the guest resumes, and news */
@@ -1873,6 +1980,13 @@ static void menu_action(struct machine *m, enum ui_action action, const char *pa
 			install_answer(&m->install, action == UI_PROMPT_YES ? INSTALL_YES :
 				       action == UI_PROMPT_ALT ? INSTALL_NEVER : INSTALL_NOT_NOW, &m->helper);
 		follow_cursor(m, now);
+		break;
+	case UI_SHARE_REFRESH:          /* (Mac OS puts it away as it runs) */
+		if (share_refresh(m, true, true)) {
+			m->paused = false;
+			display_menu(m->display, false);
+			follow_cursor(m, now);
+		}
 		break;
 	case UI_INSTALL_TOOLS:          /* the offer, now (Don't Ask Again or not) */
 		m->paused = false;
@@ -2227,6 +2341,27 @@ static void display_input(struct machine *m, uint64_t now)
 	}
 }
 
+/* A script's change to the shared folder, as if made on the host: "NAME TEXT", NAME (in the folder) holding TEXT */
+static void share_host_file(struct machine *m, const char *arg)
+{
+	const char *space = strchr(arg, ' ');
+	char path[1400];
+	if (!m->drives.folder || !space || space == arg || strstr(arg, "..") == arg || strstr(arg, "/..")) {
+		fprintf(stderr, "input script: share file NAME TEXT (with a shared folder)\n");
+		return;
+	}
+	snprintf(path, sizeof path, "%s/%.*s", share_folder(m->drives.folder), (int)(space - arg), arg);
+	FILE *f = fopen(path, "w");
+	bool ok = f && fputs(space + 1, f) >= 0;
+	if (f && fclose(f))
+		ok = false;
+	if (ok)
+		printf("share: %s written as if on the host, at instruction %llu\n", path,
+		       (unsigned long long)m->cpu.icount);
+	else
+		fprintf(stderr, "input script: cannot write %s\n", path);
+}
+
 /* Scripted input (for headless runs and tests) */
 struct script_event {
 	uint64_t at;                    /* instruction count, or host ns for a timed script */
@@ -2304,6 +2439,14 @@ static int script_load(struct script *s, const char *path)
 			e.a = sscanf(rest, " insert %255[^\n]", e.arg) == 1 ? 1 : strstr(rest, "eject") ? 2 : 0;
 			for (size_t n = strlen(e.arg); n && (e.arg[n - 1] == ' ' || e.arg[n - 1] == '\r'); n--)
 				e.arg[n - 1] = '\0';
+		} else if (strcmp(e.cmd, "share") == 0) {
+			/* share eject, share refresh; share file NAME TEXT (the rest of the line, as for clipboard) */
+			char what[16] = "";
+			int n = 0;
+			sscanf(rest, " %15s%n", what, &n);
+			e.a = !strcmp(what, "eject") ? 1 : !strcmp(what, "refresh") ? 2 : !strcmp(what, "file") ? 3 : 0;
+			if (e.a == 3)
+				script_text(rest + n, e.arg, sizeof e.arg);
 		} else {
 			sscanf(rest, " %d %d", &e.a, &e.b);
 		}
@@ -2438,6 +2581,13 @@ static void script_run(struct machine *m, struct script *s)
 				cd_eject(m);
 			else
 				fprintf(stderr, "input script: cdrom insert FILE, or cdrom eject\n");
+		} else if (strcmp(e->cmd, "share") == 0) {
+			if (e->a == 1 || e->a == 2)     /* as Mac OS would put it away, or as the menu's Refresh */
+				share_refresh(m, e->a == 2, false);
+			else if (e->a == 3)
+				share_host_file(m, e->arg);
+			else
+				fprintf(stderr, "input script: share eject, share refresh, or share file NAME TEXT\n");
 		} else {
 			fprintf(stderr, "input script: unknown command '%s'\n", e->cmd);
 		}
@@ -3390,16 +3540,26 @@ static void tools_show(struct machine *m)
  */
 static bool tools_idle(struct machine *m, bool at_trap)
 {
-	if (m->install.phase == INSTALL_OFF || m->install.phase == INSTALL_DONE)
-		return false;
-	struct install_idle w = { .mem = &m->mem, .helper = &m->helper, .finder = finder_current(m), .tb = m->cpu.tb,
-				  .tb_hz = TIMEBASE_HZ, .drive = m->disk[m->tools_disk].part[m->tools_part].drive_num,
-				  .trap = at_trap ? m->watched_trap : 0 };
-	for (unsigned k = 0; k < m->disks; k++)
-		w.disk_bytes += m->disk[k].bytes_read + m->disk[k].bytes_written;
-	bool diverted = install_idle(&m->install, &w);
-	tools_show(m);
-	uint16_t trap = m->install.phase == INSTALL_INJECT && !m->synch_idle_seen ? TRAP_IDLE_9 : TRAP_SYNCH_IDLE_TIME;
+	bool diverted = false;
+	bool putting_away = m->putaway.phase == PUTAWAY_INJECTED || m->putaway.phase == PUTAWAY_RUNNING;
+	if (m->install.phase != INSTALL_OFF && m->install.phase != INSTALL_DONE) {
+		struct install_idle w = { .mem = &m->mem, .helper = &m->helper, .finder = finder_current(m),
+					  .tb = m->cpu.tb, .tb_hz = TIMEBASE_HZ,
+					  .drive = m->disk[m->tools_disk].part[m->tools_part].drive_num,
+					  .trap = at_trap && !putting_away ? m->watched_trap : 0 };
+		for (unsigned k = 0; k < m->disks; k++)
+			w.disk_bytes += m->disk[k].bytes_read + m->disk[k].bytes_written;
+		diverted = install_idle(&m->install, &w);
+		tools_show(m);
+	}
+	if (!diverted && m->putaway.phase != PUTAWAY_OFF) {     /* (the shared folder's volume put away: share_refresh()) */
+		diverted = putaway_idle(&m->putaway, &m->mem, at_trap ? m->watched_trap : 0, !install_busy(&m->install),
+					m->cpu.tb, TIMEBASE_HZ);
+		if (m->putaway.phase == PUTAWAY_DONE)
+			share_put_away_done(m);
+	}
+	bool waiting = m->install.phase == INSTALL_INJECT || putaway_waiting(&m->putaway);
+	uint16_t trap = waiting && !m->synch_idle_seen ? TRAP_IDLE_9 : TRAP_SYNCH_IDLE_TIME;
 	if (trap != m->watched_trap)
 		watch_trap(m, trap);
 	return diverted;
@@ -3605,6 +3765,11 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		install_call(&m->install, &c);
 		tools_show(m);
 		break;
+	case HOSTCALL_PUTAWAY:
+		putaway_call(&m->putaway, &c);
+		if (m->putaway.phase == PUTAWAY_DONE)
+			share_put_away_done(m);
+		break;
 	case HOSTCALL_LANLIB:
 		net_call(&m->net, &c);
 		break;
@@ -3619,13 +3784,18 @@ static const char *host_call(struct machine *m, uint32_t selector)
 			floppy_next(m);         /* (Mac OS ejected it) */
 		break;
 	}
-	default:
+	default: {
 		if (selector - HOSTCALL_DISK_DRIVER >= m->disks)
 			return "unknown host call";
 		if (m->transfer_due && cpu->pc == m->transfer_pc && cpu->gpr[1] == m->transfer_sp)
 			return transfer_wait(m);
-		transfer = drive_call(m, &m->disk[selector - HOSTCALL_DISK_DRIVER], &c);
+		struct disk *d = &m->disk[selector - HOSTCALL_DISK_DRIVER];
+		bool had = d->media;
+		transfer = drive_call(m, d, &c);
+		if (had && !d->media && d == m->drives.share)
+			share_ejected(m);       /* (Mac OS ejected it) */
 		break;
+	}
 	}
 
 	if (c.done) {
@@ -4358,6 +4528,7 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	memcpy(m->floppy_queue, old.floppy_queue, sizeof m->floppy_queue);
 	m->floppy_queued = old.floppy_queued;
 	m->cd_swap = old.cd_swap;
+	m->share_swap = old.share_swap;
 	for (unsigned k = 0; k < NK_MAX_DISKS; k++)
 		snprintf(m->cd_path[k], sizeof m->cd_path[k], "%s", !old.disk[k].removable ? old.cd_path[k] :
 			 old.disk[k].media ? old.disk[k].media_path : "");
@@ -4431,6 +4602,14 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 	}
 	for (size_t k = 0; k < script.count; k++)
 		m.cd_swap |= strcmp(script.ev[k].cmd, "cdrom") == 0;
+	/*
+	 * So does the shared folder's (Mac OS puts the volume away, it's written
+	 * back and offered again), for the same reason only where it can: in a
+	 * window or real time, or when the input script has Mac OS put it away.
+	 */
+	m.share_swap = opt->share && (opt->window || opt->realtime);
+	for (size_t k = 0; k < script.count; k++)
+		m.share_swap |= opt->share && strcmp(script.ev[k].cmd, "share") == 0;
 	m.gpu = open_gpu(opt);          /* (getting ready in the background) */
 	if (start_machine(&m, opt))
 		return 1;

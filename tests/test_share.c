@@ -3,10 +3,12 @@
  * made from host folders (read back with hfsread, and with hfsutils if
  * installed), their dates, and Mac OS's changes written back: new,
  * changed, renamed, moved and deleted files, the recovery folder, changes
- * on both sides, and a volume Mac OS didn't put away.
+ * on both sides, and a volume Mac OS didn't put away; written back during
+ * the run and made again, and not written back twice.
  */
 #include <dirent.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -742,6 +744,202 @@ static void test_not_put_away(void)
 	remove_tree(dir);
 }
 
+/* How many write-backs have kept the host's old files (the recovery folder's folders, one each) */
+static unsigned recoveries(const char *dir)
+{
+	char path[1024];
+	unsigned n = 0;
+	snprintf(path, sizeof path, "%s/%s", dir, SHARE_RECOVERY);
+	DIR *d = opendir(path);
+	struct dirent *de;
+	while (d && (de = readdir(d)))
+		n += de->d_name[0] != '.';
+	if (d)
+		closedir(d);
+	return n;
+}
+
+/* Files in the recovery folder's folders, all told */
+static unsigned recovered(const char *dir)
+{
+	char path[1024], sub[1300];
+	unsigned n = 0;
+	snprintf(path, sizeof path, "%s/%s", dir, SHARE_RECOVERY);
+	DIR *d = opendir(path);
+	struct dirent *de;
+	while (d && (de = readdir(d))) {
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(sub, sizeof sub, "%s/%s", path, de->d_name);
+		DIR *e = opendir(sub);
+		struct dirent *f;
+		while (e && (f = readdir(e)))
+			n += f->d_name[0] != '.';
+		if (e)
+			closedir(e);
+	}
+	if (d)
+		closedir(d);
+	return n;
+}
+
+/*
+ * Mac OS puts the volume away during the run: what it changed is written
+ * back then, the volume made again from the folder (with what the host
+ * changed meanwhile) and Mac OS's next changes written back at the end.
+ * Written back once, a volume isn't again (not even at the end, the host
+ * having changed things since), nor one Mac OS hasn't put away.
+ */
+static void test_write_back_again(void)
+{
+	char dir[512];
+	if (temp_dir(dir, sizeof dir)) {
+		CHECK(!"temp_dir");
+		return;
+	}
+	const char *root = strrchr(dir, '/') + 1;
+	put_text(dir, "a.txt", "a");
+	put_text(dir, "b.txt", "b");
+	quiet(true);
+	struct share *s = share_open(dir, 0);
+	quiet(false);
+	CHECK(s != NULL);
+	if (!s) {
+		remove_tree(dir);
+		return;
+	}
+	char real[1024];
+	CHECK(realpath(dir, real) && !strcmp(share_folder(s), real));
+	CHECK(!strcmp(share_name(s), root) && !share_put_away(s));
+	const struct disk_backend *b = share_disk(s);
+	struct hfsread_volume v;
+	struct ids ids = IDS("a.txt", "b.txt");
+	CHECK(hfsread_open_with(&v, b->read, b->ctx, b->size) == 0 && hfsread_walk(&v, find_ids, &ids) == 0);
+	CHECK(!share_host_changed(s));
+
+	/* Mac OS changes a.txt but hasn't put the volume away: nothing is written back */
+	struct fake f[8];
+	unsigned n = 0;
+	entry(f, &n, root, 0, true, 0, NULL, 0, 0, NULL);
+	entry(f, &n, "a.txt", 0, false, id_of(&ids, "a.txt"), "Mac OS's a", TEXT, TTXT, NULL);
+	entry(f, &n, "b.txt", 0, false, id_of(&ids, "b.txt"), "b", TEXT, TTXT, NULL);
+	CHECK(pretend_mac_os(b, f, n, false) == 0);
+	CHECK(!share_put_away(s));
+	quiet(true);
+	CHECK_EQ(share_write_back(s), 0);
+	quiet(false);
+	CHECK(is_text(dir, "a.txt", "a") && !exists(dir, SHARE_RECOVERY));
+
+	/* put away: written back now, the host's old a.txt kept */
+	CHECK(pretend_mac_os(b, f, n, true) == 0);
+	CHECK(share_put_away(s));
+	quiet(true);
+	CHECK_EQ(share_write_back(s), 0);
+	quiet(false);
+	CHECK(is_text(dir, "a.txt", "Mac OS's a"));
+	CHECK_EQ(recovered(dir), 1);
+
+	/* not again: the host changes a.txt meanwhile, and it stays the host's */
+	put_text(dir, "a.txt", "the host's a");
+	quiet(true);
+	CHECK_EQ(share_write_back(s), 0);
+	quiet(false);
+	CHECK(is_text(dir, "a.txt", "the host's a") && !exists(dir, "a (Mac OS).txt"));
+	CHECK_EQ(recovered(dir), 1);
+
+	/* made again, from the folder as it is: the host's new c.txt, its a.txt, Mac OS's nothing yet */
+	put_text(dir, "c.txt", "new on the host");
+	put_text(dir, ".DS_Store", "not Mac OS's");
+	CHECK(share_host_changed(s));
+	quiet(true);
+	CHECK_EQ(share_rebuild(s, 0), 0);
+	quiet(false);
+	CHECK(!share_host_changed(s) && !share_put_away(s));
+	b = share_disk(s);
+	CHECK(b != NULL);
+	if (!b) {
+		share_close(s);
+		remove_tree(dir);
+		return;
+	}
+	struct seen seen = { .ordered = true, .want = { "a.txt", "b.txt", "c.txt" } };
+	CHECK(hfsread_open_with(&v, b->read, b->ctx, b->size) == 0 && hfsread_walk(&v, look, &seen) == 0);
+	CHECK_EQ(seen.files, 3);
+	char buf[64] = { 0 };
+	CHECK(seen.found[0].data.size == 12 && hfsread_read(&v, &seen.found[0].data, 0, buf, 12) == 0 &&
+	      !memcmp(buf, "the host's a", 12));
+	CHECK(seen.found[2].id && seen.found[2].data.size == 15);
+	CHECK(v.attributes & HFS_UNMOUNTED);
+	put_text(dir, ".DS_Store", "still not Mac OS's");
+	CHECK(!share_host_changed(s));                  /* (what Mac OS doesn't see doesn't count) */
+
+	/* Mac OS's changes to the new volume go back at the end */
+	struct ids ids2 = IDS("a.txt", "b.txt", "c.txt");
+	CHECK(hfsread_walk(&v, find_ids, &ids2) == 0);
+	n = 0;
+	entry(f, &n, root, 0, true, 0, NULL, 0, 0, NULL);
+	entry(f, &n, "a.txt", 0, false, id_of(&ids2, "a.txt"), "the host's a", TEXT, TTXT, NULL);
+	entry(f, &n, "b.txt", 0, false, id_of(&ids2, "b.txt"), "Mac OS's b", TEXT, TTXT, NULL);
+	entry(f, &n, "c.txt", 0, false, id_of(&ids2, "c.txt"), "new on the host", TEXT, TTXT, NULL);
+	CHECK(pretend_mac_os(b, f, n, true) == 0);
+	quiet(true);
+	CHECK_EQ(share_close(s), 0);
+	quiet(false);
+	CHECK(is_text(dir, "b.txt", "Mac OS's b") && is_text(dir, "a.txt", "the host's a") &&
+	      is_text(dir, "c.txt", "new on the host"));
+	CHECK_EQ(recovered(dir), 2);
+	CHECK(recoveries(dir) >= 1);
+
+	/* written back during the run, not made again: nothing more at the end */
+	quiet(true);
+	s = share_open(dir, 0);
+	quiet(false);
+	CHECK(s != NULL);
+	if (s) {
+		b = share_disk(s);
+		struct ids ids3 = IDS("a.txt", "b.txt", "c.txt");
+		CHECK(hfsread_open_with(&v, b->read, b->ctx, b->size) == 0 && hfsread_walk(&v, find_ids, &ids3) == 0);
+		n = 0;
+		entry(f, &n, root, 0, true, 0, NULL, 0, 0, NULL);
+		entry(f, &n, "a.txt", 0, false, id_of(&ids3, "a.txt"), "the host's a", TEXT, TTXT, NULL);
+		entry(f, &n, "b.txt", 0, false, id_of(&ids3, "b.txt"), "Mac OS's b", TEXT, TTXT, NULL);
+		CHECK(pretend_mac_os(b, f, n, true) == 0);              /* (c.txt deleted) */
+		quiet(true);
+		CHECK_EQ(share_write_back(s), 0);
+		quiet(false);
+		CHECK(!exists(dir, "c.txt"));
+		unsigned kept = recovered(dir);
+		put_text(dir, "c.txt", "the host's again");
+		quiet(true);
+		CHECK_EQ(share_close(s), 0);
+		quiet(false);
+		CHECK(is_text(dir, "c.txt", "the host's again"));
+		CHECK_EQ(recovered(dir), kept);
+	}
+
+	/* the folder gone: no volume to offer again */
+	quiet(true);
+	s = share_open(dir, 0);
+	quiet(false);
+	CHECK(s != NULL);
+	if (s) {
+		char moved[600];
+		snprintf(moved, sizeof moved, "%s-moved", dir);
+		CHECK(rename(dir, moved) == 0);
+		quiet(true);
+		CHECK_EQ(share_rebuild(s, 0), -1);
+		quiet(false);
+		CHECK(share_disk(s) == NULL && !share_put_away(s) && !share_host_changed(s));
+		CHECK(rename(moved, dir) == 0);
+		CHECK(share_host_changed(s));                   /* (it's back) */
+		quiet(true);
+		CHECK_EQ(share_rebuild(s, 0), 0);
+		CHECK_EQ(share_close(s), 0);
+		quiet(false);
+	}
+	remove_tree(dir);
+}
+
 /* ---- dates ------------------------------------------------------------------------ */
 
 static void set_mtime(const char *dir, const char *rel, time_t t)
@@ -841,4 +1039,5 @@ void test_share(void)
 	test_dates();
 	test_write_back();
 	test_not_put_away();
+	test_write_back_again();
 }

@@ -168,7 +168,6 @@ struct install {
 	uint64_t inject_tb;             /* when the installer first waited for the idle trap */
 	/* the bootstrap */
 	uint32_t trap_entry, trap_routine;      /* the idle trap's entry in the trap table, its own routine */
-	uint32_t fragment_len;
 	struct ndrv_layout layout;
 	/* the installer's progress */
 	uint16_t drive;
@@ -254,5 +253,27 @@ void install_offer(struct install *in);
 
 /* The installer's host call: its main routine, or a resumption after a callout. */
 void install_call(struct install *in, struct ndrv_call *c);
+
+/*
+ * Other code of Blue's runs in Mac OS the same way (putting the shared
+ * folder's volume away: putaway.h): at an idle trap's dispatch (`trap`),
+ * the bootstrap prepares a fragment (`spec`, named `name`; its layout in
+ * `layout`) and calls its main routine. The trap's entry and its routine
+ * go in `entry` and `routine`, for install_diverted(). False if the
+ * fragment can't be made. One at a time: the region is the installer's
+ * (install_busy()).
+ */
+bool install_divert(struct mem *m, uint16_t trap, const struct ndrv_spec *spec, const char *name,
+		    struct ndrv_layout *layout, uint32_t *entry, uint32_t *routine);
+
+/*
+ * At a later idle call, if the fragment hasn't started: 0 if it's about
+ * to; -1 if it won't (the trap's entry put back), why in `why` (`what`
+ * names the fragment).
+ */
+int install_diverted(struct mem *m, uint32_t entry, uint32_t routine, const char *what, char *why, size_t len);
+
+/* Whether the installer has the region (from going in until it's done) */
+bool install_busy(const struct install *in);
 
 #endif

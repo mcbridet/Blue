@@ -16,6 +16,8 @@
 #include "ppc.h"
 #include "rom.h"
 
+struct share;
+
 /* ConfigInfo lives at a fixed offset in the 4 MB Toolbox image. */
 #define NK_CONFIGINFO_OFFSET 0x30D000u
 
@@ -100,7 +102,7 @@ struct nk_boot_options {
 	const char *disk[NK_MAX_DISKS];         /* disk images, in drive order (NULL: an empty CD-ROM drive) */
 	bool cdrom[NK_MAX_DISKS];               /* ... attached read-only as CDs (see cd_swap in nk.c) */
 	unsigned disks;
-	const struct disk_backend *share;       /* a shared folder's drive, after the disks (counts towards the 4) */
+	struct share *share;    /* a shared folder, its drive after the disks (counts towards the 4) */
 	bool rom_from_disk;     /* the ROM file came from a drive's System Folder: ... */
 	unsigned rom_disk, rom_part;    /* ... this drive's, this partition (the startup disk) */
 	bool rom_chosen;        /* ... which Open Firmware's boot-device names (see startup.h) */

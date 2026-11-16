@@ -158,6 +158,17 @@ void disk_open_floppy(struct disk *d, struct mem *mem);
 int disk_open_cdrom(struct disk *d, struct mem *mem, const char *path);
 
 /*
+ * A disk drive whose disk comes and goes (the shared folder's), with the
+ * volume `b` in it (NULL: empty), shown to Mac OS at once: writable,
+ * ejectable, a disk that stays in at a restart and at shutdown. Mac OS
+ * ejects it through the driver (Put Away, Eject), and
+ * disk_insert_backend() puts one in again (a second later, Mac OS sees it
+ * go in and mounts it).
+ */
+void disk_open_removable(struct disk *d, struct mem *mem, const struct disk_backend *b);
+void disk_insert_backend(struct disk *d, const struct disk_backend *b);
+
+/*
  * Puts an image in the drive (taking out the one in it, if any): read-only
  * if the file can't be written (a CD always). Returns 0, or -1 with the
  * reason in `why` (the drive is left as it was).
@@ -175,5 +186,19 @@ void disk_flush(struct disk *d);
 
 /* Whether Mac OS has a volume on the drive (one of its drives) mounted, so that only it can eject it */
 bool disk_in_use(const struct disk *d);
+
+/*
+ * ... or has one of the drive's volumes at all: mounted, or off line (as
+ * Eject leaves a volume that wasn't unmounted, Mac OS asking for its disk
+ * when it's needed again)
+ */
+bool disk_volume_held(const struct disk *d);
+
+/*
+ * The files Mac OS has open on the volume of the drive's first (or only)
+ * drive, but for those the volume keeps open itself (its B-trees, the
+ * desktop database): 0 if it isn't mounted.
+ */
+unsigned disk_files_open(const struct disk *d);
 
 #endif

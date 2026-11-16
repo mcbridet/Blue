@@ -481,10 +481,54 @@ static uint32_t trap_entry(uint16_t trap)
 	return trap & 0x0800u ? 0x0E00u + 4u * (trap & 0x3FFu) : 0x0400u + 4u * (trap & 0xFFu);
 }
 
+bool install_divert(struct mem *m, uint16_t trap, const struct ndrv_spec *spec, const char *name,
+		    struct ndrv_layout *layout, uint32_t *entry, uint32_t *routine)
+{
+	static uint8_t fragment[R_BUFFER - R_FRAGMENT], head[R_FRAGMENT];
+	size_t len = ndrv_build(spec, fragment, sizeof fragment, layout);
+	if (!len)
+		return false;
+	*entry = trap_entry(trap);
+	*routine = mem_r32(m, *entry);
+	memset(head, 0, sizeof head);
+	make_bootstrap(head + R_CODE, *entry, *routine, (uint32_t)len);
+	make_routine_descriptor(head + R_RD);
+	put_be32(head + R_STATUS, STATUS_PENDING);
+	put_pstring(head + R_NAME, name, 64);
+	mem_map(m, INSTALL_REGION, INSTALL_REGION_SIZE, MEM_RWX);
+	mem_load(m, at(0), head, sizeof head);
+	mem_load(m, at(R_FRAGMENT), fragment, (uint32_t)len);
+	uint8_t to[4];
+	put_be32(to, at(R_CODE));
+	mem_load(m, *entry, to, 4);
+	return true;
+}
+
+int install_diverted(struct mem *m, uint32_t entry, uint32_t routine, const char *what, char *why, size_t len)
+{
+	uint32_t status = mem_r32(m, at(R_STATUS));
+	if (status == STATUS_STARTED || status == 0)
+		return 0;               /* (still preparing it, or about to call it) */
+	if (status == STATUS_PENDING) {
+		if (mem_r32(m, entry) == at(R_CODE)) {
+			uint8_t to[4];
+			put_be32(to, routine);
+			mem_load(m, entry, to, 4);
+		}
+		snprintf(why, len, "Mac OS didn't run %s", what);
+	} else {
+		char msg[256];
+		const uint8_t *s = mem_ptr(m, at(R_ERRMSG));
+		hfs_to_utf8(s + 1, s[0], msg, sizeof msg);
+		snprintf(why, len, "the Code Fragment Manager couldn't prepare %s (error %d%s%s)", what, (int32_t)status,
+			 msg[0] ? ", " : "", msg);
+	}
+	return -1;
+}
+
 /* Points the idle trap's entry at the bootstrap, for its dispatch under way. */
 static bool inject(struct install *in, struct mem *m, uint16_t trap)
 {
-	static uint8_t fragment[R_BUFFER - R_FRAGMENT], head[R_FRAGMENT];
 	const struct ndrv_spec spec = {
 		.kind = FRAG_APPLICATION,
 		.entries = 1,
@@ -492,27 +536,11 @@ static bool inject(struct install *in, struct mem *m, uint16_t trap)
 		.imports = installer_imports,
 		.import_count = I_COUNT,
 	};
-	size_t len = ndrv_build(&spec, fragment, sizeof fragment, &in->layout);
-	uint32_t entry = trap_entry(trap), routine = mem_r32(m, entry);
-	if (!len) {
+	if (!install_divert(m, trap, &spec, "Blue Installer", &in->layout, &in->trap_entry, &in->trap_routine)) {
 		snprintf(in->news, sizeof in->news, "couldn't make the installer");
 		finish_news(in);
 		return false;
 	}
-	memset(head, 0, sizeof head);
-	make_bootstrap(head + R_CODE, entry, routine, (uint32_t)len);
-	make_routine_descriptor(head + R_RD);
-	put_be32(head + R_STATUS, STATUS_PENDING);
-	put_pstring(head + R_NAME, "Blue Installer", 64);
-	mem_map(m, INSTALL_REGION, INSTALL_REGION_SIZE, MEM_RWX);
-	mem_load(m, at(0), head, sizeof head);
-	mem_load(m, at(R_FRAGMENT), fragment, (uint32_t)len);
-	uint8_t to[4];
-	put_be32(to, at(R_CODE));
-	mem_load(m, entry, to, 4);
-	in->trap_entry = entry;
-	in->trap_routine = routine;
-	in->fragment_len = (uint32_t)len;
 	in->phase = INSTALL_INJECTED;
 	if (in->job == INSTALL_JOB_TOOLS)
 		printf("tools: installing%s (Mac OS writes the files)\n", in->retried ? " again" : "");
@@ -522,24 +550,10 @@ static bool inject(struct install *in, struct mem *m, uint16_t trap)
 /* At a later idle call: the bootstrap ran (or not), but the installer didn't start */
 static void injected(struct install *in, struct mem *m)
 {
-	uint32_t status = mem_r32(m, at(R_STATUS));
-	if (status == STATUS_STARTED || status == 0)
-		return;                 /* (still preparing it, or about to call it) */
-	if (status == STATUS_PENDING) {
-		if (mem_r32(m, in->trap_entry) == at(R_CODE)) {
-			uint8_t to[4];
-			put_be32(to, in->trap_routine);
-			mem_load(m, in->trap_entry, to, 4);
-		}
-		snprintf(in->news, sizeof in->news, "couldn't install the guest tools: Mac OS didn't run the installer");
-	} else {
-		char msg[256];
-		const uint8_t *s = mem_ptr(m, at(R_ERRMSG));
-		hfs_to_utf8(s + 1, s[0], msg, sizeof msg);
-		snprintf(in->news, sizeof in->news,
-			 "couldn't install the guest tools: the Code Fragment Manager couldn't prepare the installer "
-			 "(error %d%s%s)", (int32_t)status, msg[0] ? ", " : "", msg);
-	}
+	char why[400];
+	if (!install_diverted(m, in->trap_entry, in->trap_routine, "the installer", why, sizeof why))
+		return;
+	snprintf(in->news, sizeof in->news, "couldn't install the guest tools: %s", why);
 	finish_news(in);
 }
 
@@ -681,6 +695,11 @@ bool install_idle(struct install *in, const struct install_idle *w)
 	if (in->phase == INSTALL_INJECTED)
 		injected(in, w->mem);
 	return false;
+}
+
+bool install_busy(const struct install *in)
+{
+	return in->phase == INSTALL_INJECT || in->phase == INSTALL_INJECTED || in->phase == INSTALL_RUNNING;
 }
 
 void install_answer(struct install *in, enum install_answer a, struct helper *h)

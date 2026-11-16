@@ -644,7 +644,24 @@ static enum ui_action drives_menu(const struct ui_drives *dr)
 		ImGui::TextDisabled("Next floppies, as Mac OS ejects: %s", dr->next);
 		ImGui::PopTextWrapPos();
 	}
-	ImGui::TextDisabled("(or drop an image on the window to put it in)");
+	if (dr->count)
+		ImGui::TextDisabled("(or drop an image on the window to put it in)");
+	if (dr->share[0]) {
+		char label[96];
+		snprintf(label, sizeof label, "Refresh \"%s\"", dr->share);
+		ImGui::BeginDisabled(dr->share_why_not[0] != '\0');
+		if (button(label, 0))
+			action = UI_SHARE_REFRESH;
+		ImGui::EndDisabled();
+		tip(dr->share_why_not[0] ? dr->share_why_not :
+					   "Mac OS puts the shared folder's disk away, what it changed goes to the folder "
+					   "on your computer, and the disk comes back with what's in the folder now");
+		beside_buttons();
+		if (dr->share_changed)
+			ImGui::TextUnformatted("Shared folder: changed on your computer");
+		else
+			ImGui::TextDisabled("Shared folder");
+	}
 	return action;
 }
 

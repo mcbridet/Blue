@@ -7,6 +7,7 @@
 #include "../src/be.h"
 #include "../src/disk.h"
 #include "../src/drives.h"
+#include "../src/share.h"
 #include "test.h"
 
 #define K 1024u
@@ -591,6 +592,214 @@ static void test_shutdown(struct mem *mem)
 	unlink(flop);
 }
 
+/* A volume from code (as a shared folder's is): an image file's blocks */
+static int file_read(void *ctx, void *buf, size_t len, uint64_t at)
+{
+	return pread(*(int *)ctx, buf, len, (off_t)at) == (ssize_t)len ? 0 : -1;
+}
+
+static int file_write(void *ctx, const void *buf, size_t len, uint64_t at)
+{
+	return pwrite(*(int *)ctx, buf, len, (off_t)at) == (ssize_t)len ? 0 : -1;
+}
+
+/* A VCB for drive `drive` (0: off line, `dref` then its drive number), the only one */
+static void volume(struct mem *mem, int16_t drive, int16_t dref)
+{
+	mem_w32(mem, 0x356 + 2, VCB);
+	mem_w32(mem, VCB, 0);
+	mem_w16(mem, VCB + 72, (uint16_t)drive);
+	mem_w16(mem, VCB + 74, (uint16_t)dref);
+}
+
+/* An FCB in the table at `table` (entries of `len` bytes): the VCB, a file number, a name in the root */
+static void fcb(struct mem *mem, uint32_t table, unsigned k, unsigned len, uint32_t file, const char *name)
+{
+	uint32_t f = table + 2 + len * k;
+	mem_w32(mem, f + 20, VCB);
+	if (len < 94)
+		return;
+	mem_w32(mem, f, file);
+	mem_w32(mem, f + 58, 2);
+	mem_w8(mem, f + 62, (uint8_t)strlen(name));
+	memcpy(mem_ptr(mem, f + 63), name, strlen(name));
+}
+
+/*
+ * The shared folder's drive, where its disk comes and goes: in at startup,
+ * writable and ejectable, with icons of its own; the files Mac OS has open
+ * on it; Mac OS's Eject; the volume it holds off line; another disk in.
+ */
+static void test_removable(struct mem *mem)
+{
+	char path[256];
+	make_image(path, sizeof path, 4u << 20, "Shared");
+	int fd = open(path, O_RDWR);
+	CHECK(fd >= 0);
+	const struct disk_backend b = { path, &fd, 4u << 20, file_read, file_write };
+	static struct disk d;
+	disk_open_removable(&d, mem, &b);
+	CHECK(d.removable && !d.cdrom && !d.floppy && !d.read_only && d.media && d.shown);
+	load_driver(&d, mem);
+	mem_w32(mem, 0x308 + 2, 0);
+	mem_w32(mem, 0x308 + 6, 0);
+	memcpy(mem_ptr(mem, 0x910), "\6Finder", 7);
+	volumes(mem, 0, 0);
+	CHECK_EQ(io(&d, mem, NDRV_INITIALIZE, 0, 0), 0);
+	const uint16_t drive = d.part[0].drive_num;
+	CHECK_EQ(in_place(mem, &d, 0), 1);                      /* (ejectable) */
+	CHECK_EQ(mem_r8(mem, TOC + d.layout.extra), 0);         /* (not locked) */
+	CHECK_EQ(blocks(mem, &d, 0), (4u << 20) / 512);
+	CHECK_EQ(timer(&d, mem, 1000), 1);
+	CHECK_EQ(read_block(&d, mem, drive, 2), 0);
+	/* a disk drive's, its disk staying in at a restart and at shutdown, its icons its own */
+	CHECK_EQ(gestalt(&d, mem, drive, "devt"), 0);
+	CHECK_EQ(mem_r32(mem, PB + 32), be32("disk"));
+	CHECK_EQ(gestalt(&d, mem, 0, "ejec"), 0);
+	CHECK_EQ(mem_r32(mem, PB + 32), 3);
+	CHECK_EQ(gestalt(&d, mem, drive, "mics"), 0);
+	CHECK_EQ(mem_r32(mem, mem_r32(mem, PB + 32)), be32("icns"));
+	static uint8_t icn[2][256], icns[2][FLOPPY_ICNS_SIZE];
+	share_icons(icn[0], icn[1], icns[0], icns[1]);
+	CHECK_EQ(io(&d, mem, NDRV_CONTROL, 22, drive), 0);
+	CHECK(!memcmp(mem_ptr(mem, mem_r32(mem, PB + 28)), icn[0], 256));
+	CHECK_EQ(io(&d, mem, NDRV_CONTROL, 21, drive), 0);
+	CHECK(!memcmp(mem_ptr(mem, mem_r32(mem, PB + 28)), icn[1], 256));
+	CHECK(!memcmp(mem_ptr(mem, mem_r32(mem, PB + 28) + 256), "\022Blue shared folder", 19));
+
+	/* files open on it: Mac OS 8's FCB table, then 9's stand-in (the volume's own forks counted out) */
+	const uint32_t table = 0x24000;
+	memset(mem_ptr(mem, table), 0, 0x2000);
+	mem_w32(mem, 0x34E, table);
+	mem_w16(mem, 0x3F6, 94);
+	mem_w16(mem, table, 2 + 94 * 6);
+	volume(mem, (int16_t)drive, -50);
+	fcb(mem, table, 0, 94, 3, "**** EXTENTS B-TREE");
+	fcb(mem, table, 1, 94, 4, "**** CATALOG B-TREE");
+	fcb(mem, table, 3, 94, 20, "Desktop DB");
+	fcb(mem, table, 4, 94, 21, "Desktop DF");
+	CHECK_EQ(disk_files_open(&d), 0);
+	fcb(mem, table, 5, 94, 30, "Read Me");
+	CHECK_EQ(disk_files_open(&d), 1);
+	mem_w16(mem, 0x3F6, 4);
+	memset(mem_ptr(mem, table), 0, 0x2000);
+	mem_w16(mem, table, 2 + 4 * 40);
+	for (unsigned k = 0; k < 4; k++)
+		fcb(mem, table, 3 * k, 4, 0, "");
+	CHECK_EQ(disk_files_open(&d), 0);
+	fcb(mem, table, 20, 4, 0, "");
+	fcb(mem, table, 21, 4, 0, "");
+	CHECK_EQ(disk_files_open(&d), 2);
+	volumes(mem, 0, 0);
+	CHECK_EQ(disk_files_open(&d), 0);                       /* (not mounted) */
+
+	/* Mac OS has the volume (mounted, or off line), or not */
+	volume(mem, (int16_t)drive, -50);
+	CHECK(disk_in_use(&d) && disk_volume_held(&d));
+	volume(mem, 0, (int16_t)drive);
+	CHECK(!disk_in_use(&d) && disk_volume_held(&d));
+	volume(mem, 0, (int16_t)-drive);
+	CHECK(disk_volume_held(&d));
+	volume(mem, 0, (int16_t)(drive + 1));
+	CHECK(!disk_volume_held(&d));
+	volumes(mem, 0, 0);
+	CHECK(!disk_volume_held(&d));
+
+	/* Mac OS ejects it: the drive's empty; another disk goes in, and Mac OS sees it as it goes in */
+	CHECK_EQ(io(&d, mem, NDRV_CONTROL, 7, drive), 0);
+	CHECK(!d.media && d.ejects == 1 && !d.backend);
+	CHECK_EQ(in_place(mem, &d, 0), 0);
+	CHECK_EQ(read_block(&d, mem, drive, 2), -65);
+	CHECK_EQ(timer(&d, mem, 2000), 0);
+	disk_insert_backend(&d, &b);
+	CHECK(d.media && !d.shown);
+	CHECK_EQ(read_block(&d, mem, drive, 2), -65);           /* (not until the timer shows it) */
+	CHECK_EQ(timer(&d, mem, 3000), 1);
+	CHECK_EQ(in_place(mem, &d, 0), 1);
+	CHECK_EQ(read_block(&d, mem, drive, 2), 0);
+	disk_close(&d);
+
+	/* a drive with nothing in it (the folder's volume couldn't be made) */
+	disk_open_removable(&d, mem, NULL);
+	CHECK(d.removable && !d.media && d.partitions == 1);
+	disk_close(&d);
+	close(fd);
+	unlink(path);
+}
+
+/*
+ * The shared folder's drive and its folder: put away (Mac OS's MDB says so,
+ * and it has no VCB for it), the volume is written back and offered again;
+ * ejected while Mac OS holds it off line (its Eject leaves the MDB saying
+ * so too), the same disk goes back in, written back no more; Refresh while
+ * it's not mounted makes it again at once, and not while Mac OS has it.
+ */
+static void test_share_drive(struct mem *mem)
+{
+	char dir[256], path[400], why[300];
+	const char *tmp = getenv("TMPDIR");
+	snprintf(dir, sizeof dir, "%s/blue-test-XXXXXX", tmp ? tmp : "/tmp");
+	if (!mkdtemp(dir)) {
+		CHECK(!"mkdtemp");
+		return;
+	}
+	snprintf(path, sizeof path, "%s/Note.txt", dir);
+	FILE *f = fopen(path, "w");
+	CHECK(f && fputs("hello", f) >= 0);
+	if (f)
+		fclose(f);
+	int out = dup(1), null = open("/dev/null", O_WRONLY);
+	fflush(stdout);
+	dup2(null, 1);                                  /* (the share says what it does) */
+	struct share *s = share_open(dir, 0);
+	CHECK(s != NULL);
+	static struct disk d;
+	struct drives dr = { .share = &d, .folder = s };
+	if (s) {
+		disk_open_removable(&d, mem, share_disk(s));
+		load_driver(&d, mem);
+		mem_w32(mem, 0x308 + 2, 0);
+		mem_w32(mem, 0x308 + 6, 0);
+		memcpy(mem_ptr(mem, 0x910), "\6Finder", 7);
+		volumes(mem, 0, 0);
+		CHECK_EQ(io(&d, mem, NDRV_INITIALIZE, 0, 0), 0);
+		const uint16_t drive = d.part[0].drive_num;
+		const struct disk_backend *b = share_disk(s);
+		uint8_t mdb[512];
+		/* Mac OS mounted it, so it can't be made again now; then it put it away and ejected it */
+		CHECK(read_block(&d, mem, drive, 2) == 0 && b->read(b->ctx, mdb, 512, 1024) == 0);
+		put_be16(mdb + 10, be16(mdb + 10) & ~0x0100u);
+		CHECK(b->write(b->ctx, mdb, 512, 1024) == 0);
+		volume(mem, (int16_t)drive, -50);
+		CHECK(!drives_share_remake(&dr, 0, why, sizeof why) && strstr(why, "using"));
+		put_be16(mdb + 10, be16(mdb + 10) | 0x0100u);
+		CHECK(b->write(b->ctx, mdb, 512, 1024) == 0);
+		volume(mem, 0, (int16_t)drive);                 /* (off line: Eject, without UnmountVol) */
+		CHECK_EQ(io(&d, mem, NDRV_CONTROL, 7, drive), 0);
+		CHECK(!d.media);
+		CHECK(!drives_share_ejected(&dr, 0));
+		CHECK(d.media && share_put_away(s));            /* (the same disk, as Mac OS left it) */
+		CHECK_EQ(timer(&d, mem, 1000), 1);
+		volumes(mem, 0, 0);                             /* (unmounted) */
+		CHECK_EQ(io(&d, mem, NDRV_CONTROL, 7, drive), 0);
+		CHECK(drives_share_ejected(&dr, 0));
+		CHECK(d.media && !d.shown && !share_put_away(s));      /* (a new disk, in a second) */
+		CHECK_EQ(timer(&d, mem, 2000), 1);
+		/* not mounted yet: Refresh makes it again at once */
+		unsigned gen = d.media_gen;
+		CHECK(drives_share_remake(&dr, 0, why, sizeof why));
+		CHECK(d.media && d.media_gen != gen);
+	}
+	fflush(stdout);
+	dup2(out, 1);
+	close(out);
+	close(null);
+	disk_close(&d);
+	share_close(s);
+	snprintf(path, sizeof path, "rm -rf '%s'", dir);
+	CHECK(system(path) == 0);
+}
+
 /* Where images go, and what the menu shows */
 static void test_routing(struct mem *mem)
 {
@@ -697,6 +906,8 @@ void test_drives(void)
 	test_cdrom(&mem);
 	test_cd_calls(&mem);
 	test_shutdown(&mem);
+	test_removable(&mem);
+	test_share_drive(&mem);
 	test_routing(&mem);
 	mem_free(&mem);
 }

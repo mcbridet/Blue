@@ -45,6 +45,7 @@ enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI
 		 UI_CAPTURE_MOUSE, UI_RELEASE_MOUSE, UI_TURN_OFF, UI_PROMPT_YES, UI_PROMPT_NO,
 		 UI_PROMPT_ALT,                 /* (a prompt's third button, on the left: Don't Ask Again) */
 		 UI_INSTALL_TOOLS,              /* (the offer to install the guest tools, asked for) */
+		 UI_SHARE_REFRESH,              /* (the shared folder's volume put away, written back, offered again) */
 		 UI_EJECT,                      /* (+ the drive's number in the menu's list) */
 		 UI_EJECT_LAST = UI_EJECT + UI_DRIVES - 1,
 		 UI_INSERT,                     /* (likewise: an image chosen with the host's file chooser) */
@@ -71,6 +72,10 @@ struct ui_drives {
 	unsigned count;
 	struct ui_drive drive[UI_DRIVES];
 	char next[200];                 /* the floppy images that go in as Mac OS ejects the one in ("": none) */
+	/* the shared folder's volume, if Mac OS can put it away during the run ("": none) */
+	char share[64];                 /* its name */
+	char share_why_not[240];        /* why Refresh is disabled ("": it isn't) */
+	bool share_changed;             /* the folder has changed on the host since the volume was made */
 };
 
 /* The status bar's lights */

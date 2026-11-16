@@ -564,7 +564,7 @@ static int cmd_boot(int argc, char **argv)
 	}
 	if (found)
 		return 1;
-	opt.share = share ? share_disk(share) : NULL;
+	opt.share = share;
 	/* (with a window, the machine runs on a thread of its own, and this one runs the window) */
 	struct boot boot = { &rom, &opt };
 	int rc = opt.window ? display_main(boot_machine, &boot) : nk_boot(&rom, &opt);

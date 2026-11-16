@@ -11,6 +11,7 @@
 #include "dmg.h"
 #include "hfs.h"
 #include "ndrv.h"
+#include "share.h"
 
 /* OSErr values */
 #define NO_ERR 0
@@ -329,11 +330,11 @@ size_t disk_build_ndrv(struct disk *d, uint8_t *out, size_t size, uint32_t hostc
 		.extra_len = d->boot_gestalt ? DATA_SIZE_REG_ENTRY : DATA_SIZE,
 	};
 	uint8_t icons[DATA_SIZE_ICONS];
-	if (d->floppy || d->cdrom) {
-		const char *where = d->floppy ? "Blue floppy drive" : "Blue CD-ROM drive";
+	if (d->floppy || d->cdrom || d->removable) {
+		const char *where = d->floppy ? "Blue floppy drive" : d->cdrom ? "Blue CD-ROM drive" : "Blue shared folder";
 		memset(icons, 0, sizeof icons);
-		(d->floppy ? floppy_icons : cdrom_icons)(icons + MEDIA_ICN, icons + DRIVE_ICN, icons + MEDIA_ICNS,
-							  icons + DRIVE_ICNS);
+		(d->floppy ? floppy_icons : d->cdrom ? cdrom_icons : share_icons)(icons + MEDIA_ICN, icons + DRIVE_ICN,
+										  icons + MEDIA_ICNS, icons + DRIVE_ICNS);
 		icons[DRIVE_WHERE] = (uint8_t)strlen(where);
 		memcpy(icons + DRIVE_WHERE + 1, where, strlen(where));
 		spec.extra = icons;
@@ -582,6 +583,8 @@ static int32_t floppy_control(struct disk *d, uint32_t pb, uint32_t toc);
 static int32_t floppy_status(struct disk *d, uint32_t pb, uint32_t toc);
 static int32_t cdrom_control(struct disk *d, uint32_t pb, uint32_t toc, uint64_t tb);
 static int32_t cdrom_status(struct disk *d, uint32_t pb, uint32_t toc, uint64_t tb);
+static int32_t removable_control(struct disk *d, uint32_t pb, uint32_t toc);
+static int32_t removable_status(struct disk *d, uint32_t pb, uint32_t toc);
 
 static int32_t driver_io(struct disk *d, uint32_t toc, uint32_t contents, uint32_t code, uint64_t tb)
 {
@@ -606,10 +609,12 @@ static int32_t driver_io(struct disk *d, uint32_t toc, uint32_t contents, uint32
 		return transfer(d, contents, true);
 	case NDRV_CONTROL:
 		return d->floppy ? floppy_control(d, contents, toc) :
-		       d->cdrom ? cdrom_control(d, contents, toc, tb) : control(d, contents);
+		       d->cdrom ? cdrom_control(d, contents, toc, tb) :
+		       d->removable ? removable_control(d, contents, toc) : control(d, contents);
 	case NDRV_STATUS:
 		return d->floppy ? floppy_status(d, contents, toc) :
-		       d->cdrom ? cdrom_status(d, contents, toc, tb) : status(d, contents, toc);
+		       d->cdrom ? cdrom_status(d, contents, toc, tb) :
+		       d->removable ? removable_status(d, contents, toc) : status(d, contents, toc);
 	default:
 		return PARAM_ERR;
 	}
@@ -769,7 +774,7 @@ void disk_driver_call(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz)
 
 static const char *drive_kind(const struct disk *d)
 {
-	return d->floppy ? "floppy" : "cdrom";
+	return d->floppy ? "floppy" : d->cdrom ? "cdrom" : "disk";
 }
 
 void disk_open_floppy(struct disk *d, struct mem *mem)
@@ -780,6 +785,36 @@ void disk_open_floppy(struct disk *d, struct mem *mem)
 	d->path = d->media_path;
 	d->removable = d->floppy = true;
 	d->partitions = 1;
+}
+
+void disk_open_removable(struct disk *d, struct mem *mem, const struct disk_backend *b)
+{
+	memset(d, 0, sizeof *d);
+	d->mem = mem;
+	d->fd = -1;
+	d->path = d->media_path;
+	d->removable = true;
+	d->partitions = 1;
+	if (!b)
+		return;
+	disk_insert_backend(d, b);
+	d->shown = true;                        /* (in at startup) */
+	d->shown_gen = d->media_gen;
+}
+
+void disk_insert_backend(struct disk *d, const struct disk_backend *b)
+{
+	disk_eject(d);
+	d->backend = b;
+	d->size = b->size & ~(uint64_t)511;
+	d->read_only = !b->write;
+	d->part[0].offset = 0;
+	d->part[0].size = d->size;
+	d->part[0].mounted = false;
+	d->media_parts = 1;
+	snprintf(d->media_path, sizeof d->media_path, "%s", b->name);
+	d->media = true;
+	d->media_gen++;
 }
 
 /*
@@ -1010,6 +1045,82 @@ bool disk_in_use(const struct disk *d)
 	return volume_on(d, d->partitions);
 }
 
+#define VCB_DREF_NUM 74                 /* (off line: the drive's number, or its negation) */
+
+bool disk_volume_held(const struct disk *d)
+{
+	const struct mem *m = d->mem;
+	unsigned guard = 0;
+	if (!mem_ok(m, LM_VCB_QHDR, 10, MEM_R))
+		return false;
+	for (uint32_t q = mem_r32(m, LM_VCB_QHDR + 2); q && guard < 256; q = mem_r32(m, q), guard++) {
+		if (!mem_ok(m, q, VCB_DREF_NUM + 2, MEM_R))
+			break;
+		int drive = (int16_t)mem_r16(m, q + VCB_DRV_NUM), dref = (int16_t)mem_r16(m, q + VCB_DREF_NUM);
+		for (unsigned j = 0; j < d->partitions; j++)
+			if (d->part[j].drive_num &&
+			    (drive == d->part[j].drive_num || (!drive && (dref == d->part[j].drive_num ||
+									 dref == -d->part[j].drive_num))))
+				return true;
+	}
+	return false;
+}
+
+/*
+ * The FCB table (Technical Note TN1184): its size, then the FCBs, each of
+ * FSFCBLen bytes (94). Mac OS 9 keeps its FCBs elsewhere, and this is a
+ * stand-in of 4-byte entries, one for each FCB, of which only the VCB
+ * pointer (at +20) is kept: there the volume's own four forks (its two
+ * B-trees, the desktop database's two files) are counted out (on 9.2.2,
+ * a Finder window on it adds none).
+ */
+#define LM_FCBS_PTR 0x034Eu
+#define LM_FSFCB_LEN 0x03F6u
+#define FCB_FILE_NUM 0
+#define FCB_VCB 20
+#define FCB_DIR_ID 58
+#define FCB_NAME 62
+#define FCB_CLASSIC_LEN 94u
+#define FIRST_USER_FILE 16u             /* (file numbers below: the volume's B-trees) */
+#define VOLUME_OWN_FORKS 4u
+
+unsigned disk_files_open(const struct disk *d)
+{
+	const struct mem *m = d->mem;
+	uint32_t vcb = 0;
+	unsigned guard = 0, open = 0;
+	if (!d->part[0].drive_num || !mem_ok(m, LM_VCB_QHDR, 10, MEM_R) || !mem_ok(m, LM_FSFCB_LEN, 2, MEM_R))
+		return 0;
+	for (uint32_t q = mem_r32(m, LM_VCB_QHDR + 2); q && guard < 256 && !vcb; q = mem_r32(m, q), guard++) {
+		if (!mem_ok(m, q, VCB_DRV_NUM + 2, MEM_R))
+			break;
+		if (mem_r16(m, q + VCB_DRV_NUM) == d->part[0].drive_num)
+			vcb = q;
+	}
+	uint32_t table = mem_r32(m, LM_FCBS_PTR);
+	uint16_t len = mem_r16(m, LM_FSFCB_LEN);
+	if (!vcb || !len || len > 0x7FFF || !mem_ok(m, table, 2, MEM_R))
+		return 0;
+	uint16_t size = mem_r16(m, table);
+	for (uint32_t ref = 2; ref + (len < FCB_CLASSIC_LEN ? FCB_VCB + 4 : len) <= size; ref += len) {
+		uint32_t f = table + ref;
+		if (!mem_ok(m, f, len < FCB_CLASSIC_LEN ? FCB_VCB + 4 : len, MEM_R) || mem_r32(m, f + FCB_VCB) != vcb)
+			continue;
+		if (len < FCB_CLASSIC_LEN) {
+			open++;
+			continue;
+		}
+		uint32_t file = mem_r32(m, f + FCB_FILE_NUM);
+		const uint8_t *name = mem_ptr(m, f + FCB_NAME);
+		bool desktop = mem_r32(m, f + FCB_DIR_ID) == 2 && name[0] == 10 &&
+			       (!memcmp(name + 1, "Desktop DB", 10) || !memcmp(name + 1, "Desktop DF", 10));
+		open += file >= FIRST_USER_FILE && !desktop;
+	}
+	if (len < FCB_CLASSIC_LEN)
+		open = open > VOLUME_OWN_FORKS ? open - VOLUME_OWN_FORKS : 0;
+	return open;
+}
+
 /* Whether Mac OS knows of the disc in the drive (and it's still the one it knows of) */
 static bool media_shown(const struct disk *d)
 {
@@ -1086,7 +1197,8 @@ static int32_t eject(struct disk *d, uint32_t pb, uint32_t data)
 	if (in_place(d, (unsigned)k)) {
 		d->part[k].ejected = true;
 		if (!disk_in_use(d)) {
-			printf("%s: Mac OS ejected %s\n", drive_kind(d), d->path);
+			if (d->floppy || d->cdrom)
+				printf("%s: Mac OS ejected %s\n", drive_kind(d), d->path);
 			disk_eject(d);
 			d->ejects++;
 			d->shown = false;
@@ -1290,4 +1402,47 @@ static int32_t floppy_status(struct disk *d, uint32_t pb, uint32_t toc)
 	default:
 		return status(d, pb, toc);
 	}
+}
+
+/*
+ * A removable disk (the shared folder's volume): a disk drive whose disk
+ * Mac OS ejects (Put Away, Eject), and which, like the CD-ROM drives and the
+ * floppy drive, keeps it in at a restart and at shutdown, and gives its
+ * icons (without them, Mac OS 8.5's Finder ejected a disk mounted after it
+ * had put one away with its window open, as soon as it was mounted).
+ */
+static int32_t removable_control(struct disk *d, uint32_t pb, uint32_t toc)
+{
+	uint32_t data = toc + d->layout.extra;
+	switch (mem_r16(d->mem, pb + PB_CS_CODE)) {
+	case 7:         /* Eject */
+		return eject(d, pb, data);
+	case 21:        /* the drive's icon, and where it is (for Get Info) */
+		mem_w32(d->mem, pb + PB_CS_PARAM, data + DRIVE_ICN);
+		return NO_ERR;
+	case 22:        /* the disk's icon */
+		mem_w32(d->mem, pb + PB_CS_PARAM, data + MEDIA_ICN);
+		return NO_ERR;
+	default:
+		return control(d, pb);
+	}
+}
+
+static int32_t removable_status(struct disk *d, uint32_t pb, uint32_t toc)
+{
+	struct mem *m = d->mem;
+	uint32_t data = toc + d->layout.extra, p = pb + PB_CS_PARAM, sel = mem_r32(m, p);
+	if (mem_r16(m, pb + PB_CS_CODE) != 43)
+		return status(d, pb, toc);
+	if (sel == os_type("ejec"))
+		mem_w32(m, p + 4, RESTART_DONT_EJECT | SHUT_DOWN_DONT_EJECT);
+	else if (sel == os_type("mics"))
+		mem_w32(m, p + 4, data + MEDIA_ICNS);
+	else if (sel == os_type("dics"))
+		mem_w32(m, p + 4, data + DRIVE_ICNS);
+	else if (sel == os_type("mnam"))
+		mem_w32(m, p + 4, data + DRIVE_WHERE);
+	else
+		return status(d, pb, toc);
+	return NO_ERR;
 }
