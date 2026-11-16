@@ -346,6 +346,8 @@ static void signal_input(struct display *d)
 		EV_SET(&e, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
 		kevent(d->kq, &e, 1, NULL, 0, NULL);
 	}
+#else
+	(void)d;
 #endif
 	pthread_cond_broadcast(&host.cond);
 }

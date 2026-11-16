@@ -4016,6 +4016,7 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	m->quit = old.quit;
 	m->mouse_captured = old.mouse_captured;
 	m->mouse_released = old.mouse_released;
+	m->clip = old.clip;             /* (the host's side: start_machine() starts Mac OS's again) */
 	m->scripted = old.scripted;
 	m->tools_offer = old.tools_offer;
 	if (old.prompting && old.prompt_news)   /* (the installer's news stays: Mac OS restarting is in it) */
