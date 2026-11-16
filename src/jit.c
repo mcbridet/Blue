@@ -24,12 +24,17 @@ const char *jit_unavailable(void)
 #ifdef __APPLE__
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
+#include <mach/mach.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <time.h>
 #endif
 
 #include "ppc_fp.h"
 
 /* sampling profiler (see below) */
 #define PROF_MAX 1000000u
+#define PROF_US 250                     /* between samples */
 
 struct prof_sample {
 	uint32_t guest_pc;              /* block, or 0 */
@@ -45,6 +50,12 @@ static struct {
 	uintptr_t text_lo, text_hi;     /* Blue's own code */
 	const uint64_t *icount;         /* samples only from instruction `from` to `to` */
 	uint64_t from, to;
+#ifdef __APPLE__
+	thread_act_t thread;            /* the emulation thread */
+	pthread_t sampler;
+	bool running;
+	atomic_bool stop;
+#endif
 } prof;
 
 /* ---- blocks ----------------------------------------------------------- */
@@ -611,6 +622,8 @@ void jit_free(struct jit *j)
 {
 	if (!j)
 		return;
+	if (prof.j == j)
+		prof.j = NULL;
 	jit_flush(j);
 	j->mem->code_changed = NULL;
 	j->mem->flags_changed = NULL;
@@ -713,15 +726,11 @@ enum ppc_exit jit_run(struct jit *j, struct ppc_cpu *c, uint64_t budget)
 
 /* ---- sampling profiler (BLUE_JIT_PROFILE=1) ------------------------------- */
 
-
-static void prof_signal(int sig, siginfo_t *si, void *ctx)
+static void prof_sample(uintptr_t pc)
 {
-	(void)sig;
-	(void)si;
-	uintptr_t pc = arch_context_pc(ctx);
 	struct jit *j = prof.j;
 	struct prof_sample smp = { 0, 0, pc };
-	if (!prof.icount || *prof.icount < prof.from || *prof.icount >= prof.to)
+	if (!j || !prof.icount || *prof.icount < prof.from || *prof.icount >= prof.to)
 		return;
 
 	prof.total++;
@@ -751,10 +760,56 @@ static void prof_signal(int sig, siginfo_t *si, void *ctx)
 		prof.s[prof.n++] = smp;
 }
 
+#ifdef __APPLE__
+/*
+ * macOS delivers SIGPROF at the thread's next system call or fault, not
+ * where the time went (in a loop that spends 1% of its time in a system
+ * call, 99% of the samples land there), so a thread of the profiler's own
+ * stops the emulation thread every PROF_US while it runs, to read its pc.
+ */
+static void *prof_thread(void *arg)
+{
+	(void)arg;
+	const struct timespec interval = { 0, PROF_US * 1000 };
+	while (!atomic_load(&prof.stop)) {
+		nanosleep(&interval, NULL);
+		struct thread_basic_info info;
+		mach_msg_type_number_t n = THREAD_BASIC_INFO_COUNT;
+		if (thread_info(prof.thread, THREAD_BASIC_INFO, (thread_info_t)&info, &n) != KERN_SUCCESS)
+			break;
+		if (info.run_state != TH_STATE_RUNNING || thread_suspend(prof.thread) != KERN_SUCCESS)
+			continue;
+#ifdef __aarch64__
+		arm_thread_state64_t st;
+		n = ARM_THREAD_STATE64_COUNT;
+		if (thread_get_state(prof.thread, ARM_THREAD_STATE64, (thread_state_t)&st, &n) == KERN_SUCCESS)
+			prof_sample((uintptr_t)__darwin_arm_thread_state64_get_pc(st));
+#else
+		x86_thread_state64_t st;
+		n = x86_THREAD_STATE64_COUNT;
+		if (thread_get_state(prof.thread, x86_THREAD_STATE64, (thread_state_t)&st, &n) == KERN_SUCCESS)
+			prof_sample((uintptr_t)st.__rip);
+#endif
+		thread_resume(prof.thread);
+	}
+	return NULL;
+}
+#else
+static void prof_signal(int sig, siginfo_t *si, void *ctx)
+{
+	(void)sig;
+	(void)si;
+	prof_sample(arch_context_pc(ctx));
+}
+#endif
+
+/* (on the emulation thread; again, keeping the samples, for the jit of a restarted machine) */
 static void prof_start(struct jit *j, const char *window)
 {
 	char *end;
 	prof.j = j;
+	if (prof.s)
+		return;
 	prof.from = strtoull(window, &end, 0);
 	prof.to = *end == ':' ? strtoull(end + 1, NULL, 0) : UINT64_MAX;
 	prof.s = malloc(PROF_MAX * sizeof *prof.s);
@@ -764,18 +819,34 @@ static void prof_start(struct jit *j, const char *window)
 	unsigned long size = 0;
 	prof.text_lo = (uintptr_t)getsegmentdata(&_mh_execute_header, "__TEXT", &size);
 	prof.text_hi = prof.text_lo + size;
+	prof.thread = mach_thread_self();
+	prof.running = !pthread_create(&prof.sampler, NULL, prof_thread, NULL);
 #else
 	extern char __executable_start, etext;
 	prof.text_lo = (uintptr_t)&__executable_start;
 	prof.text_hi = (uintptr_t)&etext;
-#endif
 	struct sigaction sa = { 0 };
 	sa.sa_sigaction = prof_signal;
 	sa.sa_flags = SA_SIGINFO | SA_RESTART;
 	sigemptyset(&sa.sa_mask);
 	sigaction(SIGPROF, &sa, NULL);
-	struct itimerval it = { { 0, 250 }, { 0, 250 } };
+	struct itimerval it = { { 0, PROF_US }, { 0, PROF_US } };
 	setitimer(ITIMER_PROF, &it, NULL);
+#endif
+}
+
+static void prof_stop(void)
+{
+#ifdef __APPLE__
+	if (prof.running) {
+		atomic_store(&prof.stop, true);
+		pthread_join(prof.sampler, NULL);
+		prof.running = false;
+	}
+#else
+	struct itimerval off = { { 0, 0 }, { 0, 0 } };
+	setitimer(ITIMER_PROF, &off, NULL);
+#endif
 }
 
 static int cmp_sample(const void *x, const void *y)
@@ -799,8 +870,7 @@ static int cmp_count(const void *x, const void *y)
 
 static void prof_report(FILE *f)
 {
-	struct itimerval off = { { 0, 0 }, { 0, 0 } };
-	setitimer(ITIMER_PROF, &off, NULL);
+	prof_stop();
 	if (!prof.total)
 		return;
 	fprintf(f, "profile: %lu samples: %.1f%% translated blocks, %.1f%% stubs, %.1f%% Blue, %.1f%% elsewhere\n",
