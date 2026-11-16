@@ -278,14 +278,20 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
   drive if there's one (device 7, `blue,floppy`) and Mac I/O
   (device 16) at `0x81080000`:
   Heathrow-style interrupt controller (`+0x10`), DMA channels (`+0x8000`,
-  0x100 bytes each), SCC (`+0x12000`), VIA1 with Cuda (`+0x16000`).
+  0x100 bytes each), SCC (`+0x12000`; the escc layout at `+0x13000`), VIA1
+  with Cuda (`+0x16000`).
   Interrupt sources use Heathrow numbers (DMA channel n is source n,
   Ethernet 14, SCC A 15, SCC B 16, sound 17, VIA1 18, the display 22, as the
   iMac's ATI chip, USB 28); levels: VIA1
-  1, the display, sound, Ethernet, USB and their DMA 2, SCC 4. Configuration space is at
+  1, the display, sound, Ethernet, USB and their DMA 2, SCC 4 (and its DMA
+  channels 4-7, with the modem). Configuration space is at
   `0xFEC00000` (`CONFIG_ADDR`) and `0xFEE00000` (`CONFIG_DATA`).
 - Sound: `davbus` at Mac I/O `+0x14000` (DMA channels 8 and 9), with a
   `sound` child; DecoderInfo long 39 holds the chip's address.
+- The SCC, with the internal modem (see
+  [devices.md](devices.md#the-serial-controller)): `escc` and
+  `escc-legacy`, each with `ch-a` (the modem's: DMA channels 4 and 5) and
+  `ch-b` (the infrared port's: 6 and 7).
 - Ethernet: `ethernet` at Mac I/O `+0x11000` (`bmac+`, DMA channels 2 and 3;
   nothing answers at those addresses, lanLib being the driver's way to the
   hardware), station address 52:54:00:12:34:56. Its lanLib is Blue's even

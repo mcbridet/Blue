@@ -81,6 +81,10 @@ with `#` are comments):
 | `pad N plug [NAME]`, `pad N unplug` | game controller N (0 to 3) plugged in or out |
 | `pad N button NAME down\|up` | its button pressed or let go, by SDL's name: `a`, `b`, `x`, `y`, `back`, `guide`, `start`, `leftstick`, `rightstick`, `leftshoulder`, `rightshoulder`, `dpup`, `dpdown`, `dpleft`, `dpright`, `misc1`, `paddle1` to `paddle4`, `touchpad` |
 | `pad N axis NAME VALUE` | its stick or trigger moved, from -1 to 1 (a trigger's from 0): `leftx`, `lefty` (down positive), `rightx`, `righty`, `lefttrigger`, `righttrigger` |
+| `modem ring` | the script's far end calls the modem: it rings, for `ATA` or S0 |
+| `modem pickup` | the script's far end answers the next number dialled (`CONNECT 56000`), rather than nobody (`NO CARRIER`) |
+| `modem recv TEXT` | the far end sends TEXT (the rest of the line: `\r`, `\n`, `\\` and `\xHH` stand for a CR, a newline, a backslash and any byte) |
+| `modem hangup` | the far end hangs up |
 
 Times can be seconds of host time since the start instead, written with
 an `s` (`12.5s click 100 200`), for scripts in real time (in the window,
@@ -110,6 +114,24 @@ their names (`pad 0 plug Test Pad`: a `[controller Test Pad]` section).
 patches in: a script with a `wheel` command has them, as one with
 `clipboard` has), the lines wait for the application in front, which a
 key wakes, to scroll by; otherwise they're the arrow keys at once.
+
+`modem` plays the internal modem's far end (see
+[devices.md](devices.md#the-modem)), so a call can be tested the same way
+every time: in instruction time the modem has no TCP, and dialling gives
+`NO CARRIER` unless the script picked up. What Mac OS sends to the
+script's far end is printed (`modem: the far end got "..."`, with the same
+escapes), and a script with `modem` commands has the modem in instruction
+time too. For example, Remote Access dialling with a scripted far end:
+
+```
+0 modem pickup                  # the next call is answered
+7300000000 click 486 368        # Remote Access's Connect, at 800x600
+8000000000 modem recv ~\xFF}#\xC0!}!}!} }*}%}&}24Vxy} ~
+8500000000 modem hangup
+```
+
+(`modem recv` takes the rest of its line, so a comment can't follow it: the
+line above is an LCP Configure-Request.)
 
 `clock N` keeps a run reproducible while making guest time pass as on a
 guest processor of N MIPS, so that work paced by guest time (sound, timer
@@ -225,11 +247,13 @@ and doesn't read it.
 | `BLUE_LOG_AUDIO=1` | how the host's sound queue fares, every second ([above](#tracing-and-logging)) |
 | `BLUE_LOG_GL=1` | logs every OpenGL call |
 | `BLUE_LOG_LIBS=1` | the file SDL2 and libslirp were loaded from |
+| `BLUE_LOG_MODEM=1` | the modem's commands, results and calls |
 | `BLUE_LOG_MP=1` | Multiprocessing Services' calls, task switches, timers and software interrupts |
 | `BLUE_LOG_NET=1` | the Ethernet driver's calls |
 | `BLUE_LOG_PADS=1` | the game controllers' buttons and axes, and the mapping each went to; InputSprocket's calls to Blue Game Controllers, and each of a game's needs ([input.md](input.md#testing)) |
 | `BLUE_LOG_PCI=1` | PCI configuration space accesses |
 | `BLUE_LOG_RAVE=1` | every call to the 3D engine |
+| `BLUE_LOG_SERIAL=1` | the serial controller's register accesses (the modem's channel), and its DCD, CTS, DTR and RTS |
 | `BLUE_LOG_SHARE=1` | Mac OS's writes to the shared folder |
 | `BLUE_LOG_SOUND=1` | the sound chip's register accesses |
 | `BLUE_LOG_USB=1` | the USB controller's register accesses (not the frame number) |

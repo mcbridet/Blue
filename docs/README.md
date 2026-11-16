@@ -9,7 +9,8 @@ test and debug it.
 - [architecture.md](architecture.md): the design: the NanoKernel interface,
   the loader, the kernel, time, and the machine Mac OS sees.
 - [devices.md](devices.md): the iMac's devices and Blue's drivers: interrupts,
-  DMA, the display, sound, networking and USB.
+  DMA, the serial controller and the modem, the display, sound, networking
+  and USB.
 - [drives.md](drives.md): disks, CD-ROM and floppy drives, cue sheets and CD
   audio.
 - [shared-folder.md](shared-folder.md): a host folder shown to Mac OS as a
@@ -49,5 +50,4 @@ test and debug it.
 **What's next**
 
 - [roadmap.md](roadmap.md): the next steps.
-- [future.md](future.md): ideas further off: a modem, sound input and
-  printing.
+- [future.md](future.md): ideas further off: sound input and printing.

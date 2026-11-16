@@ -2849,3 +2849,75 @@ made to start up.
   leave your disk untouched." Continue (532 372), finished by 30 billion
   (74 MB written), Restart (532 348), and Blue restarts the machine into
   8.6.
+- **The iMac's serial controller in the device tree** (the modem): the
+  SCC has no port on the outside; its channel A is the internal modem's
+  and channel B the infrared port's. The firmware describes it twice:
+  `escc` (compatible `escc`, `CHRP,es0`; the registers at Mac I/O
+  `+0x13000`) and `escc-legacy` (`chrp,es1`; the old Macs' layout at
+  `+0x12000`), each with a `ch-a` and a `ch-b` of device type `serial`.
+  `escc`'s channels (compatible `chrp,es2` and `chrp,es3`) have five `reg`
+  entries and `AAPL,address`es (control, data and enhancement registers,
+  one byte each, then the transmit and receive DMA channels, 0x100 bytes
+  each: A's 4 and 5, B's 6 and 7), three interrupts (the SCC's own, 15 or
+  16, then the two DMA channels') and `slot-names` (`Modem`, `IrDA`);
+  `escc-legacy`'s (`chrp,es4` and `chrp,es5`) only `reg` and
+  `AAPL,address`. Mac OS's serial driver finds the channels by
+  `compatible`. Which channel is the modem the extensions find in two
+  ways, as Linux does (`pmac_scc_enable()` in its `feature.c`: a channel
+  whose compatible names `cobalt`, or whose `slot-names` is `Modem`, is
+  the modem; `IrDA`, the infrared port). Mac OS 8.5's iMac Modem Extension
+  wants a `ch-a` whose compatible is `chrp,es2` itself and whose
+  `slot-names` is `Modem`; with `cobalt` added to that compatible it
+  doesn't find the modem. Mac OS 9's Internal V.90 Modem wants a `ch-a`
+  whose compatible names `cobalt`, which Blue gives `escc-legacy`'s
+  (`chrp,es4`, `cobalt`), so both find it. Either way the port is
+  "Internal Modem" in the Modem control panel, and Mac OS chooses the
+  modem's script there itself (8.5's "iMac Internal 56k", 9's "Apple
+  Internal 56K Modem (v.90)"). Mac OS 9's extension also resets the modem
+  through Heathrow's modem-reset GPIO (`+0x6D`, Linux's
+  `HRW_GPIO_MODEM_RESET`) at `0x8000006D`, the real iMac's Mac I/O
+  address written in rather than taken from the tree; Blue keeps that byte
+  there when the modem is attached.
+- **SerialDMA on the iMac** (the modem): the ROM's serial driver moves
+  the data by DMA both ways, not through the SCC's interrupts. It
+  receives into a ring of DBDMA input commands with the SCC's W/REQ as the
+  receiver's DMA request (WR1 `0xE0`), and stops and restarts the channel
+  now and then to see what has come in, rather than waiting for a buffer
+  to fill. It transmits through a ring of output commands, a character
+  going whenever the transmit FIFO has room. The SCC's own interrupts are
+  for the rest: receive errors, breaks and CTS changes (external/status,
+  for hardware handshaking), through the 68k-style dispatch of Mac OS's
+  SCC interrupt handler (RR3, and the vector modified with the status,
+  read through channel B). RR0's CTS bit is inverted on Power Macs: clear
+  while CTS is asserted. When the driver resets its channel (opening the
+  port, a change of speed) it drops DTR for a moment, so a modem set to
+  hang up on DTR (`&D2`, as 9's script sets) has to wait a little (`S25`)
+  before taking it as a hang-up.
+- **The modem scripts' strings** (the modem): 8.5's "iMac Internal 56k"
+  sends `AT`, then `AT&FE0Q0V1X4&C1&K3S95=1S7=75S0=0` and, as its
+  settings ask, `AT\N0` (no error correction), `AT%C0` (no compression),
+  `ATM0` (the speaker off) or `ATX1S6=4` (dialling without waiting for
+  the dial tone); it sets the serial port to 57,600 or 115,200 bits a
+  second (`serreset`). It dials with `ATD` and the number, in up to three
+  parts for a long one (`ATD^3^7;`, `ATD^3^8;`, `ATD^3^9`: `;` keeps the
+  modem in command mode), answers with `ATA`, and hangs up with `+++ATH`
+  (the escape, followed at once by a command) and DTR. 9's "Apple
+  Internal 56K Modem (v.90)" sends `AT` and `ATI12`, and picks its
+  initialisation by the answer: after Blue's `D1`,
+  `AT&FL3E0Q0V1X4&C1&K3S95=0&D2S7=75S0=0W2` (it has others, such as
+  `AT&F1&D0&H1&R1&B1S0=0E0V1Q0&A3S7=60`, for other answers); it dials and
+  hangs up the same way. The numbers go to
+  the modem as typed, so `127.0.0.1:5555` reaches Blue's modem whole
+  (`ATDT127.0.0.1:5555`, the T for tone dialling).
+- **Remote Access over the modem** (the modem; Mac OS 8.5 and 9.2.2, in
+  real time, dialling a test PPP server on the host): Remote Access opens
+  with LCP (async control character map 0, a magic number, protocol and
+  address-and-control field compression), then each protocol it uses.
+  9.2.2's, with TCP/IP set to PPP, negotiates IPCP (an address of the
+  server's), AppleTalk's control protocol and sends AppleTalk datagrams,
+  and shows "Connected at: 56000 bps" from the modem's `CONNECT 56000`.
+  8.5's, with TCP/IP left on Ethernet, negotiates AppleTalk's control
+  protocol only and waits at "Starting Network Protocols" for AppleTalk
+  answers the test server didn't give. Both send an LCP echo request
+  about every 13 seconds while connected. When the far end hangs up, the
+  modem drops DCD and says `NO CARRIER`.

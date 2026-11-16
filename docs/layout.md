@@ -11,7 +11,7 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           Services, NanoKernel 2's), priv.c (supervisor mode: the skeleton key),
           bootinfo.c + devtree.c (Trampoline replacement, device tree),
           rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
-          dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
+          dbdma.c, via.c, cuda.c, adb.c, scc.c (serial), awacs.c, ohci.c (USB), pci.c
           (configuration space), nvram.c (devices), pad.c (game
           controllers as the keyboard and mouse), settings.c (Blue's
           settings file: the pads' mappings), wheel.c (the scroll wheel's
@@ -25,7 +25,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           and Ogg Vorbis tracks), dmg.c (compressed Mac images: UDIF and
           NDIF), cdaudio.c (the drive's player),
           net.c (Ethernet's lanLib,
-          libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
+          libslirp), modem.c (the internal modem: AT commands, telnet),
+          modemnet.c (its calls over TCP), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
           reader: the startup disk's ROM file), startup.c (which disk is
           the startup disk, and a Pippin disc's without one), ofnvram.c (Open Firmware's variables in
           NVRAM: boot-device), share.c (shared folder),

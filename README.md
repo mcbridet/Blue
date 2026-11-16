@@ -53,7 +53,8 @@ from that disk, in a window on your desktop.
   128, and Mac OS 9's OpenGL through Blue's own libraries, drawn on the GPU
   (over Metal on Apple silicon) or in software.
 - **The rest of a Mac:** sound and CD audio, networking through your
-  connection, a folder of yours as a disk, the clipboard shared both ways,
+  connection, the internal modem (its calls go over the internet), a
+  folder of yours as a disk, the clipboard shared both ways,
   and disk, CD (`.iso`, `.toast`, `.cue`/`.bin`, `.nrg`, `.mds`, `.ccd`,
   `.chd`, `.dmg`) and floppy images you drop on the window.
 - **Game controllers:** Xbox, PlayStation, Switch and other pads play as
@@ -106,11 +107,12 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **Disk images** | Dropped on the window or inserted from the menu: CD images in most formats, compressed `.dmg` and Disk Copy images, floppies | Uncompressed images, and one at a time dropped in as a CD | Raw and QEMU's own formats, changed from a menu | Mac OS X's |
 | **Shared folders** | A folder of yours as a disk, its changes written back when Mac OS shuts down or puts it away, and offered again with yours | A folder as a live disk, though programs can't run from it | Separate experimental drivers | Mac OS X's disks, directly |
 | **Networking** | TCP/IP through its NAT; no port forwarding yet | TCP/IP through its NAT, with port forwarding; AppleTalk with extra setup, on some hosts | TCP/IP through its NAT, with port forwarding; AppleTalk through bridged networking, run as root | Mac OS X's, AppleTalk included |
+| **Modem** | The iMac's internal modem, its calls going over the internet | The modem and printer ports passed to the host's serial ports; no modem of its own | A host serial port, through an emulated USB serial adapter and FTDI's driver; no modem of its own | Mac OS X's dial-up connection, for internet programs; terminal and fax programs can't use the modem |
 | **Game controllers** | Gamepads, as keys or through InputSprocket | No | A USB gamepad, passed through | Unreliable |
 | **Pippin titles** | Yes | No | No | No |
 
 SheepShaver also runs System 7.5 to Mac OS 8.1, given an Old World ROM.
-Blue's other gaps, such as serial ports and modems, are listed under
+Blue's other gaps, such as serial ports and printing, are listed under
 [What isn't there](#what-isnt-there).
 
 ## Download and install
@@ -373,6 +375,8 @@ F12 or Esc closes it again.
   they follow; its checkbox turns them off, and **Mappings…** sets what
   their buttons, sticks and triggers do (see
   [Game controllers](#game-controllers)).
+- **Modem** says what the [modem](#the-modem) is doing, and **Hang Up**
+  ends its call.
 
 While the menu is open, the Mac's clock stops, so it's behind by that
 much afterwards.
@@ -692,6 +696,41 @@ Blue's network uses libslirp, which Blue.app and the AppImages carry. A
 build of your own needs it installed (see
 [Building from source](#building-from-source)).
 
+### The modem
+
+The iMac's built-in 56K modem is there too, as Mac OS's Internal Modem,
+with its modem script already chosen in the Modem control panel. Rather
+than a phone line, its calls go over the internet: dial a host and port
+and it connects there, answering `CONNECT 56000`, as the modems of DOSBox
+and 86Box do. Programs that use a modem (terminal programs, Remote Access,
+games with a modem link) use it as they would on the iMac.
+
+- **BBSes:** many still run, reached by telnet. In a terminal program such
+  as ZTerm, type `ATDT bbs.example.com` (port 23, telnet's) or `ATDT
+  bbs.example.com:2323`. The modem speaks telnet to port 23 and to any far
+  end that opens with telnet's negotiation, as BBSes do, so the BBS sees a
+  telnet client. `+++` with a second's pause either side returns to the
+  modem's commands; `ATH` hangs up.
+- **Calling another Blue:** start one with `--modem-listen 2323`. A call to
+  it (`ATDT 127.0.0.1:2323` from another Blue on the same computer, or
+  `ATDT` the first computer's address from another) rings there (`RING`):
+  answer with `ATA`, or type `ATS0=1` beforehand to answer at the first
+  ring. Over the internet, the computer listening needs that port open in
+  its router; `--modem-listen 127.0.0.1:2323` takes calls from your own
+  computer only.
+- **The phonebook,** for programs that only dial digits: `--modem-phonebook
+  FILE` names a text file of numbers, one a line, such as `5551234
+  bbs.example.com:2323` (add `telnet` or `raw` after it if Blue shouldn't
+  guess). Dialling 555-1234 then calls that host.
+- **Remote Access** dials the same way, to a PPP server of your own: type
+  the host and port as its number.
+
+The modem works in real time only (the window, or `--headless --realtime`),
+as the Ethernet does. Characters go at the speed Mac OS sets the serial
+port to, rather than a 56K line's. Blue's menu shows the call and can hang
+it up; `--no-modem` leaves the modem out. The commands are the usual Hayes
+ones: see [docs/devices.md](docs/devices.md#the-modem).
+
 ### Sound
 
 Sound plays while the Mac runs in a window, through Mac OS's own sound
@@ -794,6 +833,14 @@ or CI), `blue boot` says so and stops: run it with `--headless`.
 | `--no-net` | Leaves the Mac's Ethernet unplugged. |
 | `--no-gpu` | Draws 3D in software rather than on the GPU. |
 
+**The modem**
+
+| Option | What it does |
+|---|---|
+| `--no-modem` | Leaves the internal modem out. |
+| `--modem-listen [ADDRESS:]PORT` | A connection to this port is a call to the modem: it rings. |
+| `--modem-phonebook FILE` | Numbers the modem dials: lines of `NUMBER HOST:PORT`. |
+
 **Time and speed**
 
 | Option | What it does |
@@ -864,7 +911,7 @@ version runs in Rosetta 2 without the JIT.
 
 Blue doesn't do everything a Mac of the time could:
 
-- **Modems, serial ports, infrared and printing.**
+- **Serial ports, infrared and printing.**
 - **USB and FireWire devices** of any kind (game controllers reach Mac OS
   as the keyboard and mouse, and through InputSprocket: see
   [Game controllers](#game-controllers)).
@@ -944,6 +991,17 @@ For a CD's music, attach an image with tracks (a `.cue`, `.nrg`, `.mds`,
 - Most of today's websites need HTTPS, which browsers of the time can't
   manage: plain HTTP sites work. AppleTalk doesn't work, and nothing can
   connect in to the Mac.
+
+### The modem says NO CARRIER
+
+- The modem's calls go out only in real time (not with `--headless`
+  unless `--realtime` is given too).
+- Dial a host and port (`ATDT bbs.example.com:2323`); a number of digits
+  only reaches somewhere listed in the phonebook (`--modem-phonebook`).
+- `BUSY` means nothing listens on that port (the connection was
+  refused); `NO CARRIER`, that the host didn't answer or its name didn't
+  resolve (either, after `ATX0` to `ATX2`). A Blue already in a call
+  answers another and hangs it up at once.
 
 ### Blue says "no JIT"
 

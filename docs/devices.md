@@ -11,8 +11,10 @@ screen and takes the keyboard and mouse, in [window.md](window.md).
 
 Blue emulates RTAS (clock, NVRAM, power), a 6522 VIA with timers, the Cuda (time,
 PRAM, power, ADB with autopoll), an ADB keyboard and mouse, a Heathrow-style
-interrupt controller and a Z8530 SCC with nothing attached (LocalTalk sees an
-idle network), and for ROM files with parcels the NVRAM chip behind Mac I/O
+interrupt controller, a Z8530 SCC (its channel A the internal
+[modem's](#the-modem); channel B, the infrared port's, has nothing
+attached, so LocalTalk there sees an idle network), and for ROM files with
+parcels the NVRAM chip behind Mac I/O
 (`src/nvram.c`; see [Mac OS 9.1](bring-up.md#mac-os-91-from-its-cd)). Device registers are emulated by decoding the faulting
 load/store (`src/mmio.c`), without an exit where it would do nothing more
 (see the JIT's [device registers in place](jit.md#device-registers-in-place)).
@@ -64,6 +66,111 @@ transfers take no time of their own, so DMA happens at deterministic points.
 Channel interrupts are pulses that the interrupt controller latches until
 cleared, or until the kernel takes them when it delivers them (see
 [interrupts](architecture.md#the-kernel)).
+
+## The serial controller
+
+The iMac's serial controller is a Zilog Z85C30 ESCC in Mac I/O
+(`src/scc.c`), with no ports on the outside: its channel A is the internal
+modem's and channel B the infrared port's. The firmware describes it to
+Mac OS in the device tree, as an `escc` node (and `escc-legacy`, the same
+channels at the old Macs' register layout) with a `ch-a` and a `ch-b`:
+each with its control, data and enhancement registers, a DMA channel for
+each direction (A's are 4 and 5, B's 6 and 7) and an interrupt for each of
+the three (the SCC's own at level 4, as on every Mac, and the two DMA
+channels'). Mac OS's serial driver, the ROM's SerialDMA, finds the channels
+by `compatible` (`chrp,es2`, `chrp,es3`), and sends and receives by DMA:
+it receives through a ring of buffers that it stops and restarts to see
+what has come in, with the SCC raising its DMA request for the receiver,
+and it transmits through a ring of its own, the SCC taking each character
+as there's room in its transmit FIFO. The SCC's interrupts tell it of
+errors, breaks and CTS changes (for hardware handshaking), through the
+68k-style dispatch of Mac OS's SCC interrupt handler (RR3, and the vector
+modified with the status through channel B). The modem's extension, which
+names the port "Internal Modem" in the Modem control panel, finds the
+modem by channel A's `slot-names` (Modem) on Mac OS 8.5 and by a channel
+A whose `compatible` names `cobalt` on Mac OS 9 (Blue's legacy one does:
+see [findings.md](findings.md), "The iMac's serial controller in the
+device tree"). The nodes are in the tree only with the modem (see
+[below](#the-modem)): other runs are as they were without it.
+
+With the modem attached, channel A carries data both ways. What Mac OS
+sends goes through the transmit FIFO (4 characters) to the shift register,
+and leaves one character per character time: start, data, parity and stop
+bits at the bit rate Mac OS programs (the baud-rate generator's time
+constant, its clock, 3.6864 MHz, and the clock mode: 57,600 or 115,200
+bits a second as the modem scripts set it). The modem's characters come
+into the receive FIFO (8) at the same pace, and wait at the modem while
+it's full. Everything is in guest time, so what Mac OS sees never depends
+on the host: a device event at the next character's time, like the other
+devices' (see [When devices are serviced](debugging.md#when-devices-are-serviced)).
+The receive, transmit and external/status interrupts, DTR and RTS (to the
+modem) and DCD and CTS (from it) are the SCC's, with RR0's CTS bit
+inverted, as on every Power Mac (the bit is clear while CTS is
+asserted). Channel B, with nothing attached, is as the whole SCC used to
+be: what Mac OS sends vanishes at once, the receiver sees an idle line,
+and it raises no interrupts.
+
+## The modem
+
+The iMac's built-in 56K modem "appears to the system as a serial port that
+responds to the typical AT commands" (Apple's iMac Developer Note), and
+Blue's is one: a Hayes-compatible modem (`src/modem.c`) on the SCC's
+channel A, whose calls go over TCP (`src/modemnet.c`), as DOSBox's and
+86Box's do. It's there in a window or real time (`--no-modem` leaves it
+out), and in instruction-time runs that ask for it (`--modem-listen`,
+`--modem-phonebook`, or an input script's `modem` commands): Mac OS sees
+the escc nodes and the modem only then, so other runs stay the same
+instruction for instruction.
+
+- **Commands:** what Mac OS's modem scripts send (8.5's "iMac Internal
+  56k" and 9's "Apple Internal 56K Modem (v.90)"), and what terminal
+  programs use: `ATZ`, `AT&F`, `E`, `V`, `Q`, `X`, `M`, `L`, `H`, `O`, `A`,
+  `D`, `S` registers (`S0` auto-answer, `S2` and `S12` for the escape, `S7`
+  for how long dialling waits, `S25` for how long DTR has to drop), `&C`,
+  `&D`, `I`, `&V` and `A/`, with verbose or numeric result codes; the rest
+  (`\N`, `%C`, `&K`, `W` and such) are taken with OK. `ATI12` answers `D1`,
+  by which Mac OS 9's script picks its settings.
+- **Dialling:** `ATDT host:port` (or `ATDP`) connects there, `host` alone
+  to port 23, and answers `CONNECT 56000` once connected, or `NO CARRIER`
+  (no answer, or nobody there) or `BUSY` (refused; `NO CARRIER` too
+  after `ATX0` to `ATX2`). A number of digits is
+  looked up in the phonebook (`--modem-phonebook FILE`: lines of `NUMBER
+  HOST:PORT`, with `telnet` or `raw` after it if need be, `#` starting a
+  comment); a number dialled in parts (`ATDT555;`, then `ATDT1234`), as
+  Mac OS's scripts do with long numbers, is put together. Names are looked
+  up and connections made on a thread of their own, and a key pressed while
+  dialling gives up, as on a real modem.
+- **Answering:** with `--modem-listen [ADDRESS:]PORT`, a connection to that
+  port rings (`RING` every six seconds of guest time, `S1` counting) until
+  `ATA`, or the `S0`th ring when `S0` is set. A connection coming in
+  during a call is closed at once.
+- **The call:** data goes both ways while it's on; `+++` with a second
+  (`S12`) of silence before and after returns to command mode, the call
+  kept (`ATO` goes back); so does `+++` followed at once by a command and
+  its CR (`+++ATH`, as Mac OS's scripts hang up). DCD follows the carrier
+  (`&C1`); dropping DTR for `S25` (0.05 s) hangs up (`&D2`), but not the
+  moment's drop of a serial driver resetting its channel. The far end
+  hanging up gives `NO CARRIER`. Characters go at the serial port's rate,
+  not a 56K line's.
+- **Telnet:** to port 23, to a phonebook entry marked `telnet`, and to any
+  far end that opens with a telnet command (as BBSes do), the modem speaks
+  telnet (RFC 854), as DOSBox's does: a 0xFF sent is doubled and one
+  received undoubled, and option negotiation is answered minimally (binary
+  and suppress-go-ahead agreed to both ways, the far end's echo accepted,
+  anything else refused); subnegotiations are skipped.
+- **Real time only,** as Ethernet: in instruction time the modem answers
+  its commands as ever, but dialling gives `NO CARRIER` and nothing rings,
+  so runs are reproducible; an input script's `modem` commands stand in
+  for a far end (see [Input scripts](debugging.md#input-scripts)).
+- **Blue's menu** shows what the modem is doing ("Modem: connected to
+  host:port", "Modem: idle, listening for calls on port N") with a Hang Up
+  button. `BLUE_LOG_MODEM=1` logs its commands and calls,
+  `BLUE_LOG_SERIAL=1` the SCC's registers.
+
+Mac OS 9's extension for the modem resets it through a GPIO of Heathrow's
+at the real iMac's Mac I/O address (`0x8000006D`), which it has written
+in; Blue's Mac I/O is elsewhere, so with the modem there that byte is
+answered there too (it's only kept: the modem needs no resetting).
 
 ## Display and the vertical blank
 

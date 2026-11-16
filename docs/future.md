@@ -4,40 +4,6 @@ Ideas worth doing some day, beyond the [roadmap](roadmap.md). Each says
 what the real iMac had, what it would be good for under Blue, and what it
 would take.
 
-The modem needs something first: a serial controller that carries
-data. Blue's Z8530 SCC (`src/scc.c`) has
-nothing attached today: what Mac OS sends vanishes, the receiver always sees
-an idle line, and it raises no interrupts. It would need data both ways, its
-interrupts (receive, transmit, status changes), the handshake and
-carrier-detect lines the drivers watch, timing at the chosen bit rate, and
-perhaps Mac I/O's DMA channels for the SCC if Mac OS's serial driver uses
-them on the iMac. Runs that use the network or a host device stay real-time
-only, as with Ethernet, with input-script commands for reproducible tests.
-
-## Modem
-
-- **The iMac's:** a built-in 56K modem (V.90 and K56flex; fax at 14.4K) that
-  "appears to the system as a serial port that responds to the typical AT
-  commands" (Apple's iMac Developer Note). Mac OS has a modem script for it
-  ("iMac Internal 56K"), so the Modem control panel, Remote Access and
-  serial programs find it as they would on the real machine.
-- **What for:** not the Internet (Ethernet already reaches it, far faster),
-  but software that only knows modems: terminal programs such as ZTerm
-  calling telnet BBSes (many still run), head-to-head modem games of the
-  90s between two Blue windows or over the Internet, and old dial-up
-  clients.
-- **How:** as DOSBox and 86Box do, the modem talks over TCP. `ATDT
-  host:port` (or a number from a small phonebook) connects there and answers
-  `CONNECT 56000`; hanging up closes the connection. An option such as
-  `--modem-listen PORT` makes an incoming connection ring, for `ATA` or
-  auto-answer (S0), so two Blue instances can call each other. The usual
-  Hayes behaviour: the command set Mac OS's script sends, `+++` with its
-  guard time, result codes, and carrier detect following the connection.
-- **For fun:** the real modem fed its speaker (dialling, the handshake) into
-  the sound chip; Blue could play that while connecting.
-- **Size:** moderate, nearly all of it in the serial controller; the modem
-  and TCP parts are small.
-
 ## Sound input (microphone and line in)
 
 - **The iMac's:** a built-in microphone above the screen and a stereo
