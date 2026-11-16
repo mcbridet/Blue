@@ -18,6 +18,8 @@ test and debug it.
   status bar.
 - [guest-tools.md](guest-tools.md): the guest tools and their installer: Blue
   Enhancements, the clipboard, the 3D engine, OpenGL and the Pippin library.
+- [3d.md](3d.md): 3D: the RAVE engine and QuickDraw 3D, Blue's OpenGL, the
+  software rasterizer and the GPU backend.
 - [jit.md](jit.md): the PowerPC JIT for AArch64 and x86-64.
 - [bring-up.md](bring-up.md): how Mac OS 8.5, 9.0, 9.1 and 9.2.2 were made to
   start up.
@@ -41,10 +43,7 @@ test and debug it.
 - [roadmap.md](roadmap.md): the next steps.
 - [plan.md](plan.md): the plan for Mac OS 9.1 and later, its tasks, and the
   findings along the way.
-- [future.md](future.md): ideas not planned yet: a modem, a serial port,
-  infrared, 3D sound, sound input, AltiVec, printing, game controllers and
-  more CD formats.
-- [opengl-plan.md](opengl-plan.md): Blue's OpenGL for Mac OS 9 games.
-- [gpu-plan.md](gpu-plan.md): the 3D engine's OpenGL backend.
-- [glide-plan.md](glide-plan.md): 3dfx Glide.
+- [future.md](future.md): ideas further off: a modem, a serial port,
+  infrared, 3D sound, sound input, AltiVec, 3dfx Glide, pictures on the
+  clipboard, printing, game controllers and more CD formats.
 - [x86-jit-plan.md](x86-jit-plan.md): the x86-64 JIT.

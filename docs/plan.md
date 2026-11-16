@@ -147,7 +147,7 @@ Done:
   in place of the Driver Services timer. The restored 9.2.2 reaches the
   Finder in instruction time without a key. See Findings, "The display's
   interrupt".
-- **OpenGL** (Task 18; milestones 0 to 8 of [opengl-plan.md](opengl-plan.md)): the
+- **OpenGL** (Task 18; milestones 0 to 8; [3d.md](3d.md)): the
   libraries, AGL and clears, checked by a test application in the guest;
   gl calls recorded in guest memory by the library's own code, and a
   fixed-function front end on the host drawing triangles (matrices,
@@ -829,7 +829,7 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 18. OpenGL for Mac OS 9 games
 
-- **Status:** milestones 0 to 8 done ([opengl-plan.md](opengl-plan.md) has the plan,
+- **Status:** milestones 0 to 8 done ([3d.md](3d.md) has how it works,
   its milestones and what's built). Milestone 8, the rest of OpenGL 1.2:
   logic ops (OpenGL's own on the GPU); line stipple (the counter going on
   along strips and loops, starting again for separate lines) and polygon
@@ -1183,8 +1183,8 @@ Facts later tasks need, added as they are found.
   16-16-16-16, stencil 0 or 8, 4 auxiliary buffers, window, offscreen,
   backing store, MP safe, robust, multiscreen and compliant, not
   accelerated or full screen. Its `gldGetString` gives "Apple", "Generic",
-  "1.1" and an extension list ending in `GL_ARB_multitexture` (left out of
-  [opengl-plan.md](opengl-plan.md) before). The engine's `glGetString` passes the
+  "1.1" and an extension list ending in `GL_ARB_multitexture`. The
+  engine's `glGetString` passes the
   vendor, renderer and version on as they are, and makes the extensions
   its own seven followed by those of the renderer's it knows (13), in the
   renderer's order, each with a space after it. ATI's
@@ -1193,8 +1193,8 @@ Facts later tasks need, added as they are found.
   smooth points or lines are on, whatever the hint. ATI's `gldGetString`
   picks its renderer's name and extensions by the chip; a Rage 128's
   list has `GL_EXT_texture_env_combine`, `GL_EXT_texture_lod_bias` and
-  `GL_SGIS_texture_edge_clamp` ([opengl-plan.md](opengl-plan.md) had guessed, from the
-  strings' order, a shorter one). The engine keeps `glTexEnv`'s LOD bias as
+  `GL_SGIS_texture_edge_clamp` (the strings' order alone suggests a
+  shorter one). The engine keeps `glTexEnv`'s LOD bias as
   given, per unit, but answers no `GL_MAX_TEXTURE_LOD_BIAS_EXT`
   (`GL_INVALID_ENUM`); its specular vector is the specification's formula.
   Its `glTexEnv` takes `GL_EXT_texture_env_combine`'s values only (no

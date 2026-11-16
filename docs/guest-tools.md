@@ -175,17 +175,16 @@ draws it:
   stay the same on every host. `BLUE_RASTER_THREADS` sets the number
   (default 3, counting the emulated processor's).
 
-The rasterizer and the GPU take what Mac OS 9's OpenGL needs too
-([opengl-plan.md](opengl-plan.md)): two texture units combined in stages as OpenGL's
-texture environments combine them, blend equations, color masks, fog by
-a fog coordinate, a stencil buffer and its test; RAVE's texture
-operations are such stages.
+The rasterizer and the GPU take what Mac OS 9's OpenGL needs too: two
+texture units combined in stages as OpenGL's texture environments combine
+them, blend equations, colour masks, fog by a fog coordinate, a stencil
+buffer and its test; RAVE's texture operations are such stages.
 
 `--no-gpu` (or `BLUE_GPU=0`) draws in software in real time too;
 `BLUE_GPU=1` draws with OpenGL in any run, a software renderer such as
 Mesa's llvmpipe included. `BLUE_RAVE_FPS=1` prints the frame rate every
-second, and `BLUE_LOG_RAVE=1` logs every call. [gpu-plan.md](gpu-plan.md)
-describes the GPU backend in full.
+second, and `BLUE_LOG_RAVE=1` logs every call. [3d.md](3d.md) describes
+the engine and both backends in full.
 
 Frames for the screen come at most one a vertical blank of the display's
 (60 a second of guest time), which shows no more; the iMac's 3D hardware
@@ -195,7 +194,7 @@ interrupts meanwhile; in instruction time guest time moves on instead.
 Games of the time go wrong at the frame rates the host's GPU reaches:
 Unreal Tournament's engine ticks its actors at least 5 ms at a time, so
 at 400 frames a second its game, timers and match clock included, ran
-at twice the speed (see Findings in [plan.md](plan.md#findings)). Waiting, the host sleeps,
+at twice the speed (see [3d.md](3d.md#presenting-and-pacing)). Waiting, the host sleeps,
 as when the guest idles (but guest time ahead of the host clock isn't
 made up then: the game would show it). In a window in real time, the
 window shows each such frame when it's due, so frames come at an even
@@ -207,9 +206,6 @@ again (and a window offers to update it). How Bugdom and Unreal
 Tournament use the engine is in [software.md](software.md#bugdom-and-unreal-tournament).
 
 ## Blue OpenGL Library, Memory and Utility
-
-Milestones 0 to 8 of the plan, [opengl-plan.md](opengl-plan.md), are done;
-what's left is under "Not yet" below.
 
 These are Mac OS 9's OpenGL libraries, as Blue's own, under
 Apple's fragment names (OpenGLLibrary, OpenGLMemory, OpenGLUtility) with
@@ -223,14 +219,14 @@ does OpenGL's
 fixed function, and it draws with the 3D engine's backend, on the GPU in
 real time and in software otherwise, into the context's window (clipped
 to its regions), the screen or an offscreen buffer, when it's swapped.
-So far: AGL (ATI's accelerated "Rage 128 OpenGL Engine" as on Mac OS 9,
+They do AGL (ATI's accelerated "Rage 128 OpenGL Engine" as on Mac OS 9,
 and, for pixel formats with an accumulation buffer, which only Apple's
 software renderer offered, that one, "Generic", drawn the same way but
 with Apple's strings; their pixel formats and renderer info; contexts
 laid out as Apple's, with their dispatch tables; drawables, swaps, swap
 and buffer rectangles) and, of
-OpenGL, the matrices and their stacks, `glBegin` and `glEnd`'s points,
-lines, triangles, quads and polygons with their colors, transformed,
+OpenGL 1.2, the matrices and their stacks, `glBegin` and `glEnd`'s points,
+lines, triangles, quads and polygons with their colours, transformed,
 clipped, culled, flat or smooth shaded, depth tested, blended or by logic
 ops, alpha tested, masked and scissored in the viewport; points and lines
 by OpenGL's rules (wide, antialiased, stippled, textured), the polygon
@@ -253,9 +249,9 @@ mipmaps, quadrics); selection and feedback (`src/glselect.c`);
 evaluators (`src/gleval.c`); `aglSetFullScreen` (the Display Manager
 switches the screen to the size asked for, and back when the drawable
 goes) and `aglUseFont` (QuickDraw draws the glyphs, as with Apple's).
-Not yet: OpenGLUtility's tessellators and NURBS (they draw nothing);
+They leave out OpenGLUtility's tessellators and NURBS (they draw nothing),
 antialiased polygons (`GL_POLYGON_SMOOTH` is kept, not drawn), auxiliary
-buffers and color index; S3TC and paletted textures aren't offered (nor
+buffers and colour index; S3TC and paletted textures aren't offered (nor
 were they by Apple's for a Rage 128). An OpenGLLibrary installed by an older version of Blue is left
 alone, and Blue says to update it.
 Unreal Tournament's OpenGL build (on the UT CD, `Extras:OpenGL UT.sea`)
@@ -268,7 +264,8 @@ before and where it went (the libraries' host calls, waiting for the
 backend, reading back from the GPU, writing the frame to guest memory,
 waiting for the frame's turn), the calls, records and primitives, and
 the GPU thread's time drawing and reading back; and a line for each
-update of the window (see [opengl-plan.md](opengl-plan.md), milestone 7).
+update of the window (see [3d.md](3d.md#where-a-frames-time-goes)).
+How they work, and how they're tested, is in [3d.md](3d.md#blues-opengl).
 
 ## Blue Pippin Library
 

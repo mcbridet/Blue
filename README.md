@@ -920,6 +920,7 @@ The [docs](docs/README.md) folder goes further:
 - [The iMac's devices](docs/devices.md), [the drives](docs/drives.md),
   [the shared folder](docs/shared-folder.md), [the window](docs/window.md)
   and [the guest tools](docs/guest-tools.md), in depth.
+- [3D](docs/3d.md): the RAVE engine, OpenGL and the GPU backend.
 - [The JIT](docs/jit.md).
 - [Notes on programs and games](docs/software.md).
 - [Building, testing and packaging](docs/building.md),
@@ -928,9 +929,8 @@ The [docs](docs/README.md) folder goes further:
 - [The QEMU reference](docs/qemu-reference.md) and
   [NanoKernel 2 under QEMU](docs/nk2-reference.md).
 - [The roadmap](docs/roadmap.md), [the plan](docs/plan.md) with its
-  findings, [ideas for later](docs/future.md), and the plans for
-  [OpenGL](docs/opengl-plan.md), [the GPU backend](docs/gpu-plan.md),
-  [Glide](docs/glide-plan.md) and [the x86-64 JIT](docs/x86-jit-plan.md).
+  findings, [ideas for later](docs/future.md), and the plan for
+  [the x86-64 JIT](docs/x86-jit-plan.md).
 
 ## License
 

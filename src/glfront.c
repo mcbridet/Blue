@@ -51,7 +51,7 @@ static const struct cap {
 	[GLF_CAP_POINT_SMOOTH] = { GL_POINT_SMOOTH, false, false },
 	[GLF_CAP_LINE_SMOOTH] = { GL_LINE_SMOOTH, false, false },
 	[GLF_CAP_LINE_STIPPLE] = { GL_LINE_STIPPLE, false, false },
-	/* (polygons aren't antialiased: see docs/opengl-plan.md; color index's logic op: there's none) */
+	/* (polygons aren't antialiased: see docs/3d.md; color index's logic op: there's none) */
 	[GLF_CAP_POLYGON_SMOOTH] = { GL_POLYGON_SMOOTH, false, false },
 	[GLF_CAP_POLYGON_STIPPLE] = { GL_POLYGON_STIPPLE, false, false },
 	[GLF_CAP_INDEX_LOGIC_OP] = { GL_INDEX_LOGIC_OP, false, false },
