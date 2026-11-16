@@ -217,15 +217,16 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   MacAlly iShock, Thrustmaster and others) were used through InputSprocket
   (Game Sprockets), with drivers from their makers or a generic USB HID
   driver.
-- **Where Blue is:** the host's gamepads don't reach Mac OS; games see the
-  keyboard and mouse only.
+- **Where Blue is:** the host's pads (SDL2's game controllers, in the
+  window) are the Mac's keyboard and mouse, by Blue's mapping or, while a
+  Pippin title runs in front, as the Pippin's AppleJack by the title's own
+  ([window.md](window.md#game-controllers),
+  [guest-tools.md](guest-tools.md#blue-pippin-library)); the right button
+  is a Control-click and the scroll wheel the arrow keys. Not yet: pads in
+  InputSprocket's configuration, with named buttons and sticks.
 - **What for:** games with InputSprocket support, which most Mac action
   games of the late 90s have (Unreal Tournament among them).
-- **Host side:** SDL2's game controller API (loaded at run time like the
-  rest of SDL; macOS and Linux; plugging in and out; the standard layouts of
-  Xbox, PlayStation and Switch pads), in window runs only, with script
-  commands for tests.
-- **Guest side, options:**
+- **Guest side, what's left:**
   - An InputSprocket driver among the guest tools, its logic in Blue
     through host calls like the 3D engine's: the pad appears in each game's
     InputSprocket configuration with named buttons, sticks and triggers,
@@ -237,18 +238,12 @@ only, as with Ethernet, with input-script commands for reproducible tests.
     read USB HID themselves; a base for other USB devices), but it needs
     USB device emulation and depends on what Mac OS 8.5-9.1's USB HID
     support does with gamepads (to check).
-  - A host-side mapping of the pad to keys and the mouse, for games without
-    InputSprocket (set up in the F12 menu, say).
-- **Related, small:** right-click as Control-click (Mac OS 8's contextual
-  menus), and the scroll wheel (Mac OS 9 had no system-wide support; the
-  guest tools could turn it into scrolling).
-- **Pippin titles:** the Bandai Pippin's AppleJack pad was an ADB device
-  whose buttons its driver turned into keys, as each title's `pipp`
-  resources say (Super Marathon's: arrows, Space, Tab, Option, Command,
-  Shift, Control and letters); a host pad mapped the same way would play
-  them as on a Pippin (the key mapping above, set per title).
-- **Size:** small to moderate for the InputSprocket driver and the key
-  mapping; moderate for the USB gamepad.
+  - Mappings of one's own, kept between runs (with the launcher), and
+    two AppleJacks for two-player Pippin titles.
+  - The scroll wheel as scrolling (the guest tools could scroll the window
+    under the pointer) rather than arrow keys.
+- **Size:** small to moderate for the InputSprocket driver; moderate for
+  the USB gamepad.
 
 ## More CD formats
 

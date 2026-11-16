@@ -321,6 +321,9 @@ F12 or Esc closes it again.
 - **Status bar** shows or hides the status bar.
 - **Capture the mouse** sets whether the mouse is captured while Mac OS
   hides its pointer, as games do (see [Keyboard and mouse](#keyboard-and-mouse)).
+- **Controllers** lists the game controllers connected, and which mapping
+  they follow; its checkbox turns them off (see
+  [Game controllers](#game-controllers)).
 
 While the menu is open, the Mac's clock stops, so it's behind by that
 much afterwards.
@@ -350,7 +353,7 @@ that it installs there for you:
 | Blue Enhancements | The screen follows the window's size, and the clipboard is shared with your computer. |
 | Blue 3D Engine | Accelerates QuickDraw 3D and RAVE games, which see an ATI Rage 128. |
 | Blue OpenGL Library, Memory and Utility | OpenGL for Mac OS 9 games, drawn on your GPU. |
-| Blue Pippin Library | Lets Bandai Pippin titles run (see [Pippin titles](#pippin-titles)). |
+| Blue Pippin Library | Lets Bandai Pippin titles run, and game controllers play them as the Pippin's AppleJack (see [Pippin titles](#pippin-titles)). |
 
 When the Finder is up and a tool is missing, or comes from another
 version of Blue, Blue offers to install them, over the Mac's screen:
@@ -413,14 +416,49 @@ Blue's: it opens the menu, and Mac OS never sees it. (On a Mac laptop,
 you may need to hold fn as you press F12.)
 
 The Mac has a one-button mouse: the left button is its button, and the
-others, and the scroll wheel, do nothing. For a contextual menu,
-Control-click.
+right button Control-clicks, for contextual menus. The scroll wheel presses
+the arrow keys (a press for each step of the wheel), which scroll most
+windows of the time: Mac OS 8 and 9 didn't know scroll wheels. In a game
+that has the mouse (below), the right button and the wheel do nothing.
 
 The Mac's pointer follows yours. When Mac OS hides its pointer for a
 moment, as games do, Blue captures the mouse, so that its movements go to
 the game; the window's title says so. Press **Control-Option**
 (Ctrl+Alt) to get your pointer back, and click in the window to capture
 it again. Capture the mouse in the menu turns this off.
+
+### Game controllers
+
+Game controllers (Xbox, PlayStation, Switch and other pads SDL knows,
+several at once, plugged in and out as you like) work in the window, as
+the Mac's keyboard and mouse. Their buttons are known by where they sit:
+A is the bottom face button, B the right one, X the left and Y the top,
+whatever the pad's labels say.
+
+| On the pad | In Mac OS |
+|---|---|
+| D-pad, left stick | The arrow keys |
+| A | Return |
+| B | Command-period (Cancel) |
+| X | Space |
+| Y | Tab |
+| Start | Esc |
+| Back (Select, View, Minus) | Command, held |
+| Left and right shoulder | Shift and Option, held |
+| Right stick | Moves the mouse (pressed: clicks) |
+| Right trigger | Clicks |
+| Left trigger | Control-clicks (a contextual menu) |
+
+While a [Pippin title](#pippin-titles) runs in front, the pad is the
+Pippin's AppleJack controller instead, and the title's own mapping of its
+buttons applies, as on a Pippin: the D-pad and left stick are its D-pad;
+A, B, X and Y its red, green, yellow and blue buttons; the shoulders and
+triggers its left and right fire buttons; Back, Guide (Home, PS) and
+Start its three buttons below; and the right stick its trackball.
+
+**Controllers** in Blue's menu (F12) lists the pads connected and which
+mapping they follow, and turns them off. A pad's input reaches Blue only
+while its window is in front.
 
 ### Copy and paste
 
@@ -565,9 +603,11 @@ proper speed.
 Many discs for the Bandai Pippin, Apple's 1996 game console design, run
 in Blue. Titles that need the Pippin's own library get Blue Pippin
 Library, one of the guest tools. Their saved games and preferences go in
-`System Folder:Preferences:Pippin:`, under the title's name. The Pippin's
-AppleJack controller isn't emulated: titles map its buttons to keys. More
-in [docs/software.md](docs/software.md#pippin-titles).
+`System Folder:Preferences:Pippin:`, under the title's name. A game
+controller plays them as the Pippin's AppleJack controller, by the
+title's own mapping of its buttons (see
+[Game controllers](#game-controllers)); the keyboard and mouse work too.
+More in [docs/software.md](docs/software.md#pippin-titles).
 
 A Pippin disc doesn't start the Mac by itself: a Pippin's system is in
 its console, and its titles run inside Mac OS. Start Blue with the Mac OS
@@ -713,8 +753,10 @@ Blue doesn't have everything a real iMac had, yet:
 - **Mac OS's virtual memory,** which stays off: give the Mac more memory
   with `--ram` instead.
 - **Modems, serial ports, infrared and printing.**
-- **Game controllers** (joysticks and gamepads), and USB or FireWire
-  devices of any kind: the keyboard and mouse are the Mac's input.
+- **InputSprocket,** for games that read game controllers themselves:
+  pads reach Mac OS as the keyboard and mouse (see
+  [Game controllers](#game-controllers)). USB and FireWire devices of any
+  kind aren't there either.
 - **Sound input** (a microphone), and 3D sound.
 - **AppleTalk** networking, and connections into the Mac.
 - **3dfx Glide,** for games that draw with a Voodoo card.
@@ -841,6 +883,17 @@ Blue now asks first while Mac OS is running (see [The window](#the-window)).
 
 Press Control-Option (Ctrl+Alt), or switch to another application. Click
 in the window to capture the mouse again.
+
+### My game controller does nothing
+
+Blue's window has to be in front. Check Controllers in Blue's menu (F12):
+the pad should be listed, and the checkbox on. Blue takes the pads SDL
+recognises as game controllers (most Xbox, PlayStation and Switch pads,
+and many others); a build of your own needs a recent SDL2 (2.0.18 or
+later, as for the menu).
+Games that read InputSprocket get the pad as keys, which their own key
+settings may not use: set the game's keys to the arrows, Return, Space and
+Tab, or use the keyboard.
 
 ### The CD came out when Mac OS restarted
 

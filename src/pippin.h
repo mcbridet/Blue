@@ -3,8 +3,7 @@
  * Bandai Pippin's system software (its "Pippin" enabler's 'nlib' 777), with
  * Apple's exports, for Pippin titles that link to it. Its code is the
  * library's own and calls Mac OS through InterfaceLib (and AppearanceLib);
- * it makes no host calls (the host call in the builder's stubs, which no
- * export uses, only identifies Blue's copy: see install.c).
+ * its only host calls tell Blue of the title's AppleJack (below).
  *
  * On a Pippin each call is a selector of the enabler's trap $AA6F (Pippin.h,
  * Pippin SDK 1.1); here they map onto Mac OS 8.5 to 9.2.2:
@@ -40,6 +39,19 @@
  * ShutDwnStart return at once: a Pippin turns off when its title quits,
  * which here would shut Mac OS down. (An application's patches are its own:
  * the Process Manager swaps them in and out with it.)
+ *
+ * And the title has an AppleJack, the Pippin's controller, for Blue's game
+ * controllers (pad.h): the AppleJack's driver's data (AJGlobalData, whose
+ * mapping of its switches to keys and clicks titles change), filled in with
+ * the title's first 'pipp' resource (as a Pippin loads one as a title
+ * starts; else with the driver's own mapping), found as titles find an
+ * AppleJack's: CountADBs counts one more ADB device than there are, and
+ * GetIndADB gives that one as an AppleJack (original address 3, its data
+ * area a cursor device record whose refCon points at the AJGlobalData;
+ * these patches the title's too). The library tells Blue where that is, and
+ * the title's process, with host calls (PIPPIN_ENTRY_ATTACH, and _DETACH as
+ * the title quits): Blue maps the pads by the switches' mapping there, and
+ * keeps their switchStates as the pads have them.
  */
 #ifndef BLUE_PIPPIN_H
 #define BLUE_PIPPIN_H
@@ -57,12 +69,18 @@
 extern const char *const pippin_exports[PIPPIN_EXPORTS];
 #define PIPPIN_FIRST_EXPORT 2           /* (entries 0 and 1: initialization and termination) */
 
+/* The host calls (entries after the exports): r3 the AJGlobalData, r4 (attaching) the title's process */
+#define PIPPIN_ENTRY_ATTACH (PIPPIN_FIRST_EXPORT + PIPPIN_EXPORTS)
+#define PIPPIN_ENTRY_DETACH (PIPPIN_ENTRY_ATTACH + 1)
+#define PIPPIN_ADB_ADDRESS 15           /* (the AppleJack's, as GetIndADB gives it) */
+
 /* The library's imports (InterfaceLib's, then AppearanceLib's), in its order */
 enum {
 	PIPPIN_FIND_FOLDER, PIPPIN_PB_GET_CAT_INFO_SYNC, PIPPIN_DIR_CREATE, PIPPIN_FLUSH_VOL, PIPPIN_STANDARD_GET_FILE,
 	PIPPIN_STANDARD_PUT_FILE, PIPPIN_FSP_DELETE, PIPPIN_GET_RESOURCE, PIPPIN_RELEASE_RESOURCE, PIPPIN_BLOCK_MOVE,
 	PIPPIN_BLOCK_MOVE_DATA, PIPPIN_NEW_GESTALT_VALUE, PIPPIN_DELETE_GESTALT_VALUE, PIPPIN_NGET_TRAP_ADDRESS,
-	PIPPIN_NSET_TRAP_ADDRESS, PIPPIN_OPEN_WD, PIPPIN_STANDARD_ALERT, PIPPIN_IMPORTS
+	PIPPIN_NSET_TRAP_ADDRESS, PIPPIN_OPEN_WD, PIPPIN_CUR_RES_FILE, PIPPIN_USE_RES_FILE, PIPPIN_GET1_IND_RESOURCE,
+	PIPPIN_GET_HANDLE_SIZE, PIPPIN_GET_CURRENT_PROCESS, PIPPIN_STANDARD_ALERT, PIPPIN_IMPORTS
 };
 extern const struct ndrv_import pippin_imports[PIPPIN_IMPORTS];
 

@@ -29,5 +29,5 @@ What's next for Blue. The work done so far, task by task, is in
    polygons, auxiliary buffers, color index: [opengl-plan.md](opengl-plan.md)).
 
 [future.md](future.md) has ideas not planned yet: a modem, a serial port, infrared, 3D
-sound, sound input, AltiVec, printing, game controllers, and more CD
+sound, sound input, AltiVec, printing, InputSprocket, and more CD
 formats.

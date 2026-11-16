@@ -42,7 +42,7 @@ test and debug it.
 - [plan.md](plan.md): the plan for Mac OS 9.1 and later, its tasks, and the
   findings along the way.
 - [future.md](future.md): ideas not planned yet: a modem, a serial port,
-  infrared, 3D sound, sound input, AltiVec, printing, game controllers and
+  infrared, 3D sound, sound input, AltiVec, printing, InputSprocket and
   more CD formats.
 - [opengl-plan.md](opengl-plan.md): Blue's OpenGL for Mac OS 9 games.
 - [gpu-plan.md](gpu-plan.md): the 3D engine's OpenGL backend.

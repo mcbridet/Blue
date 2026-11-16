@@ -20,10 +20,12 @@
 #include "hostlib.h"
 #include "icon.h"
 #include "menubar.h"
+#include "pad.h"
 #include "ui.h"
 
 /* The parts of the SDL2 ABI we use (stable across SDL 2.x). */
 #define SDL_INIT_VIDEO 0x00000020u
+#define SDL_INIT_GAMECONTROLLER 0x00002000u
 #define SDL_WINDOWPOS_CENTERED 0x2FFF0000
 #define SDL_WINDOWPOS_CENTERED_DISPLAY(k) (0x2FFF0000 | (k))
 #define SDL_WINDOW_FULLSCREEN 0x00000001u
@@ -66,6 +68,16 @@
 #define SDL_MOUSEBUTTONUP 0x402u
 #define SDL_MOUSEWHEEL 0x403u
 #define SDL_MOUSEWHEEL_FLIPPED 1u
+#define SDL_CONTROLLERAXISMOTION 0x650u
+#define SDL_CONTROLLERBUTTONDOWN 0x651u
+#define SDL_CONTROLLERBUTTONUP 0x652u
+#define SDL_CONTROLLERDEVICEADDED 0x653u        /* (which: the joystick's device index) */
+#define SDL_CONTROLLERDEVICEREMOVED 0x654u      /* (which: its instance ID, as in the others) */
+#define SDL_JOYSTICK_TYPE_GAMECONTROLLER 1
+#define SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS "SDL_GAMECONTROLLER_USE_BUTTON_LABELS"
+#define SDL_HINT_AUTO_UPDATE_JOYSTICKS "SDL_AUTO_UPDATE_JOYSTICKS"
+#define SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS "SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"
+#define SDL_CONTROLLER_VIRTUAL_BUTTONS 15       /* (A to the D-pad's right: a virtual one's buttons, in SDL's order) */
 #define SDL_CLIPBOARDUPDATE 0x900u
 #define SDL_RENDER_TARGETS_RESET 0x2000u /* (render targets lost what was drawn in them) */
 #define SDL_DROPFILE 0x1000u
@@ -120,6 +132,22 @@ typedef union {
 		char *file;                     /* (SDL's to free) */
 		uint32_t window;
 	} drop;
+	struct {
+		uint32_t type, timestamp;
+		int32_t which;
+		uint8_t axis, pad1, pad2, pad3;
+		int16_t value;
+		uint16_t pad4;
+	} caxis;
+	struct {
+		uint32_t type, timestamp;
+		int32_t which;
+		uint8_t button, state, pad1, pad2;
+	} cbutton;
+	struct {
+		uint32_t type, timestamp;
+		int32_t which;
+	} cdevice;
 	uint8_t padding[56];
 } SDL_Event;
 
@@ -184,6 +212,23 @@ struct sdl {
 	void *(*CreateRGBSurfaceFrom)(void *, int, int, int, int, uint32_t, uint32_t, uint32_t, uint32_t);
 	void (*SetWindowIcon)(void *, void *);
 	void (*FreeSurface)(void *);
+	/* game controllers (none if any of these is missing) */
+	int (*InitSubSystem)(uint32_t);
+	void *(*GameControllerOpen)(int);
+	void (*GameControllerClose)(void *);
+	const char *(*GameControllerName)(void *);
+	void *(*GameControllerGetJoystick)(void *);
+	int32_t (*JoystickInstanceID)(void *);
+	int32_t (*JoystickGetDeviceInstanceID)(int);
+	int (*NumJoysticks)(void);
+	void (*GameControllerUpdate)(void);
+	/* ... and virtual ones (2.0.14) */
+	int (*JoystickAttachVirtual)(int, int, int, int);
+	int (*JoystickDetachVirtual)(int);
+	int (*JoystickSetVirtualAxis)(void *, int, int16_t);
+	int (*JoystickSetVirtualButton)(void *, int, uint8_t);
+	void *(*JoystickOpen)(int);
+	void (*JoystickClose)(void *);
 };
 
 #define QUEUE 1024                      /* events waiting for the machine, at most */
@@ -217,6 +262,14 @@ struct handed {
 	struct ui_drives drives;
 	bool tools;
 	char tools_why_not[160];
+	bool has_pads;
+	struct ui_pads pads;
+	struct display_pad_request {    /* virtual pads' changes (display_pad_virtual()), in order */
+		enum display_pad_op op;
+		unsigned n, which;
+		int value;
+	} pad_requests[64];
+	unsigned pad_request_count;
 	bool prompt_changed;
 	bool prompt;
 	unsigned prompt_id;             /* (counts the prompts shown) */
@@ -281,6 +334,18 @@ struct display {
 	char prompt_text[2048], prompt_yes[32], prompt_no[32], prompt_alt[32];
 	bool tools;                     /* the menu has Install Guest Tools... (display_tools_state()), */
 	char tools_why_not[160];        /* ... enabled unless this says why not */
+	bool has_pads;                  /* ... and the game controllers (display_pads_state()) */
+	struct ui_pads pads;
+	/* game controllers (with SDL's support for them: `pads_on`), by Blue's number for them */
+	bool pads_on;
+	struct {
+		void *controller;       /* (NULL: none) */
+		int32_t id;             /* its joystick's instance ID */
+	} pad[PAD_MAX];
+	struct {                        /* ... and the virtual ones, display_pad_virtual()'s n */
+		void *joystick;         /* (NULL: none) */
+		int32_t id;
+	} virtual_pad[PAD_MAX];
 	bool fullscreen;
 	bool status_bar;                /* shown, below the screen (only with the menu's SDL) */
 	struct ui_status bar;           /* what it shows */
@@ -548,6 +613,21 @@ static bool load_sdl(struct sdl *s)
 	*(void **)&s->CreateRGBSurfaceFrom = dlsym(s->lib, "SDL_CreateRGBSurfaceFrom");
 	*(void **)&s->SetWindowIcon = dlsym(s->lib, "SDL_SetWindowIcon");
 	*(void **)&s->FreeSurface = dlsym(s->lib, "SDL_FreeSurface");
+	*(void **)&s->InitSubSystem = dlsym(s->lib, "SDL_InitSubSystem");
+	*(void **)&s->GameControllerOpen = dlsym(s->lib, "SDL_GameControllerOpen");
+	*(void **)&s->GameControllerClose = dlsym(s->lib, "SDL_GameControllerClose");
+	*(void **)&s->GameControllerName = dlsym(s->lib, "SDL_GameControllerName");
+	*(void **)&s->GameControllerGetJoystick = dlsym(s->lib, "SDL_GameControllerGetJoystick");
+	*(void **)&s->JoystickInstanceID = dlsym(s->lib, "SDL_JoystickInstanceID");
+	*(void **)&s->JoystickGetDeviceInstanceID = dlsym(s->lib, "SDL_JoystickGetDeviceInstanceID");
+	*(void **)&s->NumJoysticks = dlsym(s->lib, "SDL_NumJoysticks");
+	*(void **)&s->GameControllerUpdate = dlsym(s->lib, "SDL_GameControllerUpdate");
+	*(void **)&s->JoystickAttachVirtual = dlsym(s->lib, "SDL_JoystickAttachVirtual");
+	*(void **)&s->JoystickDetachVirtual = dlsym(s->lib, "SDL_JoystickDetachVirtual");
+	*(void **)&s->JoystickSetVirtualAxis = dlsym(s->lib, "SDL_JoystickSetVirtualAxis");
+	*(void **)&s->JoystickSetVirtualButton = dlsym(s->lib, "SDL_JoystickSetVirtualButton");
+	*(void **)&s->JoystickOpen = dlsym(s->lib, "SDL_JoystickOpen");
+	*(void **)&s->JoystickClose = dlsym(s->lib, "SDL_JoystickClose");
 	return true;
 }
 
@@ -982,6 +1062,7 @@ static void draw(struct display *d)
 			.prompt_no = d->prompt_no[0] ? d->prompt_no : NULL,
 			.prompt_alt = d->prompt_alt[0] ? d->prompt_alt : NULL,
 			.drives = d->has_drives ? &d->drives : NULL,
+			.pads = d->has_pads ? &d->pads : NULL,
 			.tools = d->tools,
 			.tools_why_not = d->tools_why_not[0] ? d->tools_why_not : NULL,
 			.scale = d->scale_chosen,
@@ -1021,6 +1102,11 @@ static void flush(struct display *d)
 			last->ev.y = q->ev.y;
 			last->ev.dx += q->ev.dx;
 			last->ev.dy += q->ev.dy;
+			continue;
+		}
+		if (q->ev.type == DISPLAY_EVENT_PAD_AXIS && last && last->ev.type == DISPLAY_EVENT_PAD_AXIS &&
+		    last->ev.pad == q->ev.pad && last->ev.button == q->ev.button) {
+			last->ev.value = q->ev.value;
 			continue;
 		}
 		if (q->ev.type == DISPLAY_EVENT_MENU_ACTION && q->prompt && q->prompt == d->in.prompt_id)
@@ -1188,6 +1274,91 @@ static void chosen(struct display *d, enum ui_action action)
 	emit(d, &ev, NULL, prompt);
 }
 
+/* ---- game controllers -------------------------------------------------------------- */
+
+/* Blue's number for a controller, by its joystick's instance ID (-1: not one that's open) */
+static int pad_number(const struct display *d, int32_t id)
+{
+	for (int k = 0; k < PAD_MAX; k++)
+		if (d->pad[k].controller && d->pad[k].id == id)
+			return k;
+	return -1;
+}
+
+/* A controller plugged in (SDL's device index; at startup, each that's there): opened, and numbered */
+static void pad_added(struct display *d, int index)
+{
+	struct sdl *s = &d->sdl;
+	if (pad_number(d, s->JoystickGetDeviceInstanceID(index)) >= 0)
+		return;
+	int k = 0;
+	while (k < PAD_MAX && d->pad[k].controller)
+		k++;
+	void *gc = k < PAD_MAX ? s->GameControllerOpen(index) : NULL;
+	if (!gc) {
+		fprintf(stderr, "display: a game controller can't be used (%s)\n",
+			k < PAD_MAX ? s->GetError() : "Blue takes four at most");
+		return;
+	}
+	d->pad[k].controller = gc;
+	d->pad[k].id = s->JoystickInstanceID(s->GameControllerGetJoystick(gc));
+	const char *name = s->GameControllerName(gc);
+	struct display_event ev = { .type = DISPLAY_EVENT_PAD_ADDED, .pad = k };
+	for (unsigned n = 0; n < PAD_MAX; n++)
+		ev.value |= d->virtual_pad[n].joystick && d->virtual_pad[n].id == d->pad[k].id;
+	emit(d, &ev, strdup(name ? name : "Game controller"), 0);
+}
+
+/* ... and unplugged */
+static void pad_removed(struct display *d, int32_t id)
+{
+	int k = pad_number(d, id);
+	if (k < 0)
+		return;
+	d->sdl.GameControllerClose(d->pad[k].controller);
+	d->pad[k].controller = NULL;
+	struct display_event ev = { .type = DISPLAY_EVENT_PAD_REMOVED, .pad = k };
+	emit(d, &ev, NULL, 0);
+}
+
+/* A virtual controller's change (display_pad_virtual()): SDL then sends its events as a real one's */
+static void pad_request(struct display *d, const struct display_pad_request *r)
+{
+	struct sdl *s = &d->sdl;
+	if (r->n >= PAD_MAX)
+		return;
+	void **joystick = &d->virtual_pad[r->n].joystick;
+	if (r->op == DISPLAY_PAD_PLUG && r->value && !*joystick) {
+		/* (a script's run in the window, the window in front or not: the host's own pads are ignored then) */
+		s->SetHintWithPriority(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1", SDL_HINT_OVERRIDE);
+		int index = s->JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, PAD_AXES,
+						     SDL_CONTROLLER_VIRTUAL_BUTTONS, 0);
+		*joystick = index >= 0 ? s->JoystickOpen(index) : NULL;
+		if (!*joystick) {
+			fprintf(stderr, "display: no virtual game controller (%s)\n", s->GetError());
+			return;
+		}
+		d->virtual_pad[r->n].id = s->JoystickInstanceID(*joystick);
+		/* (a trigger's axis is at its lowest at rest) */
+		s->JoystickSetVirtualAxis(*joystick, PAD_LEFT_TRIGGER, -32768);
+		s->JoystickSetVirtualAxis(*joystick, PAD_RIGHT_TRIGGER, -32768);
+	} else if (r->op == DISPLAY_PAD_PLUG && !r->value && *joystick) {
+		s->JoystickClose(*joystick);
+		*joystick = NULL;
+		for (int k = 0; k < s->NumJoysticks(); k++) {
+			if (s->JoystickGetDeviceInstanceID(k) == d->virtual_pad[r->n].id) {
+				s->JoystickDetachVirtual(k);
+				break;
+			}
+		}
+	} else if (r->op == DISPLAY_PAD_BUTTON && *joystick) {
+		s->JoystickSetVirtualButton(*joystick, (int)r->which, r->value != 0);
+	} else if (r->op == DISPLAY_PAD_AXIS && *joystick) {
+		int v = r->which >= PAD_LEFT_TRIGGER ? 2 * r->value - 32768 : r->value;
+		s->JoystickSetVirtualAxis(*joystick, (int)r->which, (int16_t)(v < -32768 ? -32768 : v > 32767 ? 32767 : v));
+	}
+}
+
 /* The keys the menu takes (for moving about it from the keyboard) */
 static void menu_key(struct display *d, unsigned scancode, bool down)
 {
@@ -1329,8 +1500,37 @@ static void handle(struct display *d, SDL_Event *e)
 			float flip = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
 			ui_mouse_wheel(d->ui, flip * (float)e->wheel.x, flip * (float)e->wheel.y);
 			d->stale = true;
+			return;
 		}
+		if (d->menu || d->prompt || (!e->wheel.x && !e->wheel.y))
+			return;
+		ev.type = DISPLAY_EVENT_WHEEL;
+		ev.dx = e->wheel.x;
+		ev.dy = e->wheel.y;
+		break;
+	case SDL_CONTROLLERDEVICEADDED:
+		pad_added(d, e->cdevice.which);
 		return;
+	case SDL_CONTROLLERDEVICEREMOVED:
+		pad_removed(d, e->cdevice.which);
+		return;
+	case SDL_CONTROLLERBUTTONDOWN:
+	case SDL_CONTROLLERBUTTONUP:
+		ev.pad = pad_number(d, e->cbutton.which);
+		if (ev.pad < 0 || e->cbutton.button >= PAD_BUTTONS)
+			return;
+		ev.type = DISPLAY_EVENT_PAD_BUTTON;
+		ev.button = e->cbutton.button;
+		ev.down = e->type == SDL_CONTROLLERBUTTONDOWN;
+		break;
+	case SDL_CONTROLLERAXISMOTION:
+		ev.pad = pad_number(d, e->caxis.which);
+		if (ev.pad < 0 || e->caxis.axis >= PAD_AXES)
+			return;
+		ev.type = DISPLAY_EVENT_PAD_AXIS;
+		ev.button = e->caxis.axis;
+		ev.value = e->caxis.value;
+		break;
 	case SDL_DROPFILE:
 	case SDL_DROPTEXT: {
 		if (!e->drop.file)
@@ -1363,6 +1563,8 @@ struct taken {
 	char *clipboard;
 	bool clipboard_asked;
 	bool close;
+	struct display_pad_request pad_requests[64];
+	unsigned pad_request_count;
 };
 
 /*
@@ -1454,9 +1656,14 @@ static void take(struct display *d, struct taken *t)
 		d->drives = in->drives;
 		d->tools = in->tools;
 		memcpy(d->tools_why_not, in->tools_why_not, sizeof d->tools_why_not);
+		d->has_pads = in->has_pads;
+		d->pads = in->pads;
 		d->stale |= d->menu;
 		in->info_changed = false;
 	}
+	memcpy(t->pad_requests, in->pad_requests, in->pad_request_count * sizeof in->pad_requests[0]);
+	t->pad_request_count = in->pad_request_count;
+	in->pad_request_count = 0;
 	if (in->prompt_changed) {
 		t->prompt = true;
 		d->prompt = in->prompt;
@@ -1523,6 +1730,8 @@ static void act(struct display *d, struct taken *t)
 	if (t->clipboard && d->sdl.SetClipboardText)
 		d->sdl.SetClipboardText(t->clipboard);
 	free(t->clipboard);
+	for (unsigned k = 0; k < t->pad_request_count; k++)
+		pad_request(d, &t->pad_requests[k]);
 	if (t->clipboard_asked) {
 		char *text = d->sdl.GetClipboardText(), *copy = text ? strdup(text) : NULL;
 		d->sdl.free(text);
@@ -1545,6 +1754,7 @@ static void destroy_window(struct display *d);
  */
 #define REDRAW_NS 16000000u
 #define IDLE_MS 250                     /* (the window looks round at least this often) */
+#define PAD_MS 8                        /* (... and with a game controller, this often) */
 #define CHECK_NS 1000000000u            /* (and at its display this often) */
 
 /* The window's thread: until the machine closes the window, or is over */
@@ -1556,9 +1766,20 @@ static void run(struct display *d)
 		uint64_t now = clock_ns(CLOCK_MONOTONIC);
 		int timeout = animated ? (drawn + REDRAW_NS > now ? (int)((drawn + REDRAW_NS - now) / 1000000u) : 0) :
 				IDLE_MS;
+		bool pads = false;
+		for (unsigned k = 0; k < PAD_MAX; k++)
+			pads |= d->pad[k].controller != NULL;
+		timeout = pads && timeout > PAD_MS ? PAD_MS : timeout;
 		SDL_Event e;
 		uint64_t cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID);
 		bool got = d->sdl.WaitEventTimeout(&e, timeout) == 1;
+		/*
+		 * The pads are looked at (and for pads plugged in or out) here, rather
+		 * than as SDL waits for events, which then polls every millisecond (a
+		 * twentieth of a core) while there's one
+		 */
+		if (d->pads_on)
+			d->sdl.GameControllerUpdate();
 		cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID) - cpu;  /* (waiting, but for what SDL does meanwhile) */
 		atomic_store(&d->woken, false);
 
@@ -1646,6 +1867,18 @@ static struct display *open_window(const char *title, unsigned width, unsigned h
 		catch_signals(false);
 		goto fail;
 	}
+	/* game controllers, A the bottom button whatever its label (each there sends SDL_CONTROLLERDEVICEADDED) */
+	struct sdl *s = &d->sdl;
+	if (s->InitSubSystem && s->GameControllerOpen && s->GameControllerClose && s->GameControllerName &&
+	    s->GameControllerGetJoystick && s->JoystickInstanceID && s->JoystickGetDeviceInstanceID && s->NumJoysticks &&
+	    s->GameControllerUpdate) {
+		s->SetHintWithPriority(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0", SDL_HINT_OVERRIDE);
+		/* (see run(): else SDL's wait for events polls every millisecond while there's a pad) */
+		s->SetHintWithPriority(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0", SDL_HINT_OVERRIDE);
+		d->pads_on = s->InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0;
+		if (!d->pads_on)
+			fprintf(stderr, "display: no game controllers (%s)\n", s->GetError());
+	}
 #ifdef __APPLE__
 	menubar_install();
 #endif
@@ -1720,6 +1953,12 @@ static void destroy_window(struct display *d)
 	free(d->in.clipboard_text);
 	if (d->kq >= 0)
 		close(d->kq);
+	for (unsigned k = 0; k < PAD_MAX; k++) {
+		if (d->pad[k].controller)
+			d->sdl.GameControllerClose(d->pad[k].controller);
+		if (d->virtual_pad[k].joystick)
+			d->sdl.JoystickClose(d->virtual_pad[k].joystick);
+	}
 	ui_close(d->ui);
 	if (d->cursor_color)
 		d->sdl.DestroyTexture(d->cursor_color);
@@ -1973,6 +2212,32 @@ void display_drives_state(struct display *d, const struct ui_drives *drives)
 		d->in.drives = *drives;
 	d->in.info_changed = true;
 	pthread_mutex_unlock(&host.lock);
+}
+
+void display_pads_state(struct display *d, const struct ui_pads *pads)
+{
+	pthread_mutex_lock(&host.lock);
+	if (d->in.has_pads != d->pads_on || memcmp(&d->in.pads, pads, sizeof d->in.pads) != 0) {
+		d->in.has_pads = d->pads_on;
+		d->in.pads = *pads;
+		d->in.info_changed = true;
+	}
+	pthread_mutex_unlock(&host.lock);
+}
+
+bool display_pad_virtual(struct display *d, enum display_pad_op op, unsigned n, unsigned which, int value)
+{
+	const struct sdl *s = &d->sdl;
+	if (!d->pads_on || !s->JoystickAttachVirtual || !s->JoystickDetachVirtual || !s->JoystickSetVirtualAxis ||
+	    !s->JoystickSetVirtualButton || !s->JoystickOpen || !s->JoystickClose)
+		return false;
+	pthread_mutex_lock(&host.lock);
+	struct handed *in = &d->in;
+	if (in->pad_request_count < sizeof in->pad_requests / sizeof in->pad_requests[0])
+		in->pad_requests[in->pad_request_count++] = (struct display_pad_request){ op, n, which, value };
+	pthread_mutex_unlock(&host.lock);
+	wake(d);
+	return true;
 }
 
 bool display_prompt(struct display *d, const char *text, const char *yes, const char *no)

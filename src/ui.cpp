@@ -739,6 +739,23 @@ static enum ui_action menu(const struct ui_state *s, const struct keys *keys)
 	ImGui::EndDisabled();
 	ImGui::TextDisabled(s->mouse == UI_MOUSE_FOLLOWS ? "(the Mac shows its cursor: the mouse follows the pointer)" :
 			    "(while the Mac hides its cursor; Control-Option releases it)");
+	if (s->pads) {
+		separator();
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 480);
+		ImGui::Text("Controllers: %s", s->pads->count ? s->pads->names : "none connected");
+		ImGui::PopTextWrapPos();
+		bool on = s->pads->on;
+		if (checkbox("Controllers as the keyboard and mouse", &on))
+			action = UI_PADS;
+		tip("Game controllers' buttons and sticks as keys and the mouse: as the Pippin's AppleJack while "
+		    "a Pippin title runs, by the title's own mapping; otherwise the D-pad and left stick are the "
+		    "arrow keys, A Return, B Command-period, X Space, Y Tab, Start Esc, Back Command, the "
+		    "shoulders Shift and Option, the right stick the mouse, and the triggers clicks (the left "
+		    "one a Control-click)");
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 480);
+		ImGui::TextDisabled("(%s)", s->pads->mapping);
+		ImGui::PopTextWrapPos();
+	}
 	if (s->news) {
 		separator();
 		text_wrapped(s->news, 480);     /* (the drives' news can be long) */

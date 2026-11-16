@@ -17,7 +17,8 @@
  *                       take Apple's place (see install.h).
  *   Blue Pippin Library PippinPPC (pippin.h), the Bandai Pippin's library,
  *                       for Pippin titles that link to it; its code is its
- *                       own, calling Mac OS (no host calls).
+ *                       own, calling Mac OS (its host calls only tell Blue
+ *                       of the title's AppleJack, for game controllers).
  */
 #ifndef BLUE_TOOLS_H
 #define BLUE_TOOLS_H
@@ -37,7 +38,7 @@
 #define HOSTCALL_TOOLS_GLM 0x105u       /* OpenGLMemory */
 #define HOSTCALL_TOOLS_GLU 0x106u       /* OpenGLUtility */
 #define HOSTCALL_TOOLS_GL_TEST 0x107u   /* the OpenGL test application (gltest.h) */
-#define HOSTCALL_TOOLS_PIPPIN 0x108u    /* (in the Pippin library's stubs, which nothing calls: see pippin.h) */
+#define HOSTCALL_TOOLS_PIPPIN 0x108u    /* the Pippin library's (pippin.h) */
 #define TOOLS_VOLUME_SIZE (2u << 20)
 
 /* The tools' files, in the volume's order */
@@ -75,6 +76,10 @@ struct helper {
 	unsigned long launches, switches, failures;
 	int32_t last_error;             /* of the last mode switch that failed */
 	unsigned long scrap_calls;      /* to the patches */
+	/* which process is in front, asked for as it looks round (while Blue wants to know: a Pippin title runs) */
+	bool want_front;
+	bool front_known;
+	uint32_t front[2];              /* (its ProcessSerialNumber) */
 };
 
 void helper_init(struct helper *h);

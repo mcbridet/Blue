@@ -71,6 +71,9 @@ with `#` are comments):
 | `tools install`, `tools later`, `tools never`, `tools offer` | the guest tools' offer: answered, or made now |
 | `clipboard TEXT`, `print-clipboard` | the host's clipboard, stood in for |
 | `clock N` | from here, guest time as for an N MIPS processor |
+| `pad N plug [NAME]`, `pad N unplug` | game controller N (0 to 3) plugged in or out |
+| `pad N button NAME down\|up` | its button pressed or let go, by SDL's name: `a`, `b`, `x`, `y`, `back`, `guide`, `start`, `leftstick`, `rightstick`, `leftshoulder`, `rightshoulder`, `dpup`, `dpdown`, `dpleft`, `dpright` |
+| `pad N axis NAME VALUE` | its stick or trigger moved, from -1 to 1 (a trigger's from 0): `leftx`, `lefty` (down positive), `rightx`, `righty`, `lefttrigger`, `righttrigger` |
 
 Times can be seconds of host time since the start instead, written with
 an `s` (`12.5s click 100 200`), for scripts in real time (in the window,
@@ -81,6 +84,13 @@ a script's times are either all instruction counts or all seconds.
 scripted run leaves the window's alone), for Blue Enhancements to share
 (see [guest-tools.md](guest-tools.md#the-clipboard)): the text is as if copied on the host with the window
 then brought to the front.
+
+`pad` plays a game controller (see
+[window.md](window.md#game-controllers)): in a window, through one of
+SDL's virtual game controllers (SDL 2.0.14 and later), as a real pad
+would; otherwise, or without them, straight to the pads' mapping. A
+scripted run ignores the host's own pads. Its right stick moves the mouse
+as guest time passes, so the same script moves it as far each time.
 
 `clock N` keeps a run reproducible while making guest time pass as on a
 guest processor of N MIPS, so that work paced by guest time (sound, timer
@@ -198,6 +208,7 @@ and doesn't read it.
 | `BLUE_LOG_LIBS=1` | the file SDL2 and libslirp were loaded from |
 | `BLUE_LOG_MP=1` | Multiprocessing Services' calls, task switches, timers and software interrupts |
 | `BLUE_LOG_NET=1` | the Ethernet driver's calls |
+| `BLUE_LOG_PADS=1` | the game controllers' buttons and axes, and the mapping each went to |
 | `BLUE_LOG_PCI=1` | PCI configuration space accesses |
 | `BLUE_LOG_RAVE=1` | every call to the 3D engine |
 | `BLUE_LOG_SHARE=1` | Mac OS's writes to the shared folder |

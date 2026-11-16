@@ -12,7 +12,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           bootinfo.c + devtree.c (Trampoline replacement, device tree),
           rtas.c (clock/NVRAM/power/PCI configuration), mmio.c, macio.c,
           dbdma.c, via.c, cuda.c, adb.c, scc.c, awacs.c, ohci.c (USB), pci.c
-          (configuration space), nvram.c (devices), ndrv.c (PEF fragment
+          (configuration space), nvram.c (devices), pad.c (game
+          controllers as the keyboard and mouse), ndrv.c (PEF fragment
           generator: drivers, the guest tools),
           video.c, disk.c (native drivers), floppy.c (floppy images),
           drives.c (removable drives: where images go, the menu),

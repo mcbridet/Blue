@@ -1023,8 +1023,10 @@ the kernel); 8 onwards as the boot progresses.
   made in scratch: playing through a level isn't scriptable. The other
   Pippin disc here, "1995.1.17 Hanshin Daishinsai" (a Director 4
   projector, 68k), runs on both.
-- **Open:** the AppleJack controller ([future.md](future.md)); titles that use the
-  Pippin's video calls (PippinVideo.h's) or its floppy dock.
+- **Open:** titles that use the Pippin's video calls (PippinVideo.h's)
+  or its floppy dock. (The AppleJack controller: the host's game
+  controllers play as one, by each title's mapping; see Findings, "The
+  AppleJack".)
 
 ## Findings
 
@@ -3588,3 +3590,39 @@ Facts later tasks need, added as they are found.
   terminal, and (but with `--headless`) over a black screen in a 640 x
   480 window at the display's own scale, with Copy Command (the Pippin's)
   and Quit; exit status 1.
+- **The AppleJack** (game controllers): Apple's Pippin Technical Note
+  "Applejack Input Device Driver" (PPBD-JHACEF003, 4/11/96) gives its
+  driver's data, AJGlobalData: `pipp`, MyTalkR0, handlerID, ourMBState,
+  ourLockState, switchStates (a long, a bit per switch, 0 while down),
+  SwitchData switchMappingArray[18] (function, modifiers, keyCode,
+  charCode: functions nothing, mouse, double-click, mouse lock, keyboard,
+  front panel (unused), modifier; modifiers bits Command, Shift, Caps
+  Lock, Option, Control), nextjADBProc and cursorHandler: 92 bytes, as a
+  `pipp` resource is. The switch numbers are the bits of its ADB register
+  0: 0-2 the three system buttons below (left, middle, right), 3-7 none,
+  8 blue, 9 yellow, 10-13 the D-pad's up, left, right and down, 14 red,
+  15 green, 16 the right fire button, 17 the left. The key codes are
+  virtual ones (the KeyMap's, an event's): Super Marathon's have 0x7E for
+  up and 0x3B for Control, where the note's own constants say 0x36 (the
+  ADB keyboard's raw code); the System's `KMAP` maps the ADB keyboard's
+  codes to them (raw 0x36 Control to 0x3B, the arrows 0x3B-0x3E to
+  0x7B-0x7E, the right-hand modifiers 0x7B-0x7D to 0x3C-0x3E). The driver
+  sits in a Pippin's ROM; Super Marathon's disc has no Applejack extension
+  (its System Folder's Extensions folder has only "Pippin 1.2 ROM Init"),
+  and the enabler's own `pipp` resources (0, and 128: the startup
+  picture) aren't mappings. `marathon.ppc` and `marathon2.ppc` each have
+  `pipp` 1000 (the menus: the D-pad the arrows, the fire buttons the mouse
+  button, the system buttons Command-Q, mouse lock and double-click) and
+  1001 (the game: O, K, ; and L on the D-pad, Z and X the fire buttons,
+  Option, Space, Shift and Tab the coloured buttons, Command-Q, Control
+  and P the system buttons). Their routine at code offset 0x38174 (in
+  Marathon's) goes through CountADBs down to 1 with GetIndADB, and for a
+  device whose origADBAddr is 3 and dbDataAreaAddr isn't nil, takes that
+  as a cursor device record, its refCon (offset 8) as AJGlobalData, and if
+  that begins `pipp`, copies the resource's 18 SwitchData into it (nothing
+  else). It's called with 1000 as menus come up, and with 1001 by
+  "LoadGameAppleJackSettings" only if a byte the game sets from Gestalt
+  'pipn' says it's a Pippin. The ADB Manager's traps: _CountADBs $A077,
+  _GetIndADB $A078 and _GetADBInfo $A079 (Blue Pippin Library's patch
+  first went on $A079 by mistake: Marathon then found no AppleJack, and
+  GetADBInfo for the mouse's address 3 gave the AppleJack's record).
