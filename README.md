@@ -549,8 +549,11 @@ rest of the line), `floppy eject` and `cdrom eject` (the first CD-ROM drive
 whose disc Mac OS isn't using), which follow the same rules.
 
 CD-ROM drives answer as CD-ROM drives (see CDs: audio and cue sheets
-below), and the swappable ones say their disc is ejectable, and that a
-restart keeps it in. A CD-ROM drive gives
+below), and the swappable ones say their disc is ejectable. As in an iMac,
+a disc stays in its drive through a restart (Special > Restart, the guest
+tools' Install and Restart, the menu's Restart) and when Mac OS shuts
+down, and is mounted again after the restart; Mac OS itself ejects a
+floppy when it restarts or shuts down (see Floppies). A CD-ROM drive gives
 Mac OS a drive for each HFS partition of the disc in it at startup (one if
 it's empty); a disc put in later with more shows its first ones, and a
 disc comes out once none of its volumes is in use. A CD put in while Mac OS runs is never
@@ -572,7 +575,8 @@ instruction.
 
 A CD-ROM drive (every one, swappable or not) answers Mac OS as Apple's
 CD-ROM driver does on a real Mac (`src/cdrom.c`, after Apple's Technical
-Note DV22): its driver is named `.AppleCD`, DriverGestalt says `cdrm`, and
+Note DV22): its driver is named `.AppleCD`, DriverGestalt says `cdrm` (and
+`ejec`, that a restart or shutdown leaves the disc in), and
 it has the calls that AppleCD Audio Player, the Control Strip's CD module,
 Audio CD Access, QuickTime and games make: the table of contents
 (ReadTOC), where the drive is (AudioStatus, the Q subchannel), playing
@@ -663,7 +667,9 @@ device 7, much as a USB floppy drive is on a real iMac, and needs nothing
 installed in Mac OS. It answers as a floppy drive
 (DriverGestalt 'devt' 'flop', a floppy disk's icon and the drive's, in
 color, the 'where' of Get Info, the format list) and says its disk is
-ejectable, and Mac OS keeps the disk in at a restart. A floppy is never the
+ejectable. Mac OS ejects the disk when it restarts or shuts down, as from a
+Mac's own floppy drive (the next of several `--floppy` images then goes
+in). A floppy is never the
 startup disk: the drive is empty as far as Mac OS knows until applications
 run (see plan.md, Findings), and Blue doesn't look for a ROM file on it.
 Transfers take guest time at the disks' rate. The status bar's floppy light
@@ -729,7 +735,8 @@ first (its file is in use while it runs). Once everything is in place,
 Mac OS restarts as Special > Restart does (Blue's installer sends the
 Process Manager the Restart Apple event): programs are asked to quit, and
 can ask to save their work first, or stop the restart (the tools are in
-place then, and load at the next restart). Afterwards the tools load as
+place then, and load at the next restart). CDs stay in their drives
+through the restart (see Floppies and CDs). Afterwards the tools load as
 any extension does: Blue Enhancements runs, programs find the 3D engine
 and Blue's OpenGL, and nothing is offered. If anything goes wrong, Mac
 OS doesn't restart, and the box says what. This works on Mac OS 8.5, 8.6,

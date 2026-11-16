@@ -692,8 +692,16 @@ void disk_driver_call(struct disk *d, struct ndrv_call *c, uint32_t timebase_hz)
 #define FORMAT_TSS 0x80u                /* format list: tracks, sides and sectors are given */
 #define FORMAT_CURRENT 0x40u            /* ... the disk in the drive has this format */
 #define FORMAT_HIGH_DENSITY 0x10u
-#define RESTART_DONT_EJECT 1u           /* DriverGestalt 'ejec' */
-#define MEDIA_CDROM 129                 /* ... 'minf' */
+/*
+ * DriverGestalt 'ejec': a CD stays in at a restart and at shutdown, as on
+ * an iMac. Both bits: 8.5's, 8.6's and 9.1's ShutDown Managers test the
+ * first at a restart (as Apple's headers name them), 9.2.2's (its ROM's
+ * and its System's) the second. The floppy drive doesn't answer, so Mac OS
+ * ejects its disk then, as from a Mac's floppy drive.
+ */
+#define RESTART_DONT_EJECT 1u
+#define SHUT_DOWN_DONT_EJECT 2u
+#define MEDIA_CDROM 129                 /* DriverGestalt 'minf' */
 #define MEDIA_OVERWRITABLE 136
 #define MEDIA_NONE (-1)
 #define DRIVE_INFO_SUPERDRIVE 4u        /* Control 23: an internal 400K/800K/720K/1440K drive */
@@ -1050,8 +1058,8 @@ static int32_t cdrom_status(struct disk *d, uint32_t pb, uint32_t toc, uint64_t 
 			mem_w32(m, p + 4, os_type("scsi"));     /* (as with boot_gestalt: see status()) */
 		} else if (sel == os_type("dvrf")) {
 			mem_w32(m, p + 4, d->unit << 8);
-		} else if (sel == os_type("ejec") && d->removable) {
-			mem_w32(m, p + 4, RESTART_DONT_EJECT);  /* (a restart keeps the disc in, as Blue does) */
+		} else if (sel == os_type("ejec")) {
+			mem_w32(m, p + 4, RESTART_DONT_EJECT | SHUT_DOWN_DONT_EJECT);
 		} else if (sel == os_type("mics")) {
 			mem_w32(m, p + 4, data + MEDIA_ICNS);
 		} else if (sel == os_type("dics")) {
@@ -1178,8 +1186,6 @@ static int32_t floppy_status(struct disk *d, uint32_t pb, uint32_t toc)
 		uint32_t sel = mem_r32(m, p);
 		if (sel == os_type("devt")) {
 			mem_w32(m, p + 4, os_type("flop"));
-		} else if (sel == os_type("ejec")) {
-			mem_w32(m, p + 4, RESTART_DONT_EJECT);  /* (a restart keeps the disk in, as Blue does) */
 		} else if (sel == os_type("minf")) {
 			mem_w32(m, p + 4, blocks);
 			mem_w32(m, p + 8, 512);

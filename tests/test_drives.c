@@ -170,11 +170,11 @@ static void test_cdrom(struct mem *mem)
 	CHECK_EQ(blocks(mem, &d, 0), (4u << 20) / 512);
 	CHECK_EQ(timer(&d, mem, 1000), 1);                      /* (applications or not) */
 	CHECK_EQ(read_block(&d, mem, drive, 2), 0);              /* (mounted) */
-	/* it answers as a CD-ROM drive, with its icons, keeping its disc at a restart */
+	/* it answers as a CD-ROM drive, with its icons, keeping its disc at a restart and at shutdown */
 	CHECK_EQ(gestalt(&d, mem, drive, "devt"), 0);
 	CHECK_EQ(mem_r32(mem, PB + 32), be32("cdrm"));
 	CHECK_EQ(gestalt(&d, mem, drive, "ejec"), 0);
-	CHECK_EQ(mem_r32(mem, PB + 32), 1);
+	CHECK_EQ(mem_r32(mem, PB + 32), 3);
 	CHECK_EQ(gestalt(&d, mem, drive, "mics"), 0);
 	CHECK_EQ(mem_r32(mem, mem_r32(mem, PB + 32)), be32("icns"));
 	static uint8_t icn[2][256], icns[2][FLOPPY_ICNS_SIZE];
@@ -529,6 +529,47 @@ static void test_cd_calls(struct mem *mem)
 	unlink(data);
 }
 
+/*
+ * What Mac OS's ShutDown Manager makes of a drive's DriverGestalt 'ejec'
+ * answer (none: it ejects the disc) at a restart or at shutdown: 8.5's,
+ * 8.6's and 9.1's test the bit named for what's happening, 9.2.2's (its
+ * ROM's, and its System's patch) the other one.
+ */
+static bool shutdown_keeps(int32_t err, uint32_t answer, bool restart, bool mac_os_922)
+{
+	uint32_t asked = restart ? 1 : 2;
+	if (mac_os_922)
+		asked = 3 - asked;
+	return !err && (answer & asked);
+}
+
+/* A restart or shutdown: Mac OS asks each drive (as drive 0) whether to leave its disc in, else ejects it */
+static void test_shutdown(struct mem *mem)
+{
+	char one[256];
+	make_image(one, sizeof one, 4u << 20, "Disc One");
+	static struct disk drive[3];
+	CHECK_EQ(disk_open_cdrom(&drive[0], mem, one), 0);     /* swappable */
+	CHECK_EQ(disk_open(&drive[1], mem, one, true, true), 0);        /* fixed */
+	disk_open_floppy(&drive[2], mem);
+	for (unsigned k = 0; k < 3; k++) {
+		struct disk *d = &drive[k];
+		load_driver(d, mem);
+		mem_w32(mem, 0x308 + 2, 0);
+		mem_w32(mem, 0x308 + 6, 0);
+		CHECK_EQ(io(d, mem, NDRV_INITIALIZE, 0, 0), 0);
+		for (unsigned v = 0; v < 4; v++) {
+			mem_w32(mem, PB + 32, 0);
+			int32_t err = gestalt(d, mem, 0, "ejec");
+			bool restart = v & 1, mac_os_922 = v & 2;
+			/* a CD stays in its drive, at a restart and at shutdown, whatever the Mac OS; a floppy comes out */
+			CHECK(shutdown_keeps(err, mem_r32(mem, PB + 32), restart, mac_os_922) == !d->floppy);
+		}
+		disk_close(d);
+	}
+	unlink(one);
+}
+
 /* Where images go, and what the menu shows */
 static void test_routing(struct mem *mem)
 {
@@ -624,6 +665,7 @@ void test_drives(void)
 	memset(mem_ptr(&mem, 0), 0, 0x40000);
 	test_cdrom(&mem);
 	test_cd_calls(&mem);
+	test_shutdown(&mem);
 	test_routing(&mem);
 	mem_free(&mem);
 }
