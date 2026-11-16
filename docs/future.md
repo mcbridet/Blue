@@ -4,7 +4,7 @@ Ideas worth doing some day, beyond the [roadmap](roadmap.md). Each says
 what the real iMac had, what it would be good for under Blue, and what it
 would take.
 
-The modem, a serial port and infrared all need the same thing first: a
+The modem and a serial port both need the same thing first: a
 serial controller that carries data. Blue's Z8530 SCC (`src/scc.c`) has
 nothing attached today: what Mac OS sends vanishes, the receiver always sees
 an idle line, and it raises no interrupts. It would need data both ways, its
@@ -65,43 +65,6 @@ only, as with Ethernet, with input-script commands for reproducible tests.
   device tree.
 - **Size:** small once the serial controller carries data: the host side is
   termios and socket plumbing.
-
-## Infrared (IrDA)
-
-- **The iMac's:** revision A and B iMacs have an infrared port that supports
-  IrDA but not Apple's older IRTalk (Apple Tech Info Library 20928);
-  revision C dropped infrared. Mac OS 8.5-9 drive it with the Infrared
-  control panel. Which part of the I/O chip drives the transceiver, and how
-  the device tree describes it, is to be checked in the developer note and
-  the ROM's tree.
-- **What for:** little today. macOS never had IrDA, and Linux removed its
-  stack in 4.17, so there is nothing on the host to talk to. What could
-  work is a virtual beam: two Blue instances joined over TCP, so the
-  Infrared control panel's file exchange (and whatever runs over it) works
-  between two emulated iMacs. Mostly for completeness and curiosity.
-- **How:** the serial controller above in IrDA mode, with the frames
-  (IrLAP) passed to the other instance as they are; Mac OS's own stack does
-  the rest.
-- **Size:** small once the serial controller carries data, but low value.
-
-## 3D sound
-
-- **SoundSprocket** (Apple Game Sprockets, Mac OS 8-9): software 3D sound
-  for games, a listener and sources placed in space, filtered through the
-  Sound Manager so two speakers or headphones give direction. It runs on the
-  guest's processor before the sound reaches the sound chip, so it should
-  already work with Game Sprockets installed (Bugdom's setup includes it).
-  Nothing to do but confirm it with a game that uses it.
-- **The iMac's SRS "3D Surround Sound":** a stereo-widening effect in the
-  iMac's audio hardware, after the sound chip, turned on and off in
-  Monitors & Sound (Sound, "Enabled"; Apple advised turning it off for
-  headphones). Under Blue the switch does nothing, and it isn't known
-  whether the checkbox even appears (that depends on what the emulated sound
-  hardware reports). To do it: find which codec or GPIO bit the iMac's
-  sound driver sets for it, then widen the host's output while it's on.
-  SRS's processing was proprietary, so this would be an approximation, and
-  today's headphones and host systems often add their own spatial audio, so
-  it's low priority.
 
 ## Sound input (microphone and line in)
 
@@ -255,30 +218,3 @@ it, `docs/glide-plan.md`, is in git history.
   - The scroll wheel as scrolling (the guest tools could scroll the window
     under the pointer) rather than arrow keys.
 - **Size:** moderate for the USB gamepad; small for the rest.
-
-## More CD formats
-
-- **Where Blue is:** CD images plain, compressed (UDIF, Disk Copy 6) or
-  with tracks (cue sheets with `.bin`, WAVE, AIFF, FLAC, MP3 or Ogg Vorbis
-  tracks; Nero, Alcohol 120%, CloneCD, CHD), whose audio the CD-ROM drive
-  plays and reads as Apple's CD-ROM driver does; compressed images in the
-  floppy drive and as locked disks too ([drives.md](drives.md#cd-images),
-  [Compressed images](drives.md#compressed-images)). Hybrid Mac/PC discs
-  usually carry a partition map too and should work (not yet tried).
-- **Formats still missing:** KenCode-compressed NDIF (Disk Copy 6.0's
-  first compression); DART floppy images; sparse images and bundles
-  (`.sparseimage`, `.sparsebundle`); a CHD that needs its parent;
-  Alcohol's `.mdx`; DiscJuggler (`.cdi`), BlindWrite, and cdrdao's `.toc`
-  on its own (its `.cue`, when there is one beside it, Blue reads); audio
-  at other rates than 44.1 kHz (resampled as read), and Opus.
-- **Not yet tried:** a real early UDIF (Apple Hardware Test 1.2.2's, ADC
-  chunks: one made the same way mounts), and real Alcohol and CloneCD
-  images (those checked were made from a cue sheet by a script following
-  the formats).
-- **CD audio, what's left:** recording from the CD (the codec's input DMA
-  records silence even with the CD selected); de-emphasis for tracks
-  flagged with pre-emphasis (played as stored); CD-Text (titles); a check
-  of Mac OS 9's Audio CD Access and its AIFF tracks, and of games that play
-  their soundtracks from the CD (AppleCD Audio Player, the Control Strip's
-  CD module, Audio CD Access and QuickTime's import were tried on 8.5).
-- **Size:** small for each format left: a reader behind the drives.
