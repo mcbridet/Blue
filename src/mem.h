@@ -36,12 +36,20 @@ enum {
 	 */
 	MEM_FAST_W = 16,
 	MEM_FAST_R = 32,
+	/*
+	 * Writable, but the next write is to be seen first (see mem_watch()):
+	 * the JIT's view of the page is read-only meanwhile, and it isn't
+	 * MEM_FAST_W.
+	 */
+	MEM_WATCH = 64,
 };
 
 struct mem {
 	uint8_t *base;
 	uint8_t *pageflags;
 	int fd;                 /* behind `base`, or -1 */
+	uint32_t host_pages;    /* guest pages in a host page (at least 1) */
+	unsigned long unwatched;        /* host pages unwatched (see mem_watch()) */
 	/*
 	 * Called before [addr, addr + len) changes, for each page with MEM_CODE
 	 * (len stays within the page); it clears MEM_CODE when the page no
@@ -76,6 +84,24 @@ void mem_load(struct mem *m, uint32_t addr, const void *data, uint32_t size);
 /* Tells the JIT that the host is about to change [addr, addr + size). */
 void mem_invalidate(struct mem *m, uint32_t addr, uint32_t size);
 
+/*
+ * Watching for writes (the window's, to the framebuffer: see
+ * video_copy_changes()). mem_watch() sets MEM_WATCH on the writable pages
+ * of [addr, addr + size). The first write to a watched page, whichever way
+ * it comes (the JIT's stores, which fault on its view of the page or take
+ * their checked way; the interpreter's and the host's, which go through
+ * mem_ok_w() or mem_invalidate()), first clears MEM_WATCH there and on the
+ * pages sharing its host page (mem_unwatch()). So a page still watched
+ * hasn't been written since it was watched.
+ */
+void mem_watch(struct mem *m, uint32_t addr, uint32_t size);
+void mem_unwatch(struct mem *m, uint32_t page);
+
+static inline bool mem_watched(const struct mem *m, uint32_t addr)
+{
+	return m->pageflags[addr >> MEM_PAGE_SHIFT] & MEM_WATCH;
+}
+
 __attribute__((cold)) bool mem_write_slow(struct mem *m, uint32_t addr, uint32_t len);
 
 /* True if [addr, addr + len) is accessible with `need`; len must be <= 4096. */
@@ -88,12 +114,13 @@ static inline bool mem_ok(const struct mem *m, uint32_t addr, uint32_t len, unsi
 	       (m->pageflags[last >> MEM_PAGE_SHIFT] & need) == need;
 }
 
-/* mem_ok(MEM_W) for a guest store, which also invalidates translated code it overwrites. */
+/* mem_ok(MEM_W) for a guest store, which also invalidates translated code it overwrites (and is seen, if watched). */
 static inline bool mem_ok_w(struct mem *m, uint32_t addr, uint32_t len)
 {
 	uint32_t last = addr + len - 1;
-	if (__builtin_expect(last >= addr && (m->pageflags[addr >> MEM_PAGE_SHIFT] & (MEM_W | MEM_CODE)) == MEM_W &&
-			     (m->pageflags[last >> MEM_PAGE_SHIFT] & (MEM_W | MEM_CODE)) == MEM_W, 1))
+	if (__builtin_expect(last >= addr &&
+			     (m->pageflags[addr >> MEM_PAGE_SHIFT] & (MEM_W | MEM_CODE | MEM_WATCH)) == MEM_W &&
+			     (m->pageflags[last >> MEM_PAGE_SHIFT] & (MEM_W | MEM_CODE | MEM_WATCH)) == MEM_W, 1))
 		return true;
 	return mem_write_slow(m, addr, len);
 }

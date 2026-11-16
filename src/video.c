@@ -324,6 +324,7 @@ static void gray_page(struct video *v)
 	uint32_t black = bpp <= 8 ? (1u << bpp) - 1 : 0;
 	uint8_t *fb = mem_ptr(v->mem, v->fb_base);
 
+	mem_invalidate(v->mem, v->fb_base, rb * h);
 	for (unsigned y = 0; y < h; y++) {
 		uint8_t *row = fb + (size_t)y * rb;
 		memset(row, 0, rb);
@@ -698,18 +699,49 @@ void video_convert(const struct video_palette *p, const uint8_t *src, size_t src
 	}
 }
 
-unsigned video_changed_rows(const uint8_t *shown, const uint8_t *fb, size_t row_bytes, unsigned rows,
-			    struct video_rows *bands, unsigned max)
+unsigned video_copy_changes(struct video *v, uint8_t *copy, uint8_t *changed, unsigned rows, bool all, bool watch)
 {
-	unsigned n = 0;
-	for (unsigned y = 0; y < rows; y++) {
-		if (memcmp(shown + y * row_bytes, fb + y * row_bytes, row_bytes) == 0)
+	struct mem *m = v->mem;
+	size_t rb = video_row_bytes(v), size = rb * rows;
+	size_t unit = (size_t)(m->host_pages ? m->host_pages : 1) << MEM_PAGE_SHIFT;
+	const uint8_t *fb = mem_ptr(m, v->fb_base);
+	unsigned n = 0, marked = 0;             /* (rows marked: the next to mark is at or after `marked`) */
+	size_t arm_from = 0, arm_to = 0;        /* (units to watch: one run at a time) */
+	for (size_t at = 0; at < size; at += unit) {
+		size_t len = size - at < unit ? size - at : unit;
+		bool watched = watch && !all;
+		for (size_t p = at; p < at + len && watched; p += MEM_PAGE_SIZE)
+			watched = mem_watched(m, v->fb_base + (uint32_t)p);
+		if (watched) {
+			static int check = -1;          /* BLUE_WINDOW_CHECK: compared all the same, to find writes not seen */
+			if (check < 0)
+				check = getenv("BLUE_WINDOW_CHECK") != NULL;
+			if (check && memcmp(copy + at, fb + at, len))
+				printf("window: a write to 0x%08zX wasn't seen (BLUE_WINDOW_CHECK)\n", v->fb_base + at);
 			continue;
-		if (n && (y - bands[n - 1].to < VIDEO_ROWS_GAP || n == max))
-			bands[n - 1].to = y + 1;
-		else if (max)
-			bands[n++] = (struct video_rows){ y, y + 1 };
+		}
+		bool differs = all || memcmp(copy + at, fb + at, len) != 0;
+		if (differs) {
+			memcpy(copy + at, fb + at, len);
+			unsigned from = (unsigned)(at / rb), to = (unsigned)((at + len - 1) / rb) + 1;
+			from = from > marked ? from : marked;
+			if (to > from) {
+				memset(changed + from, 1, to - from);
+				n += to - from;
+				marked = to;
+			}
+		}
+		if (!watch || (differs && !all))
+			continue;
+		if (arm_to != at) {
+			if (arm_to > arm_from)
+				mem_watch(m, v->fb_base + (uint32_t)arm_from, (uint32_t)(arm_to - arm_from));
+			arm_from = at;
+		}
+		arm_to = at + len;
 	}
+	if (arm_to > arm_from)
+		mem_watch(m, v->fb_base + (uint32_t)arm_from, (uint32_t)(arm_to - arm_from));
 	return n;
 }
 

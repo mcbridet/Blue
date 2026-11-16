@@ -1,7 +1,8 @@
 /*
  * The screen for the window: converting the framebuffer to 32-bit pixels
- * at every depth (the same colours as the RGB screenshots take), finding
- * the rows that changed, and the hardware cursor the driver takes from
+ * at every depth (the same colours as the RGB screenshots take), keeping
+ * the window's copy up to date (comparing it, and watching the
+ * framebuffer's pages for writes), and the hardware cursor the driver takes from
  * Mac OS. The display's VBL interrupt: its timing on the timebase, and the
  * driver's handler for it in the node's interrupt set. The 3D engine's
  * frames for the screen, at most one a vertical blank.
@@ -85,36 +86,79 @@ static void test_convert(void)
 	}
 }
 
-static void test_changed_rows(void)
+/* Whether rows [from, to) are marked changed, and only they */
+static bool marked(const uint8_t *changed, unsigned rows, unsigned from, unsigned to)
 {
-	enum { ROWS = 100, ROW = 64 };
-	static uint8_t a[ROWS * ROW], b[ROWS * ROW];
-	struct video_rows r[8];
-	memset(a, 0x55, sizeof a);
-	memcpy(b, a, sizeof b);
-	CHECK_EQ(video_changed_rows(a, b, ROW, ROWS, r, 8), 0);
+	for (unsigned y = 0; y < rows; y++)
+		if (changed[y] != (y >= from && y < to))
+			return false;
+	return true;
+}
 
-	/* rows near each other are one band; a row 49 after the last starts another */
-	b[5 * ROW] ^= 1;
-	b[6 * ROW + 63] ^= 1;
-	b[30 * ROW + 10] ^= 1;
-	b[80 * ROW] ^= 1;
-	b[99 * ROW + 63] ^= 1;
-	CHECK_EQ(video_changed_rows(a, b, ROW, ROWS, r, 8), 2);
-	CHECK_EQ(r[0].from, 5);
-	CHECK_EQ(r[0].to, 31);
-	CHECK_EQ(r[1].from, 80);
-	CHECK_EQ(r[1].to, 100);
-	/* past the last band there may be, the rest go into it */
-	CHECK_EQ(video_changed_rows(a, b, ROW, ROWS, r, 1), 1);
-	CHECK_EQ(r[0].from, 5);
-	CHECK_EQ(r[0].to, 100);
+/*
+ * The window's copy brought up to date: by comparing, and with the
+ * framebuffer's pages watched (writes seen through mem_ok_w(), as the
+ * interpreter's and the JIT's checked stores are, and mem_invalidate(), as
+ * the host's are), a host page at a time
+ */
+static void test_copy_changes(void)
+{
+	struct video *v = &video;
+	video_init(v, &mem, FB, FB_SIZE, TIMEBASE);     /* (800 x 600, 8 bits: 600 rows of 800 bytes) */
+	enum { ROWS = 600, ROW = 800 };
+	size_t unit = (size_t)mem.host_pages * MEM_PAGE_SIZE;
+	uint8_t *fb = mem_ptr(&mem, FB), *copy = malloc(ROWS * ROW), changed[ROWS];
+	for (size_t k = 0; k < ROWS * ROW; k++)
+		fb[k] = next_byte();
+	for (int watch = 0; watch < 2; watch++) {
+		memset(changed, 0, sizeof changed);
+		CHECK_EQ(video_copy_changes(v, copy, changed, ROWS, true, watch), ROWS);
+		CHECK(!memcmp(copy, fb, ROWS * ROW));
+		CHECK_EQ(mem_watched(&mem, FB), watch);
+		CHECK_EQ(mem_watched(&mem, FB + ROWS * ROW - 1), watch);
+		memset(changed, 0, sizeof changed);
+		CHECK_EQ(video_copy_changes(v, copy, changed, ROWS, false, watch), 0);
 
-	memcpy(b, a, sizeof b);
-	b[0] ^= 0x80;
-	CHECK_EQ(video_changed_rows(a, b, ROW, ROWS, r, 8), 1);
-	CHECK_EQ(r[0].from, 0);
-	CHECK_EQ(r[0].to, 1);
+		/* a store (into the second host page): the rows of that page */
+		uint32_t at = FB + (uint32_t)unit + 100;
+		CHECK(mem_ok_w(&mem, at, 1));
+		CHECK(!mem_watched(&mem, at));
+		CHECK_EQ(mem_watched(&mem, at - unit), watch);
+		mem_w8(&mem, at, (uint8_t)~mem_r8(&mem, at));
+		unsigned from = (unsigned)(unit / ROW), to = (unsigned)((2 * unit - 1) / ROW) + 1;
+		CHECK_EQ(video_copy_changes(v, copy, changed, ROWS, false, watch), to - from);
+		CHECK(marked(changed, ROWS, from, to));
+		CHECK(!memcmp(copy, fb, ROWS * ROW));
+		/* written again (with the same byte), it isn't watched until it's stayed the same */
+		memset(changed, 0, sizeof changed);
+		CHECK(mem_ok_w(&mem, at, 1));
+		CHECK_EQ(video_copy_changes(v, copy, changed, ROWS, false, watch), 0);
+		CHECK_EQ(mem_watched(&mem, at), watch);
+
+		/* the host's writes, as a disk's DMA (the last row: in the last page, part of a host page) */
+		at = FB + (ROWS - 1) * ROW;
+		mem_invalidate(&mem, at, ROW);
+		CHECK(!mem_watched(&mem, at));
+		memset(fb + (ROWS - 1) * ROW, 0x5A + watch, ROW);
+		from = (unsigned)(((ROWS - 1) * ROW) / unit * unit / ROW);
+		CHECK_EQ(video_copy_changes(v, copy, changed, ROWS, false, watch), ROWS - from);
+		CHECK(marked(changed, ROWS, from, ROWS));
+		CHECK(!memcmp(copy, fb, ROWS * ROW));
+		memset(changed, 0, sizeof changed);
+		CHECK_EQ(video_copy_changes(v, copy, changed, ROWS, false, watch), 0);
+	}
+	/* comparing sees what watching wouldn't: writes no one was told of */
+	fb[3 * unit + 5] ^= 1;
+	memset(changed, 0, sizeof changed);
+	CHECK_EQ(video_copy_changes(v, copy, changed, ROWS, false, true), 0);
+	CHECK(video_copy_changes(v, copy, changed, ROWS, false, false) > 0);
+	CHECK(!memcmp(copy, fb, ROWS * ROW));
+	mem_unwatch(&mem, FB >> MEM_PAGE_SHIFT);
+	for (uint32_t p = 0; p < FB_SIZE; p += MEM_PAGE_SIZE)
+		mem_unwatch(&mem, (FB + p) >> MEM_PAGE_SHIFT);
+	CHECK(!mem_watched(&mem, FB));
+	CHECK(mem_ok_w(&mem, FB, 4));
+	free(copy);
 }
 
 /* A driver request; false if it called out instead of finishing */
@@ -482,7 +526,7 @@ void test_video(void)
 	mem_map(&mem, 0, 0x100000, MEM_RW);
 	mem_map(&mem, FB, FB_SIZE, MEM_RW);
 	test_convert();
-	test_changed_rows();
+	test_copy_changes();
 	test_cursor();
 	test_vbl_timing();
 	test_frame_pacing();

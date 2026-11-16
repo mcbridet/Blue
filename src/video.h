@@ -184,17 +184,26 @@ void video_palette(const struct video *v, struct video_palette *p);
 void video_convert(const struct video_palette *p, const uint8_t *src, size_t src_pitch, unsigned width,
 		   unsigned rows, uint32_t *dst, size_t dst_pitch);
 
-/*
- * The rows that differ between two copies of the framebuffer (rows
- * `row_bytes` long): up to `max` bands of them, top to bottom, those fewer
- * than VIDEO_ROWS_GAP rows apart (or past the last) taken as one. Returns
- * how many.
- */
-#define VIDEO_ROWS_GAP 32u
+/* A band of rows of the screen */
 struct video_rows {
 	unsigned from, to;              /* rows from .. to - 1 */
 };
-unsigned video_changed_rows(const uint8_t *shown, const uint8_t *fb, size_t row_bytes, unsigned rows,
-			    struct video_rows *bands, unsigned max);
+
+/*
+ * Brings `copy`, the window's copy of the first `rows` rows of the screen
+ * (laid out as in the framebuffer), up to date with the framebuffer, and
+ * marks the rows it changes with a 1 in `changed` (a byte each): all of
+ * them if `all`, otherwise those that differ. Returns how many it marked.
+ *
+ * It goes a host page at a time (mem.h's, at least MEM_PAGE_SIZE bytes),
+ * comparing each with the copy. With `watch`, the framebuffer's pages are
+ * watched for writes (mem_watch()): a host page that hasn't changed since
+ * the last frame is watched from now on, and while it's still watched it
+ * hasn't been written, and isn't compared. One that has changed isn't
+ * watched again until it stays the same for a frame: a page written every
+ * frame would otherwise take a fault every frame, which costs several
+ * times what comparing it does.
+ */
+unsigned video_copy_changes(struct video *v, uint8_t *copy, uint8_t *changed, unsigned rows, bool all, bool watch);
 
 #endif

@@ -255,7 +255,7 @@ static bool kcall(struct ppc_cpu *c, unsigned n)
 	return c->kcall(c, n);
 }
 
-/* A store by translated code to a page holding translated code; `value` is in guest byte order */
+/* A store by translated code to a page holding translated code, or a watched one; `value` is in guest byte order */
 static void code_store(struct jit_state *st, uint32_t ea, uint64_t value, uint32_t size)
 {
 	struct jit *j = (struct jit *)st;
@@ -352,6 +352,13 @@ static struct jit_block *find(struct jit *j, uint32_t pc)
  * The instruction is translated with checks from then on (its bit in
  * jit_page.slow): what touched a device once tends to do it again.
  *
+ * A store to a watched page (MEM_WATCH, which the view has read-only: see
+ * mem_watch()) faults too, the first since the page was watched: the
+ * handler unwatches it, which makes the page writable in the view, and the
+ * store goes ahead, the instruction as it was (the window watches the
+ * framebuffer's pages for what changed in each frame: checks from then on
+ * would slow every store to it).
+ *
  * A faulting access has changed nothing, so the interpreter starts afresh.
  * For a store that straddles into a protected page, the architecture would
  * let the host write the part before the boundary first; Apple's cores
@@ -373,6 +380,12 @@ static void fault_handler(int sig, siginfo_t *si, void *ctx)
 		if (!j || !j->view || pc < (uintptr_t)j->blocks_start || pc >= (uintptr_t)j->code_free ||
 		    addr - (uintptr_t)j->view >= MEM_SPAN)
 			continue;
+		uint32_t page = (uint32_t)((addr - (uintptr_t)j->view) >> MEM_PAGE_SHIFT);
+		if (addr - (uintptr_t)j->view < MEM_SPACE && (j->mem->pageflags[page] & MEM_WATCH)) {
+			mem_unwatch(j->mem, page);      /* (a write seen: it goes ahead, as it is) */
+			j->watch_faults++;
+			return;
+		}
 		uint32_t at = (uint32_t)(pc - (uintptr_t)j->code), lo = 0, hi = j->nsites;
 		while (lo < hi) {
 			uint32_t mid = lo + (hi - lo) / 2;
@@ -409,7 +422,7 @@ static unsigned host_prot(const struct jit *j, uint64_t h)
 	for (unsigned k = 0; k < per; k++) {
 		if (!(f[k] & MEM_R))
 			return PROT_NONE;
-		if ((f[k] & (MEM_W | MEM_CODE)) != MEM_W)
+		if ((f[k] & (MEM_W | MEM_CODE | MEM_WATCH)) != MEM_W)
 			prot = PROT_READ;
 	}
 	return prot;
@@ -888,8 +901,10 @@ void jit_print_stats(const struct jit *j, FILE *f)
 		j->exits[EXIT_LINK], j->exits[EXIT_TRAP] + j->exits[EXIT_SC] + j->exits[EXIT_HOSTCALL],
 		j->exits[EXIT_MMIO]);
 	if (j->view)
-		fprintf(f, "jit: fastmem%s: %lu faults, %lu instructions checked since, %lu protection changes\n",
-			j->fastmem ? "" : " (off)", j->faults, j->slowed, j->protects);
+		fprintf(f, "jit: fastmem%s: %lu faults, %lu instructions checked since, %lu protection changes%s",
+			j->fastmem ? "" : " (off)", j->faults, j->slowed, j->protects, j->watch_faults ? "" : "\n");
+	if (j->view && j->watch_faults)
+		fprintf(f, "; %lu writes to watched pages seen\n", j->watch_faults);
 }
 
 #else   /* no JIT for this host */

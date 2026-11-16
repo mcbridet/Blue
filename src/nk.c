@@ -508,22 +508,20 @@ struct machine {
 	uint64_t want_ns;               /* host time it last changed (0: from a script, at once) */
 	struct display *display;        /* host window, if open */
 	bool hw_cursor;                 /* ... and the display driver offers Mac OS a hardware cursor for it */
-	uint8_t *shown;                 /* framebuffer bytes as last shown */
-	uint8_t shown_clut[256][3];
-	unsigned shown_w, shown_h, shown_bpp;
-	uint64_t shown_ns;
-	struct video_palette palette;   /* (for the depth and CLUT shown) */
+	uint8_t shown_clut[256][3];     /* the CLUT the window was last handed */
+	uint64_t shown_ns;              /* ... and when it last had something new */
+	bool window_compare;            /* BLUE_WINDOW_COMPARE: the window finds changes by comparing only (no watch) */
 	/* BLUE_WINDOW_PROFILE (see window_profile()) */
 	bool window_profile;
 	uint64_t wp_ns, wp_start_ns;    /* host time of the last report, and the first frame */
 	uint64_t wp_idle_ns;            /* idle_ns then */
+	unsigned long wp_unwatched;     /* ... and the framebuffer's pages seen written (see video_copy_changes()) */
 	struct display_times wp_display;        /* the window's times then */
 	uint64_t wp_frames, wp_changed, wp_rows, wp_bytes;      /* since then: frames, those that changed, ... */
 	uint64_t wp_ns_in, wp_cpu_in;   /* ... the time display_frame() took on this thread */
 	uint64_t wp_changes_ns, wp_changes_cpu; /* ... finding the changes and copying them */
-	uint64_t wp_convert_ns, wp_convert_cpu; /* ... converting them (into the window's texture) */
+	uint64_t wp_input_ns, wp_input_cpu;     /* ... taking the window's input */
 	bool quit;                      /* the window was closed */
-	bool redraw;                    /* the window needs drawing even if the screen is the same */
 	bool mouse_captured;            /* host motion goes to the ADB mouse (see follow_cursor()) */
 	bool mouse_released;            /* ... but the user let the pointer go (Control-Option) */
 	bool paused;                    /* the menu is open (F12): the guest doesn't run */
@@ -1112,6 +1110,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->awacs.log = getenv("BLUE_LOG_SOUND") != NULL;
 	m->audio_log = getenv("BLUE_LOG_AUDIO") != NULL;
 	m->window_profile = getenv("BLUE_WINDOW_PROFILE") != NULL;
+	m->window_compare = getenv("BLUE_WINDOW_COMPARE") != NULL;
 	/*
 	 * The codec's status says it's valid, as a running codec's does. Mac
 	 * OS's sound plug-in polls for it after setting the codec up, and
@@ -1483,8 +1482,8 @@ static void nap(struct machine *m, uint64_t deadline, bool idle)
 		until = now + NET_WAKE_NS;     /* (to see the host network's traffic) */
 	if (until <= now + 20000)       /* not worth a system call */
 		return;
-	if (m->display && until - now >= 1000000) {
-		display_wait(m->display, (unsigned)((until - now) / 1000000));
+	if (m->display) {
+		display_wait(m->display, until - now);
 	} else {
 		struct timespec ts = { 0, (long)(until - now) };
 		nanosleep(&ts, NULL);
@@ -1847,27 +1846,19 @@ static void status_lights(struct machine *m, uint64_t now, bool paused)
 }
 
 /*
- * Shows the screen in the window: the rows that have changed since it was
- * last shown (all of them when its mode or colours change, when the window
- * asks, and once a second if nothing has changed), and the pointer, if Mac
- * OS has the display driver draw it; and feeds the window's input to the
- * guest. While the menu is open, the guest stays paused here.
- */
-#define DISPLAY_BANDS 8                 /* bands of changed rows, at most (see video_changed_rows()) */
-
-/*
  * BLUE_WINDOW_PROFILE: every second of host time, how many frames the
- * window showed and how much of the screen changed in them, and where
- * showing them took the host's time: on this thread (which stops the Mac
- * meanwhile) and on the window's, if it has one of its own; in
- * milliseconds a frame, of the host clock and, in brackets, of the thread's
- * processor time.
+ * window was handed and how much of the screen changed in them, and where
+ * showing them took the host's time: on this thread, which stops the Mac
+ * meanwhile (finding and copying the changes, the rest of the frame's
+ * hand-over and the input), and on the window's; in milliseconds a frame,
+ * of the host clock and, in brackets, of the thread's processor time.
  */
 static void window_profile(struct machine *m, uint64_t now)
 {
 	if (!m->wp_ns) {
 		m->wp_ns = m->wp_start_ns = now;
 		m->wp_idle_ns = m->idle_ns;
+		m->wp_unwatched = m->mem.unwatched;
 		display_times(m->display, &m->wp_display);
 		return;
 	}
@@ -1878,92 +1869,46 @@ static void window_profile(struct machine *m, uint64_t now)
 	double s = (double)(now - m->wp_ns) * 1e-9, f = m->wp_frames ? (double)m->wp_frames : 1;
 	double idle = (double)(m->idle_ns - m->wp_idle_ns) * 1e-9, busy = s - idle > 1e-3 ? s - idle : 1e-3;
 	static const char *const names[DISPLAY_TIMES] = { "convert", "upload", "draw", "present", "events" };
-	printf("window @%.1f s: %.1f frames/s, %.1f changed (%.0f rows, %.2f MB a frame); "
+	printf("window @%.1f s: %.1f frames/s, %.1f changed (%.0f rows, %.2f MB a frame), %.1f pages seen written a frame; "
 	       "the Mac stopped %.3f ms a frame [%.3f], %.2f%% of the time, %.2f%% of its busy time: "
-	       "changes %.3f [%.3f], convert %.3f [%.3f]",
+	       "changes %.3f [%.3f], input %.3f [%.3f]; the window's thread",
 	       (double)(now - m->wp_start_ns) * 1e-9, (double)m->wp_frames / s, (double)m->wp_changed / s,
 	       m->wp_changed ? (double)m->wp_rows / (double)m->wp_changed : 0.0,
 	       m->wp_changed ? (double)m->wp_bytes / (double)m->wp_changed * 1e-6 : 0.0,
-	       (double)m->wp_ns_in * 1e-6 / f, (double)m->wp_cpu_in * 1e-6 / f, (double)m->wp_ns_in * 1e-7 / s,
+	       (double)(m->mem.unwatched - m->wp_unwatched) / f, (double)m->wp_ns_in * 1e-6 / f, (double)m->wp_cpu_in * 1e-6 / f, (double)m->wp_ns_in * 1e-7 / s,
 	       (double)m->wp_ns_in * 1e-7 / busy, (double)m->wp_changes_ns * 1e-6 / f,
-	       (double)m->wp_changes_cpu * 1e-6 / f, (double)m->wp_convert_ns * 1e-6 / f,
-	       (double)m->wp_convert_cpu * 1e-6 / f);
+	       (double)m->wp_changes_cpu * 1e-6 / f, (double)m->wp_input_ns * 1e-6 / f,
+	       (double)m->wp_input_cpu * 1e-6 / f);
 	for (unsigned k = 0; k < DISPLAY_TIMES; k++)
-		if (k != DISPLAY_TIME_CONVERT)
-			printf(", %s %.3f [%.3f]", names[k], (double)(t.ns[k] - m->wp_display.ns[k]) * 1e-6 / f,
-			       (double)(t.cpu_ns[k] - m->wp_display.cpu_ns[k]) * 1e-6 / f);
-	printf("; %.1f draws/s\n", (double)(t.draws - m->wp_display.draws) / s);
+		printf("%s %s %.3f [%.3f]", k ? "," : "", names[k], (double)(t.ns[k] - m->wp_display.ns[k]) * 1e-6 / f,
+		       (double)(t.cpu_ns[k] - m->wp_display.cpu_ns[k]) * 1e-6 / f);
+	printf("; %.1f frames taken/s, %.1f draws/s\n", (double)(t.frames - m->wp_display.frames) / s,
+	       (double)(t.draws - m->wp_display.draws) / s);
 	m->wp_ns = now;
 	m->wp_idle_ns = m->idle_ns;
+	m->wp_unwatched = m->mem.unwatched;
 	m->wp_display = t;
 	m->wp_frames = m->wp_changed = m->wp_rows = m->wp_bytes = 0;
-	m->wp_ns_in = m->wp_cpu_in = m->wp_changes_ns = m->wp_changes_cpu = m->wp_convert_ns = m->wp_convert_cpu = 0;
+	m->wp_ns_in = m->wp_cpu_in = m->wp_changes_ns = m->wp_changes_cpu = m->wp_input_ns = m->wp_input_cpu = 0;
 }
 
+/*
+ * Hands the window a frame of the screen: the rows that have changed since
+ * the last (all of them when its mode or colours change, and once a second
+ * if nothing has changed), and the pointer, if Mac OS has the display
+ * driver draw it; then feeds the window's input to the guest. The window
+ * converts, draws and presents on its own thread meanwhile. While the menu
+ * is open, the guest stays paused here.
+ */
 static void display_frame(struct machine *m, uint64_t now)
 {
 	uint64_t cpu0 = m->window_profile ? thread_ns() : 0;
 	unsigned w = video_width(&m->video), h = video_height(&m->video), bpp = video_bpp(&m->video);
 	size_t rb = video_row_bytes(&m->video);
 	unsigned rows = rb * h > m->video.fb_size ? (unsigned)(m->video.fb_size / rb) : h;
-	const uint8_t *fb = mem_ptr(&m->mem, m->video.fb_base);
 	status_lights(m, now, false);   /* (drawn with the screen, if that's drawn) */
 	if (m->opengl.prof)
 		fprintf(m->opengl.prof, "d %llu\n", (unsigned long long)now);
-	struct video_rows bands[DISPLAY_BANDS];
-	unsigned n;
-	if (m->redraw || w != m->shown_w || h != m->shown_h || bpp != m->shown_bpp ||
-	    now - m->shown_ns >= 1000000000u || memcmp(m->shown_clut, m->video.clut, sizeof m->shown_clut) != 0) {
-		m->redraw = false;
-		memcpy(m->shown_clut, m->video.clut, sizeof m->shown_clut);
-		m->shown_w = w;
-		m->shown_h = h;
-		m->shown_bpp = bpp;
-		video_palette(&m->video, &m->palette);
-		bands[0] = (struct video_rows){ 0, rows };
-		n = 1;
-	} else {
-		n = video_changed_rows(m->shown, fb, rb, rows, bands, DISPLAY_BANDS);
-	}
-	uint64_t changes_ns = 0, changes_cpu = 0, convert_ns = 0, convert_cpu = 0, t0, c0;
-	if (m->window_profile) {
-		changes_ns = host_ns() - now;
-		changes_cpu = thread_ns() - cpu0;
-	}
-	for (unsigned k = 0; k < n; k++) {
-		size_t at = bands[k].from * rb, pitch;
-		unsigned count = bands[k].to - bands[k].from;
-		t0 = m->window_profile ? host_ns() : 0;
-		c0 = m->window_profile ? thread_ns() : 0;
-		memcpy(m->shown + at, fb + at, count * rb);
-		if (m->window_profile) {
-			uint64_t t1 = host_ns(), c1 = thread_ns();
-			changes_ns += t1 - t0;
-			changes_cpu += c1 - c0;
-			t0 = t1;
-			c0 = c1;
-			m->wp_rows += count;
-			m->wp_bytes += count * rb;
-		}
-		uint32_t *px = display_rows(m->display, w, h, bands[k].from, bands[k].to, &pitch);
-		if (px) {
-			video_convert(&m->palette, fb + at, rb, w, count, px, pitch);
-			if (m->window_profile) {
-				convert_ns += host_ns() - t0;
-				convert_cpu += thread_ns() - c0;
-			}
-			display_rows_done(m->display);
-		}
-	}
-	if (n) {
-		m->shown_ns = now;
-		m->wp_changed++;
-	}
-	m->wp_frames++;
-	m->wp_changes_ns += changes_ns;
-	m->wp_changes_cpu += changes_cpu;
-	m->wp_convert_ns += convert_ns;
-	m->wp_convert_cpu += convert_cpu;
 	const struct video_cursor *c = &m->video.cursor;
 	struct display_cursor pointer = {
 		.visible = m->video.hw_cursor && c->set && c->visible,
@@ -1975,7 +1920,31 @@ static void display_frame(struct machine *m, uint64_t now)
 		.image = c->images,
 	};
 	display_cursor(m->display, &pointer);
-	display_update(m->display);
+	struct display_frame *f = display_frame_begin(m->display, w, h, bpp, rb);
+	if (f) {
+		bool all = !f->kept || now - m->shown_ns >= 1000000000u ||
+			   memcmp(m->shown_clut, m->video.clut, sizeof m->shown_clut) != 0;
+		if (all) {
+			memcpy(m->shown_clut, m->video.clut, sizeof m->shown_clut);
+			video_palette(&m->video, &f->palette);
+		}
+		unsigned n = video_copy_changes(&m->video, f->pixels, f->changed, rows, all, !m->window_compare);
+		display_frame_end(m->display);
+		if (n) {
+			m->shown_ns = now;
+			m->wp_changed++;
+			m->wp_rows += n;
+			m->wp_bytes += n * rb;
+		}
+	}
+	m->wp_frames++;
+	uint64_t t0 = 0, c0 = 0;
+	if (m->window_profile) {
+		t0 = host_ns();
+		c0 = thread_ns();
+		m->wp_changes_ns += t0 - now;
+		m->wp_changes_cpu += c0 - cpu0;
+	}
 	display_input(m, now);
 	if (m->clip.enabled && !m->scripted) {          /* what Mac OS copied, to the host */
 		const char *text = clip_take(&m->clip);
@@ -1989,8 +1958,11 @@ static void display_frame(struct machine *m, uint64_t now)
 		}
 	}
 	if (m->window_profile) {
-		m->wp_ns_in += host_ns() - now;
-		m->wp_cpu_in += thread_ns() - cpu0;
+		uint64_t t1 = host_ns(), c1 = thread_ns();
+		m->wp_input_ns += t1 - t0;
+		m->wp_input_cpu += c1 - c0;
+		m->wp_ns_in += t1 - now;
+		m->wp_cpu_in += c1 - cpu0;
 		window_profile(m, now);
 	}
 	if (m->paused)
@@ -2007,8 +1979,7 @@ static void stay_paused(struct machine *m)
 	uint64_t from = host_ns();
 	status_lights(m, from, true);
 	while (m->paused && !m->quit) {
-		display_refresh(m->display);
-		display_wait(m->display, 1000 / 60);
+		display_wait(m->display, 1000000000u / 60);
 		display_input(m, host_ns());
 	}
 	m->start_ns += host_ns() - from;
@@ -2074,9 +2045,6 @@ static void display_input(struct machine *m, uint64_t now)
 				follow_cursor(m, now);
 			}
 			break;
-		case DISPLAY_EVENT_EXPOSE:
-			m->redraw = true;
-			break;
 		case DISPLAY_EVENT_CLIPBOARD:
 			if (m->clip.enabled && !m->scripted) {
 				char *text = display_clipboard(m->display);
@@ -2085,7 +2053,6 @@ static void display_input(struct machine *m, uint64_t now)
 			}
 			break;
 		case DISPLAY_EVENT_RESIZE:      /* see follow_window(); scripted runs keep their screen */
-			m->redraw = true;
 			if (ev.x > 0 && ev.y > 0 && !m->scripted) {
 				m->want_w = (unsigned)ev.x;
 				m->want_h = (unsigned)ev.y;
@@ -3940,11 +3907,9 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->display = old.display;
 	m->hw_cursor = old.hw_cursor;
 	m->gpu = old.gpu;
-	m->shown = old.shown;
 	m->quit = old.quit;
 	m->mouse_captured = old.mouse_captured;
 	m->mouse_released = old.mouse_released;
-	m->redraw = true;
 	m->scripted = old.scripted;
 	m->tools_offer = old.tools_offer;
 	if (old.prompting && old.prompt_news)   /* (the installer's news stays: Mac OS restarting is in it) */
@@ -4055,10 +4020,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	if (opt->realtime && !opt->no_fast_start)
 		fast_start_begin(&m);
 	if (opt->window) {
-		m.shown = malloc(FB_SIZE);
-		if (m.shown)
-			m.display = display_open("Blue", video_width(&m.video), video_height(&m.video),
-						 opt->integer_scale);
+		m.display = display_open("Blue", video_width(&m.video), video_height(&m.video), opt->integer_scale);
 		if (!m.display)         /* (the driver has the hardware cursor, but says it hasn't) */
 			m.hw_cursor = m.video.hw_cursor = false;
 		if (m.display && !opt->no_status_bar)
@@ -4506,7 +4468,6 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	}
 	audio_close(m.audio);
 	display_close(m.display);
-	free(m.shown);
 	free(script.ev);
 	clip_free(&m.clip);
 	return 0;

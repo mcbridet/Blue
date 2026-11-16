@@ -2,6 +2,15 @@
  * Host display window and input, using SDL2 loaded at run time (no build
  * dependency; if the library or a display isn't available, the emulator
  * runs headless).
+ *
+ * The window runs on the process's main thread (SDL wants its window,
+ * events and drawing there on macOS), and the emulated machine on a thread
+ * of its own (display_main()): the machine hands over what the window shows
+ * (its screen, a frame at a time, the pointer, the status bar, the menu's
+ * and prompts' contents) and takes the window's input from a queue, and the
+ * window converts, draws and presents without stopping it. The functions
+ * below but display_main() and the pure ones are the machine's, called
+ * from its thread.
  */
 #ifndef BLUE_DISPLAY_H
 #define BLUE_DISPLAY_H
@@ -11,8 +20,16 @@
 #include <stdint.h>
 
 #include "ui.h"
+#include "video.h"
 
 struct display;
+
+/*
+ * Runs body(arg) on a thread of its own, the machine's, while this thread
+ * (the main one) runs the window it opens, if it opens one; returns what
+ * body returned.
+ */
+int display_main(int (*body)(void *), void *arg);
 
 enum display_event_type {
 	DISPLAY_EVENT_NONE,
@@ -22,7 +39,6 @@ enum display_event_type {
 	DISPLAY_EVENT_MOUSE_BUTTON,     /* button, down */
 	DISPLAY_EVENT_RESIZE,           /* x, y: the screen size that fills the window (resized by the user,
 					 * or the status bar came or went in a window that kept its size) */
-	DISPLAY_EVENT_EXPOSE,           /* the window needs drawing again (shown, or its size changed) */
 	DISPLAY_EVENT_RELEASE_MOUSE,    /* the user pressed Control and Option (Ctrl and Alt) together */
 	DISPLAY_EVENT_MENU,             /* the menu's to open or close (F12; or Esc or Resume, open) */
 	DISPLAY_EVENT_MENU_ACTION,      /* something chosen in the menu: action (but Resume, Fullscreen, Status bar) */
@@ -41,27 +57,35 @@ struct display_event {
 };
 
 /*
- * Returns NULL (with a message on stderr) if no window can be opened. The
- * window has one unit of its size (a point, on high-density displays) per
- * screen pixel and scales the screen to fill it. With `integer`, the screen
- * is only ever drawn at a whole multiple of its size, and the window's
- * natural size for a screen is the multiple nearest the display's scale.
+ * Returns NULL (with a message on stderr) if no window can be opened (or
+ * display_main() isn't running the main thread). The window has one unit of
+ * its size (a point, on high-density displays) per screen pixel and scales
+ * the screen to fill it. With `integer`, the screen is only ever drawn at a
+ * whole multiple of its size, and the window's natural size for a screen is
+ * the multiple nearest the display's scale.
  */
 struct display *display_open(const char *title, unsigned width, unsigned height, bool integer);
 void display_close(struct display *d);
 
 /*
- * The screen (width x height) is shown from a texture of 32-bit pixels,
- * 0xFFRRGGBB (SDL's ARGB8888, the format renderers take as it is), which
- * the caller writes the changed rows of: rows from .. to - 1, `*pitch`
- * bytes apart, handed back with display_rows_done(); NULL if they can't be
- * written. The window follows a change of the screen's size (all of it is
- * to be written then). What's written is shown when the window is next
- * drawn (display_update()).
+ * The screen, as the window has it: a copy of the framebuffer in its own
+ * format (rows of `row_bytes` bytes, and the palette that converts them
+ * for 8 bits a pixel and fewer), which the machine brings up to date from
+ * display_frame_begin() to display_frame_end(), marking the rows it
+ * changes; meanwhile the window doesn't look at it. The window then shows
+ * the rows marked (all of it if the size changed). The copy keeps what was
+ * in it, unless the size or row length changed (`kept` false: then it's
+ * all to be written).
  */
-uint32_t *display_rows(struct display *d, unsigned width, unsigned height, unsigned from, unsigned to,
-		       size_t *pitch);
-void display_rows_done(struct display *d);
+struct display_frame {
+	uint8_t *pixels;
+	uint8_t *changed;               /* a byte for each row: set when it has changed */
+	bool kept;
+	struct video_palette palette;
+};
+struct display_frame *display_frame_begin(struct display *d, unsigned width, unsigned height, unsigned bpp,
+					  size_t row_bytes);
+void display_frame_end(struct display *d);
 
 /*
  * The pointer, drawn over the screen (Mac OS's hardware cursor): where its
@@ -97,8 +121,8 @@ struct display_view display_view(unsigned screen_w, unsigned screen_h, int out_w
 /* The screen pixel at (px, py) in the window's pixels (off the screen in its borders). */
 void display_view_point(const struct display_view *v, double px, double py, int *x, int *y);
 
-/* Waits up to `ms` milliseconds for input; true if some is waiting (it isn't taken). */
-bool display_wait(struct display *d, unsigned ms);
+/* Waits up to `ns` nanoseconds for input; true if some is waiting (it isn't taken). */
+bool display_wait(struct display *d, uint64_t ns);
 
 /*
  * Captures the host pointer (hidden, kept in the window, while the window
@@ -110,12 +134,11 @@ void display_capture_mouse(struct display *d, bool on);
 /*
  * Opens or closes the menu over the screen (Dear ImGui's; with SDL older
  * than 2.0.18, there's none and the title says the guest's paused). While
- * it's open, input goes to it, and display_refresh() draws it again. It
+ * it's open, input goes to it, and the window draws it as it changes. It
  * toggles fullscreen and the status bar itself; the rest of what's chosen
  * comes back as DISPLAY_EVENT_MENU_ACTION.
  */
 void display_menu(struct display *d, bool open);
-void display_refresh(struct display *d);
 
 /* What the menu shows of the machine: the mouse, and news (copied; NULL for none) */
 void display_menu_state(struct display *d, enum ui_mouse mouse, const char *status);
@@ -139,12 +162,9 @@ bool display_prompt(struct display *d, const char *text, const char *yes, const 
 void display_status_bar(struct display *d, bool on);
 void display_status(struct display *d, const struct ui_status *s);
 
-/* Draws the window if the screen, the pointer or the status bar has changed since it was. */
-void display_update(struct display *d);
-
 /*
  * The host clipboard's text (UTF-8, to free(); NULL if SDL can't say), and
- * setting it. Only on the thread that runs the window (as SDL requires).
+ * setting it (the window's thread does both, as SDL requires).
  */
 char *display_clipboard(struct display *d);
 void display_set_clipboard(struct display *d, const char *text);
@@ -152,21 +172,22 @@ void display_set_clipboard(struct display *d, const char *text);
 /* Returns false when there are no more events. */
 bool display_poll(struct display *d, struct display_event *ev);
 
+/* Maps a USB HID usage (SDL scancode) to an ADB key code; 0xFF if none. */
+uint8_t display_hid_to_adb(unsigned usage);
+
 /*
  * BLUE_WINDOW_PROFILE: the host time drawing and presenting have taken so
- * far, in nanoseconds of the host clock and of the processor time of the
- * thread they ran on, by part, and how many times the window was drawn
+ * far on the window's thread, in nanoseconds of the host clock and of that
+ * thread's processor time, by part; the frames it took (with changes) and
+ * how many times it drew the window
  */
 enum { DISPLAY_TIME_CONVERT, DISPLAY_TIME_UPLOAD, DISPLAY_TIME_DRAW, DISPLAY_TIME_PRESENT, DISPLAY_TIME_EVENTS,
        DISPLAY_TIMES };
 struct display_times {
-	unsigned long frames;           /* frames of the screen taken to show */
+	unsigned long frames;
 	unsigned long draws;
 	uint64_t ns[DISPLAY_TIMES], cpu_ns[DISPLAY_TIMES];
 };
 void display_times(struct display *d, struct display_times *t);
-
-/* Maps a USB HID usage (SDL scancode) to an ADB key code; 0xFF if none. */
-uint8_t display_hid_to_adb(unsigned usage);
 
 #endif

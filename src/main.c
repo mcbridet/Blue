@@ -5,6 +5,7 @@
 
 #include "cdimage.h"
 #include "disk.h"
+#include "display.h"
 #include "env.h"
 #include "hfsread.h"
 #include "mem.h"
@@ -321,6 +322,17 @@ static int cmd_run_raw(int argc, char **argv)
 	return 0;
 }
 
+struct boot {
+	const struct rom *rom;
+	const struct nk_boot_options *opt;
+};
+
+static int boot_machine(void *arg)
+{
+	const struct boot *b = arg;
+	return nk_boot(b->rom, b->opt);
+}
+
 static int cmd_boot(int argc, char **argv)
 {
 	if (argc < 1)
@@ -491,7 +503,9 @@ static int cmd_boot(int argc, char **argv)
 	if (found)
 		return 1;
 	opt.share = share ? share_disk(share) : NULL;
-	int rc = nk_boot(&rom, &opt);
+	/* (with a window, the machine runs on a thread of its own, and this one runs the window) */
+	struct boot boot = { &rom, &opt };
+	int rc = opt.window ? display_main(boot_machine, &boot) : nk_boot(&rom, &opt);
 	rom_free(&rom);
 	if (share_close(share))
 		rc = 1;

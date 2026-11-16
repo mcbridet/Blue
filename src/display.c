@@ -2,10 +2,17 @@
 
 #include <dlfcn.h>
 #include <math.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <time.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <sys/event.h>
+#endif
 
 #include "icon.h"
 #include "ui.h"
@@ -53,6 +60,7 @@
 #define SDL_RENDER_TARGETS_RESET 0x2000u /* (render targets lost what was drawn in them) */
 #define SDL_DROPFILE 0x1000u
 #define SDL_DROPTEXT 0x1001u
+#define SDL_USEREVENT 0x8000u           /* (ours: a wake-up from the machine's thread) */
 #define SDL_SCANCODE_RETURN 40u
 #define SDL_SCANCODE_ESCAPE 41u
 #define SDL_SCANCODE_TAB 43u
@@ -131,15 +139,14 @@ struct sdl {
 	void (*DestroyTexture)(void *);
 	int (*SetTextureBlendMode)(void *, int);
 	int (*UpdateTexture)(void *, const void *, const void *, int);
-	int (*LockTexture)(void *, const SDL_Rect *, void **, int *);
-	void (*UnlockTexture)(void *);
 	int (*ComposeCustomBlendMode)(int, int, int, int, int, int);    /* (2.0.6; NULL before) */
 	int (*SetRenderTarget)(void *, void *);
 	int (*RenderClear)(void *);
 	int (*RenderCopy)(void *, void *, const void *, const void *);
 	void (*RenderPresent)(void *);
 	int (*PollEvent)(SDL_Event *);
-	int (*WaitEventTimeout)(void *, int);
+	int (*WaitEventTimeout)(SDL_Event *, int);
+	int (*PushEvent)(SDL_Event *);
 	int (*ShowCursor)(int);
 	int (*SetRelativeMouseMode)(int);
 	void (*SetWindowTitle)(void *, const char *);
@@ -155,21 +162,66 @@ struct sdl {
 	void (*FreeSurface)(void *);
 };
 
+#define QUEUE 1024                      /* events waiting for the machine, at most */
+#define OUT 64                          /* ... and gathered meanwhile on the window's thread */
+#define BANDS 8                         /* bands of rows uploaded at once ... */
+#define BAND_GAP 32u                    /* ... rows fewer than this apart being one */
+
+/* An event for the machine, with what it carries */
+struct queued {
+	struct display_event ev;
+	char *path;                     /* (a dropped file's, to free) */
+	unsigned prompt;                /* (a prompt's answer: which prompt it answers) */
+};
+
+/*
+ * What the machine has handed the window and not yet taken (under
+ * host.lock), each with whether it has changed since
+ */
+struct handed {
+	bool cursor_changed;
+	struct display_cursor cursor;
+	uint32_t cursor_pixels[DISPLAY_CURSOR_MAX * DISPLAY_CURSOR_MAX];
+	bool bar_changed;
+	struct ui_status bar;
+	bool menu_changed;              /* (opened or closed) */
+	bool menu;
+	bool info_changed;              /* (what it shows) */
+	enum ui_mouse mouse;
+	char status[480];
+	bool has_drives;
+	struct ui_drives drives;
+	bool prompt_changed;
+	bool prompt;
+	unsigned prompt_id;             /* (counts the prompts shown) */
+	char prompt_text[1024], prompt_yes[32], prompt_no[32];
+	int capture;                    /* capture the pointer (1) or let it go (0); -1: as it is */
+	int status_bar;                 /* show the status bar (1) or hide it (0); -1: as it is */
+	char *clipboard;                /* text for the host's clipboard (to free), or NULL */
+	bool clipboard_asked;           /* the host's clipboard wanted (display_clipboard()) ... */
+	bool clipboard_answered;        /* ... and here it is: */
+	char *clipboard_text;
+	bool close;                     /* the window is to go (display_close()) */
+};
+
 struct display {
 	struct sdl sdl;
+	bool integer;                   /* whole multiples only */
+	struct ui *ui;                  /* the menu (F12), if this SDL can draw it */
+
+	/* the window's thread's */
 	void *window, *renderer;
 	void *texture;                  /* the screen, drawn nearest-neighbour */
-	bool locked;                    /* ... some of its rows are being written (display_rows()) */
-	bool screen_stale;              /* ... and it has changed since the window was drawn */
 	void *scaled;                   /* ... at a whole multiple of its size, drawn filtered */
 	unsigned scaled_from, scaled_to;        /* ... rows of it from an older screen */
 	unsigned width, height;         /* the screen's size */
 	unsigned scaled_by;             /* the multiple `scaled` holds */
+	uint32_t *argb;                 /* the screen converted, what the texture is updated from */
+	size_t argb_size;               /* (pixels it holds) */
 	/* the pointer (Mac OS's hardware cursor), drawn over the screen */
 	struct display_cursor cursor;
 	uint32_t cursor_pixels[DISPLAY_CURSOR_MAX * DISPLAY_CURSOR_MAX];
 	unsigned long cursor_images;    /* ... counts the images copied to cursor_pixels */
-	bool cursor_stale;              /* ... has changed since the window was drawn */
 	void *cursor_color, *cursor_invert;     /* ... its pixels, and those that invert the screen */
 	unsigned long cursor_image;     /* ... the image they hold (of cursor_images) */
 	unsigned cursor_scale;          /* ... at this multiple of its size (0: none yet) */
@@ -177,31 +229,62 @@ struct display {
 	int invert_mode;                /* the blend mode that inverts (-1: none) */
 	int max_texture;                /* longest texture side the renderer takes (0: any) */
 	bool prescale;                  /* render targets, on a renderer fast enough for them */
-	bool integer;                   /* whole multiples only */
 	double density;                 /* window pixels per unit when it was last fitted */
 	bool caps_lock;
 	bool ctrl[2], alt[2];           /* (left and right) held, for the release key */
-	bool release;                   /* the release key was pressed: an event to deliver */
-	struct ui *ui;                  /* the menu (F12), if this SDL can draw it */
-	bool menu;                      /* it's open: input goes to it */
-	bool menu_event;                /* F12 or Esc: a DISPLAY_EVENT_MENU to deliver */
-	enum ui_action menu_action;     /* chosen in it, to deliver (or carry out) */
+	bool menu;                      /* the menu's open: input goes to it */
 	double menu_time;               /* (when it was last drawn, in seconds) */
 	enum ui_mouse menu_mouse;       /* what it shows */
 	char menu_status[480];
+	bool has_drives;                /* ... drives with removable media: */
+	struct ui_drives drives;
 	bool prompt;                    /* a question or news is shown (display_prompt()): input goes to it */
+	unsigned prompt_id;
 	char prompt_text[1024], prompt_yes[32], prompt_no[32];
 	bool fullscreen;
 	bool status_bar;                /* shown, below the screen (only with the menu's SDL) */
 	struct ui_status bar;           /* what it shows */
-	bool bar_stale;                 /* ... has changed since it was drawn */
-	bool resize;                    /* a DISPLAY_EVENT_RESIZE to deliver: it came or went, the window kept its size */
 	bool captured;                  /* the pointer is captured (display_capture_mouse()) */
-	bool has_drives;                /* the menu shows drives with removable media: */
-	struct ui_drives drives;
-	char drop[1024];                /* the file last dropped on the window */
+	bool stale;                     /* the window is to be drawn again */
+	enum ui_action choice;          /* chosen in the menu or a prompt as it was drawn */
+	struct queued out[OUT];         /* events for the machine, not yet queued */
+	unsigned nout;
 	struct display_times times;     /* (BLUE_WINDOW_PROFILE) */
+
+	/* shared with the machine's thread, under host.lock */
+	atomic_bool woken;              /* a wake-up is on its way to the window's thread */
+	bool waiting;                   /* the machine's waits for input (see input_wait()) ... */
+	int kq;                         /* ... in this kqueue, on macOS */
+	struct queued queue[QUEUE];     /* events for the machine */
+	unsigned head, count;
+	struct display_frame frame;     /* the screen (see display_frame_begin()) */
+	unsigned frame_w, frame_h, frame_bpp;
+	size_t frame_rb, frame_bytes, frame_rows;      /* (and what's allocated) */
+	bool frame_ended;               /* ... it has changed since the window took it */
+	struct handed in;
+	struct display_times times_out; /* (the window's thread's, as of its last turn) */
+
+	/* the machine's */
+	char drop[1024];                /* the file last dropped on the window */
 };
+
+/*
+ * The thread running the window (the main one, in display_main()) and the
+ * machine's: what they wait for, under its lock
+ */
+static struct {
+	pthread_mutex_t lock;
+	pthread_cond_t cond;            /* signalled when anything below or in the display's shared part changes */
+	bool running;                   /* display_main() runs the window's thread */
+	bool done;                      /* the machine's thread is over */
+	bool opening;                   /* display_open() asks for a window: */
+	const char *title;
+	unsigned width, height;
+	bool integer;
+	bool opened;                    /* ... answered: */
+	struct display *d;              /* the window, or NULL */
+	bool closed;                    /* display_close() was answered */
+} host = { .lock = PTHREAD_MUTEX_INITIALIZER };
 
 static uint64_t clock_ns(clockid_t clock)
 {
@@ -220,9 +303,68 @@ static uint64_t timed(struct display *d, unsigned part, uint64_t from, uint64_t 
 	return now;
 }
 
+/*
+ * The machine's thread waits for input (display_wait()) at most `ns`
+ * nanoseconds; then the window's thread, queueing some, signals it
+ * (signal_input()). It waits to time the guest's naps, so on time: on
+ * macOS a sleep or a condition variable's wait for a thread not in front
+ * came 15-25% late (16 ms became 19), and a kqueue timer that may not be
+ * put off comes within 0.05 ms, so it waits in a kqueue there (for the
+ * timer, or the signal).
+ */
+static void input_wait(struct display *d, uint64_t ns)
+{
+#ifdef __APPLE__
+	struct kevent timer, got;
+	EV_SET(&timer, 2, EVFILT_TIMER, EV_ADD | EV_ONESHOT, NOTE_NSECONDS | NOTE_CRITICAL, (intptr_t)ns, NULL);
+	d->waiting = true;
+	pthread_mutex_unlock(&host.lock);
+	if (d->kq >= 0)
+		kevent(d->kq, &timer, 1, &got, 1, NULL);
+	pthread_mutex_lock(&host.lock);
+	d->waiting = false;
+#else
+	(void)d;
+	uint64_t at = clock_ns(CLOCK_MONOTONIC) + ns;   /* (host.cond is on the monotonic clock) */
+	struct timespec abs = { (time_t)(at / 1000000000u), (long)(at % 1000000000u) };
+	pthread_cond_timedwait(&host.cond, &host.lock, &abs);
+#endif
+}
+
+/* (host.lock held) */
+static void signal_input(struct display *d)
+{
+#ifdef __APPLE__
+	if (d->waiting && d->kq >= 0) {
+		struct kevent e;
+		EV_SET(&e, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+		kevent(d->kq, &e, 1, NULL, 0, NULL);
+	}
+#endif
+	pthread_cond_broadcast(&host.cond);
+}
+
+/*
+ * Wakes the window's thread, which waits for SDL's events, with one of its
+ * own. (The window stays while the machine's thread is in the functions
+ * below, other than display_close(): it goes only when that thread is done
+ * or asks it to, and they wake it with host.lock held.)
+ */
+static void wake(struct display *d)
+{
+	if (atomic_exchange(&d->woken, true))
+		return;
+	SDL_Event e;
+	memset(&e, 0, sizeof e);
+	e.type = SDL_USEREVENT;
+	d->sdl.PushEvent(&e);
+}
+
 void display_times(struct display *d, struct display_times *t)
 {
-	*t = d->times;
+	pthread_mutex_lock(&host.lock);
+	*t = d->times_out;
+	pthread_mutex_unlock(&host.lock);
 }
 
 /* The status bar's height in the window's units (0: hidden) */
@@ -285,14 +427,13 @@ static bool load_sdl(struct sdl *s)
 	SYM(DestroyTexture, "SDL_DestroyTexture");
 	SYM(SetTextureBlendMode, "SDL_SetTextureBlendMode");
 	SYM(UpdateTexture, "SDL_UpdateTexture");
-	SYM(LockTexture, "SDL_LockTexture");
-	SYM(UnlockTexture, "SDL_UnlockTexture");
 	SYM(SetRenderTarget, "SDL_SetRenderTarget");
 	SYM(RenderClear, "SDL_RenderClear");
 	SYM(RenderCopy, "SDL_RenderCopy");
 	SYM(RenderPresent, "SDL_RenderPresent");
 	SYM(PollEvent, "SDL_PollEvent");
 	SYM(WaitEventTimeout, "SDL_WaitEventTimeout");
+	SYM(PushEvent, "SDL_PushEvent");
 	SYM(ShowCursor, "SDL_ShowCursor");
 	SYM(SetRelativeMouseMode, "SDL_SetRelativeMouseMode");
 	SYM(SetWindowTitle, "SDL_SetWindowTitle");
@@ -570,6 +711,9 @@ static void draw_cursor(struct display *d, const struct display_view *v, unsigne
 	d->sdl.RenderCopy(d->renderer, d->cursor_color, &src, &dst);
 }
 
+static void flush(struct display *d);
+
+/* Draws the window: the screen, the pointer, the status bar, the menu or a prompt */
 static void draw(struct display *d)
 {
 	uint64_t cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID), t = clock_ns(CLOCK_MONOTONIC);
@@ -581,12 +725,11 @@ static void draw(struct display *d)
 	void *src = k && d->prescale ? prescaled(d, k) : NULL;
 	SDL_Rect dst = { v.x, v.y, v.w, v.h };
 	d->sdl.RenderClear(d->renderer);
-	d->sdl.RenderCopy(d->renderer, src ? src : d->texture, NULL, &dst);
+	if (d->texture)
+		d->sdl.RenderCopy(d->renderer, src ? src : d->texture, NULL, &dst);
 	draw_cursor(d, &v, k, src != NULL);
 	if (d->ui && (d->menu || d->status_bar || d->prompt)) {
-		struct timespec ts;
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-		double now = (double)ts.tv_sec + 1e-9 * (double)ts.tv_nsec;
+		double now = (double)t * 1e-9;
 		struct ui_state s = {
 			.menu = d->menu,
 			/* (whole pixels: the screen is drawn above them) */
@@ -601,22 +744,532 @@ static void draw(struct display *d)
 			.drives = d->has_drives ? &d->drives : NULL,
 		};
 		enum ui_action action = ui_draw(d->ui, &s, ww, wh, ww > 0 ? (float)pw / (float)ww : 1, now - d->menu_time);
-		if (action != UI_NONE)
-			d->menu_action = action;
 		d->menu_time = now;
+		if (action != UI_NONE)
+			d->choice = action;
 	}
-	d->bar_stale = d->screen_stale = d->cursor_stale = false;
+	d->stale = false;
 	t = timed(d, DISPLAY_TIME_DRAW, t, &cpu);
 	d->sdl.RenderPresent(d->renderer);
 	timed(d, DISPLAY_TIME_PRESENT, t, &cpu);
 	d->times.draws++;
 }
 
-struct display *display_open(const char *title, unsigned width, unsigned height, bool integer)
+/* An event for the machine (path: a dropped file's, the machine's to free; prompt: the one it answers) */
+static void emit(struct display *d, const struct display_event *ev, char *path, unsigned prompt)
+{
+	if (d->nout == OUT)
+		flush(d);
+	d->out[d->nout++] = (struct queued){ *ev, path, prompt };
+}
+
+/* The events gathered, to the machine's queue (one move after another is one move) */
+static void flush(struct display *d)
+{
+	if (!d->nout)
+		return;
+	pthread_mutex_lock(&host.lock);
+	for (unsigned k = 0; k < d->nout; k++) {
+		struct queued *q = &d->out[k];
+		struct queued *last = d->count ? &d->queue[(d->head + d->count - 1) % QUEUE] : NULL;
+		if (q->ev.type == DISPLAY_EVENT_MOUSE_MOVE && last && last->ev.type == DISPLAY_EVENT_MOUSE_MOVE) {
+			last->ev.x = q->ev.x;
+			last->ev.y = q->ev.y;
+			last->ev.dx += q->ev.dx;
+			last->ev.dy += q->ev.dy;
+			continue;
+		}
+		if (q->ev.type == DISPLAY_EVENT_MENU_ACTION && q->prompt && q->prompt == d->in.prompt_id)
+			d->in.prompt = false;           /* (answered) */
+		if (d->count == QUEUE) {                /* (the machine isn't taking them) */
+			free(q->path);
+			continue;
+		}
+		d->queue[(d->head + d->count++) % QUEUE] = *q;
+	}
+	d->nout = 0;
+	signal_input(d);
+	pthread_mutex_unlock(&host.lock);
+}
+
+/* A position in the window, in its units, to a screen pixel */
+static void to_screen(struct display *d, int x, int y, int *sx, int *sy)
+{
+	int ww, wh, pw, ph;
+	struct display_view v = screen_view(d, &ww, &wh, &pw, &ph);
+	/* (positions are whole units, a unit maybe more than a pixel: take its middle) */
+	display_view_point(&v, (x + 0.5) * pw / (ww > 0 ? ww : 1), (y + 0.5) * ph / (wh > 0 ? wh : 1), sx, sy);
+}
+
+/* Whether a position in the window, in its units, is on the status bar */
+static bool on_status_bar(struct display *d, int y)
+{
+	int ww, wh;
+	d->sdl.GetWindowSize(d->window, &ww, &wh);
+	return d->status_bar && y >= wh - bar_units(d);
+}
+
+/* The window's title: what the pointer does, or that the guest's paused (without the menu's SDL) */
+static void set_title(struct display *d)
+{
+	d->sdl.SetWindowTitle(d->window, d->menu && !d->ui ? "Blue (paused: F12 resumes)" :
+				    d->captured ? "Blue (Control-Option releases the mouse)" : "Blue");
+}
+
+/* The host's pointer is shown for the menu and prompts (the guest's doesn't move meanwhile) */
+static void show_pointer(struct display *d)
+{
+	d->sdl.ShowCursor((d->menu || d->prompt) && d->ui ? 1 : 0);
+}
+
+/*
+ * Shows or hides the status bar. The window grows or shrinks to keep the
+ * screen's size, unless it keeps its size (fullscreen, maximized): then
+ * it's the screen that fits it that changes, as if the user had resized it.
+ */
+static void show_status_bar(struct display *d, bool on)
+{
+	if (on == d->status_bar || (on && !d->ui))
+		return;
+	int ww, wh, pw, ph;
+	d->sdl.GetWindowSize(d->window, &ww, &wh);
+	d->status_bar = on;
+	if (d->sdl.GetWindowFlags(d->window) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED)) {
+		struct display_event ev = { .type = DISPLAY_EVENT_RESIZE };
+		double density = window_size(d, &ww, &wh, &pw, &ph);
+		screen_for_window(d, ww, wh, density, &ev.x, &ev.y);
+		emit(d, &ev, NULL, 0);
+	} else {
+		d->sdl.SetWindowSize(d->window, ww, wh + (on ? UI_STATUS_BAR_HEIGHT : -UI_STATUS_BAR_HEIGHT));
+	}
+	d->stale = true;
+}
+
+/* What was chosen in the menu or a prompt: fullscreen and the status bar are the window's */
+static void chosen(struct display *d, enum ui_action action)
+{
+	struct display_event ev = { .type = DISPLAY_EVENT_MENU_ACTION, .action = action };
+	unsigned prompt = 0;
+	switch (action) {
+	case UI_FULLSCREEN:
+		d->fullscreen = !d->fullscreen;
+		d->sdl.SetWindowFullscreen(d->window, d->fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+		d->stale = true;
+		return;
+	case UI_STATUS_BAR:
+		show_status_bar(d, !d->status_bar);
+		return;
+	case UI_RESUME:
+		ev.type = DISPLAY_EVENT_MENU;
+		break;
+	case UI_PROMPT_YES:
+	case UI_PROMPT_NO:
+		d->prompt = false;
+		prompt = d->prompt_id;
+		show_pointer(d);
+		d->stale = true;
+		break;
+	default:
+		break;
+	}
+	emit(d, &ev, NULL, prompt);
+}
+
+/* The keys the menu takes (for moving about it from the keyboard) */
+static void menu_key(struct display *d, unsigned scancode, bool down)
+{
+	static const struct { unsigned scancode; enum ui_key key; } keys[] = {
+		{ SDL_SCANCODE_TAB, UI_KEY_TAB }, { SDL_SCANCODE_LEFT, UI_KEY_LEFT }, { SDL_SCANCODE_RIGHT, UI_KEY_RIGHT },
+		{ SDL_SCANCODE_UP, UI_KEY_UP }, { SDL_SCANCODE_DOWN, UI_KEY_DOWN }, { SDL_SCANCODE_SPACE, UI_KEY_SPACE },
+		{ SDL_SCANCODE_RETURN, UI_KEY_ENTER }, { SDL_SCANCODE_KP_ENTER, UI_KEY_ENTER },
+	};
+	for (size_t k = 0; d->ui && k < sizeof keys / sizeof keys[0]; k++)
+		if (keys[k].scancode == scancode)
+			ui_key(d->ui, keys[k].key, down);
+}
+
+/* An SDL event: for the machine (as events it takes), the menu or a prompt, or the window itself */
+static void handle(struct display *d, SDL_Event *e)
+{
+	struct display_event ev = { .type = DISPLAY_EVENT_NONE };
+	switch (e->type) {
+	case SDL_QUIT:
+		ev.type = DISPLAY_EVENT_QUIT;
+		break;
+	case SDL_RENDER_TARGETS_RESET:
+		scaled_stale(d, 0, d->height);
+		d->stale = true;
+		return;
+	case SDL_CLIPBOARDUPDATE:
+		ev.type = DISPLAY_EVENT_CLIPBOARD;
+		break;
+	case SDL_WINDOWEVENT:
+		if (e->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+			ev.type = DISPLAY_EVENT_CLIPBOARD;
+			break;
+		}
+		if (e->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+			/* (keys let go elsewhere aren't seen) */
+			d->ctrl[0] = d->ctrl[1] = d->alt[0] = d->alt[1] = false;
+			return;
+		}
+		/* (some compositors, Wayland's, resize the window only as fast as it's drawn) */
+		if (e->window.event == SDL_WINDOWEVENT_EXPOSED || e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+			d->stale = true;
+			return;
+		}
+		if (e->window.event == SDL_WINDOWEVENT_RESIZED) {
+			int ww, wh, pw, ph;
+			double density = window_size(d, &ww, &wh, &pw, &ph);
+			ev.type = DISPLAY_EVENT_RESIZE;
+			screen_for_window(d, e->window.data1, e->window.data2, density, &ev.x, &ev.y);
+		}
+		break;
+	case SDL_KEYDOWN:
+	case SDL_KEYUP: {
+		bool down = e->type == SDL_KEYDOWN;
+		if (e->key.repeat)
+			return;
+		unsigned sc = (unsigned)e->key.scancode;
+		/* F12 opens and closes the menu (Esc closes it too): the guest doesn't get them */
+		if (sc == SDL_SCANCODE_F12 || (d->menu && sc == SDL_SCANCODE_ESCAPE)) {
+			if (down)
+				ev.type = DISPLAY_EVENT_MENU;
+			break;
+		}
+		if (d->menu) {
+			menu_key(d, sc, down);
+			return;
+		}
+		if (d->prompt) {                /* (Esc is its "no") */
+			if (sc != SDL_SCANCODE_ESCAPE)
+				menu_key(d, sc, down);
+			else if (down)
+				chosen(d, d->prompt_no[0] ? UI_PROMPT_NO : UI_PROMPT_YES);
+			return;
+		}
+		/* Control and Option (Ctrl and Alt) together: the release key (and keys to the guest too) */
+		if (sc == SDL_SCANCODE_LCTRL || sc == SDL_SCANCODE_RCTRL)
+			d->ctrl[sc == SDL_SCANCODE_RCTRL] = down;
+		if (sc == SDL_SCANCODE_LALT || sc == SDL_SCANCODE_RALT)
+			d->alt[sc == SDL_SCANCODE_RALT] = down;
+		if (down && (d->ctrl[0] || d->ctrl[1]) && (d->alt[0] || d->alt[1]) &&
+		    (sc == SDL_SCANCODE_LCTRL || sc == SDL_SCANCODE_RCTRL || sc == SDL_SCANCODE_LALT ||
+		     sc == SDL_SCANCODE_RALT)) {
+			struct display_event release = { .type = DISPLAY_EVENT_RELEASE_MOUSE };
+			emit(d, &release, NULL, 0);
+		}
+		if (sc == SDL_SCANCODE_CAPSLOCK) {
+			/* the ADB caps lock key latches: down when engaged, up when released */
+			if (!down)
+				return;
+			d->caps_lock = !d->caps_lock;
+			down = d->caps_lock;
+		}
+		uint8_t code = display_hid_to_adb(sc);
+		if (code == 0xFF)
+			return;
+		ev.type = DISPLAY_EVENT_KEY;
+		ev.adb_key = code;
+		ev.down = down;
+		break;
+	}
+	case SDL_MOUSEMOTION:
+		if (d->menu || d->prompt) {
+			if (d->ui)
+				ui_mouse_move(d->ui, (float)e->motion.x, (float)e->motion.y);
+			return;
+		}
+		ev.type = DISPLAY_EVENT_MOUSE_MOVE;
+		to_screen(d, e->motion.x, e->motion.y, &ev.x, &ev.y);
+		ev.dx = e->motion.xrel;
+		ev.dy = e->motion.yrel;
+		break;
+	case SDL_MOUSEBUTTONDOWN:
+	case SDL_MOUSEBUTTONUP:
+		if (d->menu || d->prompt) {
+			/* (SDL's buttons are left, middle, right; Dear ImGui's left, right, middle) */
+			static const int buttons[4] = { -1, 0, 2, 1 };
+			if (d->ui && e->button.button < 4)
+				ui_mouse_button(d->ui, buttons[e->button.button], e->type == SDL_MOUSEBUTTONDOWN);
+			return;
+		}
+		/* (a click on the status bar isn't one at the bottom of the screen; letting go anywhere is) */
+		if (e->type == SDL_MOUSEBUTTONDOWN && !d->captured && on_status_bar(d, e->button.y))
+			return;
+		ev.type = DISPLAY_EVENT_MOUSE_BUTTON;
+		ev.button = e->button.button - 1;
+		ev.down = e->type == SDL_MOUSEBUTTONDOWN;
+		to_screen(d, e->button.x, e->button.y, &ev.x, &ev.y);
+		break;
+	case SDL_MOUSEWHEEL:
+		if ((d->menu || d->prompt) && d->ui) {
+			float flip = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
+			ui_mouse_wheel(d->ui, flip * (float)e->wheel.x, flip * (float)e->wheel.y);
+		}
+		return;
+	case SDL_DROPFILE:
+	case SDL_DROPTEXT: {
+		if (!e->drop.file)
+			return;
+		char *path = e->type == SDL_DROPFILE ? strdup(e->drop.file) : NULL;
+		d->sdl.free(e->drop.file);
+		if (!path)
+			return;
+		ev.type = DISPLAY_EVENT_DROP_FILE;
+		emit(d, &ev, path, 0);
+		return;
+	}
+	default:
+		return;
+	}
+	if (ev.type != DISPLAY_EVENT_NONE)
+		emit(d, &ev, NULL, 0);
+}
+
+/* What the window takes over (host.lock held) to act on afterwards */
+struct taken {
+	bool resized;                   /* the screen's size changed */
+	unsigned width, height;
+	struct video_rows bands[BANDS]; /* the rows converted, to upload */
+	unsigned nbands;
+	bool menu, prompt;              /* opened or closed */
+	int capture, status_bar;
+	char *clipboard;
+	bool clipboard_asked;
+	bool close;
+};
+
+/*
+ * The screen's changed rows converted into argb (what the texture is
+ * updated from), in bands to upload (host.lock held: the machine doesn't
+ * touch the frame meanwhile)
+ */
+static void take_frame(struct display *d, struct taken *t)
+{
+	struct display_frame *f = &d->frame;
+	unsigned w = d->frame_w, h = d->frame_h;
+	if (!d->frame_ended || !w || !h || !f->palette.bpp)
+		return;
+	d->frame_ended = false;
+	if ((size_t)w * h > d->argb_size) {
+		uint32_t *argb = realloc(d->argb, (size_t)w * h * sizeof *argb);
+		if (!argb)
+			return;
+		d->argb = argb;
+		d->argb_size = (size_t)w * h;
+	}
+	if (w != d->width || h != d->height) {
+		t->resized = true;
+		t->width = w;
+		t->height = h;
+	}
+	uint64_t cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID), t0 = clock_ns(CLOCK_MONOTONIC);
+	for (unsigned y = 0; y < h;) {
+		if (!f->changed[y]) {
+			y++;
+			continue;
+		}
+		unsigned to = y + 1;
+		while (to < h && f->changed[to])
+			to++;
+		video_convert(&f->palette, f->pixels + (size_t)y * d->frame_rb, d->frame_rb, w, to - y, d->argb + (size_t)y * w,
+			      (size_t)w * 4);
+		memset(f->changed + y, 0, to - y);
+		if (t->nbands && (y - t->bands[t->nbands - 1].to < BAND_GAP || t->nbands == BANDS))
+			t->bands[t->nbands - 1].to = to;
+		else
+			t->bands[t->nbands++] = (struct video_rows){ y, to };
+		y = to;
+	}
+	if (t->resized) {               /* (all of it is shown anew) */
+		t->bands[0] = (struct video_rows){ 0, h };
+		t->nbands = 1;
+	}
+	if (t->nbands)
+		d->times.frames++;
+	timed(d, DISPLAY_TIME_CONVERT, t0, &cpu);
+}
+
+/* What the machine handed over (host.lock held) */
+static void take(struct display *d, struct taken *t)
+{
+	struct handed *in = &d->in;
+	take_frame(d, t);
+	if (in->cursor_changed) {
+		const struct display_cursor *c = &in->cursor;
+		if (c->visible != d->cursor.visible ||
+		    (c->visible && (c->x != d->cursor.x || c->y != d->cursor.y || c->image != d->cursor.image)))
+			d->stale = true;
+		if (c->image != d->cursor.image) {
+			memcpy(d->cursor_pixels, in->cursor_pixels, sizeof d->cursor_pixels);
+			d->cursor_images++;
+		}
+		d->cursor = *c;
+		d->cursor.pixels = d->cursor_pixels;
+		in->cursor_changed = false;
+	}
+	if (in->bar_changed) {
+		d->bar = in->bar;
+		d->stale |= d->status_bar;
+		in->bar_changed = false;
+	}
+	if (in->menu_changed) {
+		t->menu = d->menu != in->menu;
+		d->menu = in->menu;
+		in->menu_changed = false;
+	}
+	if (in->info_changed) {
+		d->menu_mouse = in->mouse;
+		memcpy(d->menu_status, in->status, sizeof d->menu_status);
+		d->has_drives = in->has_drives;
+		d->drives = in->drives;
+		d->stale |= d->menu;
+		in->info_changed = false;
+	}
+	if (in->prompt_changed) {
+		t->prompt = true;
+		d->prompt = in->prompt;
+		d->prompt_id = in->prompt_id;
+		memcpy(d->prompt_text, in->prompt_text, sizeof d->prompt_text);
+		memcpy(d->prompt_yes, in->prompt_yes, sizeof d->prompt_yes);
+		memcpy(d->prompt_no, in->prompt_no, sizeof d->prompt_no);
+		in->prompt_changed = false;
+	}
+	t->capture = in->capture;
+	t->status_bar = in->status_bar;
+	in->capture = in->status_bar = -1;
+	t->clipboard = in->clipboard;
+	in->clipboard = NULL;
+	t->clipboard_asked = in->clipboard_asked;
+	in->clipboard_asked = false;
+	t->close = in->close;
+	d->times_out = d->times;
+}
+
+/* ... and done */
+static void act(struct display *d, struct taken *t)
+{
+	if (t->resized) {
+		if (set_screen_size(d, t->width, t->height))
+			fit_window(d);
+	} else if (d->integer) {
+		/* the window's natural size depends on the display's scale: known once the window
+		 * is shown, and changed by moving it to another display */
+		int ww, wh, pw, ph;
+		if (fabs(window_size(d, &ww, &wh, &pw, &ph) - d->density) > 0.02)
+			fit_window(d);
+	}
+	uint64_t cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID), t0 = clock_ns(CLOCK_MONOTONIC);
+	for (unsigned k = 0; k < t->nbands && d->texture; k++) {
+		const struct video_rows *b = &t->bands[k];
+		SDL_Rect r = { 0, (int)b->from, (int)d->width, (int)(b->to - b->from) };
+		d->sdl.UpdateTexture(d->texture, &r, d->argb + (size_t)b->from * d->width, (int)d->width * 4);
+		scaled_stale(d, b->from, b->to);
+		d->stale = true;
+	}
+	if (t->nbands)
+		timed(d, DISPLAY_TIME_UPLOAD, t0, &cpu);
+	if (t->menu || t->prompt) {
+		d->ctrl[0] = d->ctrl[1] = d->alt[0] = d->alt[1] = false;
+		show_pointer(d);
+		if (t->menu)
+			set_title(d);
+		if (t->menu && d->menu)
+			d->menu_time = (double)clock_ns(CLOCK_MONOTONIC) * 1e-9;
+		d->stale = true;
+	}
+	if (t->capture >= 0) {
+		d->captured = t->capture;
+		d->sdl.SetRelativeMouseMode(t->capture);
+		set_title(d);
+	}
+	if (t->status_bar >= 0)
+		show_status_bar(d, t->status_bar);
+	if (t->clipboard && d->sdl.SetClipboardText)
+		d->sdl.SetClipboardText(t->clipboard);
+	free(t->clipboard);
+	if (t->clipboard_asked) {
+		char *text = d->sdl.GetClipboardText(), *copy = text ? strdup(text) : NULL;
+		d->sdl.free(text);
+		pthread_mutex_lock(&host.lock);
+		free(d->in.clipboard_text);
+		d->in.clipboard_text = copy;
+		d->in.clipboard_answered = true;
+		pthread_cond_broadcast(&host.cond);
+		pthread_mutex_unlock(&host.lock);
+	}
+}
+
+static void destroy_window(struct display *d);
+
+#define REDRAW_NS 16000000u             /* the menu and prompts are drawn this often while shown */
+#define IDLE_MS 250                     /* (the window looks round at least this often) */
+
+/* The window's thread: until the machine closes the window, or is over */
+static void run(struct display *d)
+{
+	uint64_t drawn = 0;
+	for (;;) {
+		bool animated = d->menu || d->prompt;
+		uint64_t now = clock_ns(CLOCK_MONOTONIC);
+		int timeout = animated ? (drawn + REDRAW_NS > now ? (int)((drawn + REDRAW_NS - now) / 1000000u) : 0) :
+				IDLE_MS;
+		SDL_Event e;
+		uint64_t cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID);
+		bool got = d->sdl.WaitEventTimeout(&e, timeout) == 1;
+		cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID) - cpu;  /* (waiting, but for what SDL does meanwhile) */
+		atomic_store(&d->woken, false);
+
+		struct taken t = { .nbands = 0 };
+		pthread_mutex_lock(&host.lock);
+		take(d, &t);
+		bool done = host.done || t.close;
+		pthread_mutex_unlock(&host.lock);
+		if (done) {
+			free(t.clipboard);
+			break;
+		}
+		act(d, &t);
+
+		uint64_t t0 = clock_ns(CLOCK_MONOTONIC), c0 = clock_ns(CLOCK_THREAD_CPUTIME_ID);
+		if (got)
+			handle(d, &e);
+		while (d->sdl.PollEvent(&e))
+			handle(d, &e);
+		flush(d);
+		d->times.cpu_ns[DISPLAY_TIME_EVENTS] += cpu;
+		timed(d, DISPLAY_TIME_EVENTS, t0, &c0);
+
+		now = clock_ns(CLOCK_MONOTONIC);
+		if (animated && now - drawn >= REDRAW_NS - 1000000u)
+			d->stale = true;
+		if (d->stale) {
+			draw(d);
+			drawn = now;
+		}
+		if (d->choice != UI_NONE) {
+			chosen(d, d->choice);
+			d->choice = UI_NONE;
+			flush(d);
+		}
+	}
+	pthread_mutex_lock(&host.lock);
+	host.d = NULL;
+	host.closed = true;
+	pthread_cond_broadcast(&host.cond);
+	pthread_mutex_unlock(&host.lock);
+	destroy_window(d);
+}
+
+/* ---- the window's thread: opening and closing ---------------------------------------- */
+
+static struct display *open_window(const char *title, unsigned width, unsigned height, bool integer)
 {
 	struct display *d = calloc(1, sizeof *d);
 	if (!d)
 		return NULL;
+	d->kq = -1;
 	if (!load_sdl(&d->sdl)) {
 		fprintf(stderr, "display: SDL2 is not available; running without a window\n");
 		goto fail;
@@ -645,7 +1298,7 @@ struct display *display_open(const char *title, unsigned width, unsigned height,
 	}
 	if (!d->renderer || !set_screen_size(d, width, height)) {
 		fprintf(stderr, "display: %s\n", d->sdl.GetError());
-		display_close(d);
+		destroy_window(d);
 		return NULL;
 	}
 	SDL_RendererInfo info;
@@ -663,6 +1316,17 @@ struct display *display_open(const char *title, unsigned width, unsigned height,
 	fit_window(d);
 	d->sdl.ShowCursor(0);           /* Mac OS draws its own */
 	d->ui = open_menu(d);
+	d->in.capture = d->in.status_bar = -1;
+	d->stale = true;
+#ifdef __APPLE__
+	struct kevent e;
+	EV_SET(&e, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+	d->kq = kqueue();
+	if (d->kq >= 0 && kevent(d->kq, &e, 1, NULL, 0, NULL) != 0) {
+		close(d->kq);
+		d->kq = -1;
+	}
+#endif
 	return d;
 fail:
 	if (d->sdl.lib)
@@ -671,10 +1335,17 @@ fail:
 	return NULL;
 }
 
-void display_close(struct display *d)
+/* (the machine is done with it, or waits in display_close()) */
+static void destroy_window(struct display *d)
 {
-	if (!d)
-		return;
+	for (unsigned k = 0; k < d->count; k++)
+		free(d->queue[(d->head + k) % QUEUE].path);
+	for (unsigned k = 0; k < d->nout; k++)
+		free(d->out[k].path);
+	free(d->in.clipboard);
+	free(d->in.clipboard_text);
+	if (d->kq >= 0)
+		close(d->kq);
 	ui_close(d->ui);
 	if (d->cursor_color)
 		d->sdl.DestroyTexture(d->cursor_color);
@@ -690,40 +1361,167 @@ void display_close(struct display *d)
 		d->sdl.DestroyWindow(d->window);
 	d->sdl.Quit();
 	dlclose(d->sdl.lib);
+	free(d->argb);
+	free(d->frame.pixels);
+	free(d->frame.changed);
 	free(d);
 }
 
-uint32_t *display_rows(struct display *d, unsigned width, unsigned height, unsigned from, unsigned to, size_t *pitch)
+/* ---- the machine's thread ---------------------------------------------------------- */
+
+struct body {
+	int (*fn)(void *);
+	void *arg;
+	int ret;
+};
+
+static void *machine(void *p)
 {
-	if (width != d->width || height != d->height) {
-		if (!set_screen_size(d, width, height))
-			return NULL;
-		fit_window(d);
-	} else if (d->integer) {
-		/* the window's natural size depends on the display's scale: known once the window
-		 * is shown, and changed by moving it to another display */
-		int ww, wh, pw, ph;
-		if (fabs(window_size(d, &ww, &wh, &pw, &ph) - d->density) > 0.02)
-			fit_window(d);
-	}
-	SDL_Rect r = { 0, (int)from, (int)width, (int)to - (int)from };
-	void *pixels;
-	int p;
-	if (!d->texture || from >= to || to > height || d->sdl.LockTexture(d->texture, &r, &pixels, &p) != 0)
-		return NULL;
-	d->locked = d->screen_stale = true;
-	scaled_stale(d, from, to);
-	*pitch = (size_t)p;
-	return pixels;
+	struct body *b = p;
+	b->ret = b->fn(b->arg);
+	pthread_mutex_lock(&host.lock);
+	host.done = true;
+	if (host.d)
+		wake(host.d);
+	pthread_cond_broadcast(&host.cond);
+	pthread_mutex_unlock(&host.lock);
+	return NULL;
 }
 
-void display_rows_done(struct display *d)
+/* (as much stack as the main thread has: at least 8 MB) */
+static size_t stack_size(void)
 {
-	uint64_t cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID), t = clock_ns(CLOCK_MONOTONIC);
-	if (d->locked)
-		d->sdl.UnlockTexture(d->texture);
-	d->locked = false;
-	timed(d, DISPLAY_TIME_UPLOAD, t, &cpu);
+	struct rlimit r;
+	size_t size = 8u << 20;
+	if (getrlimit(RLIMIT_STACK, &r) == 0 && r.rlim_cur != RLIM_INFINITY && r.rlim_cur > size)
+		size = r.rlim_cur < (256u << 20) ? (size_t)r.rlim_cur : 256u << 20;
+	return size;
+}
+
+int display_main(int (*fn)(void *), void *arg)
+{
+	struct body b = { fn, arg, 0 };
+	pthread_condattr_t ca;
+	pthread_condattr_init(&ca);
+#ifndef __APPLE__
+	pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
+#endif
+	pthread_cond_init(&host.cond, &ca);
+	pthread_condattr_destroy(&ca);
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, stack_size());
+	pthread_t thread;
+	host.running = true;
+	if (pthread_create(&thread, &attr, machine, &b) != 0) {
+		host.running = false;
+		pthread_attr_destroy(&attr);
+		return fn(arg);         /* (without a window) */
+	}
+	pthread_attr_destroy(&attr);
+	pthread_mutex_lock(&host.lock);
+	while (!host.done) {
+		if (!host.opening) {
+			pthread_cond_wait(&host.cond, &host.lock);
+			continue;
+		}
+		host.opening = false;
+		const char *title = host.title;
+		unsigned width = host.width, height = host.height;
+		bool integer = host.integer;
+		pthread_mutex_unlock(&host.lock);
+		struct display *d = open_window(title, width, height, integer);
+		pthread_mutex_lock(&host.lock);
+		host.d = d;
+		host.closed = false;
+		host.opened = true;
+		pthread_cond_broadcast(&host.cond);
+		pthread_mutex_unlock(&host.lock);
+		if (d)
+			run(d);
+		pthread_mutex_lock(&host.lock);
+	}
+	host.running = false;
+	pthread_mutex_unlock(&host.lock);
+	pthread_join(thread, NULL);
+	return b.ret;
+}
+
+struct display *display_open(const char *title, unsigned width, unsigned height, bool integer)
+{
+	pthread_mutex_lock(&host.lock);
+	if (!host.running) {
+		pthread_mutex_unlock(&host.lock);
+		fprintf(stderr, "display: no thread runs the window; running without one\n");
+		return NULL;
+	}
+	host.title = title;
+	host.width = width;
+	host.height = height;
+	host.integer = integer;
+	host.opened = false;
+	host.opening = true;
+	pthread_cond_broadcast(&host.cond);
+	while (!host.opened)
+		pthread_cond_wait(&host.cond, &host.lock);
+	struct display *d = host.d;
+	pthread_mutex_unlock(&host.lock);
+	return d;
+}
+
+void display_close(struct display *d)
+{
+	if (!d)
+		return;
+	pthread_mutex_lock(&host.lock);
+	if (host.d == d) {
+		d->in.close = true;
+		wake(d);
+		while (!host.closed)
+			pthread_cond_wait(&host.cond, &host.lock);
+	}
+	pthread_mutex_unlock(&host.lock);
+}
+
+struct display_frame *display_frame_begin(struct display *d, unsigned width, unsigned height, unsigned bpp,
+					  size_t row_bytes)
+{
+	pthread_mutex_lock(&host.lock);
+	struct display_frame *f = &d->frame;
+	f->kept = width == d->frame_w && height == d->frame_h && bpp == d->frame_bpp && row_bytes == d->frame_rb;
+	if (!f->kept) {
+		if (row_bytes * height > d->frame_bytes) {
+			uint8_t *p = realloc(f->pixels, row_bytes * height);
+			if (!p)
+				goto fail;
+			f->pixels = p;
+			d->frame_bytes = row_bytes * height;
+		}
+		if (height > d->frame_rows) {
+			uint8_t *p = realloc(f->changed, height);
+			if (!p)
+				goto fail;
+			f->changed = p;
+			d->frame_rows = height;
+		}
+		memset(f->changed, 0, height);
+		d->frame_w = width;
+		d->frame_h = height;
+		d->frame_bpp = bpp;
+		d->frame_rb = row_bytes;
+	}
+	return f;
+fail:
+	d->frame_w = d->frame_h = 0;
+	pthread_mutex_unlock(&host.lock);
+	return NULL;
+}
+
+void display_frame_end(struct display *d)
+{
+	d->frame_ended = true;
+	pthread_mutex_unlock(&host.lock);
+	wake(d);
 }
 
 void display_cursor(struct display *d, const struct display_cursor *c)
@@ -731,354 +1529,153 @@ void display_cursor(struct display *d, const struct display_cursor *c)
 	struct display_cursor none = { .visible = false };
 	if (!c || c->width > DISPLAY_CURSOR_MAX || c->height > DISPLAY_CURSOR_MAX)
 		c = &none;
-	if (c->visible != d->cursor.visible ||
-	    (c->visible && (c->x != d->cursor.x || c->y != d->cursor.y || c->image != d->cursor.image)))
-		d->cursor_stale = true;
-	if (c->image != d->cursor.image && c->pixels) {
-		memcpy(d->cursor_pixels, c->pixels, c->width * c->height * sizeof *c->pixels);
-		d->cursor_images++;
+	pthread_mutex_lock(&host.lock);
+	struct handed *in = &d->in;
+	if (c->visible != in->cursor.visible || c->x != in->cursor.x || c->y != in->cursor.y ||
+	    c->image != in->cursor.image) {
+		if (c->image != in->cursor.image && c->pixels)
+			memcpy(in->cursor_pixels, c->pixels, c->width * c->height * sizeof *c->pixels);
+		in->cursor = *c;
+		in->cursor.pixels = in->cursor_pixels;
+		in->cursor_changed = true;
 	}
-	d->cursor = *c;
-	d->cursor.pixels = d->cursor_pixels;
+	pthread_mutex_unlock(&host.lock);
 }
 
-bool display_wait(struct display *d, unsigned ms)
+bool display_wait(struct display *d, uint64_t ns)
 {
-	return d->sdl.WaitEventTimeout(NULL, (int)ms) == 1;
+	pthread_mutex_lock(&host.lock);
+	if (!d->count && ns)
+		input_wait(d, ns);
+	bool any = d->count != 0;
+	pthread_mutex_unlock(&host.lock);
+	return any;
 }
 
 void display_capture_mouse(struct display *d, bool on)
 {
-	d->captured = on;
-	d->sdl.SetRelativeMouseMode(on);
-	d->sdl.SetWindowTitle(d->window, on ? "Blue (Control-Option releases the mouse)" : "Blue");
-}
-
-/* A position in the window, in its units, to a screen pixel */
-static void to_screen(struct display *d, int x, int y, int *sx, int *sy)
-{
-	int ww, wh, pw, ph;
-	struct display_view v = screen_view(d, &ww, &wh, &pw, &ph);
-	/* (positions are whole units, a unit maybe more than a pixel: take its middle) */
-	display_view_point(&v, (x + 0.5) * pw / (ww > 0 ? ww : 1), (y + 0.5) * ph / (wh > 0 ? wh : 1), sx, sy);
-}
-
-/* Whether a position in the window, in its units, is on the status bar */
-static bool on_status_bar(struct display *d, int y)
-{
-	int ww, wh;
-	d->sdl.GetWindowSize(d->window, &ww, &wh);
-	return d->status_bar && y >= wh - bar_units(d);
-}
-
-/*
- * Shows or hides the status bar. The window grows or shrinks to keep the
- * screen's size, unless it keeps its size (fullscreen, maximized): then
- * it's the screen that fits it that changes, as if the user had resized it.
- */
-static void show_status_bar(struct display *d, bool on)
-{
-	if (on == d->status_bar || (on && !d->ui))
-		return;
-	int ww, wh;
-	d->sdl.GetWindowSize(d->window, &ww, &wh);
-	d->status_bar = on;
-	if (d->sdl.GetWindowFlags(d->window) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED))
-		d->resize = true;
-	else
-		d->sdl.SetWindowSize(d->window, ww, wh + (on ? UI_STATUS_BAR_HEIGHT : -UI_STATUS_BAR_HEIGHT));
-	draw(d);
-}
-
-static void menu_key(struct display *d, unsigned scancode, bool down);
-
-static bool poll(struct display *d, struct display_event *ev);
-
-bool display_poll(struct display *d, struct display_event *ev)
-{
-	uint64_t cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID), t = clock_ns(CLOCK_MONOTONIC);
-	bool got = poll(d, ev);
-	timed(d, DISPLAY_TIME_EVENTS, t, &cpu);
-	return got;
-}
-
-static bool poll(struct display *d, struct display_event *ev)
-{
-	SDL_Event e;
-	memset(ev, 0, sizeof *ev);
-	if (d->release) {
-		d->release = false;
-		ev->type = DISPLAY_EVENT_RELEASE_MOUSE;
-		return true;
-	}
-	if (d->menu_event) {
-		d->menu_event = false;
-		ev->type = DISPLAY_EVENT_MENU;
-		return true;
-	}
-	if (d->menu_action != UI_NONE) {
-		enum ui_action action = d->menu_action;
-		d->menu_action = UI_NONE;
-		if (action == UI_FULLSCREEN) {
-			d->fullscreen = !d->fullscreen;
-			d->sdl.SetWindowFullscreen(d->window, d->fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-		} else if (action == UI_STATUS_BAR) {
-			show_status_bar(d, !d->status_bar);
-		} else {
-			if (action == UI_PROMPT_YES || action == UI_PROMPT_NO)
-				display_prompt(d, NULL, NULL, NULL);
-			ev->type = action == UI_RESUME ? DISPLAY_EVENT_MENU : DISPLAY_EVENT_MENU_ACTION;
-			ev->action = action;
-			return true;
-		}
-	}
-	if (d->resize) {
-		d->resize = false;
-		int ww, wh, pw, ph;
-		double density = window_size(d, &ww, &wh, &pw, &ph);
-		ev->type = DISPLAY_EVENT_RESIZE;
-		screen_for_window(d, ww, wh, density, &ev->x, &ev->y);
-		return true;
-	}
-	while (d->sdl.PollEvent(&e)) {
-		switch (e.type) {
-		case SDL_QUIT:
-			ev->type = DISPLAY_EVENT_QUIT;
-			return true;
-		case SDL_RENDER_TARGETS_RESET:
-			scaled_stale(d, 0, d->height);
-			ev->type = DISPLAY_EVENT_EXPOSE;
-			return true;
-		case SDL_CLIPBOARDUPDATE:
-			ev->type = DISPLAY_EVENT_CLIPBOARD;
-			return true;
-		case SDL_WINDOWEVENT: {
-			if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
-				ev->type = DISPLAY_EVENT_CLIPBOARD;
-				return true;
-			}
-			if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-				/* (keys let go elsewhere aren't seen) */
-				d->ctrl[0] = d->ctrl[1] = d->alt[0] = d->alt[1] = false;
-				continue;
-			}
-			/* (some compositors, Wayland's, resize the window only as fast as it's drawn) */
-			if (e.window.event == SDL_WINDOWEVENT_EXPOSED || e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-				ev->type = DISPLAY_EVENT_EXPOSE;
-				return true;
-			}
-			if (e.window.event != SDL_WINDOWEVENT_RESIZED)
-				continue;
-			int ww, wh, pw, ph;
-			double density = window_size(d, &ww, &wh, &pw, &ph);
-			ev->type = DISPLAY_EVENT_RESIZE;
-			screen_for_window(d, e.window.data1, e.window.data2, density, &ev->x, &ev->y);
-			return true;
-		}
-		case SDL_KEYDOWN:
-		case SDL_KEYUP: {
-			bool down = e.type == SDL_KEYDOWN;
-			if (e.key.repeat)
-				continue;
-			unsigned sc = (unsigned)e.key.scancode;
-			/* F12 opens and closes the menu (Esc closes it too): the guest doesn't get them */
-			if (sc == SDL_SCANCODE_F12 || (d->menu && sc == SDL_SCANCODE_ESCAPE)) {
-				if (!down)
-					continue;
-				ev->type = DISPLAY_EVENT_MENU;
-				return true;
-			}
-			if (d->menu) {
-				menu_key(d, sc, down);
-				continue;
-			}
-			if (d->prompt) {                /* (Esc is its "no") */
-				if (sc != SDL_SCANCODE_ESCAPE) {
-					menu_key(d, sc, down);
-					continue;
-				}
-				if (!down)
-					continue;
-				ev->type = DISPLAY_EVENT_MENU_ACTION;
-				ev->action = d->prompt_no[0] ? UI_PROMPT_NO : UI_PROMPT_YES;
-				display_prompt(d, NULL, NULL, NULL);
-				return true;
-			}
-			/* Control and Option (Ctrl and Alt) together: the release key (and keys to the guest too) */
-			if (sc == SDL_SCANCODE_LCTRL || sc == SDL_SCANCODE_RCTRL)
-				d->ctrl[sc == SDL_SCANCODE_RCTRL] = down;
-			if (sc == SDL_SCANCODE_LALT || sc == SDL_SCANCODE_RALT)
-				d->alt[sc == SDL_SCANCODE_RALT] = down;
-			if (down && (d->ctrl[0] || d->ctrl[1]) && (d->alt[0] || d->alt[1]) &&
-			    (sc == SDL_SCANCODE_LCTRL || sc == SDL_SCANCODE_RCTRL || sc == SDL_SCANCODE_LALT ||
-			     sc == SDL_SCANCODE_RALT))
-				d->release = true;
-			if (sc == SDL_SCANCODE_CAPSLOCK) {
-				/* the ADB caps lock key latches: down when engaged, up when released */
-				if (!down)
-					continue;
-				d->caps_lock = !d->caps_lock;
-				down = d->caps_lock;
-			}
-			uint8_t code = display_hid_to_adb((unsigned)e.key.scancode);
-			if (code == 0xFF)
-				continue;
-			ev->type = DISPLAY_EVENT_KEY;
-			ev->adb_key = code;
-			ev->down = down;
-			return true;
-		}
-		case SDL_MOUSEMOTION:
-			if (d->menu || d->prompt) {
-				if (d->ui)
-					ui_mouse_move(d->ui, (float)e.motion.x, (float)e.motion.y);
-				continue;
-			}
-			ev->type = DISPLAY_EVENT_MOUSE_MOVE;
-			to_screen(d, e.motion.x, e.motion.y, &ev->x, &ev->y);
-			ev->dx = e.motion.xrel;
-			ev->dy = e.motion.yrel;
-			return true;
-		case SDL_MOUSEBUTTONDOWN:
-		case SDL_MOUSEBUTTONUP:
-			if (d->menu || d->prompt) {
-				/* (SDL's buttons are left, middle, right; Dear ImGui's left, right, middle) */
-				static const int buttons[4] = { -1, 0, 2, 1 };
-				if (d->ui && e.button.button < 4)
-					ui_mouse_button(d->ui, buttons[e.button.button], e.type == SDL_MOUSEBUTTONDOWN);
-				continue;
-			}
-			/* (a click on the status bar isn't one at the bottom of the screen; letting go anywhere is) */
-			if (e.type == SDL_MOUSEBUTTONDOWN && !d->captured && on_status_bar(d, e.button.y))
-				continue;
-			ev->type = DISPLAY_EVENT_MOUSE_BUTTON;
-			ev->button = e.button.button - 1;
-			ev->down = e.type == SDL_MOUSEBUTTONDOWN;
-			to_screen(d, e.button.x, e.button.y, &ev->x, &ev->y);
-			return true;
-		case SDL_MOUSEWHEEL:
-			if ((d->menu || d->prompt) && d->ui) {
-				float flip = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
-				ui_mouse_wheel(d->ui, flip * (float)e.wheel.x, flip * (float)e.wheel.y);
-			}
-			continue;
-		case SDL_DROPFILE:
-		case SDL_DROPTEXT:
-			if (!e.drop.file)
-				continue;
-			snprintf(d->drop, sizeof d->drop, "%s", e.drop.file);
-			d->sdl.free(e.drop.file);
-			if (e.type == SDL_DROPTEXT)
-				continue;
-			ev->type = DISPLAY_EVENT_DROP_FILE;
-			ev->path = d->drop;
-			return true;
-		default:
-			continue;
-		}
-	}
-	return false;
-}
-
-/* The keys the menu takes (for moving about it from the keyboard) */
-static void menu_key(struct display *d, unsigned scancode, bool down)
-{
-	static const struct { unsigned scancode; enum ui_key key; } keys[] = {
-		{ SDL_SCANCODE_TAB, UI_KEY_TAB }, { SDL_SCANCODE_LEFT, UI_KEY_LEFT }, { SDL_SCANCODE_RIGHT, UI_KEY_RIGHT },
-		{ SDL_SCANCODE_UP, UI_KEY_UP }, { SDL_SCANCODE_DOWN, UI_KEY_DOWN }, { SDL_SCANCODE_SPACE, UI_KEY_SPACE },
-		{ SDL_SCANCODE_RETURN, UI_KEY_ENTER }, { SDL_SCANCODE_KP_ENTER, UI_KEY_ENTER },
-	};
-	for (size_t k = 0; d->ui && k < sizeof keys / sizeof keys[0]; k++)
-		if (keys[k].scancode == scancode)
-			ui_key(d->ui, keys[k].key, down);
+	pthread_mutex_lock(&host.lock);
+	d->in.capture = on;
+	pthread_mutex_unlock(&host.lock);
+	wake(d);
 }
 
 void display_menu(struct display *d, bool open)
 {
-	d->menu = open;
-	d->menu_event = false;
-	d->menu_action = UI_NONE;
-	d->ctrl[0] = d->ctrl[1] = d->alt[0] = d->alt[1] = false;
-	/* (the guest's cursor doesn't move meanwhile: the host's is shown for the menu) */
-	d->sdl.ShowCursor((open || d->prompt) && d->ui ? 1 : 0);
-	if (!d->ui)
-		d->sdl.SetWindowTitle(d->window, open ? "Blue (paused: F12 resumes)" : "Blue");
-	if (open) {
-		struct timespec ts;
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-		d->menu_time = (double)ts.tv_sec + 1e-9 * (double)ts.tv_nsec;
-	}
-	draw(d);
+	pthread_mutex_lock(&host.lock);
+	d->in.menu = open;
+	d->in.menu_changed = true;
+	pthread_mutex_unlock(&host.lock);
+	wake(d);
 }
 
 void display_menu_state(struct display *d, enum ui_mouse mouse, const char *status)
 {
-	d->menu_mouse = mouse;
-	snprintf(d->menu_status, sizeof d->menu_status, "%s", status ? status : "");
+	pthread_mutex_lock(&host.lock);
+	d->in.mouse = mouse;
+	snprintf(d->in.status, sizeof d->in.status, "%s", status ? status : "");
+	d->in.info_changed = true;
+	pthread_mutex_unlock(&host.lock);
 }
 
 void display_drives_state(struct display *d, const struct ui_drives *drives)
 {
-	d->has_drives = drives != NULL;
+	pthread_mutex_lock(&host.lock);
+	d->in.has_drives = drives != NULL;
 	if (drives)
-		d->drives = *drives;
+		d->in.drives = *drives;
+	d->in.info_changed = true;
+	pthread_mutex_unlock(&host.lock);
 }
 
 bool display_prompt(struct display *d, const char *text, const char *yes, const char *no)
 {
 	if (!d || (text && !d->ui))
 		return false;
-	d->prompt = text != NULL;
-	snprintf(d->prompt_text, sizeof d->prompt_text, "%s", text ? text : "");
-	snprintf(d->prompt_yes, sizeof d->prompt_yes, "%s", yes ? yes : "");
-	snprintf(d->prompt_no, sizeof d->prompt_no, "%s", no ? no : "");
-	if (d->menu_action == UI_PROMPT_YES || d->menu_action == UI_PROMPT_NO)
-		d->menu_action = UI_NONE;
-	d->ctrl[0] = d->ctrl[1] = d->alt[0] = d->alt[1] = false;
-	d->sdl.ShowCursor((d->prompt || d->menu) && d->ui ? 1 : 0);
-	draw(d);
+	pthread_mutex_lock(&host.lock);
+	struct handed *in = &d->in;
+	in->prompt = text != NULL;
+	in->prompt_id++;
+	snprintf(in->prompt_text, sizeof in->prompt_text, "%s", text ? text : "");
+	snprintf(in->prompt_yes, sizeof in->prompt_yes, "%s", yes ? yes : "");
+	snprintf(in->prompt_no, sizeof in->prompt_no, "%s", no ? no : "");
+	in->prompt_changed = true;
+	pthread_mutex_unlock(&host.lock);
+	wake(d);
 	return true;
-}
-
-void display_refresh(struct display *d)
-{
-	draw(d);
 }
 
 void display_status_bar(struct display *d, bool on)
 {
-	show_status_bar(d, on);
+	pthread_mutex_lock(&host.lock);
+	d->in.status_bar = on;
+	pthread_mutex_unlock(&host.lock);
+	wake(d);
 }
 
 void display_status(struct display *d, const struct ui_status *s)
 {
+	pthread_mutex_lock(&host.lock);
 	/* (copied whole, padding too, so that comparing them whole works: the caller clears it) */
-	if (memcmp(&d->bar, s, sizeof d->bar) == 0)
-		return;
-	memcpy(&d->bar, s, sizeof d->bar);
-	d->bar_stale = d->status_bar;
-}
-
-void display_update(struct display *d)
-{
-	/* (a prompt answers the pointer: drawn every frame) */
-	if (d->screen_stale || d->bar_stale || d->cursor_stale || d->prompt)
-		draw(d);
+	if (memcmp(&d->in.bar, s, sizeof d->in.bar) != 0) {
+		memcpy(&d->in.bar, s, sizeof d->in.bar);
+		d->in.bar_changed = true;
+	}
+	pthread_mutex_unlock(&host.lock);
 }
 
 char *display_clipboard(struct display *d)
 {
 	if (!d->sdl.GetClipboardText || !d->sdl.free)
 		return NULL;
-	char *text = d->sdl.GetClipboardText(), *copy = text ? strdup(text) : NULL;
-	d->sdl.free(text);
-	return copy;
+	pthread_mutex_lock(&host.lock);
+	d->in.clipboard_asked = true;
+	d->in.clipboard_answered = false;
+	pthread_mutex_unlock(&host.lock);
+	wake(d);
+	pthread_mutex_lock(&host.lock);
+	while (!d->in.clipboard_answered && !host.closed)
+		pthread_cond_wait(&host.cond, &host.lock);
+	char *text = d->in.clipboard_text;
+	d->in.clipboard_text = NULL;
+	d->in.clipboard_answered = false;
+	pthread_mutex_unlock(&host.lock);
+	return text;
 }
 
 void display_set_clipboard(struct display *d, const char *text)
 {
-	if (d->sdl.SetClipboardText)
-		d->sdl.SetClipboardText(text);
+	char *copy = strdup(text);
+	pthread_mutex_lock(&host.lock);
+	free(d->in.clipboard);
+	d->in.clipboard = copy;
+	pthread_mutex_unlock(&host.lock);
+	wake(d);
+}
+
+bool display_poll(struct display *d, struct display_event *ev)
+{
+	pthread_mutex_lock(&host.lock);
+	for (;;) {
+		if (!d->count) {
+			pthread_mutex_unlock(&host.lock);
+			return false;
+		}
+		struct queued q = d->queue[d->head];
+		d->head = (d->head + 1) % QUEUE;
+		d->count--;
+		/* (an answer to a prompt that has gone since) */
+		if (q.ev.type == DISPLAY_EVENT_MENU_ACTION && q.prompt && q.prompt != d->in.prompt_id)
+			continue;
+		pthread_mutex_unlock(&host.lock);
+		*ev = q.ev;
+		if (q.path) {
+			snprintf(d->drop, sizeof d->drop, "%s", q.path);
+			free(q.path);
+			ev->path = d->drop;
+		}
+		return true;
+	}
 }
 
 uint8_t display_hid_to_adb(unsigned usage)
