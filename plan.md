@@ -3482,11 +3482,15 @@ Facts later tasks need, added as they are found.
     `/proc/self/exe` with links resolved.
   - **Ubuntu 22.04's GCC 11 lacks `__builtin_shufflevector`** (raster.c),
     so the AppImage's Blue is built with `gcc-12`, with libstdc++ and
-    libgcc linked in: glibc (2.35) is all it needs. GCC 12 also warns of
-    `id` maybe used uninitialized in `mp_tick()` (inlined `fire()`), a
-    false alarm GCC 13 and clang don't raise. Ubuntu 22.04's GLib 2.72
-    uses PCRE 8.39 (`libpcre.so.3`), not PCRE2, and gettext's functions
-    are glibc's: the AppImage carries SDL2, libslirp, GLib and PCRE.
+    libgcc linked in: glibc (2.35) is all it needs. GCC 12 also warned of
+    `id` maybe used uninitialized in `mp_tick()` (inlined `fire()`), which
+    GCC 13 and clang didn't: `earliest()` set `*id` only when it found a
+    timer or task. It now sets it to 0 (none: no object's ID is 0) at the
+    start, as it sets `*time` to `UINT64_MAX`, so its results are defined
+    either way; GCC 12 builds Blue without a warning. Ubuntu 22.04's GLib
+    2.72 uses PCRE 8.39 (`libpcre.so.3`), not PCRE2, and gettext's
+    functions are glibc's: the AppImage carries SDL2, libslirp, GLib and
+    PCRE.
   - **The AppImage runtime**: the AppImage project's static type2-runtime
     needs no libfuse2, only `fusermount`; without FUSE (a container) it
     says so, and `--appimage-extract-and-run` works anywhere. Bundled
