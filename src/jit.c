@@ -531,7 +531,8 @@ static void fastmem_free(struct jit *j)
 /*
  * A fastmem access faulted: its instruction gets checks, in a new
  * translation of its block; and if the page wasn't even readable (a
- * device's, perhaps), the way to the mmio hook too.
+ * device's, perhaps), or a store's wasn't writable (the kernel's info
+ * records), the way to the mmio hook too.
  */
 static void slow_down(struct jit *j, uint32_t site)
 {
@@ -540,7 +541,7 @@ static void slow_down(struct jit *j, uint32_t site)
 	unsigned w = (s->pc >> 2) & (PAGE_WORDS - 1);
 	if (pg) {
 		pg->slow[w / 64] |= 1ull << (w % 64);
-		if (!(j->mem->pageflags[j->fault_ea >> MEM_PAGE_SHIFT] & MEM_R))
+		if ((j->mem->pageflags[j->fault_ea >> MEM_PAGE_SHIFT] & MEM_RW) != MEM_RW)
 			pg->io[w / 64] |= 1ull << (w % 64);
 	}
 	drop_block(j, &j->blocks[s->block]);

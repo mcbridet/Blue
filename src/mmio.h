@@ -64,4 +64,7 @@ struct mmio_access {
 bool mmio_decode(const struct mmio_bus *bus, const struct ppc_cpu *cpu, struct mmio_access *a);
 void mmio_perform(const struct mmio_access *a, struct ppc_cpu *cpu);
 
+/* The load or store `insn` is, as mmio_decode() has it (with no region); false if it's another */
+bool mmio_decode_insn(uint32_t insn, struct mmio_access *a);
+
 #endif

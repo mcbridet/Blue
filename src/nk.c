@@ -2475,11 +2475,52 @@ static const char *device_stop(const struct machine *m)
  */
 static void in_place(struct machine *m, bool on);
 
+/*
+ * A store to the info records (see kdp_sync()) the way the main loop makes
+ * it at its exit: with the page writable, the change pulled into the
+ * kernel's copy, and the devices then to be brought up to date (that exit
+ * marks them dirty, and brings them up to date only at a sync point, which
+ * the run doesn't reach here). Not with a software interrupt, task switch
+ * or preemption waiting, which the loop would see to after it; nor for
+ * other forms of store (multiple, FP, string) or one running into the next
+ * page, which exit.
+ */
+static int info_store(struct machine *m, struct ppc_cpu *cpu)
+{
+	struct mmio_access a;
+	uint32_t ea = cpu->fault_addr;
+	if (m->mp.swi || m->mp.yield || m->preempt || !mmio_decode_insn(cpu->exit_insn, &a) || !a.store ||
+	    (ea ^ (ea + a.size - 1)) >> MEM_PAGE_SHIFT)
+		return PPC_MMIO_NO;
+	uint32_t v = cpu->gpr[a.rt];
+	if (a.reverse)
+		v = a.size == 4 ? __builtin_bswap32(v) : __builtin_bswap16((uint16_t)v);
+	if (a.size == 1)
+		mem_w8(&m->mem, ea, (uint8_t)v);
+	else if (a.size == 2)
+		mem_w16(&m->mem, ea, (uint16_t)v);
+	else
+		mem_w32(&m->mem, ea, v);
+	if (a.update)
+		cpu->gpr[a.ra] = ea;
+	cpu->pc += 4;
+	cpu->icount++;
+	cpu->tb += cpu->tb_step;
+	kdp_pull(m);
+	m->dev_dirty = true;
+	in_place(m, m->in_place_on);                    /* (as for the run the loop would start next) */
+	return PPC_MMIO_DONE;
+}
+
 static int device_hook(void *ctx, struct ppc_cpu *cpu)
 {
 	struct machine *m = ctx;
 	struct mmio_access a;
-	if (cpu->icount + 1 >= m->mmio_until || !mmio_decode(&m->bus, cpu, &a))
+	if (cpu->icount + 1 >= m->mmio_until)
+		return PPC_MMIO_NO;
+	if (cpu->fault_write && cpu->fault_addr >> MEM_PAGE_SHIFT == m->ci.la_info_record >> MEM_PAGE_SHIFT)
+		return info_store(m, cpu);
+	if (!mmio_decode(&m->bus, cpu, &a))
 		return PPC_MMIO_NO;
 	/*
 	 * A read that changes nothing, with the devices not due to change by
