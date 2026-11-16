@@ -25,7 +25,7 @@ was found along the way, and how Mac OS was brought up, are in
 - Exceptions in Multiprocessing Services tasks other than the blue one,
   sent to the task's exception queue as NanoKernel 2 does (with
   `MPSetExceptionHandler` and `MPThrowException`). Such a fault stops the
-  run; none of Mac OS 9.1's or 9.2.2's tasks has made one.
+  run; none of Mac OS 9.1's or 9.2.2's tasks makes one.
 
 [future.md](future.md) has ideas not on the roadmap: a modem, a serial
 port, infrared, 3D sound, sound input, AltiVec, 3dfx Glide, pictures on
