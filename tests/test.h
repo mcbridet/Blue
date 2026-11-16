@@ -35,6 +35,8 @@ void test_awacs(void);
 void test_audio(void);
 void test_cdimage(void);
 void test_cdaudio(void);
+void test_cdformats(void);
+void test_dmg(void);
 void test_drivers(void);
 void test_net(void);
 void test_hfs(void);

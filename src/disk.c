@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "be.h"
+#include "dmg.h"
 #include "hfs.h"
 #include "ndrv.h"
 
@@ -106,7 +107,7 @@ static ssize_t write_at(const struct disk *d, const void *buf, size_t len, uint6
  * block 1. The entries are normally 512-byte blocks counting 512-byte blocks,
  * also on CDs whose descriptor says 2048; otherwise in the descriptor's.
  */
-static void read_partition_map(struct disk *d)
+static void read_apm(struct disk *d)
 {
 	uint8_t b[512];
 	if (d->size < 1024 || read_at(d, b, sizeof b, 0) != (ssize_t)sizeof b || be16(b) != 0x4552)
@@ -128,6 +129,38 @@ static void read_partition_map(struct disk *d)
 		if (strcmp(type, "Apple_HFS") == 0)
 			add_partition(d, (uint64_t)be32(b + 8) * bs, (uint64_t)be32(b + 12) * bs, name, k);
 	}
+}
+
+/*
+ * A GUID partition table, as disk images made on Macs of today have: its
+ * HFS+ partitions (Mac OS 8.5 and later read HFS+, but not the table).
+ */
+static void read_gpt(struct disk *d)
+{
+	static const uint8_t hfs[16] = { 0x00, 0x53, 0x46, 0x48, 0x00, 0x00, 0xAA, 0x11,
+					 0xAA, 0x11, 0x00, 0x30, 0x65, 0x43, 0xEC, 0xAC };
+	uint8_t h[92], e[128];
+	if (d->size < 1024 || read_at(d, h, sizeof h, 512) != (ssize_t)sizeof h || memcmp(h, "EFI PART", 8))
+		return;
+	uint64_t table = (le32(h + 72) | (uint64_t)le32(h + 76) << 32) * 512;
+	uint32_t n = le32(h + 80), size = le32(h + 84);
+	for (uint32_t k = 0; k < n && k < 128 && size >= sizeof e; k++) {
+		if (read_at(d, e, sizeof e, table + (uint64_t)k * size) != (ssize_t)sizeof e || memcmp(e, hfs, 16))
+			continue;
+		uint64_t first = le32(e + 32) | (uint64_t)le32(e + 36) << 32, last = le32(e + 40) | (uint64_t)le32(e + 44) << 32;
+		char name[33] = { 0 };
+		for (unsigned j = 0; j < 32 && e[56 + 2 * j]; j++)
+			name[j] = e[57 + 2 * j] || e[56 + 2 * j] >= 0x80 ? '_' : (char)e[56 + 2 * j];
+		if (last >= first)
+			add_partition(d, first * 512, (last - first + 1) * 512, name, k + 1);
+	}
+}
+
+static void read_partition_map(struct disk *d)
+{
+	read_apm(d);
+	if (!d->partitions)
+		read_gpt(d);
 }
 
 static int cd_image(const char *path, struct disk *img, char *why, size_t len);
@@ -156,6 +189,30 @@ int disk_open(struct disk *d, struct mem *mem, const char *path, bool read_only,
 	d->path = path;
 	d->read_only = read_only;
 	d->cdrom = cdrom;
+	char why[400];
+	int packed = dmg_open(path, &d->packed, why, sizeof why);
+	if (packed < 0) {
+		fprintf(stderr, "%s: %s\n", path, why);
+		return -1;
+	}
+	if (packed) {                   /* (a compressed image: read-only, decompressed as read) */
+		d->fd = -1;
+		d->packed_data = (struct disk_backend){ path, d->packed, dmg_size(d->packed), dmg_read, NULL };
+		d->backend = &d->packed_data;
+		d->size = dmg_size(d->packed) & ~(uint64_t)511;
+		if (!read_only)
+			fprintf(stderr, "%s: a %s, attaching it read-only\n", path, dmg_kind(d->packed));
+		d->read_only = true;
+		if (d->size < 1024) {
+			fprintf(stderr, "%s: not a usable disk image\n", path);
+			disk_close(d);
+			return -1;
+		}
+		read_partition_map(d);
+		if (!d->partitions)
+			add_partition(d, 0, d->size, "", 0);
+		return 0;
+	}
 	d->fd = open(path, read_only ? O_RDONLY : O_RDWR);
 	if (d->fd < 0 && !read_only && (errno == EACCES || errno == EROFS)) {
 		fprintf(stderr, "%s: not writable, attaching it read-only\n", path);
@@ -224,6 +281,9 @@ void disk_close(struct disk *d)
 	d->media = false;
 	cdimage_close(d->disc);
 	d->disc = NULL;
+	dmg_close(d->packed);
+	d->packed = NULL;
+	d->backend = NULL;
 	cdrom_free(d->cd);
 	d->cd = NULL;
 }
@@ -724,15 +784,19 @@ void disk_open_floppy(struct disk *d, struct mem *mem)
 
 /*
  * An image for a CD-ROM drive, opened read-only: its partitions and its disc
- * (in a disk struct of its own), or -1 and why. A cue sheet's data comes
- * through its disc (`backend` set: take_image() points it at the drive's).
+ * (in a disk struct of its own), or -1 and why. An image with tracks or a
+ * compressed one gives its data through its disc (`backend` set:
+ * take_image() points it at the drive's); a plain one is read as it is.
  */
 static int cd_image(const char *path, struct disk *img, char *why, size_t len)
 {
 	struct stat st;
 	memset(img, 0, sizeof *img);
 	img->fd = -1;
-	if (cdimage_is_cue(path)) {
+	int format = cdimage_detect(path, NULL, why, len);
+	if (format < 0)
+		return -1;
+	if (format != CDIMAGE_PLAIN) {
 		const struct cdimage *c = img->disc = cdimage_open(path, why, len);
 		if (!c)
 			return -1;
@@ -753,10 +817,11 @@ static int cd_image(const char *path, struct disk *img, char *why, size_t len)
 	const char *other = floppy_other_image(img->fd);
 	if (fstat(img->fd, &st) || !S_ISREG(st.st_mode) || st.st_size < 2048 || other) {
 		if (other && strstr(other, "2352"))
-			snprintf(why, len, "%s: give Blue its .cue sheet, which says where its tracks are", other);
+			snprintf(why, len, "%s: give Blue its .cue sheet (or .ccd, .mds), which says where its tracks are",
+				 other);
 		else if (other)
-			snprintf(why, len, "%s: CD-ROM drives take raw images (.iso, .toast, .cdr, .img; a UDIF .dmg "
-				 "converts to one with hdiutil convert -format UDTO) and .cue sheets", other);
+			snprintf(why, len, "%s: CD-ROM drives take plain images (.iso, .toast, .cdr, .img), compressed Mac "
+				 "images (.dmg, Disk Copy 6), and images with tracks (.cue, .nrg, .mds, .ccd, .chd)", other);
 		else
 			snprintf(why, len, "not a disc image");
 		close(img->fd);
@@ -852,25 +917,38 @@ int disk_insert(struct disk *d, const char *path, char *why, size_t len)
 		return 0;
 	}
 	bool read_only = false;
-	int fd = open(path, O_RDWR);
-	if (fd < 0 && (errno == EACCES || errno == EROFS || errno == EPERM)) {
-		read_only = true;       /* (EPERM: locked in the Finder) */
-		fd = open(path, O_RDONLY);
-	}
-	if (fd < 0) {
-		snprintf(why, len, "%s", strerror(errno));
-		return -1;
-	}
 	struct floppy_image image;
-	if (floppy_probe(fd, &image, why, len)) {
-		close(fd);
+	struct dmg *packed;
+	int fd = -1, rc = floppy_packed(path, &packed, &image, why, len);
+	if (rc < 0)
 		return -1;
+	if (rc > 0) {                   /* (compressed: read-only) */
+		read_only = true;
+	} else {
+		fd = open(path, O_RDWR);
+		if (fd < 0 && (errno == EACCES || errno == EROFS || errno == EPERM)) {
+			read_only = true;       /* (EPERM: locked in the Finder) */
+			fd = open(path, O_RDONLY);
+		}
+		if (fd < 0) {
+			snprintf(why, len, "%s", strerror(errno));
+			return -1;
+		}
+		if (floppy_probe(fd, &image, why, len)) {
+			close(fd);
+			return -1;
+		}
 	}
 	disk_eject(d);
 	d->fd = fd;
 	d->read_only = read_only;
 	d->image = image;
 	d->size = image.data_size;
+	if (packed) {
+		d->packed = packed;
+		d->packed_data = (struct disk_backend){ d->media_path, packed, image.data_size, dmg_read, NULL };
+		d->backend = &d->packed_data;
+	}
 	d->part[0].offset = image.data_offset;
 	d->part[0].size = image.data_size;
 	d->media_parts = 1;
@@ -904,6 +982,8 @@ void disk_eject(struct disk *d)
 		cdrom_disc(d->cd, NULL);
 	cdimage_close(d->disc);
 	d->disc = NULL;
+	dmg_close(d->packed);
+	d->packed = NULL;
 	d->backend = NULL;
 }
 

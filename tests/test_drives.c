@@ -275,7 +275,7 @@ static void test_cdrom(struct mem *mem)
 	CHECK(strstr(why, "gzip") != NULL);
 	CHECK(pwrite(fd, "\0\0", 2, 0) == 2 && pwrite(fd, "koly", 4, (4u << 20) - 512) == 4);
 	CHECK_EQ(disk_check_cd(bad, why, sizeof why), -1);
-	CHECK(strstr(why, "UDIF") != NULL && strstr(why, "hdiutil") != NULL);
+	CHECK(strstr(why, "UDIF") != NULL && strstr(why, "no block table") != NULL);
 	CHECK(ftruncate(fd, 1000) == 0);
 	CHECK_EQ(disk_check_cd(bad, why, sizeof why), -1);
 	close(fd);

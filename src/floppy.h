@@ -3,7 +3,8 @@
  * images of 400K, 720K, 800K, 1440K or 2880K disks, and Disk Copy 4.2
  * images (an 84-byte header, the disk's blocks, then their tags; also
  * inside MacBinary), told apart by their contents and size, not their
- * names. Compressed and other kinds of images are only recognized, to be
+ * names; and compressed images of those sizes (UDIF, Disk Copy 6's NDIF:
+ * dmg.h), read-only. Other kinds of images are only recognized, to be
  * refused with a reason. Also the drive's icons.
  */
 #ifndef BLUE_FLOPPY_H
@@ -13,21 +14,31 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum floppy_kind { FLOPPY_RAW, FLOPPY_DC42 };
+enum floppy_kind { FLOPPY_RAW, FLOPPY_DC42, FLOPPY_PACKED };
 
 struct floppy_image {
 	enum floppy_kind kind;
-	uint64_t data_offset, data_size;        /* the disk's blocks, in the file */
+	uint64_t data_offset, data_size;        /* the disk's blocks, in the file (PACKED: in the image decoded) */
 	uint64_t header_offset;                 /* DC42: its header (0, or 128 inside MacBinary) */
 	uint64_t tag_offset, tag_size;          /* ... and the tags after the blocks */
 	bool checksums_ok;                      /* ... whose checksums match */
 	char volume[64];                        /* what's on it, for messages: HFS "Name", FAT, blank, ... */
+	char format[64];                        /* PACKED: what kind of image it is ("UDIF image (ADC)") */
 };
+
+struct dmg;
 
 /* Looks at an open image; returns 0, or -1 with the reason it isn't taken in `why`. */
 int floppy_probe(int fd, struct floppy_image *img, char *why, size_t len);
 
-/* ... the same for a file */
+/*
+ * A compressed image of a floppy: 1 (and *out, the image open to read
+ * through dmg_read()), 0 if the file isn't a compressed image, -1 if it is
+ * but not one the drive takes (why).
+ */
+int floppy_packed(const char *path, struct dmg **out, struct floppy_image *img, char *why, size_t len);
+
+/* ... either for a file: 0, or -1 (why) */
 int floppy_check(const char *path, char *why, size_t len);
 
 /* What an open image is if it's one Blue doesn't take, a CD's either (compressed, an archive, ...); NULL if not */

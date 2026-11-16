@@ -25,8 +25,9 @@ struct drives {
 enum drives_for { DRIVES_ANY, DRIVES_FLOPPY, DRIVES_CD };
 
 /*
- * The drive an image goes in: images of a floppy's size (2880K or less) in
- * the floppy drive, others (and cue sheets) in a CD-ROM drive, an empty one or else one
+ * The drive an image goes in: images of a floppy's size (2880K or less, a
+ * compressed one's unpacked) in the floppy drive, others (and images with
+ * tracks, cue sheets and their like) in a CD-ROM drive, an empty one or else one
  * whose disc Mac OS isn't using. NULL, with why in `why`, if it can't go
  * in (no such drive, Mac OS using the disc in it, not an image it takes).
  */

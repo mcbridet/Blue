@@ -1,4 +1,4 @@
-#include "cdimage.h"
+#include "cdimage_int.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -11,21 +11,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "audiodec.h"
 #include "be.h"
+#include "dmg.h"
 
 #define MAX_CUE (1u << 20)              /* a cue sheet's bytes */
 #define BUF_SECTORS 32u
 #define SESSION_GAP_FIRST 11400u        /* after session 1: its lead-out, the next lead-in and pregap */
 #define SESSION_GAP 6900u               /* ... after later sessions */
-
-struct cd_file {
-	int fd;
-	char *path;
-	uint64_t offset;                /* of the first sector (WAVE, AIFF: of the samples) */
-	uint64_t size;                  /* bytes from there */
-	bool swap;                      /* 16-bit samples big-endian (MOTOROLA, AIFF) */
-	bool audio;                     /* WAVE or AIFF: samples only */
-};
 
 void cd_msf(uint32_t lba, uint8_t *m, uint8_t *s, uint8_t *f)
 {
@@ -61,6 +54,8 @@ void cdimage_close(struct cdimage *c)
 	for (unsigned k = 0; k < c->nfiles; k++) {
 		if (c->files[k].fd >= 0)
 			close(c->files[k].fd);
+		if (c->files[k].close)
+			c->files[k].close(c->files[k].dec);
 		free(c->files[k].path);
 	}
 	free(c->files);
@@ -76,7 +71,7 @@ static struct cdimage *new_image(const char *path)
 		return NULL;
 	c->path = strdup(path);
 	c->files = calloc(CD_MAX_TRACKS, sizeof *c->files);
-	c->buf = malloc(BUF_SECTORS * CD_SECTOR);
+	c->buf = malloc(BUF_SECTORS * CD_MAX_STRIDE);
 	c->data = -1;
 	if (!c->path || !c->files || !c->buf) {
 		cdimage_close(c);
@@ -130,6 +125,35 @@ static int open_beside(const char *cue, const char *name, char **found)
 static bool read_at(int fd, void *buf, size_t len, uint64_t at)
 {
 	return pread(fd, buf, len, (off_t)at) == (ssize_t)len;
+}
+
+bool cdimage_file_read(const struct cd_file *f, void *buf, size_t len, uint64_t at)
+{
+	return f->read ? !f->read(f->dec, buf, len, at) : read_at(f->fd, buf, len, at);
+}
+
+int cdimage_add_file(struct cdimage *c, const char *name, char *why, size_t len)
+{
+	if (c->nfiles >= CD_MAX_TRACKS) {
+		snprintf(why, len, "too many files");
+		return -1;
+	}
+	struct cd_file *f = &c->files[c->nfiles];
+	struct stat st;
+	errno = 0;
+	f->fd = open_beside(c->path, name, &f->path);
+	if (f->fd < 0) {
+		const char *slash = strrchr(c->path, '/');
+		snprintf(why, len, "%s (named in %s): %s", name, slash ? slash + 1 : c->path, strerror(errno ? errno : ENOENT));
+		return -1;
+	}
+	c->nfiles++;
+	if (fstat(f->fd, &st)) {
+		snprintf(why, len, "%s: %s", name, strerror(errno));
+		return -1;
+	}
+	f->size = (uint64_t)st.st_size;
+	return (int)c->nfiles - 1;
 }
 
 /* A WAVE file's samples: 44.1 kHz 16-bit stereo PCM */
@@ -277,6 +301,11 @@ static int parse_error(struct cue_parse *p, unsigned line, const char *what)
 	return -1;
 }
 
+static void close_audio(void *a)
+{
+	audiodec_close(a);
+}
+
 static int open_file(struct cdimage *c, struct cue_parse *p, unsigned line, const char *name, const char *type)
 {
 	if (c->nfiles >= CD_MAX_TRACKS)
@@ -284,6 +313,7 @@ static int open_file(struct cdimage *c, struct cue_parse *p, unsigned line, cons
 	if (!name || !type)
 		return parse_error(p, line, "FILE needs a name and a type");
 	struct cd_file *f = &c->files[c->nfiles];
+	errno = 0;
 	f->fd = open_beside(c->path, name, &f->path);
 	if (f->fd < 0) {
 		snprintf(p->why, sizeof p->why, "%s (named in the cue sheet): %s", name, strerror(errno ? errno : ENOENT));
@@ -295,16 +325,31 @@ static int open_file(struct cdimage *c, struct cue_parse *p, unsigned line, cons
 		return parse_error(p, line, "cannot read the file");
 	f->size = (uint64_t)st.st_size;
 	const char *err = NULL;
-	if (strcasecmp(type, "WAVE") == 0) {
-		f->audio = true;
-		err = wave_samples(f, (uint64_t)st.st_size);
-	} else if (strcasecmp(type, "AIFF") == 0) {
-		f->audio = true;
-		err = aiff_samples(f, (uint64_t)st.st_size);
-	} else if (strcasecmp(type, "MOTOROLA") == 0) {
+	char e[200];
+	uint8_t h[12] = { 0 };
+	if (strcasecmp(type, "MOTOROLA") == 0) {
 		f->swap = true;
-	} else if (strcasecmp(type, "BINARY") != 0) {
-		err = "only BINARY, MOTOROLA, WAVE and AIFF files are read (not MP3 or other compressed audio)";
+	} else if (strcasecmp(type, "BINARY") != 0) {   /* WAVE, AIFF, MP3, FLAC, ...: by what's in it */
+		struct audiodec *a = NULL;
+		int rc;
+		f->audio = true;
+		if (!read_at(f->fd, h, sizeof h, 0))
+			err = "cannot read it";
+		else if (!memcmp(h, "RIFF", 4))
+			err = wave_samples(f, f->size);
+		else if (!memcmp(h, "FORM", 4))
+			err = aiff_samples(f, f->size);
+		else if ((rc = audiodec_open(f->path, &a, e, sizeof e)) < 0)
+			err = e;
+		else if (rc == 0)
+			err = !strcasecmp(type, "WAVE") ? "not a WAVE file" : !strcasecmp(type, "AIFF") ? "not an AIFF file" :
+			      "not audio Blue reads (WAVE, AIFF, FLAC, MP3 or Ogg Vorbis)";
+		else {
+			f->dec = a;
+			f->read = audiodec_read;
+			f->close = close_audio;
+			f->size = audiodec_size(a);
+		}
 	}
 	if (err) {
 		snprintf(p->why, sizeof p->why, "%s: %s", name, err);
@@ -459,6 +504,7 @@ static int layout(struct cdimage *c, struct cue_parse *p)
 			d->control = t->control;
 			d->mode = t->mode;
 			d->sector_size = t->sector_size;
+			d->stride = t->sector_size;
 			memcpy(d->isrc, t->isrc, sizeof d->isrc);
 			d->file = (int)file;
 			d->file_pos = pos;
@@ -523,24 +569,47 @@ static struct cdimage *open_cue(struct cdimage *c, char *why, size_t len)
 	return c;
 }
 
+static void close_dmg(void *d)
+{
+	dmg_close(d);
+}
+
+/* A plain image, or a compressed one (decoded as read): one data track of 2048-byte sectors */
 static struct cdimage *open_plain(struct cdimage *c, char *why, size_t len)
 {
 	struct cd_file *f = &c->files[0];
-	f->fd = open(c->path, O_RDONLY);
-	if (f->fd < 0)
-		return fail(c, why, len, "%s", strerror(errno));
 	c->nfiles = 1;
+	f->fd = -1;
 	f->path = strdup(c->path);
-	struct stat st;
-	if (fstat(f->fd, &st) || st.st_size < (off_t)CD_DATA)
+	if (c->format == CDIMAGE_PACKED) {
+		struct dmg *d;
+		if (dmg_open(c->path, &d, why, len) != 1) {
+			cdimage_close(c);
+			return NULL;
+		}
+		f->dec = d;
+		f->read = dmg_read;
+		f->close = close_dmg;
+		f->size = dmg_size(d);
+		snprintf(c->kind, sizeof c->kind, "a %s", dmg_kind(d));
+	} else {
+		struct stat st;
+		f->fd = open(c->path, O_RDONLY);
+		if (f->fd < 0)
+			return fail(c, why, len, "%s", strerror(errno));
+		if (fstat(f->fd, &st))
+			return fail(c, why, len, "%s", strerror(errno));
+		f->size = (uint64_t)st.st_size;
+		snprintf(c->kind, sizeof c->kind, "a plain image");
+	}
+	if (f->size < CD_DATA)
 		return fail(c, why, len, "%s", "not a CD image");
-	f->size = (uint64_t)st.st_size;
 	struct cd_track *t = &c->track[0];
 	t->number = 1;
 	t->session = 1;
 	t->control = CD_CONTROL_DATA;
 	t->mode = 1;
-	t->sector_size = CD_DATA;
+	t->sector_size = t->stride = CD_DATA;
 	t->file_sectors = (uint32_t)(f->size / CD_DATA);
 	t->end = t->file_sectors;
 	c->tracks = 1;
@@ -549,14 +618,191 @@ static struct cdimage *open_plain(struct cdimage *c, char *why, size_t len)
 	return c;
 }
 
+int cdimage_check(struct cdimage *c, char *why, size_t len)
+{
+	if (!c->tracks)
+		return snprintf(why, len, "it has no tracks"), -1;
+	for (unsigned k = 0; k < c->tracks; k++) {
+		const struct cd_track *t = &c->track[k], *next = k + 1 < c->tracks ? t + 1 : NULL;
+		if (t->number < 1 || t->number > 99 || (k && t->number <= t[-1].number) || t->pregap > t->start ||
+		    t->start > t->end || (next && t->end > next->pregap) || t->end > 0xFFFFFF ||
+		    (t->sector_size != CD_SECTOR && t->sector_size != CD_DATA && t->sector_size != 2336) ||
+		    t->stride < t->sector_size || t->stride > CD_MAX_STRIDE || (!t->mode && t->sector_size != CD_SECTOR))
+			return snprintf(why, len, "its table of contents is damaged (track %u)", t->number), -1;
+		if (t->file >= 0) {
+			const struct cd_file *f = &c->files[t->file];
+			uint64_t need = t->file_sectors ? t->file_pos + (uint64_t)(t->file_sectors - 1) * t->stride +
+							  t->sector_size : 0;
+			if ((unsigned)t->file >= c->nfiles || t->file_lba < t->pregap ||
+			    t->file_lba + (uint64_t)t->file_sectors > t->end)
+				return snprintf(why, len, "its table of contents is damaged (track %u)", t->number), -1;
+			if (need > f->size)
+				return snprintf(why, len, "track %u is past the end of %s (cut short?)", t->number,
+						strrchr(f->path, '/') ? strrchr(f->path, '/') + 1 : f->path), -1;
+		}
+	}
+	c->leadout = c->track[c->tracks - 1].end;
+	c->sessions = c->track[c->tracks - 1].session;
+	return 0;
+}
+
+/* ---- what an image is --------------------------------------------------------- */
+
+static bool cue_text(const uint8_t *h, size_t n)
+{
+	static const char *const words[] = { "FILE ", "REM ", "CATALOG ", "TITLE ", "PERFORMER ", "SONGWRITER ",
+					     "CDTEXTFILE " };
+	size_t k = n >= 3 && h[0] == 0xEF && h[1] == 0xBB && h[2] == 0xBF ? 3 : 0;
+	for (size_t j = 0; j < n; j++)
+		if (h[j] < 0x20 && h[j] != '\r' && h[j] != '\n' && h[j] != '\t')
+			return false;
+	while (k < n && (h[k] == ' ' || h[k] == '\t' || h[k] == '\r' || h[k] == '\n'))
+		k++;
+	for (size_t w = 0; w < sizeof words / sizeof words[0]; w++)
+		if (n - k >= strlen(words[w]) && !strncasecmp((const char *)h + k, words[w], strlen(words[w])))
+			return true;
+	return false;
+}
+
+/* A file beside `path` with the same name but for its extension `ext` (in either case): true, its path in `out` */
+static bool sibling(const char *path, const char *ext, char *out, size_t len)
+{
+	const char *slash = strrchr(path, '/'), *base = slash ? slash + 1 : path, *dot = strrchr(base, '.');
+	size_t stem = dot ? (size_t)(dot - base) : strlen(base);
+	int dir = (int)(base - path);
+	char dirname[4096];
+	snprintf(dirname, sizeof dirname, "%.*s", dir ? dir : 1, dir ? path : ".");
+	DIR *d = opendir(dirname);
+	struct dirent *e;
+	bool found = false;
+	while (d && !found && (e = readdir(d)))
+		if (strlen(e->d_name) == stem + 1 + strlen(ext) && !strncasecmp(e->d_name, base, stem) &&
+		    e->d_name[stem] == '.' && !strcasecmp(e->d_name + stem + 1, ext)) {
+			snprintf(out, len, "%.*s%s", dir, path, e->d_name);
+			found = true;
+		}
+	if (d)
+		closedir(d);
+	return found;
+}
+
+int cdimage_detect(const char *path, char *open_path, char *why, size_t len)
+{
+	static const uint8_t sync[12] = { 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0 };
+	uint8_t h[64] = { 0 }, t[12] = { 0 };
+	struct stat st;
+	if (open_path)
+		snprintf(open_path, 4096, "%s", path);
+	int fd = open(path, O_RDONLY);
+	if (fd < 0 || fstat(fd, &st) || !S_ISREG(st.st_mode)) {
+		snprintf(why, len, "%s", fd < 0 ? strerror(errno) : "not a file");
+		if (fd >= 0)
+			close(fd);
+		return -1;
+	}
+	uint64_t size = (uint64_t)st.st_size;
+	ssize_t got = pread(fd, h, sizeof h, 0);
+	if (size >= sizeof t && pread(fd, t, sizeof t, (off_t)(size - sizeof t)) != (ssize_t)sizeof t)
+		memset(t, 0, sizeof t);
+	close(fd);
+	if (!memcmp(h, "MComprHD", 8))
+		return CDIMAGE_CHD;
+	if (!memcmp(h, "MEDIA DESCRIPTOR", 16))
+		return CDIMAGE_MDS;
+	if (!memcmp(t, "NER5", 4) || !memcmp(t + 4, "NERO", 4))
+		return CDIMAGE_NRG;
+	if (size <= MAX_CUE && got > 0) {
+		size_t k = got >= 3 && h[0] == 0xEF && h[1] == 0xBB && h[2] == 0xBF ? 3 : 0;
+		if ((size_t)got - k >= 9 && !strncasecmp((const char *)h + k, "[CloneCD]", 9))
+			return CDIMAGE_CCD;
+		if (cdimage_is_cue(path) || cue_text(h, (size_t)got))
+			return CDIMAGE_CUE;
+		if ((size_t)got - k >= 5 && (!strncmp((const char *)h + k, "CD_DA", 5) ||
+					     !strncmp((const char *)h + k, "CD_ROM", 6) || !strncmp((const char *)h + k, "CD_I", 4))) {
+			char cue[4096];         /* (cdrdao's .toc: the .cue sheet that often comes with it) */
+			if (sibling(path, "cue", cue, sizeof cue) && cdimage_detect(cue, NULL, why, len) == CDIMAGE_CUE) {
+				if (open_path)
+					snprintf(open_path, 4096, "%s", cue);
+				return CDIMAGE_CUE;
+			}
+			snprintf(why, len, "a cdrdao table of contents (.toc), which Blue doesn't read: give it a .cue sheet");
+			return -1;
+		}
+	}
+	struct dmg *d;
+	int rc = dmg_open(path, &d, why, len);
+	if (rc < 0)
+		return -1;
+	if (rc > 0) {
+		dmg_close(d);
+		return CDIMAGE_PACKED;
+	}
+	/* the data of an image whose table of contents is in a file beside it */
+	const char *dot = strrchr(path, '.');
+	if (!memcmp(h, sync, sizeof sync) || (dot && (!strcasecmp(dot, ".bin") || !strcasecmp(dot, ".img") ||
+						      !strcasecmp(dot, ".mdf") || !strcasecmp(dot, ".sub")))) {
+		static const struct { const char *ext; int format; } desc[] = {
+			{ "cue", CDIMAGE_CUE }, { "ccd", CDIMAGE_CCD }, { "mds", CDIMAGE_MDS },
+		};
+		char other[4096];
+		for (size_t k = 0; k < sizeof desc / sizeof desc[0]; k++)
+			if (sibling(path, desc[k].ext, other, sizeof other) && strcmp(other, path) &&
+			    cdimage_detect(other, NULL, why, len) == desc[k].format) {
+				if (open_path)
+					snprintf(open_path, 4096, "%s", other);
+				return desc[k].format;
+			}
+	}
+	return CDIMAGE_PLAIN;
+}
+
+bool cdimage_has_toc(const char *path)
+{
+	char why[200];
+	int format = cdimage_detect(path, NULL, why, sizeof why);
+	return format >= CDIMAGE_CUE;
+}
+
 struct cdimage *cdimage_open(const char *path, char *why, size_t len)
 {
-	struct cdimage *c = new_image(path);
+	char target[4096];
+	why[0] = 0;
+	int format = cdimage_detect(path, target, why, len);
+	if (format < 0)
+		return NULL;
+	struct cdimage *c = new_image(target);
 	if (!c) {
 		snprintf(why, len, "out of memory");
 		return NULL;
 	}
-	c = cdimage_is_cue(path) ? open_cue(c, why, len) : open_plain(c, why, len);
+	c->format = (enum cdimage_format)format;
+	int rc = 0;
+	switch (c->format) {
+	case CDIMAGE_PLAIN:
+	case CDIMAGE_PACKED:
+		c = open_plain(c, why, len);
+		break;
+	case CDIMAGE_CUE:
+		snprintf(c->kind, sizeof c->kind, "a cue sheet");
+		c = open_cue(c, why, len);
+		break;
+	case CDIMAGE_NRG:
+		rc = cdimage_nrg(c, why, len);
+		break;
+	case CDIMAGE_MDS:
+		rc = cdimage_mds(c, why, len);
+		break;
+	case CDIMAGE_CCD:
+		rc = cdimage_ccd(c, why, len);
+		break;
+	case CDIMAGE_CHD:
+		rc = cdimage_chd(c, why, len);
+		break;
+	}
+	if (c && (rc || (c->format >= CDIMAGE_NRG && cdimage_check(c, why, len)))) {
+		cdimage_close(c);
+		c = NULL;
+	}
 	if (!c)
 		return NULL;
 	for (unsigned k = 0; k < c->tracks; k++)
@@ -592,7 +838,7 @@ static bool in_file(const struct cd_track *t, uint32_t lba, uint64_t *at)
 {
 	if (t->file < 0 || lba < t->file_lba || lba - t->file_lba >= t->file_sectors)
 		return false;
-	*at = t->file_pos + (uint64_t)(lba - t->file_lba) * t->sector_size;
+	*at = t->file_pos + (uint64_t)(lba - t->file_lba) * t->stride;
 	return true;
 }
 
@@ -633,21 +879,21 @@ int cdimage_read_data(void *ctx, void *out, size_t len, uint64_t at)
 			buf += n, at += n, len -= n;
 			continue;
 		}
-		if (t->sector_size == CD_DATA) {        /* the data alone: as much as lies together, at once */
+		if (t->sector_size == CD_DATA && t->stride == CD_DATA) {        /* the data alone: as much as lies together */
 			uint64_t room = (uint64_t)run_in_file(t, lba, UINT32_MAX) * CD_DATA - off;
 			size_t n = room < len ? (size_t)room : len;
-			if (!read_at(f->fd, buf, n, f->offset + pos + off))
+			if (!cdimage_file_read(f, buf, n, f->offset + pos + off))
 				return -1;
 			buf += n, at += n, len -= n;
 			continue;
 		}
 		size_t want = (off + len + CD_DATA - 1) / CD_DATA;
 		unsigned n = run_in_file(t, lba, want < BUF_SECTORS ? (unsigned)want : BUF_SECTORS);
-		if (!read_at(f->fd, c->buf, (size_t)n * t->sector_size, f->offset + pos))
+		if (!cdimage_file_read(f, c->buf, (size_t)(n - 1) * t->stride + t->sector_size, f->offset + pos))
 			return -1;
 		for (unsigned k = 0; k < n && len; k++) {
 			size_t m = CD_DATA - off < len ? CD_DATA - off : len;
-			memcpy(buf, c->buf + (size_t)k * t->sector_size + skip + off, m);
+			memcpy(buf, c->buf + (size_t)k * t->stride + skip + off, m);
 			buf += m, at += m, len -= m;
 			off = 0;
 		}
@@ -682,26 +928,27 @@ int cdimage_read_raw(const struct cdimage *c, uint32_t lba, unsigned count, uint
 		const struct cd_track *t = &c->track[k];
 		const struct cd_file *f = &c->files[t->file];
 		unsigned n = run_in_file(t, lba, count);
-		if (t->sector_size == CD_SECTOR) {
+		if (t->sector_size == CD_SECTOR && t->stride == CD_SECTOR) {
 			uint64_t room = f->size > pos ? f->size - pos : 0;      /* (a last sector cut short) */
 			size_t want = (size_t)n * CD_SECTOR, got = room < want ? (size_t)room : want;
-			if (got && !read_at(f->fd, buf, got, f->offset + pos))
+			if (got && !cdimage_file_read(f, buf, got, f->offset + pos))
 				return -1;
 			memset(buf + got, 0, want - got);
-			if (f->swap && !t->mode)
-				for (size_t b = 0; b + 1 < want; b += 2) {
-					uint8_t x = buf[b];
-					buf[b] = buf[b + 1];
-					buf[b + 1] = x;
-				}
 		} else {
 			for (unsigned j = 0; j < n; j++) {
 				uint8_t *s = buf + (size_t)j * CD_SECTOR;
-				if (!read_at(f->fd, s, t->sector_size, f->offset + pos + (uint64_t)j * t->sector_size))
+				if (!cdimage_file_read(f, s, t->sector_size, f->offset + pos + (uint64_t)j * t->stride))
 					return -1;
-				make_raw(t, lba + j, s);
+				if (t->sector_size != CD_SECTOR)
+					make_raw(t, lba + j, s);
 			}
 		}
+		if (f->swap && !t->mode)
+			for (size_t b = 0; b + 1 < (size_t)n * CD_SECTOR; b += 2) {
+				uint8_t x = buf[b];
+				buf[b] = buf[b + 1];
+				buf[b + 1] = x;
+			}
 		buf += (size_t)n * CD_SECTOR, lba += n, count -= n;
 	}
 	return 0;

@@ -101,7 +101,8 @@ static int usage(void)
 		"      --watch <hex addr>       log every write to the page holding addr\n"
 		"      --traps <n>              log the first n 68k A-line traps\n"
 		"      --traps-after <n>        ... starting after n instructions\n"
-		"      --disk <image>           attach a disk image (writable if the file is);\n"
+		"      --disk <image>           attach a disk image (writable if the file is; a\n"
+		"                               compressed one, .dmg or Disk Copy 6, read-only);\n"
 		"                               drives are numbered, and tried for startup, in\n"
 		"                               command-line order\n"
 		"      --cdrom <image>          attach an image read-only, in a CD-ROM drive (whose\n"
@@ -110,9 +111,9 @@ static int usage(void)
 		"      --cdrom-drive            an empty CD-ROM drive (a window or real time has one\n"
 		"                               without a CD-ROM drive given)\n"
 		"      --floppy <image>         a floppy image for the floppy drive (raw 400K, 720K,\n"
-		"                               800K, 1440K or 2880K, or Disk Copy 4.2); the first is\n"
-		"                               in it at startup, the others go in, in turn, as Mac OS\n"
-		"                               ejects the one in\n"
+		"                               800K, 1440K or 2880K, Disk Copy 4.2, or compressed:\n"
+		"                               .dmg, Disk Copy 6); the first is in it at startup, the\n"
+		"                               others go in, in turn, as Mac OS ejects the one in\n"
 		"      --floppy-drive           a floppy drive, empty at startup (a window or real time\n"
 		"                               always has one)\n"
 		"      --share <folder>         show a host folder to Mac OS as a volume; what Mac OS\n"
@@ -122,8 +123,9 @@ static int usage(void)
 		"      --screenshot <file.png>  save the screen when the run ends\n"
 		"      --dump-ram <file>        save guest RAM when the run ends\n"
 		"      --log-hostcalls          log driver requests handled natively\n"
-		"  disk toc <image>             list a CD image's tracks (a .cue sheet's, or one data\n"
-		"                               track) as its CD-ROM drive gives them\n"
+		"  disk toc <image>             list a CD image's tracks (a .cue, .nrg, .mds, .ccd or\n"
+		"                               .chd's, or one data track) as its CD-ROM drive gives\n"
+		"                               them\n"
 		"  disk create <file> <size> [name]\n"
 		"                               make a disk image holding an empty HFS volume\n"
 		"                               (size in bytes, or with K, M or G; 1M or more, or a\n"
@@ -595,8 +597,8 @@ static int cmd_toc(const char *path)
 		fprintf(stderr, "%s: %s\n", path, why);
 		return 1;
 	}
-	printf("%s: %u track%s, %u session%s, lead-out at ", path, c->tracks, c->tracks == 1 ? "" : "s", c->sessions,
-	       c->sessions == 1 ? "" : "s");
+	printf("%s: %s, %u track%s, %u session%s, lead-out at ", path, c->kind, c->tracks, c->tracks == 1 ? "" : "s",
+	       c->sessions, c->sessions == 1 ? "" : "s");
 	print_msf(c->leadout, false);
 	printf(" (LBA %u)\n", c->leadout);
 	for (unsigned k = 0; k < c->tracks; k++) {

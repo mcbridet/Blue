@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "be.h"
+#include "dmg.h"
 
 #define K 1024u
 #define DC42_HEADER 84u
@@ -39,6 +40,12 @@ static int fail(char *why, size_t len, const char *what)
 {
 	snprintf(why, len, "%s", what);
 	return -1;
+}
+
+/* (describe_volume()'s reads from a file: ctx points to its descriptor) */
+static int read_fd(void *ctx, void *buf, size_t len, uint64_t at)
+{
+	return pread(*(const int *)ctx, buf, len, (off_t)at) == (ssize_t)len ? 0 : -1;
 }
 
 /* The checksum of `size` bytes of the file from `at` (both even) */
@@ -108,11 +115,11 @@ static bool dc42_header(const uint8_t *h, uint64_t at, uint64_t room, struct flo
 }
 
 /* What's on the disk, for messages; -1 (with why) for what Mac OS can't use at all */
-static int describe_volume(int fd, struct floppy_image *img, char *why, size_t len)
+static int describe_volume(int (*read)(void *ctx, void *buf, size_t len, uint64_t at), void *ctx,
+			   struct floppy_image *img, char *why, size_t len)
 {
 	uint8_t boot[512], mdb[512];
-	if (pread(fd, boot, 512, (off_t)img->data_offset) != 512 ||
-	    pread(fd, mdb, 512, (off_t)img->data_offset + 1024) != 512)
+	if (read(ctx, boot, 512, img->data_offset) || read(ctx, mdb, 512, img->data_offset + 1024))
 		return fail(why, len, "cannot read it");
 	unsigned sig = be16(mdb);
 	if (sig == 0x4244) {                    /* 'BD' */
@@ -152,6 +159,16 @@ static const char *other_image(int fd, uint64_t size, const uint8_t *h)
 		return "gzip-compressed";
 	if (!memcmp(h, "PK\3\4", 4))
 		return "a ZIP archive";
+	if (!memcmp(h, "7z\xBC\xAF\x27\x1C", 6))
+		return "a 7-Zip archive";
+	if (!memcmp(h, "Rar!\x1A\x07", 6))
+		return "a RAR archive";
+	if (!memcmp(h, "\xFD" "7zXZ", 6))
+		return "xz-compressed";
+	if (!memcmp(h, "ECM", 4))
+		return "an ECM-encoded image (unecm makes the .bin)";
+	if (!memcmp(h, "sprs", 4))
+		return "a sparse disk image (.sparseimage: hdiutil convert makes a .dmg Blue reads)";
 	if (!memcmp(h, "BZh", 3))
 		return "bzip2-compressed";
 	if (!memcmp(h, "SIT!", 4) || !memcmp(h, "StuffIt", 7))
@@ -192,8 +209,8 @@ int floppy_probe(int fd, struct floppy_image *img, char *why, size_t len)
 
 	const char *other = other_image(fd, size, h);
 	if (other) {
-		snprintf(why, len, "%s: Blue takes raw floppy images (400K, 720K, 800K, 1440K) and Disk Copy 4.2 "
-			 "images; convert it to one of those first", other);
+		snprintf(why, len, "%s: Blue takes raw floppy images (400K, 720K, 800K, 1440K), Disk Copy 4.2 images and "
+			 "compressed ones (UDIF .dmg, Disk Copy 6); convert it to one of those first", other);
 		return -1;
 	}
 
@@ -214,7 +231,8 @@ int floppy_probe(int fd, struct floppy_image *img, char *why, size_t len)
 		}
 		if (!floppy_raw_size(size)) {
 			snprintf(why, len, "%llu bytes is no floppy's size: Blue takes raw images of 400K, 720K, "
-				 "800K, 1440K or 2880K disks, and Disk Copy 4.2 images", (unsigned long long)size);
+				 "800K, 1440K or 2880K disks, Disk Copy 4.2 images and compressed ones (UDIF, Disk Copy 6)",
+				 (unsigned long long)size);
 			return -1;
 		}
 		memset(img, 0, sizeof *img);
@@ -227,18 +245,54 @@ int floppy_probe(int fd, struct floppy_image *img, char *why, size_t len)
 		img->checksums_ok = pread(fd, sums, 8, (off_t)(img->header_offset + DC42_DATA_SUM)) == 8 &&
 				    !dc42_sums(fd, img, &data, &tags) && be32(sums) == data && be32(sums + 4) == tags;
 	}
-	return describe_volume(fd, img, why, len);
+	return describe_volume(read_fd, &fd, img, why, len);
+}
+
+int floppy_packed(const char *path, struct dmg **out, struct floppy_image *img, char *why, size_t len)
+{
+	struct dmg *d;
+	*out = NULL;
+	memset(img, 0, sizeof *img);
+	int rc = dmg_open(path, &d, why, len);
+	if (rc <= 0)
+		return rc;
+	uint64_t size = dmg_size(d);
+	if (!floppy_raw_size(size)) {
+		if (size > MAX_FLOPPY)
+			snprintf(why, len, "a %s of %llu MB: too big for a floppy: it would go in a CD-ROM drive", dmg_kind(d),
+				 (unsigned long long)(size >> 20));
+		else
+			snprintf(why, len, "a %s of %llu bytes, which is no floppy's size", dmg_kind(d),
+				 (unsigned long long)size);
+		dmg_close(d);
+		return -1;
+	}
+	img->kind = FLOPPY_PACKED;
+	img->data_size = size;
+	snprintf(img->format, sizeof img->format, "%s", dmg_kind(d));
+	if (describe_volume(dmg_read, d, img, why, len)) {
+		dmg_close(d);
+		return -1;
+	}
+	*out = d;
+	return 1;
 }
 
 int floppy_check(const char *path, char *why, size_t len)
 {
 	struct floppy_image img;
+	struct dmg *packed;
+	int rc = floppy_packed(path, &packed, &img, why, len);
+	if (rc) {
+		dmg_close(packed);
+		return rc > 0 ? 0 : -1;
+	}
 	int fd = open(path, O_RDONLY);
 	if (fd < 0) {
 		snprintf(why, len, "%s", strerror(errno));
 		return -1;
 	}
-	int rc = floppy_probe(fd, &img, why, len);
+	rc = floppy_probe(fd, &img, why, len);
 	close(fd);
 	return rc;
 }

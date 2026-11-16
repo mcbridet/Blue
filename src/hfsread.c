@@ -671,7 +671,7 @@ int hfsread_system_file(const char *const *paths, unsigned count, uint32_t type,
 	err[0] = '\0';
 	for (unsigned k = 0; k < count; k++) {
 		struct disk d;
-		if (disk_open(&d, NULL, paths[k], true, cdimage_is_cue(paths[k])))     /* (any image, read-only) */
+		if (disk_open(&d, NULL, paths[k], true, cdimage_has_toc(paths[k])))     /* (any image, read-only) */
 			return -1;
 		for (unsigned p = 0; p < d.partitions; p++) {
 			int rc = system_file(&d, p, paths[k], type, found, err, errlen);
@@ -692,7 +692,7 @@ int hfsread_system_file_in(const char *path, unsigned map_entry, uint32_t type, 
 	struct disk d;
 	memset(found, 0, sizeof *found);
 	err[0] = '\0';
-	if (disk_open(&d, NULL, path, true, cdimage_is_cue(path)))
+	if (disk_open(&d, NULL, path, true, cdimage_has_toc(path)))
 		return -1;
 	int rc = 0;
 	for (unsigned p = 0; p < d.partitions && !rc; p++)
@@ -705,7 +705,7 @@ int hfsread_system_file_in(const char *path, unsigned map_entry, uint32_t type, 
 int hfsread_volumes(const char *path, int (*fn)(void *ctx, const struct hfsread_volume *v), void *ctx)
 {
 	struct disk d;
-	if (disk_open(&d, NULL, path, true, cdimage_is_cue(path)))
+	if (disk_open(&d, NULL, path, true, cdimage_has_toc(path)))
 		return -1;
 	int rc = 0;
 	for (unsigned p = 0; p < d.partitions && !rc; p++) {

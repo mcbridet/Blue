@@ -190,7 +190,7 @@ int install_check(const char *path, unsigned part, struct install_check *ck, cha
 	memset(ck, 0, sizeof *ck);
 	if (tools_files(files))
 		return fail(err, errlen, "cannot make the tools");
-	if (disk_open(&d, NULL, path, true, cdimage_is_cue(path)))      /* (any image, read-only) */
+	if (disk_open(&d, NULL, path, true, cdimage_has_toc(path)))      /* (any image, read-only) */
 		return fail(err, errlen, "%s: cannot open it", path);
 	int rc = -1;
 	l.v = &v;

@@ -899,10 +899,10 @@ static void fill_page_holes(struct machine *m)
 /* What went in the floppy drive */
 static void floppy_said(const struct disk *d)
 {
-	printf("floppy: %s in the drive (%lluK%s, %s%s)\n", d->media_path,
+	printf("floppy: %s in the drive (%lluK%s%s, %s%s)\n", d->media_path,
 	       (unsigned long long)(d->image.data_size >> 10),
-	       d->image.kind == FLOPPY_DC42 ? " Disk Copy 4.2 image" : "", d->image.volume,
-	       d->read_only ? ", locked" : "");
+	       d->image.kind == FLOPPY_DC42 ? " Disk Copy 4.2 image" : d->image.kind == FLOPPY_PACKED ? " " : "",
+	       d->image.kind == FLOPPY_PACKED ? d->image.format : "", d->image.volume, d->read_only ? ", locked" : "");
 	if (d->image.kind == FLOPPY_DC42 && !d->image.checksums_ok)
 		printf("floppy: %s: its Disk Copy checksums don't match what's in it (it may be damaged)\n",
 		       d->media_path);

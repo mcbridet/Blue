@@ -15,8 +15,10 @@
  * CD-ROM drives (`cdrom`, swappable or not) answer as Apple's CD-ROM driver
  * does (cdrom.h): DriverGestalt 'devt' 'cdrm', the disc's table of contents,
  * playing and reading audio, a CD-ROM drive's icons. Their images are plain
- * (2048-byte sectors) or cue sheets (cdimage.h), whose data track Mac OS
- * mounts; a disc of audio alone has a drive whose reads fail.
+ * (2048-byte sectors), compressed (UDIF, NDIF) or have tracks (cue sheets,
+ * Nero, Alcohol, CloneCD, CHD: cdimage.h), whose data track Mac OS mounts; a
+ * disc of audio alone has a drive whose reads fail. Disks and floppies may be
+ * compressed images too (dmg.h), read-only.
  */
 #ifndef BLUE_DISK_H
 #define BLUE_DISK_H
@@ -95,6 +97,9 @@ struct disk {
 	struct cdimage *disc;
 	struct disk_backend disc_data;
 	struct cdrom *cd;               /* (made at the driver's first call) */
+	/* a compressed image's (a disk's or a floppy's, read-only): read through packed_data */
+	struct dmg *packed;
+	struct disk_backend packed_data;
 	bool dirty;                     /* written since last flushed (and a DC42 image's checksums worked out) */
 	uint64_t written_tb;            /* ... last, at this timebase */
 	unsigned long ejects;           /* by Mac OS */
@@ -102,7 +107,8 @@ struct disk {
 
 /*
  * Opens the backing file and reads its partition map; returns 0 on success.
- * A CD (`cdrom`, then read-only) may be a cue sheet too.
+ * A CD (`cdrom`, then read-only) may be any image cdimage.h reads; a
+ * compressed image (dmg.h) is read-only.
  */
 int disk_open(struct disk *d, struct mem *mem, const char *path, bool read_only, bool cdrom);
 

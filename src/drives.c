@@ -4,6 +4,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "dmg.h"
+
 #define FLOPPY_MAX (2880u * 1024)       /* (the biggest floppy's) */
 
 static const char *file_name(const char *path)
@@ -59,9 +61,15 @@ struct disk *drives_pick_in(const struct drives *dr, struct disk *d, const char 
 struct disk *drives_pick(const struct drives *dr, const char *path, enum drives_for kind, char *why, size_t len)
 {
 	struct stat st;
-	if (kind == DRIVES_ANY) {               /* (a cue sheet is small, but a CD's) */
-		bool small = stat(path, &st) == 0 && (uint64_t)st.st_size <= FLOPPY_MAX;
-		kind = small && !cdimage_is_cue(path) ? DRIVES_FLOPPY : DRIVES_CD;
+	if (kind == DRIVES_ANY) {               /* (a cue sheet is small, but a CD's; a compressed image, by its size unpacked) */
+		struct dmg *d;
+		char reason[400];
+		uint64_t size = stat(path, &st) == 0 ? (uint64_t)st.st_size : UINT64_MAX;
+		if (dmg_open(path, &d, reason, sizeof reason) > 0) {
+			size = dmg_size(d);
+			dmg_close(d);
+		}
+		kind = size <= FLOPPY_MAX && !cdimage_has_toc(path) ? DRIVES_FLOPPY : DRIVES_CD;
 	}
 	if (kind == DRIVES_FLOPPY) {
 		if (!dr->floppy) {
