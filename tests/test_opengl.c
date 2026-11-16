@@ -1826,26 +1826,29 @@ static const struct op scene_eval_lit[] = {
 };
 
 /*
- * OpenGL 1.2's rest: logic ops over a gradient (its colors linear across the
- * quad, so either diagonal splits it the same), blending on too (which
- * they override), a line drawn twice by XOR (gone again)
+ * OpenGL 1.2's rest: logic ops over four colors, blending on too (which
+ * they override), a line drawn twice by XOR (gone again). Every color is a
+ * whole number of 255ths, flat: the bits logic ops take are then the same
+ * everywhere, where a gradient's (radeonsi's a step from llvmpipe's here
+ * and there) or a half step's rounding would change them.
  */
 enum { GL_COLOR_LOGIC_OP_T = 0x0BF2, GL_AND_T = 0x1501, GL_XOR_T = 0x1506, GL_OR_T = 0x1507, GL_EQUIV_T = 0x1509,
        GL_INVERT_T = 0x150A, GL_COPY_INVERTED_T = 0x150C, GL_NAND_T = 0x150E, GL_LINE_STIPPLE_T = 0x0B24,
        GL_POLYGON_STIPPLE_T = 0x0B42, GL_POINT_SMOOTH_T = 0x0B10, GL_LINE_SMOOTH_T = 0x0B20 };
 #define LOGIC(op) { "glLogicOp", { op } }
+#define C255(r, g, b) C3((r) / 255.0, (g) / 255.0, (b) / 255.0)
 static const struct op scene_logicop[] = {
 	ORTHO, CLEAR(0.2, 0.4, 0.6),
-	BEGIN(GL_QUADS), C3(0.5, 0.2, 0.1), V2(2.2, 2.3), C3(0.9, 0.5, 0.2), V2(93.7, 2.3), C3(0.6, 0.6, 0.9),
-	V2(93.7, 69.6), C3(0.2, 0.3, 0.8), V2(2.2, 69.6), END,
+	C255(128, 51, 26), QUAD2(2.2, 2.3, 48, 36), C255(230, 128, 51), QUAD2(48, 2.3, 93.7, 36),
+	C255(51, 77, 204), QUAD2(2.2, 36, 48, 69.6), C255(153, 153, 230), QUAD2(48, 36, 93.7, 69.6),
 	EN(GL_COLOR_LOGIC_OP_T), EN(GL_BLEND), { "glBlendFunc", { GL_ONE, GL_ONE } },
-	LOGIC(GL_XOR_T), C3(0.5, 0.75, 0.25), QUAD2(5.3, 5.2, 30.6, 30.4),
-	LOGIC(GL_AND_T), C3(0.9, 0.3, 0.6), QUAD2(35.3, 5.2, 60.6, 30.4),
-	LOGIC(GL_OR_T), C3(0.1, 0.5, 0.2), QUAD2(65.3, 5.2, 90.6, 30.4),
+	LOGIC(GL_XOR_T), C255(128, 191, 64), QUAD2(5.3, 5.2, 30.6, 30.4),
+	LOGIC(GL_AND_T), C255(230, 77, 153), QUAD2(35.3, 5.2, 60.6, 30.4),
+	LOGIC(GL_OR_T), C255(26, 128, 51), QUAD2(65.3, 5.2, 90.6, 30.4),
 	LOGIC(GL_INVERT_T), QUAD2(5.3, 35.2, 30.6, 50.4),
-	LOGIC(GL_COPY_INVERTED_T), C3(0.2, 0.7, 0.9), QUAD2(35.3, 35.2, 60.6, 50.4),
-	LOGIC(GL_NAND_T), C3(0.6, 0.6, 0.1), QUAD2(65.3, 35.2, 90.6, 50.4),
-	LOGIC(GL_EQUIV_T), C3(0.3, 0.1, 0.8), QUAD2(5.3, 55.2, 45.6, 68.4),
+	LOGIC(GL_COPY_INVERTED_T), C255(51, 179, 230), QUAD2(35.3, 35.2, 60.6, 50.4),
+	LOGIC(GL_NAND_T), C255(153, 153, 26), QUAD2(65.3, 35.2, 90.6, 50.4),
+	LOGIC(GL_EQUIV_T), C255(77, 26, 204), QUAD2(5.3, 55.2, 45.6, 68.4),
 	LOGIC(GL_XOR_T), C3(1, 1, 1), BEGIN(GL_LINES), V2(50.3, 57.6), V2(91.6, 66.3), V2(50.3, 57.6), V2(91.6, 66.3), END,
 	BEGIN(GL_LINES), V2(50.3, 60.6), V2(91.6, 69.3), END,
 	DIS(GL_COLOR_LOGIC_OP_T), DIS(GL_BLEND),
@@ -1879,7 +1882,7 @@ static const struct op scene_stipple[] = {
  * wide ones (2, 3, 5), points of sizes rounded (1, 2, 2.6, 4, 5)
  */
 static const struct op scene_lines[] = {
-	ORTHO, CLEAR(0.1, 0.15, 0.1), { "glShadeModel", { GL_FLAT } },
+	ORTHO, CLEAR(0.11, 0.15, 0.11), { "glShadeModel", { GL_FLAT } },  /* (not 0.1: 25.5, rounded either way) */
 	BEGIN(GL_LINES), C3(1, 1, 1), V2(2.3, 2.6), V2(30.7, 9.2), C3(1, 0.5, 0), V2(30.4, 12.3), V2(2.2, 4.4),
 	C3(0, 1, 0), V2(4.6, 14.3), V2(9.2, 40.7), C3(0, 1, 1), V2(14.3, 40.6), V2(12.6, 14.2), C3(1, 0, 1), V2(20.4, 15.4),
 	V2(33.6, 28.7), C3(1, 1, 0), V2(35.3, 15.6), V2(22.8, 37.3), C3(0.5, 0.5, 1), V2(3.6, 44.4), V2(3.8, 44.6), END,
@@ -1887,7 +1890,7 @@ static const struct op scene_lines[] = {
 	{ "glLineWidth", { 3 } }, BEGIN(GL_LINES), C3(0.2, 1, 0.2), V2(40.2, 18.3), V2(46.6, 40.4), END,
 	{ "glLineWidth", { 5 } }, BEGIN(GL_LINES), C3(0.3, 0.3, 1), V2(52.4, 22.7), V2(90.6, 34.3), END,
 	{ "glLineWidth", { 1 } },
-	{ "glPointSize", { 2 } }, BEGIN(GL_POINTS), C3(1, 1, 1), V2(70.3, 4.3), V2(76.5, 4.5), END,
+	{ "glPointSize", { 2 } }, BEGIN(GL_POINTS), C3(1, 1, 1), V2(70.3, 4.3), V2(76.6, 4.4), END,
 	{ "glPointSize", { 2.6 } }, BEGIN(GL_POINTS), C3(1, 1, 0), V2(82.2, 6.3), END,
 	{ "glPointSize", { 4 } }, BEGIN(GL_POINTS), C3(0, 1, 1), V2(88.7, 12.2), V2(70.2, 14.6), END,
 	{ "glPointSize", { 5 } }, BEGIN(GL_POINTS), C3(1, 0, 1), V2(80.3, 18.4), END,
@@ -1901,7 +1904,8 @@ static const struct op scene_lines[] = {
  * Antialiased lines and points over what's there, blended by their
  * coverage: the area of each pixel a rectangle or disk covers, where
  * Mesa's llvmpipe ramps lines' alpha by distance and draws smooth points
- * as round aliased ones
+ * as round aliased ones, and radeonsi covers thinner (OpenGL leaves the
+ * coverage to them: allowed for both)
  */
 static const struct op scene_smooth_lines[] = {
 	ORTHO, CLEAR(0.1, 0.1, 0.2), EN(GL_BLEND), { "glBlendFunc", { GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA } },
@@ -2146,7 +2150,7 @@ static const struct {
 	{ "offset", scene_offset, 4, 2 }, { "clip", scene_clip, 4, 2 }, { "lists", scene_lists, 4, 2 },
 	{ "pixels", scene_pixels, 4, 2 }, { "texture3d", scene_texture3d, 4, 2 }, { "glu", scene_glu, 40, 40 },
 	{ "eval", scene_eval, 0, 0 }, { "eval_lit", scene_eval_lit, 0, 0 }, { "logicop", scene_logicop, 0, 0 },
-	{ "stipple", scene_stipple, 48, 48 }, { "lines", scene_lines, 4, 0 }, { "smoothlines", scene_smooth_lines, 400, 100 },
+	{ "stipple", scene_stipple, 48, 48 }, { "lines", scene_lines, 4, 0 }, { "smoothlines", scene_smooth_lines, 450, 150 },
 	{ "texlines", scene_texlines, 64, 0 }, { "accum", scene_accum, 0, 0 }, { "lodbias", scene_lodbias, 0, 0 },
 	{ "lodrange", scene_lodrange, 0, 0 }, { "combine", scene_combine, 0, 0 }, { "combine2", scene_combine2, 0, 0 },
 };
@@ -2763,13 +2767,17 @@ static char mesa_renderer[128];         /* (its GL_RENDERER) */
  * What a Mesa driver draws wrong, not compared on it: radeonsi (Mesa
  * 26.2, on a Radeon RX 6800 XT) draws glCopyPixels' copies of depths with
  * no color at all (rather than the raster color), and writes their depths
- * with the depth test off too; llvmpipe draws them as OpenGL says
+ * with the depth test off too; and it draws an aliased point of size 2.6
+ * as a square 2.6 pixels across (as core profiles' points are), where
+ * OpenGL 1.2's 3.3 rounds the size to 3. llvmpipe draws them as OpenGL
+ * says.
  */
 static const struct {
 	const char *scene, *renderer, *what;
 	int left, top, right, bottom;           /* (pixels; rows top first) */
 } mesa_wrong[] = {
 	{ "pixels", "radeonsi", "glCopyPixels' depths", 68, SH - 71, 92, SH - 59 },
+	{ "lines", "radeonsi", "an aliased point 2.6 across", 80, SH - 9, 85, SH - 4 },
 };
 
 static void (*mesa_fn(const char *name))(void)
