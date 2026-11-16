@@ -486,9 +486,211 @@ static uint32_t switch_word(const struct pad_switch *s)
 }
 
 /*
- * The title's AppleJack: its data (AJGlobalData) with the driver's own
- * mapping or the title's first 'pipp' resource's, found by the title as an
- * ADB device's (CountADBs and GetIndADB patched by 68k code), and Blue told
+ * The 68k code of the ADB patches, run as a title calls them: enough of a
+ * 68000 for it (and for nothing else). The routines patched over are the
+ * test's: CountADBs says two devices, the keyboard and the mouse, and
+ * GetIndADB gives those.
+ */
+static struct {
+	uint32_t d[8], a[8], pc;
+	bool n, z, v, c;
+	unsigned steps;
+} m68k;
+
+static void m68k_push(uint32_t v)
+{
+	m68k.a[7] -= 4;
+	mem_w32(&mem, m68k.a[7], v);
+}
+
+static uint32_t m68k_pop(void)
+{
+	uint32_t v = mem_r32(&mem, m68k.a[7]);
+	m68k.a[7] += 4;
+	return v;
+}
+
+/* Flags of a word's result, an addition's or a subtraction's (r = x + y, or x - y) */
+static void m68k_flags(uint32_t x, uint32_t y, uint32_t r, bool sub)
+{
+	x &= 0xFFFF;
+	y &= 0xFFFF;
+	r &= 0xFFFF;
+	m68k.n = r >> 15;
+	m68k.z = r == 0;
+	m68k.v = sub ? ((x ^ y) & (x ^ r)) >> 15 : (~(x ^ y) & (x ^ r)) >> 15;
+	m68k.c = sub ? y > x : r < x;
+}
+
+static void set_word(uint32_t *reg, uint32_t v)
+{
+	*reg = (*reg & 0xFFFF0000u) | (v & 0xFFFF);
+}
+
+/* A call to the routine at `at` (D0 and A0 its registers); D0 after */
+static uint32_t m68k_call(uint32_t at, uint32_t d0, uint32_t a0)
+{
+	memset(&m68k, 0, sizeof m68k);
+	m68k.d[0] = d0;
+	m68k.d[1] = 0x1111;
+	m68k.a[0] = a0;
+	m68k.a[7] = STACK - 0x1000;
+	m68k_push(0xFFFFFFF0u);                         /* (where it returns) */
+	m68k.pc = at;
+	while (m68k.pc != 0xFFFFFFF0u && m68k.steps++ < 1000) {
+		if (m68k.pc == COUNT_ENTRY) {
+			m68k.d[0] = 2;
+			m68k.pc = m68k_pop();
+			continue;
+		}
+		if (m68k.pc == GET_IND_ENTRY) {
+			int16_t i = (int16_t)m68k.d[0];
+			if (i == 1 || i == 2) {
+				mem_w8(&mem, m68k.a[0], i == 1 ? 2 : 3);        /* devType, origADBAddr */
+				mem_w8(&mem, m68k.a[0] + 1, i == 1 ? 2 : 3);
+				mem_w32(&mem, m68k.a[0] + 2, 0x4000);
+				mem_w32(&mem, m68k.a[0] + 6, 0);
+				m68k.d[0] = i == 1 ? 2 : 3;
+			} else {
+				m68k.d[0] = 0xFFFFFFFFu;
+			}
+			m68k.pc = m68k_pop();
+			continue;
+		}
+		uint32_t pc = m68k.pc;
+		uint16_t op = mem_r16(&mem, pc);
+		uint32_t *d = m68k.d;
+		m68k.pc += 2;
+		switch (op) {
+		case 0x48E7:                            /* movem.l d0-d1/a0,-(sp) */
+			CHECK_EQ(mem_r16(&mem, pc + 2), 0xC080);
+			m68k_push(m68k.a[0]);
+			m68k_push(d[1]);
+			m68k_push(d[0]);
+			m68k.pc += 2;
+			break;
+		case 0x4CDF:                            /* movem.l (sp)+,d0-d1/a0 */
+			CHECK_EQ(mem_r16(&mem, pc + 2), 0x0103);
+			d[0] = m68k_pop();
+			d[1] = m68k_pop();
+			m68k.a[0] = m68k_pop();
+			m68k.pc += 2;
+			break;
+		case 0x4EB9:                            /* jsr abs.l */
+			m68k_push(pc + 6);
+			m68k.pc = mem_r32(&mem, pc + 2);
+			break;
+		case 0x4EF9:                            /* jmp abs.l */
+			m68k.pc = mem_r32(&mem, pc + 2);
+			break;
+		case 0x4E75:                            /* rts */
+			m68k.pc = m68k_pop();
+			break;
+		case 0x2400:                            /* move.l d0,d2 */
+			d[2] = d[0];
+			break;
+		case 0x4442: {                          /* neg.w d2 */
+			uint32_t r = 0u - (d[2] & 0xFFFF);
+			m68k_flags(0, d[2], r, true);
+			set_word(&d[2], r);
+			break;
+		}
+		case 0xD440: {                          /* add.w d0,d2 */
+			uint32_t r = (d[2] & 0xFFFF) + (d[0] & 0xFFFF);
+			m68k_flags(d[2], d[0], r, false);
+			set_word(&d[2], r);
+			break;
+		}
+		case 0xD079: {                          /* add.w abs.l,d0 */
+			uint32_t y = mem_r16(&mem, mem_r32(&mem, pc + 2)), r = (d[0] & 0xFFFF) + y;
+			m68k_flags(d[0], y, r, false);
+			set_word(&d[0], r);
+			m68k.pc += 4;
+			break;
+		}
+		case 0xB479: {                          /* cmp.w abs.l,d2 */
+			uint32_t y = mem_r16(&mem, mem_r32(&mem, pc + 2));
+			m68k_flags(d[2], y, (d[2] & 0xFFFF) - y, true);
+			m68k.pc += 4;
+			break;
+		}
+		case 0x10FC:                            /* move.b #imm,(a0)+ */
+			mem_w8(&mem, m68k.a[0]++, mem_r8(&mem, pc + 3));
+			m68k.pc += 2;
+			break;
+		case 0x4298:                            /* clr.l (a0)+ */
+			mem_w32(&mem, m68k.a[0], 0);
+			m68k.a[0] += 4;
+			break;
+		case 0x5342:                            /* subq.w #1,d2 */
+			set_word(&d[2], d[2] - 1);
+			break;
+		case 0x9042:                            /* sub.w d2,d0 */
+			set_word(&d[0], d[0] - d[2]);
+			break;
+		case 0xED4A:                            /* lsl.w #6,d2 */
+			set_word(&d[2], (d[2] & 0xFFFF) << 6);
+			break;
+		case 0x48C2:                            /* ext.l d2 */
+			d[2] = (uint32_t)(int32_t)(int16_t)d[2];
+			break;
+		case 0xD4BC:                            /* add.l #imm,d2 */
+			d[2] += mem_r32(&mem, pc + 2);
+			m68k.pc += 4;
+			break;
+		case 0x2082:                            /* move.l d2,(a0) */
+			mem_w32(&mem, m68k.a[0], d[2]);
+			break;
+		default:
+			if ((op & 0xFF00) == 0x7000) {          /* moveq */
+				d[(op >> 9) & 7] = (uint32_t)(int32_t)(int8_t)op;
+				break;
+			}
+			if ((op & 0xFF00) == 0x6F00 || (op & 0xFF00) == 0x6200) {      /* ble.s, bhi.s */
+				bool take = (op & 0xFF00) == 0x6F00 ? m68k.z || m68k.n != m68k.v : !m68k.c && !m68k.z;
+				if (take)
+					m68k.pc = pc + 2 + (uint32_t)(int32_t)(int8_t)op;
+				break;
+			}
+			CHECK(!"a 68k instruction of the patches'");
+			return 0xBAD;
+		}
+	}
+	CHECK_EQ(m68k.pc, 0xFFFFFFF0u);
+	CHECK_EQ(m68k.a[7], STACK - 0x1000);
+	CHECK_EQ(m68k.d[1], 0x1111);            /* (as the trap dispatcher would keep it) */
+	return m68k.d[0];
+}
+
+#define BLOCK (ARGS + 0x100)                    /* an ADBDataBlock */
+
+/* The AppleJacks a title finds, as Apple's note and Super Marathon look: CountADBs down, original address 3 */
+static unsigned find_applejacks(uint32_t count, uint32_t get_ind, uint32_t found[4], uint8_t addresses[4])
+{
+	unsigned n = 0;
+	for (int16_t i = (int16_t)m68k_call(count, 0, 0); i > 0 && n < 4; i--) {
+		memset(mem_ptr(&mem, BLOCK), 0xEE, 10);
+		uint32_t address = m68k_call(get_ind, (uint16_t)i, BLOCK);
+		uint32_t cursor = mem_r32(&mem, BLOCK + 6);
+		if (mem_r8(&mem, BLOCK + 1) != 3 || !cursor)
+			continue;
+		uint32_t aj = mem_r32(&mem, cursor + 8);
+		if (mem_r32(&mem, aj) == PAD_AJ_SIGNATURE) {
+			CHECK_EQ(mem_r8(&mem, BLOCK), 0);               /* devType */
+			CHECK_EQ(mem_r32(&mem, BLOCK + 2), 0);          /* dbServiceRtPtr */
+			CHECK_EQ(mem_r8(&mem, cursor + 0x18), 2);       /* (a trackball) */
+			addresses[n] = (uint8_t)address;
+			found[n++] = aj;
+		}
+	}
+	return n;
+}
+
+/*
+ * The title's AppleJacks: their data (AJGlobalData) with the driver's own
+ * mapping or the title's first 'pipp' resource's, found by the title as ADB
+ * devices' (CountADBs and GetIndADB patched by 68k code): one, or two once
+ * Blue says so; and Blue told
  */
 static void test_applejack(void)
 {
@@ -498,32 +700,37 @@ static void test_applejack(void)
 	CHECK_EQ(os.host_calls, 1);
 	uint32_t aj = os.attached;
 	CHECK(aj >= TOC && aj < TOC + 0x1000);
-	CHECK_EQ(mem_r32(&mem, aj), PAD_AJ_SIGNATURE);
-	CHECK_EQ(mem_r32(&mem, aj + PAD_AJ_STATES), 0xFFFFFFFFu);      /* (nothing down) */
-	for (unsigned k = 0; k < PAD_AJ_SWITCHES; k++)
-		CHECK_EQ(aj_switch(aj, k), switch_word(&pad_applejack_defaults[k]));
+	for (unsigned j = 0; j < PIPPIN_APPLEJACKS; j++) {
+		uint32_t at = aj + PAD_AJ_SIZE * j;
+		CHECK_EQ(mem_r32(&mem, at), PAD_AJ_SIGNATURE);
+		CHECK_EQ(mem_r32(&mem, at + PAD_AJ_STATES), 0xFFFFFFFFu);      /* (nothing down) */
+		for (unsigned k = 0; k < PAD_AJ_SWITCHES; k++)
+			CHECK_EQ(aj_switch(at, k), switch_word(&pad_applejack_defaults[k]));
+	}
+	CHECK_EQ(mem_r16(&mem, aj + PIPPIN_AJ_COUNT), 1);               /* (one, until Blue says two) */
 	CHECK_EQ(mem_r32(&mem, os.psn_at + 4), 0x2B);                  /* (its process, for Blue) */
 	/* the 'pipp' looked for in the title's file, and the current one put back */
 	CHECK(os.uses == 2 && os.used[0] == APP_FILE && os.used[1] == CUR_FILE && os.pipp_from == APP_FILE);
 
-	/* CountADBs: the routine's count, plus one */
+	/* the patches, run: CountADBs the routine's count plus the AppleJacks; GetIndADB those (originally at 3) */
 	uint32_t count = os.count_trap, get_ind = os.get_ind_trap;
-	CHECK(count >= TOC && count < TOC + 0x1000);
-	static const uint8_t count_code[] = { 0x4E, 0xB9, 0x23, 0x45, 0xBC, 0xDE, 0x52, 0x40, 0x4E, 0x75 };
-	CHECK(!memcmp(mem_ptr(&mem, count), count_code, sizeof count_code));
-	/* GetIndADB: the routine's, unless it's the one more; that one an AppleJack's (originally at 3) */
-	CHECK_EQ(get_ind, count + 12);
-	static const uint8_t get_ind_code[] = {
-		0x48, 0xE7, 0xC0, 0x80, 0x4E, 0xB9, 0x23, 0x45, 0xBC, 0xDE, 0x24, 0x00, 0x4C, 0xDF, 0x01, 0x03, 0x52, 0x42,
-		0xB0, 0x42, 0x67, 0x06, 0x4E, 0xF9, 0x34, 0x56, 0xCD, 0xEF, 0x10, 0xFC, 0x00, 0x00, 0x10, 0xFC, 0x00, 0x03,
-		0x42, 0x98, 0x20, 0xBC,
-	};
-	CHECK(!memcmp(mem_ptr(&mem, get_ind), get_ind_code, sizeof get_ind_code));
-	uint32_t cursor = mem_r32(&mem, get_ind + sizeof get_ind_code);
-	CHECK_EQ(mem_r16(&mem, get_ind + sizeof get_ind_code + 4), 0x7000 | PIPPIN_ADB_ADDRESS);
-	CHECK_EQ(mem_r16(&mem, get_ind + sizeof get_ind_code + 6), 0x4E75);
-	CHECK_EQ(mem_r32(&mem, cursor + 8), aj);                        /* its data area's refCon */
-	CHECK_EQ(mem_r8(&mem, cursor + 0x18), 2);                       /* (a trackball) */
+	CHECK(count >= TOC && count < TOC + 0x1000 && get_ind == count + 14);
+	CHECK_EQ(m68k_call(count, 0, 0), 3);
+	uint32_t found[4];
+	uint8_t address[4];
+	CHECK_EQ(find_applejacks(count, get_ind, found, address), 1);
+	CHECK(found[0] == aj && address[0] == PIPPIN_ADB_ADDRESS);
+	CHECK_EQ(m68k_call(get_ind, 4, BLOCK), 0xFFFFFFFFu);           /* (no more: the routine's answer) */
+	CHECK_EQ(m68k_call(get_ind, 2, BLOCK), 3);                      /* (the others: the routine's) */
+	CHECK_EQ(m68k_call(get_ind, 0, BLOCK), 0xFFFFFFFFu);
+	mem_w16(&mem, aj + PIPPIN_AJ_COUNT, 2);                         /* two pads */
+	CHECK_EQ(m68k_call(count, 0, 0), 4);
+	CHECK_EQ(find_applejacks(count, get_ind, found, address), 2);
+	/* (found from the last: the second first, at 14, then the first, at 15) */
+	CHECK(found[0] == aj + PAD_AJ_SIZE && address[0] == PIPPIN_ADB_ADDRESS - 1);
+	CHECK(found[1] == aj && address[1] == PIPPIN_ADB_ADDRESS);
+	CHECK_EQ(m68k_call(get_ind, 5, BLOCK), 0xFFFFFFFFu);
+	CHECK(mem_r32(&mem, mem_r32(&mem, get_ind + 52) + 8) == aj);  /* (the first's record, then the second's) */
 	call(TERM, 0, 0, 0, 0, 0);
 	CHECK_EQ(os.host_calls, 2);
 	CHECK_EQ(os.detached, aj);
@@ -542,10 +749,13 @@ static void test_applejack(void)
 		put_be32(pipp + PAD_AJ_MAP + 4 * k, 0x04000000u | (k + 1) << 8 | 'a');
 	CHECK_EQ(call(INIT, 0, 0, 0, 0, 0), 0);
 	aj = os.attached;
-	for (unsigned k = 0; k < PAD_AJ_SWITCHES; k++)
-		CHECK_EQ(aj_switch(aj, k), 0x04000000u | (k + 1) << 8 | 'a');
-	CHECK_EQ(mem_r32(&mem, aj + PAD_AJ_STATES), 0xFFFFFFFFu);
-	CHECK_EQ(mem_r32(&mem, aj + PAD_AJ_MAP + 4 * PAD_AJ_SWITCHES), 0);
+	for (unsigned j = 0; j < PIPPIN_APPLEJACKS; j++) {
+		uint32_t at = aj + PAD_AJ_SIZE * j;
+		for (unsigned k = 0; k < PAD_AJ_SWITCHES; k++)
+			CHECK_EQ(aj_switch(at, k), 0x04000000u | (k + 1) << 8 | 'a');
+		CHECK_EQ(mem_r32(&mem, at + PAD_AJ_STATES), 0xFFFFFFFFu);
+		CHECK_EQ(mem_r32(&mem, at + PAD_AJ_MAP + 4 * PAD_AJ_SWITCHES), 0);
+	}
 	CHECK_EQ(os.released, 1);
 	/* ... one too short, or not one: the driver's */
 	static const uint32_t sizes[2] = { 40, PAD_AJ_SIZE };
@@ -558,6 +768,7 @@ static void test_applejack(void)
 			put_be32(pipp, FOURCC('P', 'I', 'P', 'P'));
 		CHECK_EQ(call(INIT, 0, 0, 0, 0, 0), 0);
 		CHECK_EQ(aj_switch(os.attached, 10), switch_word(&pad_applejack_defaults[10]));
+		CHECK_EQ(aj_switch(os.attached + PAD_AJ_SIZE, 10), switch_word(&pad_applejack_defaults[10]));
 		CHECK_EQ(os.released, 1);
 	}
 }

@@ -2704,6 +2704,50 @@ made to start up.
   _GetIndADB $A078 and _GetADBInfo $A079 (Blue Pippin Library's patch
   first went on $A079 by mistake: Marathon then found no AppleJack, and
   GetADBInfo for the mouse's address 3 gave the AppleJack's record).
+- **A second AppleJack** (game controllers): Apple's note on the driver
+  (PPBD-JHACEF003) has each AppleJack an ADB device of its own, first at
+  address 3, with a cursor device record each and an AJGlobalData each
+  (the record's refCon), and says to keep a pointer to each one found,
+  four at most, "even if you only support a single player play"; the
+  Applejack Control application shows the ADB addresses of all those
+  found. Super Marathon's routine (`marathon.ppc`'s at code offset
+  0x38174) goes through every device, from CountADBs down to 1, and
+  copies its `pipp` resource into each AppleJack it finds: given two (Blue
+  Pippin Library's CountADBs counting two more devices, GetIndADB giving
+  them at 15 and 14), it wrote its game mapping into the second (found
+  first) and then the first, and the second pad's D-pad (the second
+  AppleJack's, O) moved the player forward. Its two-player modes are
+  network games in both `marathon.ppc` and `marathon2.ppc` ("Gather
+  Network Game", "Join Network Game": a machine each, over AppleTalk; no
+  split screen), so both pads steer the one player there. The Hanshin
+  disc's projector doesn't link PippinPPC at all. No title at hand, then,
+  shows a second player on a second AppleJack. The ADB patches' 68k
+  code is checked in `tests/test_pippin.c` by a small 68000 of the test's
+  own, as Apple's sample code walks the devices.
+- **Scrolling as the tools of the time did** (the scroll wheel): Blue
+  Enhancements' GetNextEvent filter found SimpleText's scroll bar (a
+  control in its window's list, 16 wide, TestControl giving the arrows'
+  parts at its ends) on Mac OS 8.5, but its contrlAction is nil:
+  SimpleText gives its action procedure to TrackControl. A TrackControl
+  patch saw it (SimpleText's TrackControl goes through the trap table,
+  as do the Finder's), but calling it later from the filter, with the
+  window's port set, crashed SimpleText ("an error of type 1"): the
+  procedure needs what SimpleText's click handling sets up. A click made
+  for it works instead: the filter makes the event a mouse-down on the
+  arrow, SimpleText's own handling calls TrackControl with its procedure,
+  and the patch calls that once for each line (the Finder's windows,
+  icons and lists, the same, on 8.5 and 9.2.2). Other findings on the
+  way: SimpleText sleeps in WaitNextEvent, so lines waited out their time
+  until a key (F16, which no keyboard of the time had, taken away by the
+  filter) woke it; Mac OS 9.2.2's Appearance puts both arrows together
+  at the bottom (Smart Scrolling), so TestControl at a bar's top gave the
+  page-up part (22), and the up arrow is second from the bottom; and a
+  click made in a null event's place now and then reached the filter
+  again before TrackControl (EventAvail looking), so it's tried once
+  more. The filter's patches keep their entry and parameters in the
+  stub's state words 1 to 4: the scrolling's own state first went in word
+  1, and the filter then called the routine ZeroScrap's patch had
+  replaced (and Blue crashed on 9.2.2, its entry out of range).
 - **InputSprocket's drivers** (game controllers): InputSprocketLib 1.4.1
   (Mac OS 8.6's) loads every shared library of creator `insp` (or Apple's
   own, `insi`) in the Extensions folder, for each game that starts it (its

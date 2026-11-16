@@ -8,9 +8,13 @@
  *                       from the Extensions folder at startup. When the host
  *                       window is resized, it switches the display to a mode
  *                       of that size (video_request_size()) with the Display
- *                       Manager. With a clipboard to share (clip.h), it
- *                       patches the Scrap Manager's ZeroScrap and PutScrap,
- *                       and filters events, for every application.
+ *                       Manager. With a clipboard to share (clip.h) or a
+ *                       scroll wheel (wheel.h), it patches the Scrap
+ *                       Manager's ZeroScrap and PutScrap and TrackControl,
+ *                       and filters events, for every application: the
+ *                       wheel's lines scroll the window under the pointer in
+ *                       the application in front, by its scroll bar's action
+ *                       procedure, as a click on an arrow would.
  *   Blue 3D Engine      a QuickDraw 3D RAVE drawing engine (rave.h).
  *   Blue OpenGL ...     OpenGLLibrary, OpenGLMemory and OpenGLUtility
  *                       (opengl.h), Mac OS 9's OpenGL; on Mac OS 9 they
@@ -33,6 +37,7 @@
 #include "hfs.h"
 #include "ndrv.h"
 #include "video.h"
+#include "wheel.h"
 
 /* (installed copies have these numbers in their code; 0x101 is free) */
 #define HOSTCALL_TOOLS_HELPER 0x100u
@@ -68,9 +73,23 @@ int tools_files(struct hfs_file files[TOOLS_FILES]);
  */
 int tools_create(const char *path);
 
+#define HELPER_BARS 4                   /* scroll bars tried, at most */
+
+/* The wheel's click on a scroll bar's arrow (see tools.c), for TrackControl */
+struct helper_click {
+	bool armed;
+	bool again;                     /* (its lines were put back once: the program didn't take it) */
+	uint32_t psn[2];                /* the program's process */
+	uint32_t control;               /* the scroll bar */
+	unsigned part, axis;            /* ... its arrow, and which way it scrolls */
+	int32_t lines;                  /* ... the lines */
+	uint32_t proc;                  /* the action procedure called for each, */
+	unsigned count;                 /* ... so many more times */
+};
+
 struct helper {
 	struct ndrv_layout layout;      /* of the helper's fragment */
-	uint32_t v1_extra;              /* ... and where version 1's data is */
+	uint32_t v1_extra, v2_extra;    /* ... and where versions 1's and 2's data are */
 	bool running;
 	bool quit;                      /* to quit when it next looks (see install.h) */
 	unsigned long quits;            /* times it has quit (asked by Blue or by the Process Manager) */
@@ -87,11 +106,25 @@ struct helper {
 	bool want_front;
 	bool front_known;
 	uint32_t front[2];              /* (its ProcessSerialNumber) */
+	/* the wheel: looking for where to scroll (in a program's GetNextEvent), and how */
+	bool scrolling;
+	bool log_wheel;                 /* (BLUE_LOG_WHEEL: each scroll, and why not) */
+	uint32_t event;                 /* the event record, to become the click */
+	int32_t lines[2];               /* the lines (x: right, y: up) */
+	uint32_t point;                 /* ... where the pointer is (v, h) */
+	uint32_t window;                /* ... the window under it */
+	unsigned axis;                  /* ... the way being looked at (1: up and down) */
+	uint32_t bar[HELPER_BARS];      /* ... the scroll bars that might be the one (control handles) */
+	unsigned bars, bar_at;
+	unsigned part, place;           /* ... the arrow wanted, and where on the one being tested it's looked for */
+	bool shaped;                    /* ... the window has scroll bars that way, scrollable or not */
+	bool retry;                     /* ... they're a click's the program didn't take (once) */
+	struct helper_click click;
 };
 
 void helper_init(struct helper *h);
 
 /* Runs the helper for one host call: its main routine, a patch, or a resumption after a callout. */
-void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct clip *clip);
+void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct clip *clip, struct wheel *w);
 
 #endif

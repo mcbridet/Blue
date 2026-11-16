@@ -14,6 +14,8 @@
 extern "C" {
 #endif
 
+#include "pad.h"
+
 struct ui;
 
 struct ui_rect {                        /* (an SDL_Rect) */
@@ -47,6 +49,8 @@ enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI
 		 UI_INSTALL_TOOLS,              /* (the offer to install the guest tools, asked for) */
 		 UI_SHARE_REFRESH,              /* (the shared folder's volume put away, written back, offered again) */
 		 UI_PADS,                       /* (game controllers as the keyboard and mouse, or not) */
+		 UI_PAD_EDIT,                   /* (a change to a mapping of them: ui_pad_edit()) */
+		 UI_PAD_MAPPINGS,               /* (the menu's own: its mappings shown) */
 		 UI_MODEM_HANG_UP,              /* (the modem's call ended) */
 		 UI_EJECT,                      /* (+ the drive's number in the menu's list) */
 		 UI_EJECT_LAST = UI_EJECT + UI_DRIVES - 1,
@@ -81,11 +85,40 @@ struct ui_drives {
 };
 
 /* The game controllers, as the menu shows them */
+#define UI_PAD_TYPES (PAD_MAX + 1)
+#define UI_PAD_ID 64
+
+struct ui_pad_type {
+	char id[UI_PAD_ID];             /* ("": all of them; else a type's, settings.h's) */
+	char name[PAD_NAME];            /* "All controllers", or a pad's */
+	bool own;                       /* (a type's) it has a mapping of its own, else the one for all */
+	struct pad_map map;             /* the mapping it has */
+};
+
 struct ui_pads {
 	unsigned count;                 /* connected */
 	char names[200];                /* ... their names */
 	bool on;                        /* mapped to the keyboard and mouse (the menu's checkbox) */
 	char mapping[200];              /* ... how ("as an AppleJack, by marathon.ppc's mapping") */
+	/* Blue's mappings, for all of them and for the types plugged in, and where they're kept (or why not) */
+	unsigned types;
+	struct ui_pad_type type[UI_PAD_TYPES];
+	char kept[1100];
+};
+
+/* A change to a mapping (UI_PAD_EDIT): to the type with this id, ui_pad_type's */
+enum ui_pad_change {
+	UI_PAD_SET,                     /* a control does `action` */
+	UI_PAD_STICK,                   /* a stick (`control`: 0 left, 1 right) is `mode` (PAD_STICK_*) */
+	UI_PAD_OWN,                     /* the type has a mapping of its own (`mode` 1: the one for all, copied) or not */
+	UI_PAD_RESTORE,                 /* the mapping is Blue's default */
+};
+
+struct ui_pad_edit {
+	char id[UI_PAD_ID];
+	enum ui_pad_change change;
+	unsigned control, mode;
+	struct pad_switch action;
 };
 
 /* The status bar's lights */
@@ -140,6 +173,13 @@ void ui_mouse_move(struct ui *u, float x, float y);
 void ui_mouse_button(struct ui *u, int button, bool down);      /* (0: primary) */
 void ui_mouse_wheel(struct ui *u, float dx, float dy);
 void ui_key(struct ui *u, enum ui_key key, bool down);    /* (Enter: the default button; Space: the focused one) */
+
+/* Whether the menu waits for a key to give a controller's button (any key then: ui_capture_key(), an ADB key's) */
+bool ui_capturing(const struct ui *u);
+void ui_capture_key(struct ui *u, uint8_t adb_key, bool down);
+
+/* The change UI_PAD_EDIT says was made (after ui_draw()) */
+void ui_pad_edit(const struct ui *u, struct ui_pad_edit *out);
 
 /*
  * Draws the status bar, a prompt and the menu (whichever are shown) over what

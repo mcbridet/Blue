@@ -47,6 +47,8 @@ enum {
 _Static_assert(E_ATTACH == PIPPIN_FIRST_EXPORT + PIPPIN_EXPORTS && E_ATTACH == PIPPIN_ENTRY_ATTACH &&
 	       E_DETACH == PIPPIN_ENTRY_DETACH, "an entry for each export, then the host calls");
 
+#define CURSOR_SIZE 64                          /* (a cursor device record, with room to spare) */
+
 /*
  * The library's data (after the imports and entry TVectors): strings, and
  * the _ShutDown patch, 68k code: ShutDwnPower and ShutDwnStart (selectors
@@ -72,12 +74,14 @@ enum {
 	D_PSN = 132,                            /* the title's ProcessSerialNumber */
 	D_ORIGINAL_COUNT = 140,                 /* CountADBs and GetIndADB, patched over */
 	D_ORIGINAL_GET_IND = 144,
-	D_CURSOR = 148,                         /* the AppleJack's cursor device record (its refCon: the AJGlobalData) */
-	D_AJ = D_CURSOR + 64,                   /* the AppleJack's AJGlobalData */
-	D_ADB_TEMPLATE = D_AJ + PAD_AJ_SIZE,    /* the two patches, with the routines patched over ... */
-	D_ADB_PATCHES = D_ADB_TEMPLATE + 60,    /* ... copied here */
-	D_SIZE = D_ADB_PATCHES + 60,
+	D_CURSOR = 148,                         /* the AppleJacks' cursor device records (their refCons: their AJGlobalData) */
+	D_AJ = D_CURSOR + CURSOR_SIZE * PIPPIN_APPLEJACKS,      /* ... their AJGlobalData, one after the other */
+	D_AJ_COUNT = D_AJ + PIPPIN_AJ_COUNT,    /* ... how many there are now (a word: Blue's to change) */
+	D_ADB_TEMPLATE = D_AJ_COUNT + 4,        /* the two patches, with the routines patched over ... */
+	D_ADB_PATCHES = D_ADB_TEMPLATE + 80,    /* ... copied here */
+	D_SIZE = D_ADB_PATCHES + 80,
 };
+_Static_assert(PIPPIN_AJ_COUNT == PIPPIN_APPLEJACKS * PAD_AJ_SIZE, "the AppleJacks' count after their data");
 #define PREFIX_LEN (sizeof PREFIX - 1)
 #define SUFFIX_LEN (sizeof SUFFIX - 1)
 _Static_assert(sizeof FOLDER_NAME <= D_DELETE - D_FOLDER && sizeof DELETE_NAME <= D_PREFIX - D_DELETE &&
@@ -97,35 +101,44 @@ _Static_assert(PATCH_SIZE <= D_PATCH - D_TEMPLATE && PATCH_SIZE <= D_ORIGINAL - 
 
 /*
  * CountADBs and GetIndADB, patched (OS traps: D0 the count, or the index
- * and the result; A0 the ADBDataBlock): one more device, the AppleJack
+ * and the result; A0 the ADBDataBlock): as many more devices as there are
+ * AppleJacks now (the count in the data, Blue's), the AppleJacks
  */
 static const uint8_t adb_template[] = {
 	/* CountADBs */
 	0x4E, 0xB9, 0, 0, 0, 0,                 /* jsr CountADBs */
-	0x52, 0x40,                             /* addq.w #1,d0 */
+	0xD0, 0x79, 0, 0, 0, 0,                 /* add.w applejacks,d0 */
 	0x4E, 0x75,                             /* rts */
-	0x4E, 0x71,                             /* (nop) */
 	/* GetIndADB */
 	0x48, 0xE7, 0xC0, 0x80,                 /* movem.l d0-d1/a0,-(sp)       (the index, the trap, the block) */
 	0x4E, 0xB9, 0, 0, 0, 0,                 /* jsr CountADBs */
 	0x24, 0x00,                             /* move.l d0,d2 */
 	0x4C, 0xDF, 0x01, 0x03,                 /* movem.l (sp)+,d0-d1/a0 */
-	0x52, 0x42,                             /* addq.w #1,d2 */
-	0xB0, 0x42,                             /* cmp.w d2,d0 */
-	0x67, 0x06,                             /* beq.s applejack */
-	0x4E, 0xF9, 0, 0, 0, 0,                 /* jmp GetIndADB */
-	0x10, 0xFC, 0x00, 0x00,                 /* applejack: move.b #0,(a0)+   (devType) */
+	0x44, 0x42,                             /* neg.w d2 */
+	0xD4, 0x40,                             /* add.w d0,d2                  (the index past the others) */
+	0x6F, 0x26,                             /* ble.s other */
+	0xB4, 0x79, 0, 0, 0, 0,                 /* cmp.w applejacks,d2 */
+	0x62, 0x1E,                             /* bhi.s other */
+	0x10, 0xFC, 0x00, 0x00,                 /* move.b #0,(a0)+              (devType) */
 	0x10, 0xFC, 0x00, 0x03,                 /* move.b #3,(a0)+              (origADBAddr) */
 	0x42, 0x98,                             /* clr.l (a0)+                  (dbServiceRtPtr) */
-	0x20, 0xBC, 0, 0, 0, 0,                 /* move.l #cursor,(a0)          (dbDataAreaAddr) */
+	0x53, 0x42,                             /* subq.w #1,d2                 (which AppleJack: 0, 1) */
 	0x70, PIPPIN_ADB_ADDRESS,               /* moveq #15,d0 */
+	0x90, 0x42,                             /* sub.w d2,d0                  (its address: 15, 14) */
+	0xED, 0x4A,                             /* lsl.w #6,d2 */
+	0x48, 0xC2,                             /* ext.l d2 */
+	0xD4, 0xBC, 0, 0, 0, 0,                 /* add.l #cursors,d2            (its cursor device record) */
+	0x20, 0x82,                             /* move.l d2,(a0)               (dbDataAreaAddr) */
 	0x4E, 0x75,                             /* rts */
+	0x4E, 0xF9, 0, 0, 0, 0,                 /* other: jmp GetIndADB */
 };
-#define ADB_GET_IND 12                          /* (GetIndADB's patch, in it) */
+#define ADB_GET_IND 14                          /* (GetIndADB's patch, in it) */
 #define ADB_COUNT_AT 2                          /* (the addresses in it) */
+#define ADB_N_AT 8
 #define ADB_COUNT_AT_2 (ADB_GET_IND + 6)
-#define ADB_GET_IND_AT (ADB_GET_IND + 24)
-#define ADB_CURSOR_AT (ADB_GET_IND + 40)
+#define ADB_N_AT_2 (ADB_GET_IND + 24)
+#define ADB_CURSOR_AT (ADB_GET_IND + 52)
+#define ADB_GET_IND_AT (ADB_GET_IND + 62)
 #define COUNT_ADBS_TRAP 0xA077u
 #define GET_IND_ADB_TRAP 0xA078u
 #define OS_TRAP 0u                              /* kOSTrapType */
@@ -135,6 +148,7 @@ static const uint8_t adb_template[] = {
 #define CLASS_TRACKBALL 2
 _Static_assert(sizeof adb_template <= D_ADB_PATCHES - D_ADB_TEMPLATE && sizeof adb_template <= D_SIZE - D_ADB_PATCHES,
 	       "the patches fit");
+_Static_assert(CURSOR_SIZE == 64 && PIPPIN_APPLEJACKS == 2, "the GetIndADB patch's");
 
 #define SHUTDOWN_TRAP 0xA895u
 #define TOOLBOX_TRAP 1u                         /* kToolboxTrapType */
@@ -612,10 +626,13 @@ static void entries(struct gen *g, size_t at[E_COUNT])
 	emit(g, ORI(5, 5, PAD_AJ_SIGNATURE & 0xFFFF));
 	emit(g, CMPW(0, 5));
 	branch(g, BNE, L_IN_RELEASE);
-	emit(g, ADDI(3, 4, PAD_AJ_MAP));
-	emit(g, ADDI(4, 2, data(g, D_AJ + PAD_AJ_MAP)));
-	emit(g, LI(5, 4 * PAD_AJ_SWITCHES));
-	call(g, PIPPIN_BLOCK_MOVE_DATA);
+	for (unsigned k = 0; k < PIPPIN_APPLEJACKS; k++) {
+		emit(g, LWZ(3, 0, 30));
+		emit(g, ADDI(3, 3, PAD_AJ_MAP));
+		emit(g, ADDI(4, 2, data(g, D_AJ + PAD_AJ_SIZE * k + PAD_AJ_MAP)));
+		emit(g, LI(5, 4 * PAD_AJ_SWITCHES));
+		call(g, PIPPIN_BLOCK_MOVE_DATA);
+	}
 	label(g, L_IN_RELEASE);
 	emit(g, MR(3, 30));
 	call(g, PIPPIN_RELEASE_RESOURCE);
@@ -623,7 +640,7 @@ static void entries(struct gen *g, size_t at[E_COUNT])
 	emit(g, ADDI(3, 2, data(g, D_PSN)));
 	call(g, PIPPIN_GET_CURRENT_PROCESS);
 
-	/* the AppleJack on the ADB: CountADBs and GetIndADB patched, the cursor device's refCon set */
+	/* the AppleJacks on the ADB: CountADBs and GetIndADB patched, the cursor devices' refCons set */
 	get_os_trap(g, COUNT_ADBS_TRAP);
 	emit(g, STW(3, data(g, D_ORIGINAL_COUNT), 2));
 	store_halves(g, 3, D_ADB_TEMPLATE + ADB_COUNT_AT);
@@ -631,10 +648,15 @@ static void entries(struct gen *g, size_t at[E_COUNT])
 	get_os_trap(g, GET_IND_ADB_TRAP);
 	emit(g, STW(3, data(g, D_ORIGINAL_GET_IND), 2));
 	store_halves(g, 3, D_ADB_TEMPLATE + ADB_GET_IND_AT);
+	emit(g, ADDI(3, 2, data(g, D_AJ_COUNT)));
+	store_halves(g, 3, D_ADB_TEMPLATE + ADB_N_AT);
+	store_halves(g, 3, D_ADB_TEMPLATE + ADB_N_AT_2);
 	emit(g, ADDI(3, 2, data(g, D_CURSOR)));
 	store_halves(g, 3, D_ADB_TEMPLATE + ADB_CURSOR_AT);
-	emit(g, ADDI(0, 2, data(g, D_AJ)));
-	emit(g, STW(0, data(g, D_CURSOR + CURSOR_REF_CON), 2));
+	for (unsigned k = 0; k < PIPPIN_APPLEJACKS; k++) {
+		emit(g, ADDI(0, 2, data(g, D_AJ + PAD_AJ_SIZE * k)));
+		emit(g, STW(0, data(g, D_CURSOR + CURSOR_SIZE * k + CURSOR_REF_CON), 2));
+	}
 	emit(g, ADDI(3, 2, data(g, D_ADB_TEMPLATE)));
 	emit(g, ADDI(4, 2, data(g, D_ADB_PATCHES)));
 	emit(g, LI(5, sizeof adb_template));
@@ -906,17 +928,21 @@ size_t pippin_build(uint8_t *out, size_t size, struct ndrv_layout *layout)
 	extra[D_EXPLAIN] = (uint8_t)(sizeof EXPLAIN - 1);
 	memcpy(extra + D_EXPLAIN + 1, EXPLAIN, sizeof EXPLAIN - 1);
 	memcpy(extra + D_TEMPLATE, patch_template, PATCH_SIZE);
-	extra[D_CURSOR + CURSOR_DEV_CLASS] = CLASS_TRACKBALL;
-	put_be32(extra + D_AJ, PAD_AJ_SIGNATURE);
-	put_be32(extra + D_AJ + PAD_AJ_STATES, 0xFFFFFFFFu);    /* (no switch down) */
-	for (unsigned k = 0; k < PAD_AJ_SWITCHES; k++) {
-		const struct pad_switch *s = &pad_applejack_defaults[k];
-		uint8_t *at = extra + D_AJ + PAD_AJ_MAP + 4 * k;
-		at[0] = s->function;
-		at[1] = s->modifiers;
-		at[2] = s->key;
-		at[3] = s->chr;
+	for (unsigned j = 0; j < PIPPIN_APPLEJACKS; j++) {
+		uint8_t *aj = extra + D_AJ + PAD_AJ_SIZE * j;
+		extra[D_CURSOR + CURSOR_SIZE * j + CURSOR_DEV_CLASS] = CLASS_TRACKBALL;
+		put_be32(aj, PAD_AJ_SIGNATURE);
+		put_be32(aj + PAD_AJ_STATES, 0xFFFFFFFFu);      /* (no switch down) */
+		for (unsigned k = 0; k < PAD_AJ_SWITCHES; k++) {
+			const struct pad_switch *s = &pad_applejack_defaults[k];
+			uint8_t *at = aj + PAD_AJ_MAP + 4 * k;
+			at[0] = s->function;
+			at[1] = s->modifiers;
+			at[2] = s->key;
+			at[3] = s->chr;
+		}
 	}
+	put_be16(extra + D_AJ_COUNT, 1);
 	memcpy(extra + D_ADB_TEMPLATE, adb_template, sizeof adb_template);
 	struct ndrv_spec spec = {
 		.kind = FRAG_LIBRARY,

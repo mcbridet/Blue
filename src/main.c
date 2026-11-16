@@ -128,6 +128,9 @@ static int usage(void)
 		"                               changes on it is written back when it shuts down\n"
 		"      --nvram <file>           keep NVRAM (PRAM, settings) in this file; Mac OS 9.1\n"
 		"                               and later's Startup Disk choice is kept there too\n"
+		"      --settings <file>|none   Blue's own settings (game controllers' mappings) in\n"
+		"                               this file, or none; without, a window in real time\n"
+		"                               (without --input) keeps them in the platform's place\n"
 		"      --screenshot <file.png>  save the screen when the run ends\n"
 		"      --dump-ram <file>        save guest RAM when the run ends\n"
 		"      --log-hostcalls          log driver requests handled natively\n"
@@ -401,6 +404,8 @@ static int cmd_boot(int argc, char **argv)
 			headless = true;
 		} else if (strcmp(argv[k], "--input") == 0 && k + 1 < argc) {
 			opt.input_script = argv[++k];
+		} else if (strcmp(argv[k], "--settings") == 0 && k + 1 < argc) {
+			opt.settings = argv[++k];
 		} else if (strcmp(argv[k], "--fixed-time") == 0 && k + 1 < argc) {
 			opt.fixed_time = strtoll(argv[++k], NULL, 0);
 		} else if (strcmp(argv[k], "--interp") == 0) {

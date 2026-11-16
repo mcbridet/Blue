@@ -39,6 +39,7 @@ script.txt --max 5000000000`), for example:
 3350000000 key 24                # Return (ADB key code, hex)
 3400000000 dblclick 751 52       # open the disk
 3500000000 motion 40 -10         # the mouse moved 40 right, 10 up (through the ADB mouse, as games read it)
+3550000000 wheel 0 -3            # the scroll wheel turned 3 lines down (0.25: a quarter of a line up)
 3600000000 screenshot after.png
 3700000000 clock 800             # guest time at 800 million instructions a second from here
 3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
@@ -66,6 +67,7 @@ with `#` are comments):
 | `click X Y`, `dblclick X Y` | moves there, then clicks or double-clicks once the cursor has followed (a press and its release 3 million instructions apart) |
 | `press X Y`, `down`, `up` | moves and presses the button; presses it; lets it go |
 | `motion DX DY` | the mouse moved, as games read it (through the ADB mouse) |
+| `wheel DX DY` | the scroll wheel turned, lines (or parts of one) right and up, as a trackpad's or a mouse's: Blue Enhancements scrolls the window under the pointer, or the arrow keys are pressed (see [guest-tools.md](guest-tools.md#the-scroll-wheel)) |
 | `key HEX [down\|up]` | an ADB key code, pressed and released, or only pressed or let go |
 | `power` | the keyboard's power key (Mac OS asks whether to shut down) |
 | `resize W H` | as if the window were resized (for Blue Enhancements) |
@@ -77,7 +79,7 @@ with `#` are comments):
 | `share eject`, `share refresh` | Mac OS puts the shared folder's volume away (whatever it has open on it, or as the menu's Refresh: not while files are open on it), and it's written back and offered again (see [shared-folder.md](shared-folder.md#put-away-and-offered-again)) |
 | `share file NAME TEXT` | the shared folder has NAME holding TEXT (the rest of the line, as for `clipboard`), as if the host had written it |
 | `pad N plug [NAME]`, `pad N unplug` | game controller N (0 to 3) plugged in or out |
-| `pad N button NAME down\|up` | its button pressed or let go, by SDL's name: `a`, `b`, `x`, `y`, `back`, `guide`, `start`, `leftstick`, `rightstick`, `leftshoulder`, `rightshoulder`, `dpup`, `dpdown`, `dpleft`, `dpright` |
+| `pad N button NAME down\|up` | its button pressed or let go, by SDL's name: `a`, `b`, `x`, `y`, `back`, `guide`, `start`, `leftstick`, `rightstick`, `leftshoulder`, `rightshoulder`, `dpup`, `dpdown`, `dpleft`, `dpright`, `misc1`, `paddle1` to `paddle4`, `touchpad` |
 | `pad N axis NAME VALUE` | its stick or trigger moved, from -1 to 1 (a trigger's from 0): `leftx`, `lefty` (down positive), `rightx`, `righty`, `lefttrigger`, `righttrigger` |
 
 Times can be seconds of host time since the start instead, written with
@@ -94,8 +96,20 @@ then brought to the front.
 [input.md](input.md)): in a window, through one of
 SDL's virtual game controllers (SDL 2.0.14 and later), as a real pad
 would; otherwise, or without them, straight to the pads' mapping. A
-scripted run ignores the host's own pads. Its right stick moves the mouse
-as guest time passes, so the same script moves it as far each time.
+scripted run ignores the host's own pads. A stick that's the mouse moves
+it as guest time passes, so the same script moves it as far each time.
+Each pad is numbered, so `pad 1 ...` is a second pad: with two plugged
+in, a Pippin title has two AppleJacks, the second pad the second (see
+[input.md](input.md#a-pippin-titles-applejacks)). A scripted run uses
+Blue's mappings from a settings file only if given one (`--settings
+FILE`, see [input.md](input.md#the-settings-file)); a window's pads have
+SDL's GUID for a virtual controller, and a run without a window's only
+their names (`pad 0 plug Test Pad`: a `[controller Test Pad]` section).
+
+`wheel` turns the scroll wheel: with Blue Enhancements running (and its
+patches in: a script with a `wheel` command has them, as one with
+`clipboard` has), the lines wait for the application in front, which a
+key wakes, to scroll by; otherwise they're the arrow keys at once.
 
 `clock N` keeps a run reproducible while making guest time pass as on a
 guest processor of N MIPS, so that work paced by guest time (sound, timer
@@ -219,6 +233,7 @@ and doesn't read it.
 | `BLUE_LOG_SHARE=1` | Mac OS's writes to the shared folder |
 | `BLUE_LOG_SOUND=1` | the sound chip's register accesses |
 | `BLUE_LOG_USB=1` | the USB controller's register accesses (not the frame number) |
+| `BLUE_LOG_WHEEL=1` | where each of the scroll wheel's turns went: the scroll bar clicked, the lines its action procedure scrolled, or why not ([guest-tools.md](guest-tools.md#the-scroll-wheel)) |
 | `BLUE_NET=1` | connects the Ethernet in instruction time too (then not reproducible) |
 | `BLUE_PERF=1` | the host processor's counters for the emulation thread, every second (Linux) |
 | `BLUE_RASTER_THREADS=N` | the software rasteriser's threads, counting the emulated processor's (3, or fewer processors if there are; 1 to 8) |
