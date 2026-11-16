@@ -511,7 +511,10 @@ code {
 }
 .compare td { width: 21.5%; padding: 6px 10px; vertical-align: top; }
 .compare tbody tr + tr > * { border-top: 1px solid #e6e6e6; }
-.compare td.blue { background: var(--accent-light); }
+.compare td.yes { background: #eaf6e8; }
+.compare td.no { background: #fbeeee; }
+.compare td.blue { box-shadow: inset 2px 0 var(--accent), inset -2px 0 var(--accent); }
+.compare tbody tr:last-child td.blue { box-shadow: inset 2px 0 var(--accent), inset -2px 0 var(--accent), inset 0 -2px var(--accent); }
 .compare code { font-size: 12px; }
 .compare .nw { white-space: nowrap; }
 .compare thead th:first-child, .compare tbody th { position: sticky; left: 0; z-index: 1; }
