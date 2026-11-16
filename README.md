@@ -1965,7 +1965,8 @@ container; each is run (`--version`, which must find its own libraries),
 and the app must need no newer macOS than 11. Pushing a `v*` tag
 publishes the two disk images, `Blue-x86_64.AppImage`,
 `Blue-aarch64.AppImage` and `SHA256SUMS` as a GitHub release, once the tag
-is `src/version.h`'s version (`v0.1.0` for `0.1.0`): the names have no
+is `src/version.h`'s version (`v2026.11.1` for `2026.11.1`: year, month,
+then the release within the month): the names have no
 version in them, so `releases/latest/download/Blue-arm64.dmg` and the like
 are always the newest.
 
