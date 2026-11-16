@@ -265,7 +265,37 @@ code {
   border: 1px solid #000;
   box-shadow: -1px -1px 0 var(--plat-dark), 1px 1px 0 #fff;
 }
-.splash-logo { width: 76px; height: 76px; }
+.splash-logo { width: 76px; height: 76px; overflow: visible; }
+
+/* The logo's slabs drop into place, bottom first, and the stack gives under each one's weight */
+@media (prefers-reduced-motion: no-preference) {
+  .splash-logo .stack {
+    transform-box: view-box;
+    transform-origin: 16px 31px;
+    animation: stack-give 1.6s both;
+  }
+  .splash-logo .slab { animation: slab-drop .42s cubic-bezier(.55, 0, 1, .45) both; }
+  .splash-logo .slab:nth-child(1) { --from: -26px; animation-delay: .2s; }
+  .splash-logo .slab:nth-child(2) { --from: -22px; animation-delay: .55s; }
+  .splash-logo .slab:nth-child(3) { --from: -18px; animation-delay: .9s; }
+}
+@keyframes slab-drop {
+  from { transform: translateY(var(--from)); opacity: 0; }
+  35% { opacity: 1; }
+  to { transform: none; opacity: 1; }
+}
+/* Landings at .62 s, .97 s and 1.32 s: 39%, 61% and 83% */
+@keyframes stack-give {
+  0%, 39% { transform: none; }
+  42% { transform: translateY(.4px) scaleY(.98); }
+  47%, 61% { transform: none; }
+  64% { transform: translateY(.9px) scaleY(.96); }
+  70% { transform: translateY(-.15px); }
+  74%, 83% { transform: none; }
+  87% { transform: translateY(1.8px) scaleY(.92); }
+  94% { transform: translateY(-.35px) scaleY(1.01); }
+  100% { transform: none; }
+}
 .splash-welcome { margin: 14px 0 0; font: 16px var(--chrome); color: #333; }
 .hero h1 {
   margin: 0 0 14px;
