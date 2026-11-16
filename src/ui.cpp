@@ -1016,7 +1016,7 @@ static enum ui_action mappings(struct ui *u, const struct ui_state *s, const str
 	ImGui::SetCursorPosY(top + 3);
 	ImGui::TextUnformatted("Mapping for:");
 	for (unsigned k = 0; k < p->types; k++) {
-		char id[16];
+		char id[24];
 		snprintf(id, sizeof id, "##type%u", k);
 		ImGui::SameLine(0, k ? 12 : 10);
 		ImGui::SetCursorPosY(top);
@@ -1036,7 +1036,7 @@ static enum ui_action mappings(struct ui *u, const struct ui_state *s, const str
 	}
 	separator();
 	for (unsigned k = 0; k < 3; k++) {
-		char id[16];
+		char id[24];
 		snprintf(id, sizeof id, "##page%u", k);
 		if (k)
 			ImGui::SameLine(0, 16);

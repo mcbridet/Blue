@@ -675,7 +675,7 @@ static void scroll_axis(struct helper *h, struct ndrv_call *c, struct wheel *w)
 		scroll_finish(h, c);
 		return;
 	}
-	int16_t dv, dh;
+	int16_t dv = 0, dh = 0;
 	if (!scroll_window(m, h->window, &dv, &dh)) {
 		scroll_log(h, m, "the window under the pointer isn't the one in front: nowhere to scroll");
 		h->lines[0] = h->lines[1] = 0;
@@ -700,7 +700,7 @@ static void scroll_click(struct helper *h, struct ndrv_call *c, struct wheel *w)
 	struct mem *m = c->mem;
 	uint32_t handle = h->bar[h->bar_at], ctl = mem_r32(m, handle), data = helper_data(h, c);
 	int32_t lines = h->lines[h->axis];
-	int16_t dv, dh;
+	int16_t dv = 0, dh = 0;
 	scroll_window(m, h->window, &dv, &dh);
 	h->click = (struct helper_click){
 		.armed = true,

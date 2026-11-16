@@ -102,7 +102,7 @@ struct ui_pads {
 	/* Blue's mappings, for all of them and for the types plugged in, and where they're kept (or why not) */
 	unsigned types;
 	struct ui_pad_type type[UI_PAD_TYPES];
-	char kept[300];
+	char kept[1100];
 };
 
 /* A change to a mapping (UI_PAD_EDIT): to the type with this id, ui_pad_type's */
