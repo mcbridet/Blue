@@ -969,18 +969,50 @@ static void slow_loads(struct tx *t)
 	}
 }
 
-/* The host address of the EA in w1 into x10, if the n bytes there are accessible within one page */
+/* A branch within the instruction, to point at the code to come with land() */
+static uint32_t *fwd(struct tx *t, uint32_t branch)
+{
+	uint32_t *at = t->p;
+	emit(t, branch);
+	return at;
+}
+
+static void land(struct tx *t, uint32_t *at)
+{
+	if (at && !t->overflow)
+		patch(t, at, FIX_IMM19, t->p);
+}
+
+/* The page flags in `reg` allow the access (stores: and it's no code page, the interpreter's job) */
+static void block_flags(struct tx *t, bool load, unsigned reg)
+{
+	exit_if_bit(t, false, reg, load ? 0 : 1);               /* MEM_R / MEM_W */
+	if (!load) {
+		exit_if_bit(t, true, reg, 3);                   /* MEM_CODE */
+		exit_if_bit(t, true, reg, WATCH_BIT);           /* (and MEM_WATCH: the interpreter's too) */
+	}
+}
+
+/*
+ * The host address of the EA in w1 into x10, if the n bytes there are
+ * accessible (as mem_ok() has it: running into the next page, that one too;
+ * not wrapping at 4 GB)
+ */
 static void block_access(struct tx *t, bool load, unsigned n)
 {
 	emit(t, a64_bitfield(0, A64_UBFM, 9, 1, MEM_PAGE_SHIFT, 31));
 	emit(t, a64_ldst_uxtw(0, true, 9, R_FLAGS, 9));
-	exit_if_bit(t, false, 9, load ? 0 : 1);                 /* MEM_R / MEM_W */
-	if (!load)
-		exit_if_bit(t, true, 9, 3);                     /* MEM_CODE: the interpreter's job */
+	block_flags(t, load, 9);
 	if (n > 1) {
 		ubfx(t, 10, 1, 0, MEM_PAGE_SHIFT);
 		emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 10, MEM_PAGE_SIZE - n));
-		exit_if(t, A64_HI);
+		uint32_t *within = fwd(t, a64_bcond(A64_LS, 0));
+		emit(t, a64_addsub_imm(0, 0, 1, 11, 1, n - 1));
+		exit_if(t, A64_HS);
+		emit(t, a64_bitfield(0, A64_UBFM, 11, 11, MEM_PAGE_SHIFT, 31));
+		emit(t, a64_ldst_uxtw(0, true, 11, R_FLAGS, 11));
+		block_flags(t, load, 11);
+		land(t, within);
 	}
 	emit(t, a64_add_uxtw(10, R_CBASE, 1));
 }
@@ -1016,8 +1048,9 @@ static void load_store_multiple(struct tx *t, bool load, unsigned rs, unsigned r
  * the interpreter executes the instruction.
  * Then, if the page holds no translated code, or the word stored to isn't
  * one that code was translated from (the page's bitmap says), the store
- * just happens. Otherwise a host function stores w4/x4 at the EA in w1,
- * invalidating the blocks translated from those bytes; the cached registers
+ * just happens. Otherwise, or if the page is watched (MEM_WATCH), a host
+ * function stores w4/x4 at the EA in w1, invalidating the blocks translated
+ * from those bytes (or seeing the write); the cached registers
  * in caller-saved host registers are reloaded afterwards, and if any code
  * changed, the instruction completes (rA) and the block is left after it.
  */
@@ -1026,7 +1059,7 @@ static void slow_stores(struct tx *t)
 	for (unsigned s = 0; s < t->nslow; s++) {
 		struct slow_store *ss = &t->slow[s];
 		unsigned bytes = 1u << ss->size;
-		uint32_t *to_plain[2] = { NULL, NULL }, *to_call = NULL;
+		uint32_t *to_plain[2] = { NULL, NULL }, *to_call = NULL, *to_watch;
 		patch(t, ss->at, FIX_IMM14, t->p);
 		t->k = ss->k;
 		t->rc = ss->cs;
@@ -1042,6 +1075,8 @@ static void slow_stores(struct tx *t)
 			emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 10, MEM_PAGE_SIZE - bytes));
 			exit_if(t, A64_HI);
 		}
+		to_watch = t->p;
+		emit(t, a64_tbz(true, 9, WATCH_BIT, 0));                        /* MEM_WATCH: the host sees it */
 		to_plain[0] = t->p;
 		emit(t, a64_tbz(false, 9, 3, 0));                               /* no MEM_CODE */
 		if (bytes <= 4) {
@@ -1064,6 +1099,7 @@ static void slow_stores(struct tx *t)
 		}
 		if (to_call)
 			patch(t, to_call, FIX_IMM19, t->p);
+		patch(t, to_watch, FIX_IMM14, t->p);
 
 		rc_store(t, &ss->cs);
 		fixed_store(t, CALLER_SAVED_FIXED);
@@ -1169,20 +1205,6 @@ static void slow_ios(struct tx *t)
 
 #define FPSCR_XX_BIT 25
 #define FPSCR_FI_BIT 17
-
-/* A branch within the instruction, to point at the code to come with land() */
-static uint32_t *fwd(struct tx *t, uint32_t branch)
-{
-	uint32_t *at = t->p;
-	emit(t, branch);
-	return at;
-}
-
-static void land(struct tx *t, uint32_t *at)
-{
-	if (at && !t->overflow)
-		patch(t, at, FIX_IMM19, t->p);
-}
 
 static void logic_imm64(struct tx *t, enum a64_logic op, unsigned d, unsigned n, uint64_t imm)
 {
@@ -2506,6 +2528,39 @@ static int insn31(struct tx *t, uint32_t i)
 		return EMITTED;
 	}
 
+	case 20: {                                                      /* lwarx */
+		if (rd_ == rb || (ra && rd_ == ra)) {
+			call_step(t, i);
+			return EMITTED;
+		}
+		load_store(t, 2, true, false, false, true, LS_GPR, rd_, ra, rb, 0);
+		unsigned base = rd0(t, ra), b = rd(t, rb);
+		emit(t, a64_addsub(0, 0, 0, 9, base, b, A64_LSL, 0));
+		st32(t, 9, OFF(resv_addr));
+		emit(t, a64_movw(0, A64_MOVZ, 9, 1, 0));
+		emit(t, a64_ldst_imm(0, false, 9, R_CPU, OFF(resv_valid)));
+		return EMITTED;
+	}
+	case 150: {                                                     /* stwcx. (the interpreter if the reservation fails) */
+		if (!(i & 1)) {
+			call_step(t, i);
+			return EMITTED;
+		}
+		unsigned base = rd0(t, ra), b = rd(t, rb);
+		emit(t, a64_addsub(0, 0, 0, 10, base, b, A64_LSL, 0));
+		ld32(t, 11, OFF(resv_addr));
+		emit(t, a64_ldst_imm(0, true, 9, R_CPU, OFF(resv_valid)));
+		emit(t, a64_addsub(0, 1, 1, A64_ZR, 10, 11, A64_LSL, 0));
+		exit_if(t, A64_NE);
+		exit_if_zero(t, false, 9);
+		load_store(t, 2, false, false, false, true, LS_GPR, rd_, ra, rb, 0);
+		emit(t, a64_ldst_imm(0, false, A64_ZR, R_CPU, OFF(resv_valid)));
+		unsigned xer = rd(t, G_XER), cr = rw(t, G_CR);
+		emit(t, a64_movw(0, A64_MOVZ, 9, CR_EQ, 0));            /* CR0: EQ, SO */
+		emit(t, a64_logic(0, A64_ORR, 0, 9, 9, xer, A64_LSR, 31));
+		bfi(t, cr, 9, 28, 4);
+		return EMITTED;
+	}
 	case 23: case 55:   load_store(t, 2, true, false, xo == 55, true, LS_GPR, rd_, ra, rb, 0); return EMITTED;
 	case 87: case 119:  load_store(t, 0, true, false, xo == 119, true, LS_GPR, rd_, ra, rb, 0); return EMITTED;
 	case 279: case 311: load_store(t, 1, true, false, xo == 311, true, LS_GPR, rd_, ra, rb, 0); return EMITTED;

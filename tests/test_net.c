@@ -158,45 +158,61 @@ void test_net(void)
 	CHECK_EQ(n.received, 2);
 	net_free(&n);
 
-	/* with an interrupt set: lanLib's handler for its receive DMA member, enabled */
-	net_init(&n, &mem, mac, TIMEBASE);
-	CHECK_EQ(net_build_lanlib(&n, lib, sizeof lib), size);
-	memcpy(mem_ptr(&mem, DATA), data, be32(lib + 40 + 28 + 16));
-	for (unsigned k = 0; k < IMP_COUNT; k++)
-		mem_w32(&mem, DATA + n.layout.import[k], import_tvector[k]);
-	mem_w32(&mem, exported, RECEIVE);
-	c = call(L_INIT, ENTRY_ID, 0, tb);
-	CHECK(!c.done && c.tvector == import_tvector[IMP_PROPERTY_GET]);
-	for (unsigned k = 0; k < 3; k++) {
-		mem_w32(&mem, x + X_IST + 8 * k, 0x1234);
-		mem_w32(&mem, x + X_IST + 8 * k + 4, k);
+	/*
+	 * With an interrupt set: lanLib's handler for its receive DMA member,
+	 * enabled. That's the set's last: the iMac's has all three of the node's
+	 * interrupts (the MAC's, then the transmit and receive channels'),
+	 * Blue's just the last.
+	 */
+	static const uint32_t set_members[] = { 3, 1 };
+	for (unsigned s = 0; s < 2; s++) {
+		uint32_t members = set_members[s];
+		net_init(&n, &mem, mac, TIMEBASE);
+		CHECK_EQ(net_build_lanlib(&n, lib, sizeof lib), size);
+		memcpy(mem_ptr(&mem, DATA), data, be32(lib + 40 + 28 + 16));
+		for (unsigned k = 0; k < IMP_COUNT; k++)
+			mem_w32(&mem, DATA + n.layout.import[k], import_tvector[k]);
+		mem_w32(&mem, exported, RECEIVE);
+		memset(mem_ptr(&mem, x + X_IST), 0xEE, 24);    /* (left from before) */
+		c = call(L_INIT, ENTRY_ID, 0, tb);
+		CHECK(!c.done && c.tvector == import_tvector[IMP_PROPERTY_GET]);
+		for (unsigned k = 0; k < 6; k++)                /* cleared (Mac OS leaves the size at 24) */
+			CHECK_EQ(mem_r32(&mem, x + X_IST + 4 * k), 0);
+		for (unsigned k = 0; k < members; k++) {
+			mem_w32(&mem, x + X_IST + 8 * k, 0x1234);
+			mem_w32(&mem, x + X_IST + 8 * k + 4, k + 1);
+		}
+		c = call(NDRV_ENTRY_RESUME, 0, 0, tb);
+		CHECK(!c.done && c.tvector == import_tvector[IMP_GET_INT]);
+		CHECK(c.out[0] == 0x1234 && c.out[1] == members && c.out[2] == x + X_FUNCS &&
+		      c.out[5] == x + X_FUNCS + 12);
+		mem_w32(&mem, x + X_FUNCS, 0x5555);             /* refCon, handler, enabler, disabler */
+		mem_w32(&mem, x + X_FUNCS + 4, 0x6666);
+		mem_w32(&mem, x + X_FUNCS + 8, 0x7777);
+		mem_w32(&mem, x + X_FUNCS + 12, 0x8888);
+		c = call(NDRV_ENTRY_RESUME, 0, 0, tb);
+		CHECK(!c.done && c.tvector == import_tvector[IMP_INSTALL_INT]);
+		CHECK(c.out[0] == 0x1234 && c.out[1] == members && c.out[2] == 0x5555);
+		CHECK(c.out[3] == DATA + n.layout.entry[L_INTERRUPT] && c.out[4] == 0x7777 && c.out[5] == 0x8888);
+		c = call(NDRV_ENTRY_RESUME, 0, 0, tb);
+		CHECK(!c.done && c.tvector == 0x7777 && c.out[0] == 0x1234 && c.out[1] == members &&
+		      c.out[2] == 0x5555);
+		c = call(NDRV_ENTRY_RESUME, 0, 0, tb);
+		CHECK(c.done && c.result == 1);
+		CHECK(n.irq && !n.kick);
+		if (s == 0)
+			net_free(&n);
 	}
-	c = call(NDRV_ENTRY_RESUME, 0, 0, tb);
-	CHECK(!c.done && c.tvector == import_tvector[IMP_GET_INT]);
-	CHECK(c.out[0] == 0x1234 && c.out[1] == NET_IST_RX && c.out[2] == x + X_FUNCS && c.out[5] == x + X_FUNCS + 12);
-	mem_w32(&mem, x + X_FUNCS, 0x5555);             /* refCon, handler, enabler, disabler */
-	mem_w32(&mem, x + X_FUNCS + 4, 0x6666);
-	mem_w32(&mem, x + X_FUNCS + 8, 0x7777);
-	mem_w32(&mem, x + X_FUNCS + 12, 0x8888);
-	c = call(NDRV_ENTRY_RESUME, 0, 0, tb);
-	CHECK(!c.done && c.tvector == import_tvector[IMP_INSTALL_INT]);
-	CHECK(c.out[0] == 0x1234 && c.out[1] == NET_IST_RX && c.out[2] == 0x5555);
-	CHECK(c.out[3] == DATA + n.layout.entry[L_INTERRUPT] && c.out[4] == 0x7777 && c.out[5] == 0x8888);
-	c = call(NDRV_ENTRY_RESUME, 0, 0, tb);
-	CHECK(!c.done && c.tvector == 0x7777 && c.out[0] == 0x1234 && c.out[1] == NET_IST_RX && c.out[2] == 0x5555);
-	c = call(NDRV_ENTRY_RESUME, 0, 0, tb);
-	CHECK(c.done && c.result == 1);
-	CHECK(n.irq && !n.kick);
 
 	/* a frame pulses the interrupt; the handler queues the secondary handler (once), which receives */
 	net_input(&n, arp, sizeof arp);
 	CHECK(n.kick);
-	c = call(L_INTERRUPT, 0x1234, NET_IST_RX, tb);
+	c = call(L_INTERRUPT, 0x1234, 1, tb);
 	CHECK(!c.done && c.tvector == import_tvector[IMP_QUEUE_SECONDARY]);
 	CHECK_EQ(c.out[0], DATA + n.layout.entry[L_RECEIVE]);
 	c = call(NDRV_ENTRY_RESUME, 0, 0, tb);
 	CHECK(c.done && c.result == 0);                 /* kIsrIsComplete */
-	c = call(L_INTERRUPT, 0x1234, NET_IST_RX, tb);
+	c = call(L_INTERRUPT, 0x1234, 1, tb);
 	CHECK(c.done && c.result == 0);
 	c = call(L_RECEIVE, 0, 0, tb);
 	CHECK(!c.done && c.tvector == RECEIVE && c.out[0] == x + X_RX_DESC);

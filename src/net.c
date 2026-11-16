@@ -171,16 +171,26 @@ static void receive_step(struct net *n, struct ndrv_call *c, uint32_t x)
 		arm_timer(n, c, x);
 }
 
-/* Setting up the receive interrupt, after each callout (or polling, if that fails) */
+/*
+ * Setting up the receive interrupt, after each callout (or polling, if that
+ * fails). The receive DMA channel's member is the set's last: the node's
+ * interrupts are the MAC's and the transmit and receive channels', in that
+ * order, and Blue's set has just the last (bootinfo.c). Mac OS leaves the
+ * size as it was, so the last entry is the last that isn't empty.
+ */
 static void interrupt_step(struct net *n, struct ndrv_call *c, uint32_t x)
 {
 	struct mem *m = n->mem;
-	uint32_t ist = x + X_IST + 8 * NET_IST_RX, set = mem_r32(m, ist), member = mem_r32(m, ist + 4);
+	uint32_t ist = x + X_IST;
+	for (unsigned k = 1; k < 3; k++)
+		if (mem_r32(m, x + X_IST + 8 * k))
+			ist = x + X_IST + 8 * k;
+	uint32_t set = mem_r32(m, ist), member = mem_r32(m, ist + 4);
 	uint32_t status = c->arg[0];
 
 	switch (ndrv_state(c, 0)) {
 	case S_IST:
-		if (status || mem_r32(m, x + X_IST_SIZE) < 8 * (NET_IST_RX + 1))
+		if (status || !set)
 			break;
 		ndrv_set_state(c, 0, S_FUNCTIONS);
 		ndrv_callout(c, ndrv_import(c, &n->layout, IMP_GET_INT), set, member, x + X_FUNCS, x + X_FUNCS + 4);
@@ -258,6 +268,7 @@ void net_call(struct net *n, struct ndrv_call *c)
 		n->ready = true;
 		if (c->entry == L_INIT && mem_ok(m, a[0], 16, MEM_R)) {        /* (the node's RegEntryID) */
 			mem_w32(m, x + X_IST_SIZE, 24);
+			memset(mem_ptr(m, x + X_IST), 0, 24);
 			ndrv_set_state(c, 0, S_IST);
 			ndrv_callout(c, ndrv_import(c, &n->layout, IMP_PROPERTY_GET), a[0], x + X_IST_NAME, x + X_IST,
 				     x + X_IST_SIZE);

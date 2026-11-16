@@ -192,3 +192,10 @@ static void via_write(void *ctx, uint32_t offset, unsigned size, uint32_t value)
 }
 
 const struct mmio_ops via_mmio_ops = { via_read, via_write };
+
+bool via_pure_read(const void *ctx, uint32_t offset)
+{
+	(void)ctx;
+	unsigned reg = (offset >> 9) & 15;
+	return reg != REG_T1CL && reg != REG_T2CL && reg != REG_SR;     /* (they clear interrupt flags) */
+}

@@ -57,6 +57,7 @@ void test_jit(void);
 void test_ohci(void);
 void test_mp(void);
 void test_nvram(void);
+void test_startup(void);
 void test_priv(void);
 
 #endif

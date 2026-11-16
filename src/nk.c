@@ -26,6 +26,7 @@
 #include "ndrv.h"
 #include "net.h"
 #include "nvram.h"
+#include "ofnvram.h"
 #include "ohci.h"
 #include "pci.h"
 #include "perf.h"
@@ -35,6 +36,7 @@
 #include "rave.h"
 #include "rtas.h"
 #include "scc.h"
+#include "startup.h"
 #include "tools.h"
 #include "via.h"
 #include "video.h"
@@ -463,6 +465,7 @@ struct machine {
 	struct ppc_cpu cpu;
 	struct bootinfo bootinfo;
 	struct rtas rtas;
+	const uint8_t *kept_nvram;      /* NVRAM as it was before a restart (else it's the --nvram file's) */
 	struct nvram nvram;             /* RTAS's NVRAM as a device (ROM files with parcels; see nvram.h) */
 	struct mmio_bus bus;
 	struct macio macio;
@@ -508,13 +511,20 @@ struct machine {
 	uint64_t want_ns;               /* host time it last changed (0: from a script, at once) */
 	struct display *display;        /* host window, if open */
 	bool hw_cursor;                 /* ... and the display driver offers Mac OS a hardware cursor for it */
-	uint8_t *shown;                 /* framebuffer bytes as last shown */
-	uint8_t shown_clut[256][3];
-	unsigned shown_w, shown_h, shown_bpp;
-	uint64_t shown_ns;
-	struct video_palette palette;   /* (for the depth and CLUT shown) */
+	uint8_t shown_clut[256][3];     /* the CLUT the window was last handed */
+	uint64_t shown_ns;              /* ... and when it last had something new */
+	bool window_compare;            /* BLUE_WINDOW_COMPARE: the window finds changes by comparing only (no watch) */
+	/* BLUE_WINDOW_PROFILE (see window_profile()) */
+	bool window_profile;
+	uint64_t wp_ns, wp_start_ns;    /* host time of the last report, and the first frame */
+	uint64_t wp_idle_ns;            /* idle_ns then */
+	unsigned long wp_unwatched;     /* ... and the framebuffer's pages seen written (see video_copy_changes()) */
+	struct display_times wp_display;        /* the window's times then */
+	uint64_t wp_frames, wp_changed, wp_rows, wp_bytes;      /* since then: frames, those that changed, ... */
+	uint64_t wp_ns_in, wp_cpu_in;   /* ... the time display_frame() took on this thread */
+	uint64_t wp_changes_ns, wp_changes_cpu; /* ... finding the changes and copying them */
+	uint64_t wp_input_ns, wp_input_cpu;     /* ... taking the window's input */
 	bool quit;                      /* the window was closed */
-	bool redraw;                    /* the window needs drawing even if the screen is the same */
 	bool mouse_captured;            /* host motion goes to the ADB mouse (see follow_cursor()) */
 	bool mouse_released;            /* ... but the user let the pointer go (Control-Option) */
 	bool paused;                    /* the menu is open (F12): the guest doesn't run */
@@ -723,6 +733,14 @@ static uint64_t host_ns(void)
 {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+
+/* The processor time this thread has taken */
+static uint64_t thread_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
 	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 
@@ -1026,6 +1044,28 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		if (m->disk[k].removable)
 			m->drives.cd[m->drives.cds++] = &m->disk[k];
 
+	/*
+	 * NVRAM, before the tree. ROM files with parcels get Open Firmware's
+	 * variables there too (boot-device, which the Startup Disk control panel
+	 * sets: see ofnvram.h), in a partition Blue makes the first time, and
+	 * its settings in the tree: when NVRAM is kept (--nvram) or someone can
+	 * choose (real time). Mac OS reads them at startup, so other runs (in
+	 * instruction time, without --nvram) are as they were without.
+	 */
+	rtas_init(&m->rtas);
+	if (m->kept_nvram) {
+		memcpy(m->rtas.nvram, m->kept_nvram, sizeof m->rtas.nvram);
+	} else if (opt->nvram && rtas_nvram_load(&m->rtas, opt->nvram) < 0) {
+		fprintf(stderr, "%s: not a %u-byte NVRAM image\n", opt->nvram, RTAS_NVRAM_SIZE);
+		return -1;
+	}
+	bool settings = parcels && (opt->nvram || opt->realtime);
+	char boot_device[OFNVRAM_VALUE_MAX];
+	if (settings)
+		ofnvram_format(m->rtas.nvram, RTAS_NVRAM_SIZE);
+	bool have_boot_device = settings && ofnvram_get(m->rtas.nvram, RTAS_NVRAM_SIZE, "boot-device", boot_device,
+							sizeof boot_device);
+
 	static const uint8_t mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };   /* (locally administered) */
 	net_init(&m->net, &m->mem, mac, TIMEBASE_HZ);
 	m->net.log = getenv("BLUE_LOG_NET") != NULL;
@@ -1055,6 +1095,10 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		.boot = boot,
 		.boot_disk = boot_disk,
 		.boot_map_entry = boot_map_entry,
+		.settings = settings,
+		.boot_device = have_boot_device ? boot_device : NULL,
+		/* (a ROM file before 9.1's has its Start Manager take the first drive that works: the chosen one) */
+		.first_disk = !parcels && opt->rom_from_disk && opt->rom_chosen ? opt->rom_disk : 0,
 	};
 	memcpy(hw.mac, mac, 6);
 	for (unsigned k = 0; k < m->disks; k++) {
@@ -1069,13 +1113,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		printf("rom: %u parcels, %u device-tree properties from them (tree %u KB)\n", hw.parcels->count,
 		       m->bootinfo.parcel_props, m->bootinfo.device_tree_size >> 10);
 	bootinfo_level_masks(m->level_mask);
-	rtas_init(&m->rtas);
 	m->clock = (struct guest_clock){ opt->fixed_time, &m->cpu.tb, TIMEBASE_HZ };
 	m->rtas.clock = &m->clock;
-	if (opt->nvram && rtas_nvram_load(&m->rtas, opt->nvram) < 0) {
-		fprintf(stderr, "%s: not a %u-byte NVRAM image\n", opt->nvram, RTAS_NVRAM_SIZE);
-		return -1;
-	}
 
 	/* Devices (HAL side of the I/O the ROM was told about) */
 	macio_init(&m->macio);
@@ -1084,6 +1123,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->cuda.clock = &m->clock;
 	mmio_add(&m->bus, MACIO_BASE, MACIO_PAGE_SIZE, &macio_mmio_ops, &m->macio, "mac-io");
 	mmio_add(&m->bus, MACIO_VIA1, VIA_SIZE, &via_mmio_ops, &m->via, "via1");
+	mmio_pure_reads(&m->bus, via_pure_read);
 	scc_init(&m->scc);
 	mmio_add(&m->bus, MACIO_SCC, SCC_SIZE, &scc_mmio_ops, &m->scc, "scc");
 	dbdma_init(&m->dbdma, &m->mem, m->ram_size);
@@ -1094,6 +1134,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	awacs_init(&m->awacs, &m->dbdma, TIMEBASE_HZ);
 	m->awacs.log = getenv("BLUE_LOG_SOUND") != NULL;
 	m->audio_log = getenv("BLUE_LOG_AUDIO") != NULL;
+	m->window_profile = getenv("BLUE_WINDOW_PROFILE") != NULL;
+	m->window_compare = getenv("BLUE_WINDOW_COMPARE") != NULL;
 	/*
 	 * The codec's status says it's valid, as a running codec's does. Mac
 	 * OS's sound plug-in polls for it after setting the codec up, and
@@ -1114,6 +1156,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	ohci_init(&m->ohci, &m->mem);
 	m->ohci.log = getenv("BLUE_LOG_USB") != NULL;
 	mmio_add(&m->bus, USB_BASE, OHCI_SIZE, &ohci_mmio_ops, &m->ohci, "usb");
+	mmio_pure_reads(&m->bus, ohci_pure_read);
 
 	/* PCI configuration space: the functions the device tree lists */
 	pci_init(&m->pci);
@@ -1465,8 +1508,8 @@ static void nap(struct machine *m, uint64_t deadline, bool idle)
 		until = now + NET_WAKE_NS;     /* (to see the host network's traffic) */
 	if (until <= now + 20000)       /* not worth a system call */
 		return;
-	if (m->display && until - now >= 1000000) {
-		display_wait(m->display, (unsigned)((until - now) / 1000000));
+	if (m->display) {
+		display_wait(m->display, until - now);
 	} else {
 		struct timespec ts = { 0, (long)(until - now) };
 		nanosleep(&ts, NULL);
@@ -1517,6 +1560,7 @@ static void move_mouse_to(struct machine *m, int x, int y)
 	mem_w16(&m->mem, LM_RAW_MOUSE, (uint16_t)y);
 	mem_w16(&m->mem, LM_RAW_MOUSE + 2, (uint16_t)x);
 	mem_w8(&m->mem, LM_CRSR_NEW, mem_r8(&m->mem, LM_CRSR_COUPLE));
+	cuda_mouse_moved(&m->cuda);
 }
 
 /*
@@ -1550,6 +1594,7 @@ static void follow_cursor(struct machine *m, uint64_t now)
 
 static void display_input(struct machine *m, uint64_t now);
 static void stay_paused(struct machine *m);
+static void tools_show(struct machine *m);
 
 /* A path's last part, as the menu and messages name images */
 static const char *file_name(const char *path)
@@ -1654,6 +1699,7 @@ static void menu_state(struct machine *m)
 			      m->mouse_released ? UI_MOUSE_RELEASED : UI_MOUSE_CAPTURED;
 	display_menu_state(m->display, mouse, m->menu_status);
 	drives_state(m);
+	display_tools_state(m->display, m->tools_offer, install_unofferable(&m->install));
 }
 
 /* The screen as a PNG on the Desktop (or here), named for when it was taken */
@@ -1716,9 +1762,18 @@ static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
 		break;
 	case UI_PROMPT_YES:
 	case UI_PROMPT_NO:
+	case UI_PROMPT_ALT:
 		m->prompting = false;
 		if (!m->prompt_news)
-			install_answer(&m->install, action == UI_PROMPT_YES, &m->helper);
+			install_answer(&m->install, action == UI_PROMPT_YES ? INSTALL_YES :
+				       action == UI_PROMPT_ALT ? INSTALL_NEVER : INSTALL_NOT_NOW, &m->helper);
+		follow_cursor(m, now);
+		break;
+	case UI_INSTALL_TOOLS:          /* the offer, now (Don't Ask Again or not) */
+		m->paused = false;
+		display_menu(m->display, false);
+		install_offer(&m->install);
+		tools_show(m);
 		follow_cursor(m, now);
 		break;
 	default:
@@ -1829,50 +1884,71 @@ static void status_lights(struct machine *m, uint64_t now, bool paused)
 }
 
 /*
- * Shows the screen in the window: the rows that have changed since it was
- * last shown (all of them when its mode or colours change, when the window
- * asks, and once a second if nothing has changed), and the pointer, if Mac
- * OS has the display driver draw it; and feeds the window's input to the
- * guest. While the menu is open, the guest stays paused here.
+ * BLUE_WINDOW_PROFILE: every second of host time, how many frames the
+ * window was handed and how much of the screen changed in them, and where
+ * showing them took the host's time: on this thread, which stops the Mac
+ * meanwhile (finding and copying the changes, the rest of the frame's
+ * hand-over and the input), and on the window's; in milliseconds a frame,
+ * of the host clock and, in brackets, of the thread's processor time.
  */
-#define DISPLAY_BANDS 8                 /* bands of changed rows, at most (see video_changed_rows()) */
+static void window_profile(struct machine *m, uint64_t now)
+{
+	if (!m->wp_ns) {
+		m->wp_ns = m->wp_start_ns = now;
+		m->wp_idle_ns = m->idle_ns;
+		m->wp_unwatched = m->mem.unwatched;
+		display_times(m->display, &m->wp_display);
+		return;
+	}
+	if (now - m->wp_ns < 1000000000u)
+		return;
+	struct display_times t;
+	display_times(m->display, &t);
+	double s = (double)(now - m->wp_ns) * 1e-9, f = m->wp_frames ? (double)m->wp_frames : 1;
+	double idle = (double)(m->idle_ns - m->wp_idle_ns) * 1e-9, busy = s - idle > 1e-3 ? s - idle : 1e-3;
+	static const char *const names[DISPLAY_TIMES] = { "convert", "upload", "draw", "present", "events" };
+	printf("window @%.1f s: %.1f frames/s, %.1f changed (%.0f rows, %.2f MB a frame), %.1f pages seen written a frame; "
+	       "the Mac stopped %.3f ms a frame [%.3f], %.2f%% of the time, %.2f%% of its busy time: "
+	       "changes %.3f [%.3f], input %.3f [%.3f]; the window's thread",
+	       (double)(now - m->wp_start_ns) * 1e-9, (double)m->wp_frames / s, (double)m->wp_changed / s,
+	       m->wp_changed ? (double)m->wp_rows / (double)m->wp_changed : 0.0,
+	       m->wp_changed ? (double)m->wp_bytes / (double)m->wp_changed * 1e-6 : 0.0,
+	       (double)(m->mem.unwatched - m->wp_unwatched) / f, (double)m->wp_ns_in * 1e-6 / f, (double)m->wp_cpu_in * 1e-6 / f, (double)m->wp_ns_in * 1e-7 / s,
+	       (double)m->wp_ns_in * 1e-7 / busy, (double)m->wp_changes_ns * 1e-6 / f,
+	       (double)m->wp_changes_cpu * 1e-6 / f, (double)m->wp_input_ns * 1e-6 / f,
+	       (double)m->wp_input_cpu * 1e-6 / f);
+	for (unsigned k = 0; k < DISPLAY_TIMES; k++)
+		printf("%s %s %.3f [%.3f]", k ? "," : "", names[k], (double)(t.ns[k] - m->wp_display.ns[k]) * 1e-6 / f,
+		       (double)(t.cpu_ns[k] - m->wp_display.cpu_ns[k]) * 1e-6 / f);
+	unsigned long taken = t.frames - m->wp_display.frames;
+	printf("; %.1f frames taken/s, shown %.3f ms after (at most %.3f), %.1f draws/s\n", (double)taken / s,
+	       taken ? (double)(t.latency_ns - m->wp_display.latency_ns) * 1e-6 / (double)taken : 0.0,
+	       (double)t.latency_max_ns * 1e-6, (double)(t.draws - m->wp_display.draws) / s);
+	m->wp_ns = now;
+	m->wp_idle_ns = m->idle_ns;
+	m->wp_unwatched = m->mem.unwatched;
+	m->wp_display = t;
+	m->wp_frames = m->wp_changed = m->wp_rows = m->wp_bytes = 0;
+	m->wp_ns_in = m->wp_cpu_in = m->wp_changes_ns = m->wp_changes_cpu = m->wp_input_ns = m->wp_input_cpu = 0;
+}
 
+/*
+ * Hands the window a frame of the screen: the rows that have changed since
+ * the last (all of them when its mode or colours change, and once a second
+ * if nothing has changed), and the pointer, if Mac OS has the display
+ * driver draw it; then feeds the window's input to the guest. The window
+ * converts, draws and presents on its own thread meanwhile. While the menu
+ * is open, the guest stays paused here.
+ */
 static void display_frame(struct machine *m, uint64_t now)
 {
+	uint64_t cpu0 = m->window_profile ? thread_ns() : 0;
 	unsigned w = video_width(&m->video), h = video_height(&m->video), bpp = video_bpp(&m->video);
 	size_t rb = video_row_bytes(&m->video);
 	unsigned rows = rb * h > m->video.fb_size ? (unsigned)(m->video.fb_size / rb) : h;
-	const uint8_t *fb = mem_ptr(&m->mem, m->video.fb_base);
 	status_lights(m, now, false);   /* (drawn with the screen, if that's drawn) */
 	if (m->opengl.prof)
 		fprintf(m->opengl.prof, "d %llu\n", (unsigned long long)now);
-	struct video_rows bands[DISPLAY_BANDS];
-	unsigned n;
-	if (m->redraw || w != m->shown_w || h != m->shown_h || bpp != m->shown_bpp ||
-	    now - m->shown_ns >= 1000000000u || memcmp(m->shown_clut, m->video.clut, sizeof m->shown_clut) != 0) {
-		m->redraw = false;
-		memcpy(m->shown_clut, m->video.clut, sizeof m->shown_clut);
-		m->shown_w = w;
-		m->shown_h = h;
-		m->shown_bpp = bpp;
-		video_palette(&m->video, &m->palette);
-		bands[0] = (struct video_rows){ 0, rows };
-		n = 1;
-	} else {
-		n = video_changed_rows(m->shown, fb, rb, rows, bands, DISPLAY_BANDS);
-	}
-	for (unsigned k = 0; k < n; k++) {
-		size_t at = bands[k].from * rb, pitch;
-		unsigned count = bands[k].to - bands[k].from;
-		memcpy(m->shown + at, fb + at, count * rb);
-		uint32_t *px = display_rows(m->display, w, h, bands[k].from, bands[k].to, &pitch);
-		if (px) {
-			video_convert(&m->palette, fb + at, rb, w, count, px, pitch);
-			display_rows_done(m->display);
-		}
-	}
-	if (n)
-		m->shown_ns = now;
 	const struct video_cursor *c = &m->video.cursor;
 	struct display_cursor pointer = {
 		.visible = m->video.hw_cursor && c->set && c->visible,
@@ -1884,7 +1960,31 @@ static void display_frame(struct machine *m, uint64_t now)
 		.image = c->images,
 	};
 	display_cursor(m->display, &pointer);
-	display_update(m->display);
+	struct display_frame *f = display_frame_begin(m->display, w, h, bpp, rb);
+	if (f) {
+		bool all = !f->kept || now - m->shown_ns >= 1000000000u ||
+			   memcmp(m->shown_clut, m->video.clut, sizeof m->shown_clut) != 0;
+		if (all) {
+			memcpy(m->shown_clut, m->video.clut, sizeof m->shown_clut);
+			video_palette(&m->video, &f->palette);
+		}
+		unsigned n = video_copy_changes(&m->video, f->pixels, f->changed, rows, all, !m->window_compare);
+		display_frame_end(m->display);
+		if (n) {
+			m->shown_ns = now;
+			m->wp_changed++;
+			m->wp_rows += n;
+			m->wp_bytes += n * rb;
+		}
+	}
+	m->wp_frames++;
+	uint64_t t0 = 0, c0 = 0;
+	if (m->window_profile) {
+		t0 = host_ns();
+		c0 = thread_ns();
+		m->wp_changes_ns += t0 - now;
+		m->wp_changes_cpu += c0 - cpu0;
+	}
 	display_input(m, now);
 	if (m->clip.enabled && !m->scripted) {          /* what Mac OS copied, to the host */
 		const char *text = clip_take(&m->clip);
@@ -1896,6 +1996,14 @@ static void display_frame(struct machine *m, uint64_t now)
 			adb_key(&m->cuda.adb, key, down);
 			fast_start_input(m, key & 0x7F, down);
 		}
+	}
+	if (m->window_profile) {
+		uint64_t t1 = host_ns(), c1 = thread_ns();
+		m->wp_input_ns += t1 - t0;
+		m->wp_input_cpu += c1 - c0;
+		m->wp_ns_in += t1 - now;
+		m->wp_cpu_in += c1 - cpu0;
+		window_profile(m, now);
 	}
 	if (m->paused)
 		stay_paused(m);
@@ -1911,8 +2019,7 @@ static void stay_paused(struct machine *m)
 	uint64_t from = host_ns();
 	status_lights(m, from, true);
 	while (m->paused && !m->quit) {
-		display_refresh(m->display);
-		display_wait(m->display, 1000 / 60);
+		display_wait(m->display, 1000000000u / 60);
 		display_input(m, host_ns());
 	}
 	m->start_ns += host_ns() - from;
@@ -1978,9 +2085,6 @@ static void display_input(struct machine *m, uint64_t now)
 				follow_cursor(m, now);
 			}
 			break;
-		case DISPLAY_EVENT_EXPOSE:
-			m->redraw = true;
-			break;
 		case DISPLAY_EVENT_CLIPBOARD:
 			if (m->clip.enabled && !m->scripted) {
 				char *text = display_clipboard(m->display);
@@ -1989,7 +2093,6 @@ static void display_input(struct machine *m, uint64_t now)
 			}
 			break;
 		case DISPLAY_EVENT_RESIZE:      /* see follow_window(); scripted runs keep their screen */
-			m->redraw = true;
 			if (ev.x > 0 && ev.y > 0 && !m->scripted) {
 				m->want_w = (unsigned)ev.x;
 				m->want_h = (unsigned)ev.y;
@@ -2199,13 +2302,18 @@ static void script_run(struct machine *m, struct script *s)
 			else
 				printf("screen saved to %s at instruction %llu\n", e->arg,
 				       (unsigned long long)m->cpu.icount);
-		} else if (strcmp(e->cmd, "tools") == 0 && (!strcmp(e->arg, "install") || !strcmp(e->arg, "later"))) {
+		} else if (strcmp(e->cmd, "tools") == 0 && !strcmp(e->arg, "offer")) {
+			install_offer(&m->install);     /* (as the window's menu does: Install Guest Tools...) */
+			tools_show(m);
+		} else if (strcmp(e->cmd, "tools") == 0 && (!strcmp(e->arg, "install") || !strcmp(e->arg, "later") ||
+							     !strcmp(e->arg, "never"))) {
 			/* answers the window's offer to install the guest tools (see tools_startup()) */
 			if (m->prompting) {
 				m->prompting = false;
 				display_prompt(m->display, NULL, NULL, NULL);
 			}
-			install_answer(&m->install, strcmp(e->arg, "install") == 0, &m->helper);
+			install_answer(&m->install, !strcmp(e->arg, "install") ? INSTALL_YES :
+				       !strcmp(e->arg, "never") ? INSTALL_NEVER : INSTALL_NOT_NOW, &m->helper);
 		} else if (strcmp(e->cmd, "floppy") == 0) {
 			if (e->a == 1)
 				drive_insert(m, e->arg, DRIVES_FLOPPY);
@@ -2479,6 +2587,21 @@ static int device_hook(void *ctx, struct ppc_cpu *cpu)
 	struct mmio_access a;
 	if (cpu->icount + 1 >= m->mmio_until || !mmio_decode(&m->bus, cpu, &a))
 		return PPC_MMIO_NO;
+	/*
+	 * A read that changes nothing, with the devices not due to change by
+	 * themselves (as at an exit that skips them): updating interrupts after
+	 * it, and the next device event, would find them as they were, and so
+	 * would in_place()
+	 */
+	const struct mmio_region *r = a.region;
+	if (!a.store && !m->dev_dirty && cpu->tb < m->dev_next_tb && r->pure_read && r->pure_read(r->ctx, cpu->fault_addr - r->base)) {
+		update_device_time(m);
+		mmio_perform(&a, cpu);
+		m->dev_accesses++;
+		m->dev_inline++;
+		return m->preempt || device_stop(m) || m->mp.swi || m->mp.yield || (m->mp_kernel && mp_due(&m->mp, cpu->tb)) ?
+		       PPC_MMIO_STOP : PPC_MMIO_DONE;
+	}
 	bool changed = false;
 	if (m->dev_dirty || cpu->tb >= m->dev_next_tb) {        /* (as at every exit) */
 		update_device_time(m);
@@ -2962,6 +3085,8 @@ static void tools_show(struct machine *m)
 	if (in->ask) {
 		in->ask = false;
 		shown = m->display && display_prompt(m->display, in->question, in->yes, "Not Now");
+		if (shown)
+			display_prompt_alt(m->display, in->never);
 	}
 	if (in->news_ready) {
 		in->news_ready = false;
@@ -3672,6 +3797,7 @@ static const char *kernel_call(struct machine *m, unsigned n)
 			break;
 		}
 		if (cpu->gpr[3] <= 7 && !(cpu->gpr[4] & cpu->cr)) {
+			cuda_doze(&m->cuda, cpu->tb / (TIMEBASE_HZ / 1000));   /* (Mac OS 9.2.2's power manager dozing) */
 			tools_idle(m, false);
 			blue_naps(m, UINT64_MAX, true); /* until an interrupt: there's no processor state to lose */
 		}
@@ -3809,13 +3935,56 @@ static void stop_machine(struct machine *m)
 }
 
 /*
+ * A restart starts up from the disk Open Firmware's boot-device names (the
+ * Startup Disk control panel's choice: see startup.h) if that's another one
+ * and it's there, with its own ROM file; otherwise from where it did. Not
+ * with --rom.
+ */
+static void restart_from(struct machine *m, struct nk_boot_options *opt, const struct machine *old)
+{
+	static struct rom roms[2];
+	static int current = -1;        /* (which of them is m->rom: its own ROM file came from main.c) */
+	unsigned drive, entry;
+	if (!opt->rom_from_disk || !startup_choice(old->rtas.nvram, RTAS_NVRAM_SIZE, &drive, &entry))
+		return;
+	const struct disk *now = &old->disk[opt->rom_disk];
+	if (drive == opt->rom_disk && opt->rom_part < now->partitions && now->part[opt->rom_part].map_entry == entry)
+		return;
+	const char *paths[NK_MAX_DISKS] = { NULL };
+	for (unsigned k = 0; k < opt->disks && k < NK_MAX_DISKS; k++)
+		paths[k] = !old->disk[k].removable ? opt->disk[k] : m->cd_path[k][0] ? m->cd_path[k] : NULL;
+	struct rom *rom = &roms[current == 0];
+	struct startup start;
+	char note[HFSREAD_PATH_MAX + 512], version[64];
+	int found = startup_rom(paths, opt->disks, old->rtas.nvram, RTAS_NVRAM_SIZE, rom, &start, note, sizeof note);
+	if (!found && !start.chosen)
+		rom_free(rom);
+	if (found || !start.chosen) {
+		printf("rom: %s: starting up from where it did\n", note[0] ? note : "boot-device");
+		return;
+	}
+	if (rom_file_version(rom, version, sizeof version))
+		printf("rom: %s (Mac OS ROM %s, %zu bytes), which boot-device names\n", start.from, version, rom->file_size);
+	else
+		printf("rom: %s (Toolbox release 0x%04X, %zu bytes), which boot-device names\n", start.from,
+		       rom_release(rom), rom->file_size);
+	if (current >= 0)
+		rom_free(&roms[current]);
+	current = current == 0;
+	m->rom = rom;
+	opt->rom_disk = start.drive;
+	opt->rom_part = start.part;
+	opt->rom_chosen = true;
+}
+
+/*
  * The guest asked to restart (RTAS system-reboot, or Cuda's reset): start
  * over from the ROM with memory and devices reset, as a real Mac does,
  * keeping what survives a restart there (NVRAM) and what the host side
  * counts across it: guest time, the instruction count (which input scripts
  * and --max go by), statistics, and the window and sound output.
  */
-static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
+static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 {
 	static struct machine old;
 
@@ -3844,11 +4013,10 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->display = old.display;
 	m->hw_cursor = old.hw_cursor;
 	m->gpu = old.gpu;
-	m->shown = old.shown;
 	m->quit = old.quit;
 	m->mouse_captured = old.mouse_captured;
 	m->mouse_released = old.mouse_released;
-	m->redraw = true;
+	m->clip = old.clip;             /* (the host's side: start_machine() starts Mac OS's again) */
 	m->scripted = old.scripted;
 	m->tools_offer = old.tools_offer;
 	if (old.prompting && old.prompt_news)   /* (the installer's news stays: Mac OS restarting is in it) */
@@ -3875,11 +4043,12 @@ static int restart_machine(struct machine *m, const struct nk_boot_options *opt)
 		snprintf(m->cd_path[k], sizeof m->cd_path[k], "%s", !old.disk[k].removable ? old.cd_path[k] :
 			 old.disk[k].media ? old.disk[k].media_path : "");
 	memcpy(m->exceptions, old.exceptions, sizeof m->exceptions);
+	m->kept_nvram = old.rtas.nvram;
+	restart_from(m, opt, &old);
 	if (start_machine(m, opt))
 		return -1;
 	m->install.check.apple_kept = old.install.check.apple_kept;
 	tools_startup(m, opt);
-	memcpy(m->rtas.nvram, old.rtas.nvram, sizeof m->rtas.nvram);
 	m->cpu.icount = old.cpu.icount;
 	m->cpu.tb = old.cpu.tb;
 	if (m->realtime)        /* (the guest reads the clock again: the lead guest time had is moot) */
@@ -3902,9 +4071,10 @@ static struct gpu *open_gpu(const struct nk_boot_options *opt)
 	return gpu_open(forced);
 }
 
-int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
+int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 {
 	static struct machine m;
+	struct nk_boot_options run = *options, *opt = &run;    /* (a restart may change where the ROM file comes from) */
 
 	memset(&m, 0, sizeof m);
 	m.rom = rom;
@@ -3959,10 +4129,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	if (opt->realtime && !opt->no_fast_start)
 		fast_start_begin(&m);
 	if (opt->window) {
-		m.shown = malloc(FB_SIZE);
-		if (m.shown)
-			m.display = display_open("Blue", video_width(&m.video), video_height(&m.video),
-						 opt->integer_scale);
+		m.display = display_open("Blue", video_width(&m.video), video_height(&m.video), opt->integer_scale);
 		if (!m.display)         /* (the driver has the hardware cursor, but says it hasn't) */
 			m.hw_cursor = m.video.hw_cursor = false;
 		if (m.display && !opt->no_status_bar)
@@ -4314,6 +4481,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	printf("\nadb: %lu commands, autopoll %s (devices %04X, %u ms), keyboard @%u handler %u, mouse @%u handler %u",
 	       m.cuda.adb.commands, m.cuda.autopoll ? "on" : "off", m.cuda.autopoll_devices, m.cuda.autopoll_ms,
 	       m.cuda.adb.kbd.addr, m.cuda.adb.kbd.handler, m.cuda.adb.mouse.addr, m.cuda.adb.mouse.handler);
+	if (m.cuda.wake_taps)
+		printf("; %lu Option taps waking Mac OS from its doze for the mouse", m.cuda.wake_taps);
 	printf("\nvideo: %lu driver calls, %u opens, %ux%u %u-bit, %lu mode changes, %lu VBLs",
 	       m.video.calls, m.video.open_count, video_width(&m.video), video_height(&m.video),
 	       video_bpp(&m.video), m.video.mode_changes, m.video.vbls);
@@ -4410,7 +4579,6 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *opt)
 	}
 	audio_close(m.audio);
 	display_close(m.display);
-	free(m.shown);
 	free(script.ev);
 	clip_free(&m.clip);
 	return 0;

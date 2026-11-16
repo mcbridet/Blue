@@ -165,6 +165,36 @@ void test_nvram(void)
 		CHECK(path && len == sizeof want && memcmp(path, want, len) == 0);
 	}
 	CHECK(flat_find(tree, NULL, "blue,disk", "pci") != NULL);
+	CHECK(flat_find(tree, NULL, "options", NULL) == NULL && flat_find(tree, NULL, "openprom", NULL) == NULL);
+
+	/* Open Firmware's settings, where asked for: boot-device NVRAM's, else the bootpath; the disks in order */
+	hw.settings = true;
+	for (unsigned pass = 0; pass < 2; pass++) {
+		static const char ours[] = "/pci@80000000/blue,disk@2@2:,\\\\:tbxi";
+		hw.boot_device = pass ? ours : NULL;
+		CHECK(bootinfo_build(&mem, &bi, &hw) == 0);
+		tree = mem_ptr(&mem, bi.device_tree);
+		node = flat_find(tree, NULL, "options", NULL);
+		CHECK(node != NULL);
+		if (node) {
+			uint32_t len;
+			const char *path = (const char *)flat_prop(node, "boot-device", &len);
+			const char *want = pass ? ours : "/pci/blue,disk@3:3,\\\\:tbxi";
+			CHECK(path && len == strlen(want) + 1 && memcmp(path, want, len) == 0);
+		}
+		node = flat_find(tree, NULL, "openprom", NULL);
+		uint32_t len;
+		CHECK(node && flat_prop(node, "supports-bootinfo", &len) && len == 0);
+		CHECK_EQ(flat_u32(flat_find(tree, NULL, "blue,disk", "pci"), "reg", 0), PCI_DEVFN_DISK << 8);
+	}
+	/* ... and a disk to go first (for ROM files before 9.1's: Mac OS takes the first that works) */
+	hw.first_disk = 1;
+	CHECK(bootinfo_build(&mem, &bi, &hw) == 0);
+	CHECK_EQ(flat_u32(flat_find(mem_ptr(&mem, bi.device_tree), NULL, "blue,disk", "pci"), "reg", 0),
+		 (PCI_DEVFN_DISK + 8) << 8);
+	hw.first_disk = 0;
+	hw.settings = false;
+	hw.boot_device = NULL;
 
 	/*
 	 * NanoKernel 2's HWInfo (0x0108): CascadeInfo at +0xA8, no cascaded

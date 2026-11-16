@@ -204,8 +204,15 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	if (hw->display_ndrv_size)
 		dt_prop(disp, "driver,AAPL,MacOS,PowerPC", hw->display_ndrv, (uint32_t)hw->display_ndrv_size);
 
-	/* Block storage backed by host files */
-	for (unsigned k = 0; k < hw->disks && k < BOOTINFO_MAX_DISKS; k++) {
+	/*
+	 * Block storage backed by host files, each at its own PCI device number,
+	 * in order but for first_disk, which goes first: Mac OS numbers the
+	 * drives in the tree's order, and the Start Manager of ROM files before
+	 * 9.1's takes the first drive that has a System Folder.
+	 */
+	unsigned first = hw->first_disk < hw->disks ? hw->first_disk : 0;
+	for (unsigned n = 0; n < hw->disks && n < BOOTINFO_MAX_DISKS; n++) {
+		unsigned k = n == 0 ? first : n <= first ? n - 1 : n;
 		struct dt_node *disk = dt_add_node(pci, "blue,disk");
 		const uint32_t reg[5] = { PCI_SPACE_CONFIG | (PCI_DEVFN_DISK + 8 * k) << 8, 0, 0, 0, 0 };
 		pci_ids(disk, PCI_VENDOR_BLUE, PCI_DEVICE_DISK, PCI_CLASS_DISK, 1);
@@ -328,8 +335,9 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 		const uint32_t enet_irq[3] = { IRQ_ENET, IRQ_DMA_ENET_TX, IRQ_DMA_ENET_RX };
 		/*
 		 * An interrupt set with just the receive DMA channel's (lanLib's;
-		 * see net.h). One for all three made Open Transport stall for half
-		 * a minute or more in some startups of Mac OS 9; why isn't known.
+		 * see net.h), the only one Blue raises. lanLib takes the set's last
+		 * member, so the iMac's set of all three works as well; Open
+		 * Transport doesn't stall with it.
 		 */
 		const uint32_t enet_rx_irq = IRQ_DMA_ENET_RX;
 		dt_prop_str(enet, "device_type", "network");
@@ -367,14 +375,28 @@ static struct dt_node *build_tree(const struct bootinfo_machine *hw, unsigned *p
 	 * Mac OS 9.1's Start Manager starts up only from the drive StartLib
 	 * finds for it; the disk driver says which that is (see disk.c).
 	 */
+	char path[64] = "";
 	if (hw->parcels && hw->boot && hw->boot_disk < hw->disks) {
-		char path[64];
 		unsigned dev = (PCI_DEVFN_DISK + 8 * hw->boot_disk) >> 3;
 		if (hw->boot_map_entry)
 			snprintf(path, sizeof path, "/pci/blue,disk@%x:%u,\\\\:tbxi", dev, hw->boot_map_entry);
 		else
 			snprintf(path, sizeof path, "/pci/blue,disk@%x:,\\\\:tbxi", dev);
 		dt_prop_str(dt_add_node(root, "chosen"), "bootpath", path);
+	}
+
+	/*
+	 * Open Firmware's settings and the firmware itself, as a New World
+	 * Mac's tree has them, for ROM files with parcels (where asked for): the
+	 * Startup Disk control panel (StartLib) sets /options' boot-device,
+	 * which Mac OS keeps in NVRAM (see ofnvram.h), only where /openprom says
+	 * the firmware starts up from bootinfo files (the Mac OS ROM file).
+	 */
+	if (hw->parcels && hw->settings) {
+		dt_prop_str(dt_add_node(root, "options"), "boot-device", hw->boot_device ? hw->boot_device : path);
+		struct dt_node *openprom = dt_add_node(root, "openprom");
+		dt_prop_str(openprom, "model", "OpenFirmware 3");
+		dt_prop_empty(openprom, "supports-bootinfo");
 	}
 
 	/*

@@ -44,6 +44,7 @@ int main(int argc, char **argv)
 		{ "jit", test_jit },
 		{ "mp", test_mp },
 		{ "nvram", test_nvram },
+		{ "startup", test_startup },
 		{ "priv", test_priv },
 	};
 

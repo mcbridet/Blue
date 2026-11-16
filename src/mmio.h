@@ -23,6 +23,11 @@ struct mmio_region {
 	const struct mmio_ops *ops;
 	void *ctx;
 	const char *name;
+	/*
+	 * Optional: whether reading at `offset` changes nothing (the device's
+	 * state, its interrupt line or its next event; given its time)
+	 */
+	bool (*pure_read)(const void *ctx, uint32_t offset);
 };
 
 #define MMIO_MAX_REGIONS 16
@@ -35,6 +40,9 @@ struct mmio_bus {
 void mmio_add(struct mmio_bus *bus, uint32_t base, uint32_t size, const struct mmio_ops *ops,
 	      void *ctx, const char *name);
 const struct mmio_region *mmio_find(const struct mmio_bus *bus, uint32_t addr);
+
+/* The last region added: where reading changes nothing (see struct mmio_region) */
+void mmio_pure_reads(struct mmio_bus *bus, bool (*pure_read)(const void *ctx, uint32_t offset));
 
 enum mmio_result {
 	MMIO_DONE,              /* access performed, pc advanced */

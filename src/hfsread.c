@@ -607,6 +607,38 @@ int hfsread_path(const struct hfsread_volume *v, uint32_t folder, char *buf, siz
 
 /* ---- the startup disk ------------------------------------------------------ */
 
+/* The file in partition p's blessed System Folder: 1 found (and read, or -1), 0 not there */
+static int system_file(struct disk *d, unsigned p, const char *path, uint32_t type, struct hfsread_found *found,
+		       char *err, size_t errlen)
+{
+	struct hfsread_volume v;
+	struct hfsread_file f;
+	struct disk_reader r = { d, p };
+	if (hfsread_open_with(&v, disk_read, &r, d->part[p].size) || !v.blessed || hfsread_find(&v, v.blessed, type, &f) != 1)
+		return 0;
+	char folder[HFSREAD_PATH_MAX];
+	if (hfsread_path(&v, v.blessed, folder, sizeof folder))
+		snprintf(folder, sizeof folder, "?");
+	found->part = p;
+	snprintf(found->partition, sizeof found->partition, "%s", d->part[p].name);
+	if (snprintf(found->path, sizeof found->path, "%s:%s", folder, f.name) >= (int)sizeof found->path)
+		memcpy(found->path + sizeof found->path - 4, "...", 4);
+	int rc = 1;
+	if (f.data.size > MAX_FILE_SIZE)
+		rc = fail(err, errlen, "%s: \"%s\" is too big (%llu bytes)", path, found->path,
+			  (unsigned long long)f.data.size);
+	else if (!(found->data = malloc(f.data.size ? (size_t)f.data.size : 1)))
+		rc = fail(err, errlen, "out of memory");
+	else if (hfsread_read(&v, &f.data, 0, found->data, (size_t)f.data.size))
+		rc = fail(err, errlen, "%s: cannot read \"%s\"", path, found->path);
+	found->size = (size_t)f.data.size;
+	if (rc < 0) {
+		free(found->data);
+		found->data = NULL;
+	}
+	return rc;
+}
+
 int hfsread_system_file(const char *const *paths, unsigned count, uint32_t type, struct hfsread_found *found,
 			char *err, size_t errlen)
 {
@@ -617,37 +649,30 @@ int hfsread_system_file(const char *const *paths, unsigned count, uint32_t type,
 		if (disk_open(&d, NULL, paths[k], true, cdimage_is_cue(paths[k])))     /* (any image, read-only) */
 			return -1;
 		for (unsigned p = 0; p < d.partitions; p++) {
-			struct hfsread_volume v;
-			struct hfsread_file f;
-			struct disk_reader r = { &d, p };
-			if (hfsread_open_with(&v, disk_read, &r, d.part[p].size) || !v.blessed ||
-			    hfsread_find(&v, v.blessed, type, &f) != 1)
-				continue;
-			char folder[HFSREAD_PATH_MAX];
-			if (hfsread_path(&v, v.blessed, folder, sizeof folder))
-				snprintf(folder, sizeof folder, "?");
-			found->drive = k;
-			found->part = p;
-			snprintf(found->partition, sizeof found->partition, "%s", d.part[p].name);
-			if (snprintf(found->path, sizeof found->path, "%s:%s", folder, f.name) >= (int)sizeof found->path)
-				memcpy(found->path + sizeof found->path - 4, "...", 4);
-			int rc = 1;
-			if (f.data.size > MAX_FILE_SIZE)
-				rc = fail(err, errlen, "%s: \"%s\" is too big (%llu bytes)", paths[k], found->path,
-					  (unsigned long long)f.data.size);
-			else if (!(found->data = malloc(f.data.size ? (size_t)f.data.size : 1)))
-				rc = fail(err, errlen, "out of memory");
-			else if (hfsread_read(&v, &f.data, 0, found->data, (size_t)f.data.size))
-				rc = fail(err, errlen, "%s: cannot read \"%s\"", paths[k], found->path);
-			found->size = (size_t)f.data.size;
-			if (rc < 0) {
-				free(found->data);
-				found->data = NULL;
+			int rc = system_file(&d, p, paths[k], type, found, err, errlen);
+			if (rc) {
+				found->drive = k;
+				disk_close(&d);
+				return rc;
 			}
-			disk_close(&d);
-			return rc;
 		}
 		disk_close(&d);
 	}
 	return 0;
+}
+
+int hfsread_system_file_in(const char *path, unsigned map_entry, uint32_t type, struct hfsread_found *found,
+			   char *err, size_t errlen)
+{
+	struct disk d;
+	memset(found, 0, sizeof *found);
+	err[0] = '\0';
+	if (disk_open(&d, NULL, path, true, cdimage_is_cue(path)))
+		return -1;
+	int rc = 0;
+	for (unsigned p = 0; p < d.partitions && !rc; p++)
+		if (d.part[p].map_entry == map_entry)
+			rc = system_file(&d, p, path, type, found, err, errlen);
+	disk_close(&d);
+	return rc;
 }

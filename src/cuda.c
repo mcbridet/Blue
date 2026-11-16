@@ -42,6 +42,22 @@ enum {
 
 #define MAC_EPOCH_OFFSET 2082844800     /* 1904-01-01 to 1970-01-01, seconds */
 
+/*
+ * Mac OS 9.2.2's power manager dozes after half an hour without user
+ * activity (it naps through the kernel's PowerDispatch, and Mac OS hides the
+ * cursor), until there is some. Its ADB Manager tells it of the keyboard's
+ * key-downs, but not of the mouse's data once the power manager's globals
+ * say 'SARA' (PMgrBase + 0x112), as they do here: on the iMac, whose mouse
+ * is USB, the mouse's driver told it itself. Blue's mouse is ADB's, so its
+ * clicks and moves went unseen (a dialog's button didn't take a click) until
+ * a key was pressed. So mouse input while Mac OS dozes goes after a tap of
+ * Option, down and up in one packet, which the ADB Manager takes for
+ * activity and Mac OS for nothing else; at most one a second.
+ */
+#define DOZE_MS 250             /* napping through PowerDispatch this recently: dozing */
+#define WAKE_TAP_MS 1000
+#define WAKE_KEY 0x3A           /* Option (ADB key code) */
+
 static uint32_t mac_time_now(const struct cuda *c)
 {
 	time_t t = guest_clock_now(c->clock, NULL);
@@ -255,6 +271,18 @@ void cuda_poll(struct cuda *c, uint64_t now_ms)
 	c->last_poll_ms = now_ms;
 
 	int addr = adb_pending(&c->adb, c->autopoll_devices);
+	bool mouse = addr < 0 ? c->mouse_moved : addr == c->adb.mouse.addr;
+	c->mouse_moved = false;
+	if (mouse && c->dozed && now_ms - c->doze_ms < DOZE_MS && now_ms - c->wake_ms >= WAKE_TAP_MS &&
+	    (c->autopoll_devices >> c->adb.kbd.addr & 1)) {
+		const uint8_t tap[5] = { PKT_ADB, ADB_FLAG_AUTOPOLL, (uint8_t)(c->adb.kbd.addr << 4 | 0x0C), WAKE_KEY,
+					 WAKE_KEY | 0x80 };
+		c->wake_ms = now_ms;
+		c->wake_taps++;
+		send_packet(c, tap, sizeof tap);
+		c->unsolicited = true;
+		return;                 /* (the mouse's data goes at the next poll) */
+	}
 	if (addr < 0)
 		return;
 	uint8_t cmd = (uint8_t)(addr << 4 | 0x0C);      /* Talk R0 */
@@ -264,6 +292,17 @@ void cuda_poll(struct cuda *c, uint64_t now_ms)
 		return;
 	send_packet(c, r, 3u + (unsigned)n);
 	c->unsolicited = true;
+}
+
+void cuda_doze(struct cuda *c, uint64_t now_ms)
+{
+	c->dozed = true;
+	c->doze_ms = now_ms;
+}
+
+void cuda_mouse_moved(struct cuda *c)
+{
+	c->mouse_moved = true;
 }
 
 void cuda_init(struct cuda *c, struct via *via)

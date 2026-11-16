@@ -34,6 +34,7 @@
 #define MAX_SITES (1u << 22)
 #define FAST_W_BIT 4                    /* MEM_FAST_W */
 #define FAST_R_BIT 5                    /* MEM_FAST_R */
+#define WATCH_BIT 6                     /* MEM_WATCH */
 
 /* Why generated code returned to C */
 enum { EXIT_MISS, EXIT_BUDGET, EXIT_INTERP, EXIT_HOOK, EXIT_LINK, EXIT_TRAP, EXIT_SC, EXIT_HOSTCALL, EXIT_MMIO,
@@ -118,6 +119,13 @@ struct jit {
 	struct jit_state st;            /* (first: code_store() finds the jit from it) */
 	struct mem *mem;
 	uint8_t *code, *code_end, *code_free, *blocks_start;
+	/*
+	 * Out-of-line code apart from the blocks' main lines, so that those
+	 * pack together (x86-64): cold_share sixteenths of the blocks area, at
+	 * its end; else 0, and blocks hold their own
+	 */
+	unsigned cold_share;
+	uint8_t *cold_start, *cold_free;
 	uint32_t (*enter)(struct ppc_cpu *, const void *, uint64_t, struct jit_state *);
 	const void *hook_exit, *miss_exit;      /* (see l1) */
 	uint32_t linked_hook;           /* blocks are never linked to this pc */
@@ -152,6 +160,7 @@ struct jit {
 	uint32_t fault_ea;              /* guest address of the last fault (set with st.fault_site) */
 
 	unsigned long translated, invalidations, flushes, links, exits[EXIT_KINDS], faults, slowed, protects;
+	unsigned long watch_faults;     /* fastmem faults that were writes to watched pages (see mem_watch()) */
 	uint64_t translated_insns;
 
 #ifdef JIT_A64

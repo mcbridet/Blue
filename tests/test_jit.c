@@ -10,7 +10,10 @@
  * because of the host page size) for loads and stores of every kind, and
  * for stores into the code. And an unmapped page with a device behind it,
  * through the mmio hook (fake_device() below), which must see the same
- * accesses, at the same instruction counts and times, either way.
+ * accesses, at the same instruction counts and times, either way. In a
+ * quarter of the programs the data's pages are watched for writes, as the
+ * window watches the framebuffer's (mem_watch()): a page still watched
+ * must be as it was then, either way.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -178,8 +181,13 @@ static uint32_t gen_insn(unsigned k, unsigned n)
 		unsigned rt = (xo >= 535 && xo <= 759 && xo != 662 && xo != 534) ? pick(32) : rdst();
 		return x_form(rt, update ? (pick(4) ? 29 : 28) : 31, 30, xo, xo == 150);
 	}
-	if (c < 82)                                                     /* lmw, stmw */
-		return d_form(pick(2) ? 46 : 47, 20 + pick(12), 31, (uint32_t)(pick(256) * 4));
+	if (c < 82) {                                                   /* lmw, stmw */
+		unsigned rs = 20 + pick(12), n = 32 - rs;
+		uint32_t d = pick(256) * 4;
+		if (n > 1 && pick(4) == 0)                              /* running into the next page */
+			d = 0x1000 - (BASE_A & 0xFFF) - 4 * (1 + pick(n - 1));
+		return d_form(pick(2) ? 46 : 47, rs, 31, d);
+	}
 	if (c < 88) {                                                   /* floating point */
 		/* fadd fsub fmul fdiv fmadd fmsub fnmadd fnmsub fsqrt fres frsqrte fsel */
 		static const unsigned a_ops[] = { 21, 20, 25, 18, 29, 28, 31, 30, 21, 25, 29, 22, 24, 26, 23 };
@@ -245,6 +253,7 @@ static bool fuzz_kcall(struct ppc_cpu *c, unsigned n)
 	uint32_t to = CODE + 4 * ((g[5]++ + n) % (fuzz_insns + 1));
 	while ((mem_r32(c->mem, to) & 0xFFFF0000u) == 0x0FFF0000u || mem_r32(c->mem, to) == 0x44000002u)
 		to += 4;
+	mem_invalidate(c->mem, DATA + 0x100 + 4 * (g[7] & 15), 4);     /* (as the host tells of its writes) */
 	mem_w32(c->mem, DATA + 0x100 + 4 * (g[7] & 15), g[3] ^ g[24]);
 	uint32_t t = g[3];
 	g[3] = g[4] + n;
@@ -321,6 +330,7 @@ static int fake_device(void *ctx, struct ppc_cpu *cpu)
 		cpu->cr ^= (uint32_t)d->state;
 		break;
 	case 1:
+		mem_invalidate(d->mem, DATA + ((uint32_t)(d->state >> 20) & (DATA_SIZE - 4)), 4);
 		mem_w32(d->mem, DATA + ((uint32_t)(d->state >> 20) & (DATA_SIZE - 4)), (uint32_t)d->state);
 		break;
 	case 2: {                                                       /* (just ahead: the block that's running, perhaps) */
@@ -409,7 +419,7 @@ static void report(const struct side *a, const struct side *b, enum ppc_exit ea,
 		fprintf(stderr, "  %08x: %08x\n", CODE + 4 * k, code[k]);
 }
 
-/* Unless turned off, fastmem must have been on, and faulted */
+/* Unless turned off, fastmem must have been on, and faulted (on watched pages too) */
 static void check_fastmem(const struct jit *j)
 {
 	const char *mode = getenv("BLUE_JIT_FASTMEM");
@@ -422,7 +432,7 @@ static void check_fastmem(const struct jit *j)
 	if (mode && !strcmp(mode, "0"))
 		CHECK(line == NULL);
 	else
-		CHECK(line && strtoul(line + 9, NULL, 10) > 0);
+		CHECK(line && strtoul(line + 9, NULL, 10) > 0 && strstr(line, "writes to watched pages seen"));
 	free(text);
 }
 
@@ -446,6 +456,15 @@ static unsigned long jit_exits(const struct jit *j, const char *kind)
 	}
 	free(text);
 	return n;
+}
+
+/* Whether the data's pages that are still watched are as they were (`data`) */
+static bool watched_unchanged(struct side *s, const uint8_t *data)
+{
+	for (uint32_t o = 0; o < DATA_SIZE; o += MEM_PAGE_SIZE)
+		if (mem_watched(&s->mem, DATA + o) && memcmp(mem_ptr(&s->mem, DATA + o), data + o, MEM_PAGE_SIZE))
+			return false;
+	return true;
 }
 
 /* With rom_code, the code can't be written (as in ROM, where the JIT follows branches) */
@@ -547,6 +566,7 @@ static void test_random_programs(unsigned programs, bool rom_code)
 		}
 
 		bool device = pick(4) != 0;                             /* (otherwise its accesses all fault) */
+		bool watch = (seed >> 40) % 4 == 0;                     /* (not from rng: the programs stay as they were) */
 		uint64_t device_state = (uint64_t)rnd() << 32 | rnd();
 		for (int side = 0; side < 2; side++) {
 			struct side *s = side ? &b : &a;
@@ -564,6 +584,8 @@ static void test_random_programs(unsigned programs, bool rom_code)
 			}
 			s->dev.state = device_state;
 			s->dev.accesses = 0;
+			if (watch)
+				mem_watch(&s->mem, DATA, DATA_SIZE);
 		}
 
 		/* several runs with random budgets, as the kernel would make them */
@@ -575,6 +597,13 @@ static void test_random_programs(unsigned programs, bool rom_code)
 			enum ppc_exit eb = ppc_run(&b.cpu, budget);
 			if (!same(&a, &b, ea, eb)) {
 				report(&a, &b, ea, eb, code, n + 1, seed);
+				failures++;
+				test_failures++;
+				break;
+			}
+			if (watch && (!watched_unchanged(&a, data) || !watched_unchanged(&b, data))) {
+				fprintf(stderr, "jit: a watched page changed (seed %llu, %s)\n", (unsigned long long)seed,
+					watched_unchanged(&a, data) ? "JIT" : "interpreter");
 				failures++;
 				test_failures++;
 				break;

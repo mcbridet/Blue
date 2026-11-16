@@ -1442,8 +1442,9 @@ static void slow_loads(struct tx *t)
  * the interpreter executes the instruction. Then, if the page holds no
  * translated code, or the word stored to isn't one that code was
  * translated from (the page's bitmap says), the store just happens.
- * Otherwise a host function stores it, invalidating the blocks translated
- * from those bytes; the registers in caller-saved host registers are
+ * Otherwise, or if the page is watched (MEM_WATCH), a host function stores
+ * it, invalidating the blocks translated from those bytes (or seeing the
+ * write); the registers in caller-saved host registers are
  * reloaded afterwards, and if any code changed, the instruction completes
  * (rA) and the block is left after it.
  */
@@ -1469,6 +1470,8 @@ static void slow_stores(struct tx *t)
 			x86_alu_ri(B, X86_CMP, 0, T2, (int32_t)(MEM_PAGE_SIZE - bytes));
 			exit_if(t, X86_A);
 		}
+		x86_test_ri(B, 0, T1, MEM_WATCH);                       /* the host sees it */
+		uint8_t *watch = fwd(t, X86_NE);
 		x86_test_ri(B, 0, T1, MEM_CODE);
 		uint8_t *plain[2] = { fwd(t, X86_E), NULL }, *call = NULL;
 		if (bytes <= 4) {
@@ -1492,6 +1495,7 @@ static void slow_stores(struct tx *t)
 			plain[1] = fwd(t, X86_AE);
 		}
 		land(t, call);
+		land(t, watch);
 
 		/* code_store(&jit_state, EA, the bytes in guest order, size), the value taken first (xmm5) */
 		if (ss->fp && ss->size == 3)
@@ -1585,21 +1589,39 @@ static void slow_ios(struct tx *t)
 	}
 }
 
-/* The host address of the EA in eax into rdx, if the n bytes there are accessible within one page */
-static void block_access(struct tx *t, bool load, unsigned n)
+/* The page flags in ecx allow the access (stores: and it's no code page, the interpreter's job) */
+static void block_flags(struct tx *t, bool load)
 {
-	page_flags(t);
 	x86_test_ri(B, 0, T1, load ? MEM_R : MEM_W);
 	exit_if(t, X86_E);
 	if (!load) {
-		x86_test_ri(B, 0, T1, MEM_CODE);                /* the interpreter's job */
+		x86_test_ri(B, 0, T1, MEM_CODE | MEM_WATCH);    /* the interpreter's job */
 		exit_if(t, X86_NE);
 	}
+}
+
+/*
+ * The host address of the EA in eax into rdx, if the n bytes there are
+ * accessible (as mem_ok() has it: running into the next page, that one too;
+ * not wrapping at 4 GB)
+ */
+static void block_access(struct tx *t, bool load, unsigned n)
+{
+	page_flags(t);
+	block_flags(t, load);
 	if (n > 1) {
 		x86_mov_rr(B, 0, T1, T0);
 		x86_alu_ri(B, X86_AND, 0, T1, MEM_PAGE_SIZE - 1);
 		x86_alu_ri(B, X86_CMP, 0, T1, (int32_t)(MEM_PAGE_SIZE - n));
-		exit_if(t, X86_A);
+		uint8_t *within = fwd(t, X86_BE);
+		x86_mov_rr(B, 0, T1, T0);
+		x86_alu_ri(B, X86_ADD, 0, T1, (int32_t)n - 1);
+		exit_if(t, X86_B);
+		x86_shift_ri(B, X86_SHR, 0, T1, MEM_PAGE_SHIFT);
+		x86_alu_rm(B, X86_ADD, 1, T1, ST(pageflags));
+		x86_load(B, 1, false, T1, x86_m(T1, 0));
+		block_flags(t, load);
+		land(t, within);
 	}
 	x86_lea(B, 1, T2, x86_mx(T2, T0, 0, 0));
 }
@@ -2640,6 +2662,37 @@ static int insn31(struct tx *t, uint32_t i)
 		zero_block(t, ra, rb);
 		return EMITTED;
 
+	case 20:                                                        /* lwarx */
+		if (rd_ == rb || (ra && rd_ == ra)) {
+			call_step(t, i);
+			return EMITTED;
+		}
+		load_store(t, 2, true, false, false, true, false, LS_GPR, rd_, ra, rb, 0);
+		effective_address(t, false, true, ra, rb, 0);
+		st32(t, T0, OFF(resv_addr));
+		x86_store_imm(B, 1, x86_m(R_CPU, OFF(resv_valid)), 1);
+		return EMITTED;
+	case 150: {                                                     /* stwcx. (the interpreter if the reservation fails) */
+		if (!(i & 1)) {
+			call_step(t, i);
+			return EMITTED;
+		}
+		effective_address(t, false, true, ra, rb, 0);
+		x86_alu_rm(B, X86_CMP, 0, T0, x86_m(R_CPU, OFF(resv_addr)));
+		exit_if(t, X86_NE);
+		x86_test_mi(B, 1, x86_m(R_CPU, OFF(resv_valid)), 1);
+		exit_if(t, X86_E);
+		load_store(t, 2, false, false, false, true, false, LS_GPR, rd_, ra, rb, 0);
+		x86_store_imm(B, 1, x86_m(R_CPU, OFF(resv_valid)), 0);
+		x86_mov_rr(B, 0, T0, rd(t, G_XER));                     /* CR0: EQ, SO */
+		x86_shift_ri(B, X86_SHR, 0, T0, 31);
+		x86_alu_ri(B, X86_OR, 0, T0, CR_EQ);
+		x86_shift_ri(B, X86_SHL, 0, T0, 28);
+		unsigned cr = rw(t, G_CR);
+		x86_alu_ri(B, X86_AND, 0, cr, 0x0FFFFFFF);
+		x86_alu_rr(B, X86_OR, 0, cr, T0);
+		return EMITTED;
+	}
 	case 23: case 55:   load_store(t, 2, true, false, xo == 55, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;
 	case 87: case 119:  load_store(t, 0, true, false, xo == 119, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;
 	case 279: case 311: load_store(t, 1, true, false, xo == 311, true, false, LS_GPR, rd_, ra, rb, 0); return EMITTED;
@@ -3005,8 +3058,9 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	if (!mem_ok(j->mem, pc0, 4, MEM_X))
 		return NULL;
 	uint32_t page = pc0 >> MEM_PAGE_SHIFT;
-	if ((size_t)(j->code_end - j->code_free) < BLOCK_RESERVE || j->nblocks >= MAX_BLOCKS ||
-	    (!j->pages[page] && j->ncode_pages + 1 >= MAX_CODE_PAGES) || j->nsites + MAX_BLOCK_INSNS > MAX_SITES)
+	if ((size_t)(j->cold_start - j->code_free) < BLOCK_RESERVE || (size_t)(j->code_end - j->cold_free) < BLOCK_RESERVE ||
+	    j->nblocks >= MAX_BLOCKS || (!j->pages[page] && j->ncode_pages + 1 >= MAX_CODE_PAGES) ||
+	    j->nsites + MAX_BLOCK_INSNS > MAX_SITES)
 		jit_flush(j);
 	struct jit_page *pg = jit_get_page(j, page);
 
@@ -3014,7 +3068,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	t.j = j;
 	t.max_insns = max_insns;
 	uint8_t *start = (uint8_t *)(((uintptr_t)j->code_free + sizeof(struct jit_block *) + 15) & ~(uintptr_t)15);
-	t.x = (struct x86_buf){ start, j->code_end, false };    /* (the block pointer goes just before) */
+	t.x = (struct x86_buf){ start, j->cold_start, false };  /* (the block pointer goes just before) */
 	t.nfix = 0;
 	t.nlinks = 0;
 	t.nbexits = 0;
@@ -3083,12 +3137,18 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	if (!cover)
 		cover = budget_needed;
 
-	rc_reset(&t);                   /* (what follows is out of line) */
+	/*
+	 * What follows is out of line: the taken paths of conditional branches,
+	 * which run often, after the main line; the rest apart (see struct jit)
+	 */
+	rc_reset(&t);
+	branch_exits(&t);
+	uint8_t *end = t.x.p;
+	t.x = (struct x86_buf){ j->cold_free, j->code_end, t.x.overflow };
 	slow_stores(&t);
 	slow_loads(&t);
 	slow_ios(&t);
 	slow_fps(&t);
-	branch_exits(&t);
 	ools(&t);
 	rc_reset(&t);
 
@@ -3156,7 +3216,8 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 		return NULL;    /* the interpreter runs this instruction; next time there's room */
 	}
 	memcpy(ninsn, &budget_needed, 4);
-	struct jit_block *b = jit_add_block(j, pg, pc0, budget_needed, cover, start, t.x.p, redispatch);
+	j->cold_free = t.x.p;
+	struct jit_block *b = jit_add_block(j, pg, pc0, budget_needed, cover, start, end, redispatch);
 	j->translated_insns += n;
 	return b;
 }
@@ -3368,6 +3429,7 @@ static void build_stubs(struct jit *j)
 void arch_init(struct jit *j)
 {
 	build_stubs(j);
+	j->cold_share = 7;              /* (the out-of-line code is about 40%) */
 }
 
 /* ---- the host ---------------------------------------------------------- */
