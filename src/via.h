@@ -48,6 +48,7 @@ struct via {
 
 void via_init(struct via *v);
 extern const struct mmio_ops via_mmio_ops;
+bool via_pure_read(const void *ctx, uint32_t offset);       /* (see struct mmio_region) */
 
 /* Advances time; may set timer flags. */
 void via_set_time(struct via *v, uint64_t ticks);

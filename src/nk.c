@@ -1084,6 +1084,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	m->cuda.clock = &m->clock;
 	mmio_add(&m->bus, MACIO_BASE, MACIO_PAGE_SIZE, &macio_mmio_ops, &m->macio, "mac-io");
 	mmio_add(&m->bus, MACIO_VIA1, VIA_SIZE, &via_mmio_ops, &m->via, "via1");
+	mmio_pure_reads(&m->bus, via_pure_read);
 	scc_init(&m->scc);
 	mmio_add(&m->bus, MACIO_SCC, SCC_SIZE, &scc_mmio_ops, &m->scc, "scc");
 	dbdma_init(&m->dbdma, &m->mem, m->ram_size);
@@ -1114,6 +1115,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	ohci_init(&m->ohci, &m->mem);
 	m->ohci.log = getenv("BLUE_LOG_USB") != NULL;
 	mmio_add(&m->bus, USB_BASE, OHCI_SIZE, &ohci_mmio_ops, &m->ohci, "usb");
+	mmio_pure_reads(&m->bus, ohci_pure_read);
 
 	/* PCI configuration space: the functions the device tree lists */
 	pci_init(&m->pci);
@@ -2479,6 +2481,21 @@ static int device_hook(void *ctx, struct ppc_cpu *cpu)
 	struct mmio_access a;
 	if (cpu->icount + 1 >= m->mmio_until || !mmio_decode(&m->bus, cpu, &a))
 		return PPC_MMIO_NO;
+	/*
+	 * A read that changes nothing, with the devices not due to change by
+	 * themselves (as at an exit that skips them): updating interrupts after
+	 * it, and the next device event, would find them as they were, and so
+	 * would in_place()
+	 */
+	const struct mmio_region *r = a.region;
+	if (!a.store && !m->dev_dirty && cpu->tb < m->dev_next_tb && r->pure_read && r->pure_read(r->ctx, cpu->fault_addr - r->base)) {
+		update_device_time(m);
+		mmio_perform(&a, cpu);
+		m->dev_accesses++;
+		m->dev_inline++;
+		return m->preempt || device_stop(m) || m->mp.swi || m->mp.yield || (m->mp_kernel && mp_due(&m->mp, cpu->tb)) ?
+		       PPC_MMIO_STOP : PPC_MMIO_DONE;
+	}
 	bool changed = false;
 	if (m->dev_dirty || cpu->tb >= m->dev_next_tb) {        /* (as at every exit) */
 		update_device_time(m);
