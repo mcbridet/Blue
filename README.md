@@ -94,7 +94,6 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **How** | Apple's code, unmodified, on a native kernel in place of the NanoKernel | Apple's code on a patched ROM, with a kernel of its own | A whole Power Mac emulated, firmware and all | Mac OS 9 as a program in Mac OS X, on a real PowerPC |
 | **Speed** | A JIT on every host: about 18 times a Power Mac G3/300 in MacBench 5's processor test, on an Apple M5 | A JIT on Intel and AMD; none on Apple silicon | A JIT, with every device and the memory management unit emulated | The PowerPC's own, up to a Power Mac G5 |
 | **AltiVec** | Not yet | Yes, as a G4 (7400) | Yes, as a G4 | On G4 and G5 Macs |
-| **Mac OS's virtual memory** | Not yet: give the Mac more memory instead | No | Yes | Mac OS X's own |
 | **What you need** | A Mac OS CD or disk image | A Mac OS CD or disk image, and a ROM file found elsewhere | A Mac OS CD or disk image | Mac OS 9 installed beside Mac OS X |
 | **3D** | QuickDraw 3D, RAVE (as an ATI Rage 128) and OpenGL, drawn on your GPU | Software only | Software only | Programs that draw straight to the screen or the hardware often fail |
 | **Restart and Startup Disk** | Both work | Restarting can freeze or crash it; Startup Disk doesn't work | Neither works | Mac OS X's own |
