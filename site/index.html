@@ -170,7 +170,7 @@
         <div class="doc how">
           <p>On a real Power Mac only the NanoKernel runs in supervisor mode. The 68k emulator, the Toolbox, applications and drivers all run in PowerPC user mode and reach the kernel through a small interface.</p>
           <p>Blue runs all of that Apple code unmodified, as the guest, and supplies everything below the interface as an ordinary program on the host.</p>
-          <p>Where Mac OS looks to the machine for drivers, Blue puts its own in the device tree, as a Mac’s firmware would. They’re thin: the work is done on the host. The system helpers work the same way. Once the Finder is up, Blue offers to install them: guest enhancements that make the screen follow the window and share the clipboard, a 3D engine, and OpenGL.</p>
+          <p>Where Mac OS looks to the machine for drivers, Blue puts its own in the device tree, as a Mac’s firmware would. They’re thin: the work is done on the host. The system helpers work the same way. Once the Finder is up, Blue offers to install them, then restarts Mac OS: guest enhancements that make the screen follow the window and share the clipboard, a 3D engine, OpenGL, and a library for Pippin titles.</p>
           <figure class="arch">
             <div class="zone guest">
               <p class="zone-label">Guest</p>
@@ -190,7 +190,7 @@
               </div>
               <div class="abox blue guest-blue">
                 <p class="abox-title">System helpers</p>
-                <span class="part">Guest enhancements, 3D engine, OpenGL</span>
+                <span class="part">Guest enhancements, 3D engine, OpenGL, Pippin library</span>
                 <p class="abox-foot">Offered once the Finder is up, installed in Extensions</p>
               </div>
             </div>
@@ -241,7 +241,7 @@
       <button class="box shade" type="button" aria-expanded="true" aria-label="Collapse window"></button>
     </div>
     <div class="window-content">
-      <div class="finder-header"><span>12 items</span></div>
+      <div class="finder-header"><span>13 items</span></div>
       <div class="window-body list">
         <div class="list-head" aria-hidden="true"><span class="sorted">Name</span><span>Notes</span></div>
         <div class="row">
@@ -250,7 +250,7 @@
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-monitor"/></svg>Display</span>
-          <span class="notes">In a window or full screen; with the guest tools, the screen follows the window’s size. A hardware cursor, and the iMac’s 60 Hz display interrupt.</span>
+          <span class="notes">In a window or full screen, with a Platinum menu (F12); with the guest tools, the screen follows the window’s size. A hardware cursor, and the iMac’s 60 Hz display interrupt.</span>
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-speaker"/></svg>Sound</span>
@@ -266,7 +266,7 @@
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-cd"/></svg>Disks, CDs and floppies</span>
-          <span class="notes">Disk, CD (also <code>.cue</code>/<code>.bin</code> with audio tracks) and floppy images; drop one on the window to change discs.</span>
+          <span class="notes">Disk, CD (also <code>.cue</code>/<code>.bin</code> with audio tracks) and floppy images; drop one on the window, or Insert… from the menu. Discs stay in through a restart, and Startup Disk picks the startup disk.</span>
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-folder"/></svg>Shared folders</span>
@@ -283,6 +283,10 @@
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-cube"/></svg>OpenGL</span>
           <span class="notes">Working, through Blue’s own OpenGL libraries, drawn the same way.</span>
+        </div>
+        <div class="row">
+          <span class="name"><svg aria-hidden="true"><use href="#i-cd"/></svg>Pippin titles</span>
+          <span class="notes">Many Bandai Pippin discs run, with Blue’s own Pippin library in place of the console’s.</span>
         </div>
         <div class="row">
           <span class="name"><svg aria-hidden="true"><use href="#i-chip"/></svg>CPU</span>
@@ -340,7 +344,7 @@
       <li><a href="https://github.com/__REPO__#readme">Read Me</a></li>
       <li><a href="https://github.com/__REPO__/issues">Issues</a></li>
     </ul>
-    <p class="legal">Blue is not affiliated with Apple. Mac OS, Macintosh, Power Mac and QuickDraw are trademarks of Apple Inc.</p>
+    <p class="legal">Blue is not affiliated with Apple. Mac OS, Macintosh, Power Mac, QuickDraw and Pippin are trademarks of Apple Inc.</p>
   </div>
 </footer>
 </body>
