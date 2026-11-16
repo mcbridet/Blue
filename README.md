@@ -86,6 +86,34 @@ memory and devices reset as on a real Mac (NVRAM is kept, and so are guest
 time and the instruction count, which input scripts and `--max` go by).
 Shut Down quits.
 
+The Startup Disk control panel of Mac OS 9.1 and later chooses the startup
+disk, as on an iMac: it sets Open Firmware's `boot-device`, which Mac OS
+keeps in NVRAM (as `boot-device=/pci@80000000/blue,disk@3@3:8,\\:tbxi`:
+the disk's PCI device number, its SCSI target, the partition), and a
+restart, or the next launch with the same `--nvram` file, starts the ROM
+file in that disk's System Folder, whichever system it is:
+
+```
+build/blue boot --disk hd91.img --disk hd922.img --cdrom 922.iso --cdrom 85.iso --window --nvram blue.nvram
+rom: "MacOS9Lives:System Folder:Mac OS ROM" from hd922.img (Mac OS ROM 10.2f1, 2796822 bytes), which boot-device names
+```
+
+If that disk isn't attached (or has no ROM file there now), Blue starts up
+from the first drive as before, and says why; `--rom FILE` overrides it.
+For this, a ROM file with parcels (9.1 and later) gets Open Firmware's
+settings in the device tree (`/options` with `boot-device`, `/openprom`
+with `supports-bootinfo`, without which StartLib doesn't set it) and their
+NVRAM partition (`common`, which Blue makes in NVRAM's first 2 KB the first
+time; Mac OS's PRAM stays at `0x1400`), when NVRAM is kept (`--nvram`) or
+in real time: Mac OS reads them at startup, so instruction-time runs
+without `--nvram` are as they were. Mac OS 8.5 and 8.6's Startup Disk
+lists only the current startup disk (it asks drives what to put in PRAM,
+which Blue's don't answer), and their ROM files' Start Manager starts up
+from the first drive with a System Folder: when `boot-device` (set by 9.x)
+names such a disk, Blue puts that drive first, so it is (choosing the 8.5
+CD in 9.1's Startup Disk starts 8.5 from it). From those systems, start
+with `--rom` or without the disk to go back.
+
 Mac OS 8.5 also starts up with the ROM file from its own System Folder
 (the data fork of "Mac OS ROM", release 0x44F3), from the CD or from a
 system installed from it. That ROM has the DAV audio component's 'thng'
@@ -253,8 +281,17 @@ when it writes them to the chip, as on an iMac: changes since startup are
 lost when Blue quits otherwise (closing the window, or Turn off in its
 menu). The end-of-run statistics count the chip's reads and writes.
 
-Not done yet: installing 9.1 onto a disk image with its installer and
-starting up from that.
+9.1 installs onto a disk image with its own installer, as 9.0 does
+(`build/blue disk create hd91.img 2G "Macintosh HD"`, then the CD and the
+disk; Mac OS Install from the CD's window: Continue, Select with Macintosh
+HD as the destination, Continue, Continue, Agree, then Options... to turn
+off "Update Apple Hard Disk Drivers", and Start). A scripted run installed
+it (268 MB written) by instruction 40 billion; the installed system starts
+up from the disk alone (`rom: "Macintosh HD:System Folder:Mac OS ROM"`) to
+the Finder with the Mac OS Setup Assistant, and takes the guest tools (see
+Guest tools). By then the screen has gone to sleep, as Energy Saver puts
+it after a while without input, and the first click or key press only
+wakes it: the installer's last dialog takes the second.
 
 ### Mac OS 9.2.2 (from its CD)
 
@@ -331,14 +368,33 @@ build/blue boot --disk hd922.img --cdrom 922.iso --window --nvram blue.nvram
 In Apple Software Restore (open it from the CD's window), click Switch Disk
 until the destination disk is "Macintosh HD", then Restore, and OK. A
 scripted run restored 671 MB in under 20 billion instructions; the volume is
-then called MacOS9Lives. Then `build/blue boot --disk hd922.img --window
---nvram blue.nvram` starts it, to the Finder (the first time, with the
-Setup Assistant over it), in real time and in instruction time. In
+then called MacOS9Lives. Click Quit when it says so: Apple Software Restore
+quits the Finder while it works, and the Finder, started again then, makes
+the new volume's Desktop Folder and Trash. Then `build/blue boot --disk
+hd922.img --window --nvram blue.nvram` starts it, to the Finder (the first
+time, with the Setup Assistant over it), in real time and in instruction
+time. In
 instruction time its startup used to stop short of the Finder until a key
 was pressed: a Time Manager software interrupt the 68k emulator never took,
 and nothing else to interrupt the native code it then napped in. The
 display's vertical blank interrupts it 60 times a second now, as an iMac's
 does (plan.md, Findings).
+
+A volume Apple Software Restore has restored but not yet given back (Blue
+closed with its last dialog up) has neither folder, and on its first
+startup the Setup Assistant, quit, leaves the desktop without a menu bar:
+it puts its Register with Apple alias in the Desktop Folder as it quits,
+and without one it quits without showing the menu bar again. The Finder
+makes the folder then, so the next startup is as it should be. That's Mac
+OS's own doing, with that disk, on any Mac. What led there: Mac OS 9.2.2's
+power manager dozes after half an hour without user activity (in a
+scripted restore, half an hour after the last click, its last dialog up),
+and it learns of activity from the ADB keyboard's key-downs but not from an
+ADB mouse (the iMac's mouse is USB, and its driver tells the power manager
+itself), so the dialog's Quit took no click until a key was pressed. While
+Mac OS dozes, Blue now has mouse input go after a tap of Option, which
+wakes it (`src/cuda.c`; plan.md, Findings): clicks and moves work after
+half an hour's idling too.
 
 The CD's system and the restored one start up as quickly as before in
 real time, give or take the half second USB's root hub and the sound
@@ -663,8 +719,8 @@ starts it looks in the startup disk's System Folder (its folders,
 Extensions whatever its name and Extensions (Disabled) among them) for
 them, and once the Finder is up, if one is missing or isn't this version's
 (both forks compared with what it makes), a box over the screen says so,
-with Install and Restart (or Update and Restart) and Not Now; Mac OS runs
-on meanwhile. On Install, Mac OS writes the files itself (see Findings in
+with Install and Restart (or Update and Restart), Not Now and Don't Ask
+Again (below); Mac OS runs on meanwhile. On Install, Mac OS writes the files itself (see Findings in
 plan.md): each goes to a temporary file in the folder it belongs in, which
 then takes the old copy's place, so an error (a full or locked disk) leaves
 nothing half written; a disabled copy is updated where it is and stays
@@ -676,10 +732,9 @@ can ask to save their work first, or stop the restart (the tools are in
 place then, and load at the next restart). Afterwards the tools load as
 any extension does: Blue Enhancements runs, programs find the 3D engine
 and Blue's OpenGL, and nothing is offered. If anything goes wrong, Mac
-OS doesn't restart, and the box says what. This works on Mac OS 8.5, 8.6
-and 9.2.2 installed on disk images (9.1 by the same path; there was no
-installed 9.1 to try). The outcome is shown (the box stays through the
-restart, until OK) and printed:
+OS doesn't restart, and the box says what. This works on Mac OS 8.5, 8.6,
+9.1 and 9.2.2 installed on disk images. The outcome is shown (the box stays
+through the restart, until OK) and printed:
 
 ```
 tools: installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory and Blue OpenGL Utility in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
@@ -699,10 +754,28 @@ tools: installed Blue OpenGL Library, Blue OpenGL Memory and Blue OpenGL Utility
 
 Nothing is offered when the startup disk is a CD, an image attached
 read-only, or a locked volume, nor without a window: an input script can
-answer instead (`tools install`, `tools later`), and that turns the check
-on; `tools install` restarts Mac OS too, and instruction-time runs stay
-reproducible. The startup disk is the partition the ROM file came from (with
-`--rom`, the first with boot blocks).
+answer instead (`tools install`, `tools later`, `tools never`), and that
+turns the check on; `tools install` restarts Mac OS too, and
+instruction-time runs stay reproducible. The startup disk is the partition
+the ROM file came from (with `--rom`, the first with boot blocks).
+
+The offer has a third button, on its left: Don't Ask Again. Blue then
+doesn't offer the tools by itself on that disk again, whatever version
+they are: Mac OS writes a small preferences file, "Blue Preferences", in
+the startup disk's Preferences folder (through the installer, as it writes
+the tools; text: `Offer the guest tools: no`), which Blue finds there as it
+looks for the tools before startup. The choice goes with the disk, so
+another system Blue starts has its own. Install Guest Tools... in Blue's
+menu (F12) makes the offer any time there's something to install (it's
+disabled otherwise, saying why), Don't Ask Again or not; installing the
+tools deletes the file, so newer versions of them are offered again.
+Deleting the file by hand does the same. In scripts, `tools offer` is the
+menu item.
+
+```
+tools: Blue won't offer its guest tools on "MacOS9Lives" again (Blue Preferences in "MacOS9Lives:System Folder:Preferences" says so). To install them later, choose Install Guest Tools... in Blue's menu (F12).
+tools: not offered (Blue Preferences: Don't Ask Again; Blue's menu, F12, offers them)
+```
 
 They can still be installed by hand: `blue tools create FILE` writes a
 small volume, "Blue Tools", holding them, which `--cdrom FILE` attaches
@@ -1002,7 +1075,11 @@ software (on 8.6, an M5 Mac).
     that faults (a device register, an unmapped or read-only page) is sent
     by a SIGSEGV handler (SIGBUS on macOS) to the interpreter, and
     translated with flag checks from then on. A few thousand do so in a
-    boot. `BLUE_JIT_FASTMEM=0` checks every access.
+    boot. `BLUE_JIT_FASTMEM=0` checks every access. In a window the
+    framebuffer's pages are write-protected there too while they're watched
+    for the window (`MEM_WATCH`, see Host side): a store to one makes the
+    handler let the page go and the store go ahead, the instruction as it
+    was; checked stores call into C for watched pages.
   - Code changes are tracked per instruction word: stores (by either engine,
     or the host, e.g. disk reads) to a page with translated code drop only
     the blocks translated from those words, which matters because the 68k
@@ -1307,9 +1384,10 @@ software (on 8.6, an M5 Mac).
   interrupt's slot in HWInfo's VectorLookupTable, whose slot n is source n
   here: the source again). The display, the USB controller, the
   sound chip and the Ethernet node have them (the Ethernet node only for
-  its receive DMA channel, lanLib's: with all three of its interrupts, Open
-  Transport stalled for half a minute or more in some startups of Mac OS 9,
-  busy in its deferred tasks, for reasons not yet known), with
+  its receive DMA channel, the one Blue raises; lanLib takes its set's
+  last member, which is that channel's in the iMac's set of all three as
+  well, and Open Transport doesn't stall with that one either: plan.md,
+  Findings), with
   `AAPL,interrupt-index` when the ROM file's Trampoline makes it (the
   display's always: earlier ROMs ignore it). Their handlers mask and
   unmask the source but never clear a latched pulse in the controller, so
@@ -1327,15 +1405,28 @@ software (on 8.6, an M5 Mac).
   MacPorts' directories, which aren't searched for bare library names;
   redrawn only when the screen, the pointer or the status bar changes;
   drawn at the display's full resolution, so high-density displays don't
-  blur it). Up to 60 times a second the framebuffer is compared with a
-  copy of what was last shown, row by row, and only the bands of rows that
-  changed are converted, straight into a streaming texture in the 32-bit
-  format renderers take as it is (ARGB8888: a byte swap at 32 bits per
-  pixel, the 5-bit channels widened at 16, the CLUT expanded to 32-bit
-  colours at 8 and fewer), and drawn again in the scaled copy below (all
-  of it when the mode or colours change, and once a second if nothing
-  has). The screen is scaled to fill the window above the status bar,
-  keeping its shape:
+  blur it). The window has a thread of its own, the process's main thread
+  (where SDL wants windows, events and drawing on macOS), and the Mac runs
+  on another: up to 60 times a second (and when each of a 3D game's frames
+  is due) the Mac hands over a frame, the rows of the screen that changed
+  copied into the window's copy of the framebuffer, and goes on while the
+  window converts, uploads, draws and presents it (about a millisecond
+  later); the window's input reaches the Mac through a queue. The Mac
+  doesn't compare the whole framebuffer to find what changed: its pages
+  are watched for writes (in the JIT's view of guest memory they're
+  write-protected, and the first store to one, whichever way it comes, is
+  seen and lets the page go; see fastmem), so only the pages written since
+  the last frame are compared with the copy, a host page at a time (16 KB
+  on Apple silicon). A page written in most frames (a game's, a movie's) is
+  compared rather than watched, until it has stayed the same for 8 frames:
+  being seen written costs several times what comparing it does.
+  `BLUE_WINDOW_COMPARE=1` compares the whole screen instead. The rows that
+  changed are converted into the 32-bit format renderers take as it is
+  (ARGB8888: a byte swap at 32 bits per pixel, the 5-bit channels widened
+  at 16, the CLUT expanded to 32-bit colours at 8 and fewer), uploaded,
+  and drawn again in the scaled copy below (all of it when the mode or
+  colours change, and once a second if nothing has). The screen is scaled
+  to fill the window above the status bar, keeping its shape:
   whole multiples exactly, other sizes by drawing it at the multiple above
   on the GPU and filtering that down, so every screen pixel comes out the
   same size with edges blended over at most one window pixel.
@@ -1358,7 +1449,8 @@ software (on 8.6, an M5 Mac).
   shuts down properly if told to (applications ask to save, NVRAM and a
   shared folder are written, and the run ends when the Mac turns itself
   off); Turn off, the power switch, for a Mac that doesn't answer (straight
-  away; it keeps NVRAM, as closing the window does); a screenshot of the Mac's screen
+  away; it keeps NVRAM, as closing the window does); Install Guest
+  Tools... (the offer, see Guest tools); a screenshot of the Mac's screen
   (a PNG on the Desktop, or in the current directory without one, named
   for when it was taken); fullscreen (at the desktop's resolution); the
   status bar; whether the pointer is captured while the Mac hides its
@@ -1447,6 +1539,14 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
   driver says, through DriverGestalt, which node ('nmrg'), unit ('intf'
   'scsi', 'dvrf' with the PCI device number as target ID) and partition
   ('ofpt') each drive is.
+- Open Firmware's settings, for ROM files with parcels when NVRAM is kept
+  or in real time: `/options` (`boot-device`, from NVRAM's `common`
+  partition, else the bootpath) and `/openprom` (`model` "OpenFirmware 3",
+  `supports-bootinfo`); in NVRAM, the `common` partition (CHRP: signature
+  0x70, 2 KB at offset 0), which Blue makes if those bytes are blank
+  (`src/ofnvram.c`). The disks' nodes are in command-line order, but for a
+  startup disk `boot-device` chose for a ROM file without parcels, which
+  goes first.
 - ADB/power-manager kind 0 in the universal flags, so the early ROM code uses
   RTAS (tokens in `NKHWInfo`) for clock, NVRAM and power (`NKHWInfo`'s Mac OS
   NVRAM offset, `0x1400`, is where PRAM goes; a ROM file with parcels uses the
@@ -1486,18 +1586,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    it saves) and translating takes 1-4%. On x86-64 the front end still
    limits a Zen 5 (about half its dispatch slots get nothing), now mostly
    for the size of the code (docs/x86-jit-plan.md).
-2. The window: drawing and presenting on a thread of their own, so the
-   Mac doesn't stop for them; and knowing which framebuffer pages were
-   written (by protecting them) rather than comparing it with a copy each
-   frame, which is most of what showing a 32-bit screen still costs (plan.md,
-   Findings, "Showing the screen").
-3. Known problems: on a 9.2.2 that Apple Software Restore has just
-   restored, quitting the Setup Assistant at the first startup leaves the
-   desktop without a menu bar (plan.md, task 17); a "don't ask again" for
-   the guest tools' offer, and the offer on an installed 9.1; startup-disk
-   selection (the Startup Disk control panel); whether Open Transport's
-   stall with a full interrupt set for the Ethernet node is still there.
-4. Later: host ports forwarded to the guest (so it can serve); the shared
+2. Later: host ports forwarded to the guest (so it can serve); the shared
    folder written back when Mac OS ejects the volume and offered again as
    new media, so that changes cross during a run; Glide
    (docs/glide-plan.md); and, when a program needs them, what OpenGL
@@ -1612,7 +1701,8 @@ counts, for example:
 3600000000 screenshot after.png
 3700000000 clock 800             # guest time at 800 million instructions a second from here
 3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
-0 tools install                  # the answer to the offer to install the guest tools (or "later"): Mac OS then restarts
+0 tools install                  # the answer to the offer to install the guest tools (or "later", or "never": Don't Ask Again): Mac OS then restarts
+5000000000 tools offer           # the offer, now (the menu's Install Guest Tools...)
 3900000000 floppy insert Disk 2.img
 3950000000 cdrom insert Game CD 2.iso
 4000000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)
@@ -1664,7 +1754,17 @@ how the host's sound queue fared (its depth, how much faster or slower it
 played, chunks dropped, silence added) and what paces it (the frames the
 guest's sound DMA gave, how far guest time is ahead of the host clock, the
 disks' transfers and the guest time they took, how much the host's sleeps
-overran). `BLUE_LOG_USB=1` logs the USB
+overran). `BLUE_WINDOW_PROFILE=1` prints, every second in a window, the
+frames the Mac handed the window and how much of the screen changed in
+them, and where showing them took the host's time: on the Mac's thread
+(which stops the Mac meanwhile: finding and copying the changes, taking
+the input) and on the window's (converting, uploading, drawing,
+presenting, events), in milliseconds a frame of the host clock and of the
+thread's processor time, the pages seen written a frame, and how long after
+the hand-over a frame was on the screen. `BLUE_WINDOW_COMPARE=1` finds the
+changes by comparing the whole screen, without watching the framebuffer;
+`BLUE_WINDOW_CHECK=1` compares the watched pages too, and says where a
+write went unseen. `BLUE_LOG_USB=1` logs the USB
 controller's register accesses (not the frame number, which drivers poll),
 `BLUE_LOG_PCI=1` configuration space accesses.
 `--io-ram` backs unmodelled I/O pages with plain RAM. Under gdb, `handle
@@ -1725,7 +1825,8 @@ the one in the startup disk's System Folder.
 ## Layout
 
 ```
-src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
+src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its page
+          flags, pages watched for writes),
           ppc.c + ppc_exec.inc + ppc_fp.c (interpreter), jit.c (the JIT's
           runtime), jit_a64.c + a64.h and jit_x86.c + x86.h (its AArch64
           and x86-64 translators), nk.c (native kernel), mp.c (its Multiprocessing
@@ -1741,7 +1842,9 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           sheets, the table of contents), cdaudio.c (the drive's player),
           net.c (Ethernet's lanLib,
           libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
-          reader: the startup disk's ROM file), share.c (shared folder),
+          reader: the startup disk's ROM file), startup.c (which disk is
+          the startup disk), ofnvram.c (Open Firmware's variables in
+          NVRAM: boot-device), share.c (shared folder),
           rsrc.c (resource forks), tools.c (guest tools), install.c
           (installing them from inside Mac OS), clip.c (the clipboard they
           share with the host), rave.c (3D engine), opengl.c +
@@ -1750,7 +1853,7 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space),
           vertex's work, client arrays, the attribute stacks), gltest.c (their test application),
           surface.c + raster.c + gpu.c + gl.c (the 3D backend:
           drawing, in software and with OpenGL, and presenting), display.c (SDL2
-          window), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
+          window, on the main thread, and what the Mac hands it), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), env.c (settings' old names),
           icon.c (the window's icon), main.c
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c

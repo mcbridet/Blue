@@ -39,12 +39,28 @@ struct cuda {
 	bool power_off, reset;
 	unsigned long packets;
 	uint8_t unknown_logged[32];     /* bitmap of unknown commands already reported */
+	/* Mac OS dozing, and mouse input waking it (see cuda_poll()) */
+	bool dozed;
+	uint64_t doze_ms;               /* when it last dozed */
+	uint64_t wake_ms;               /* when a key tap last woke it */
+	bool mouse_moved;               /* the cursor was put somewhere since the last poll (not through ADB) */
+	unsigned long wake_taps;
 };
 
 /* Connects the Cuda to `via` (installs the VIA hooks). */
 void cuda_init(struct cuda *c, struct via *via);
 
-/* Autopoll: sends pending ADB device data to the host when the bus is idle. */
+/*
+ * Autopoll: sends pending ADB device data to the host when the bus is idle.
+ * While Mac OS dozes, mouse input (ADB's, or cuda_mouse_moved()) goes after a
+ * tap of the keyboard's Option key, which wakes it (see cuda.c).
+ */
 void cuda_poll(struct cuda *c, uint64_t now_ms);
+
+/* Mac OS's power manager dozes at guest time `now_ms` (it naps through the kernel's PowerDispatch) */
+void cuda_doze(struct cuda *c, uint64_t now_ms);
+
+/* The cursor was put where the host pointer is (in low memory, not through ADB) */
+void cuda_mouse_moved(struct cuda *c);
 
 #endif

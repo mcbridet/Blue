@@ -34,6 +34,7 @@
 #define MAX_SITES (1u << 22)
 #define FAST_W_BIT 4                    /* MEM_FAST_W */
 #define FAST_R_BIT 5                    /* MEM_FAST_R */
+#define WATCH_BIT 6                     /* MEM_WATCH */
 
 /* Why generated code returned to C */
 enum { EXIT_MISS, EXIT_BUDGET, EXIT_INTERP, EXIT_HOOK, EXIT_LINK, EXIT_TRAP, EXIT_SC, EXIT_HOSTCALL, EXIT_MMIO,
@@ -159,6 +160,7 @@ struct jit {
 	uint32_t fault_ea;              /* guest address of the last fault (set with st.fault_site) */
 
 	unsigned long translated, invalidations, flushes, links, exits[EXIT_KINDS], faults, slowed, protects;
+	unsigned long watch_faults;     /* fastmem faults that were writes to watched pages (see mem_watch()) */
 	uint64_t translated_insns;
 
 #ifdef JIT_A64

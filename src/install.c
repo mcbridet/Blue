@@ -37,6 +37,37 @@ static const char *const apple_names[INSTALL_APPLE_GL] = { "OpenGLLibrary", "Ope
 #define EXTENSIONS_NAME "Extensions"
 #define DISABLED_NAME "Extensions (Disabled)"
 
+/* ---- Blue's preferences file -------------------------------------------------------- */
+
+#define PREFS_TYPE FOURCC('p', 'r', 'e', 'f')
+#define PREFS_CREATOR FOURCC('s', 'y', 'H', 'p')       /* (Blue Enhancements') */
+#define PREFS_HEADER "Blue Preferences"
+#define PREFS_OFFER "Offer the guest tools: "
+
+size_t install_prefs_make(char *out, size_t len, bool never)
+{
+	int n = snprintf(out, len, PREFS_HEADER "\r" PREFS_OFFER "%s\r", never ? "no" : "yes");
+	return n > 0 && (size_t)n < len ? (size_t)n : 0;
+}
+
+bool install_prefs_parse(const uint8_t *data, size_t len, bool *never)
+{
+	const size_t header = sizeof PREFS_HEADER - 1, offer = sizeof PREFS_OFFER - 1;
+	*never = false;
+	if (len < header + 1 || memcmp(data, PREFS_HEADER, header) != 0 || (data[header] != '\r' && data[header] != '\n'))
+		return false;
+	for (size_t at = header + 1; at < len;) {
+		size_t end = at;
+		while (end < len && data[end] != '\r' && data[end] != '\n')
+			end++;
+		if (end - at == offer + 2 && memcmp(data + at, PREFS_OFFER, offer) == 0 &&
+		    memcmp(data + at + offer, "no", 2) == 0)
+			*never = true;
+		at = end + 1;
+	}
+	return true;
+}
+
 static bool is_gl(unsigned t)
 {
 	return t >= TOOLS_GL_FIRST && t < TOOLS_GL_FIRST + TOOLS_GL_FILES;
@@ -101,6 +132,13 @@ static int look_at_file(void *ctx, const struct hfsread_file *e)
 	unsigned in = 0;
 	while (in < l->subs && l->sub[in].id != e->parent)
 		in++;
+	if (!e->folder && in < l->subs && e->type == PREFS_TYPE && e->creator == PREFS_CREATOR &&
+	    !strcmp(e->name, INSTALL_PREFS_NAME) && e->data.size <= INSTALL_PREFS_MAX && !l->ck->prefs_found &&
+	    hfsread_read(l->v, &e->data, 0, l->buf, (size_t)e->data.size) == 0 &&
+	    install_prefs_parse(l->buf, (size_t)e->data.size, &l->ck->never)) {
+		l->ck->prefs_found = true;
+		l->ck->prefs_dir = e->parent;
+	}
 	if (!e->folder && in < l->subs && e->type == FOURCC('s', 'h', 'l', 'b') &&
 	    e->creator != l->files[TOOLS_GL_FIRST].creator) {          /* (Apple's OpenGL libraries) */
 		int where = !strcmp(l->sub[in].name, EXTENSIONS_NAME) ? 0 : !strcmp(l->sub[in].name, DISABLED_NAME) ? 1 : -1;
@@ -240,7 +278,10 @@ static void say_found(struct install *in)
 		    on && off ? " and " : "", off ? "\"" DISABLED_NAME "\"" : "");
 	if (ck->apple_kept)
 		add(line, sizeof line, " (put back in this run: Blue's aren't offered)");
+	if (ck->prefs_found)
+		add(line, sizeof line, "; " INSTALL_PREFS_NAME " says %s", ck->never ? "not to offer them" : "to offer them");
 	printf("tools: on \"%s\", %s\n", ck->volume, line);
+	in->never = "Don't Ask Again";
 
 	unsigned installed = 0, todo = 0;
 	bool gl_todo = false;
@@ -326,6 +367,7 @@ enum {
 	R_ADDRESS = 0x05C8,             /* ... the Restart event's address (an AEDesc), */
 	R_EVENT = 0x05D0,               /* ... the event, */
 	R_REPLY = 0x05D8,               /* ... and its reply (none) */
+	R_PREFS = 0x0600,               /* an FSSpec: Blue's preferences file */
 	R_FRAGMENT = 0x1000,            /* the installer's container */
 	R_BUFFER = 0x4000,              /* a fork, for FSWrite */
 };
@@ -472,7 +514,8 @@ static bool inject(struct install *in, struct mem *m, uint16_t trap)
 	in->trap_routine = routine;
 	in->fragment_len = (uint32_t)len;
 	in->phase = INSTALL_INJECTED;
-	printf("tools: installing (Mac OS writes the files)\n");
+	if (in->job == INSTALL_JOB_TOOLS)
+		printf("tools: installing (Mac OS writes the files)\n");
 	return true;
 }
 
@@ -532,8 +575,13 @@ void install_begin(struct install *in, const char *path, unsigned part, bool rea
 		return;
 	}
 	say_found(in);
-	if (in->check.locked)
+	if (in->check.locked) {
 		printf("tools: \"%s\" is locked: the guest tools aren't offered\n", in->check.volume);
+		return;
+	}
+	in->checked = true;
+	if (install_needed(&in->check) && in->check.never)
+		printf("tools: not offered (" INSTALL_PREFS_NAME ": Don't Ask Again; Blue's menu, F12, offers them)\n");
 	else if (install_needed(&in->check))
 		in->phase = INSTALL_WAIT_FINDER;
 }
@@ -565,7 +613,8 @@ static bool finder_up(struct install *in, const struct install_idle *w)
 /* A running Enhancements that's to be replaced quits first (its file is in use while it runs): true if asked to */
 static bool ask_to_quit(struct install *in, struct helper *h)
 {
-	if (in->quit_asked || in->check.tool[TOOLS_ENHANCEMENTS].state != INSTALL_DIFFERS || !h->running)
+	if (in->job != INSTALL_JOB_TOOLS || in->quit_asked || in->check.tool[TOOLS_ENHANCEMENTS].state != INSTALL_DIFFERS ||
+	    !h->running)
 		return false;
 	h->quit = true;
 	in->quit_asked = true;
@@ -578,8 +627,8 @@ bool install_idle(struct install *in, const struct install_idle *w)
 {
 	if (in->phase == INSTALL_WAIT_FINDER && finder_up(in, w)) {
 		in->phase = INSTALL_ASKING;
-		if (in->answer) {
-			install_answer(in, in->answer > 0, w->helper);
+		if (in->answered) {
+			install_answer(in, in->answer, w->helper);
 		} else {
 			in->ask = true;
 			printf("tools: the Finder is up: asking (%s?)\n", in->yes);
@@ -614,21 +663,27 @@ bool install_idle(struct install *in, const struct install_idle *w)
 	return false;
 }
 
-void install_answer(struct install *in, bool yes, struct helper *h)
+void install_answer(struct install *in, enum install_answer a, struct helper *h)
 {
 	switch (in->phase) {
 	case INSTALL_OFF:
 		if (in->on)
-			printf("tools: nothing to install\n");
+			printf(in->checked && install_needed(&in->check) ? "tools: not offered (Don't Ask Again)\n" :
+			       "tools: nothing to install\n");
 		break;
 	case INSTALL_WAIT_FINDER:
-		in->answer = yes ? 1 : -1;
+		in->answer = a;
+		in->answered = true;
 		break;
 	case INSTALL_ASKING:
 		in->ask = false;
-		if (!yes) {
+		in->job = a == INSTALL_NEVER ? INSTALL_JOB_NEVER : INSTALL_JOB_TOOLS;
+		if (a == INSTALL_NOT_NOW) {
 			in->phase = INSTALL_DONE;
 			printf("tools: not now\n");
+		} else if (a == INSTALL_NEVER) {
+			in->phase = INSTALL_INJECT;
+			printf("tools: don't ask again (Mac OS writes " INSTALL_PREFS_NAME ")\n");
 		} else if (!ask_to_quit(in, h)) {
 			in->phase = INSTALL_INJECT;
 		}
@@ -638,11 +693,40 @@ void install_answer(struct install *in, bool yes, struct helper *h)
 	}
 }
 
+const char *install_unofferable(const struct install *in)
+{
+	if (!in->checked)
+		return "There's no startup disk Blue can install them on (a writable disk image with a System Folder)";
+	if (in->phase >= INSTALL_QUITTING && in->phase <= INSTALL_RUNNING)
+		return "Mac OS is installing them";
+	if (in->phase == INSTALL_DONE && in->restarting)
+		return "Mac OS is restarting";
+	if (!install_needed(&in->check))
+		return "They're installed, and this version's";
+	return NULL;
+}
+
+void install_offer(struct install *in)
+{
+	const char *why = install_unofferable(in);
+	if (why) {
+		printf("tools: not offered: %s\n", why);
+		return;
+	}
+	in->phase = INSTALL_ASKING;
+	in->answered = false;
+	in->ask = true;
+	in->quit_asked = false;
+	in->quit_tb = in->stopped_tb = in->inject_tb = 0;
+	printf("tools: asking (%s?)\n", in->yes);
+}
+
 /* ---- the installer ------------------------------------------------------------------ */
 
 #define K_ON_SYSTEM_DISK 0xFFFF8000u    /* (-32768) */
 #define K_EXTENSION_FOLDER FOURCC('e', 'x', 't', 'n')
 #define K_EXTENSION_DISABLED_FOLDER FOURCC('e', 'x', 't', 'D')
+#define K_PREFERENCES_FOLDER FOURCC('p', 'r', 'e', 'f')
 #define FS_RD_WR_PERM 3u
 #define SM_SYSTEM_SCRIPT 0xFFFFFFFFu    /* (-1) */
 #define FNF_ERR (-43)
@@ -686,6 +770,8 @@ enum {
 	S_OPEN_RF, S_WRITE_RF, S_CLOSE_RF, S_SET_INFO, S_DELETE_OLD, S_RENAME, S_CLEANUP_CLOSE, S_CLEANUP_DELETE,
 	S_DISABLED_FOLDER, S_DISABLED_NAME, S_APPLE_MOVE, S_FLUSH, S_RESTART_ADDRESS, S_RESTART_EVENT,
 	S_RESTART_SEND, S_DISPOSE_EVENT, S_DISPOSE_ADDRESS,
+	S_PREFS_FOLDER, S_PREFS_NAME, S_PREFS_DELETE, S_PREFS_CREATE, S_PREFS_OPEN, S_PREFS_WRITE, S_PREFS_CLOSE,
+	S_PREFS_FLUSH, S_PREFS_FORGET,
 };
 
 static void callout(struct install *in, struct ndrv_call *c, unsigned step, unsigned imp, uint32_t a0, uint32_t a1,
@@ -702,6 +788,13 @@ static void put_fsspec(struct mem *m, uint32_t spec, int16_t vref, uint32_t dir,
 	mem_w16(m, spec, (uint16_t)vref);
 	mem_w32(m, spec + 2, dir);
 	memcpy(mem_ptr(m, spec + 6), pname, (size_t)pname[0] + 1);
+}
+
+static void put_name_spec(struct mem *m, uint32_t spec, int16_t vref, uint32_t dir, const char *name)
+{
+	uint8_t pname[64];
+	put_pstring(pname, name, sizeof pname);
+	put_fsspec(m, spec, vref, dir, pname);
 }
 
 /* The parameter block, cleared, with the name buffer (emptied) and the volume */
@@ -820,11 +913,17 @@ static void next_tool(struct install *in, struct ndrv_call *c)
 		return;
 	}
 	if (in->tool == TOOLS_FILES) {
-		/* all in place: on the disk, then a restart, as Special > Restart (programs can save their work) */
-		if (all_done(in))
+		/* all in place: Blue's preferences forgotten (the offer comes again when needed), on the disk, then
+		 * a restart, as Special > Restart (programs can save their work) */
+		if (all_done(in) && in->check.prefs_found && !in->prefs_forgotten) {
+			in->prefs_forgotten = true;
+			put_name_spec(c->mem, at(R_PREFS), in->vref, in->check.prefs_dir, INSTALL_PREFS_NAME);
+			callout(in, c, S_PREFS_FORGET, I_FSP_DELETE, at(R_PREFS), 0, 0, 0);
+		} else if (all_done(in)) {
 			callout(in, c, S_FLUSH, I_FLUSH_VOL, 0, (uint32_t)(int32_t)in->vref, 0, 0);
-		else
+		} else {
 			report(in, c);
+		}
 		return;
 	}
 	const struct install_copy *cp = &in->check.tool[in->tool];
@@ -861,6 +960,14 @@ static void stop(struct install *in, struct ndrv_call *c, int16_t err, const cha
 	next_tool(in, c);
 }
 
+/* Don't Ask Again couldn't be saved */
+static void prefs_stop(struct install *in, struct ndrv_call *c, int16_t err, const char *doing)
+{
+	in->prefs_error = err;
+	in->prefs_doing = doing;
+	report(in, c);
+}
+
 /* Writes a fork of the tool into the open temporary file */
 static void write_fork(struct install *in, struct ndrv_call *c, bool rsrc)
 {
@@ -886,8 +993,8 @@ void install_call(struct install *in, struct ndrv_call *c)
 		}
 		in->phase = INSTALL_RUNNING;
 		in->tool = TOOLS_FILES;         /* (none yet) */
-		in->error = in->restart_error = 0;
-		in->restarting = false;
+		in->error = in->restart_error = in->prefs_error = 0;
+		in->restarting = in->prefs_forgotten = false;
 		memset(in->result, 0, sizeof in->result);
 		in->apple_done = true;          /* (not until the tools are written) */
 		memset(in->apple_moved, 0, sizeof in->apple_moved);
@@ -921,6 +1028,11 @@ void install_call(struct install *in, struct ndrv_call *c)
 			stop(in, c, WRONG_DISK, NULL);
 		if (in->error)
 			return;
+		if (in->job == INSTALL_JOB_NEVER) {
+			callout(in, c, S_PREFS_FOLDER, I_FIND_FOLDER, K_ON_SYSTEM_DISK, K_PREFERENCES_FOLDER, 1, at(R_VREF));
+			c->out[4] = at(R_DIRID);
+			return;
+		}
 		param_block(in, m);
 		mem_w16(m, pb + PB_DIR_INDEX, 0xFFFF);  /* (-1: the folder itself) */
 		mem_w32(m, pb + PB_DIR_ID, in->ext_dir);
@@ -1123,10 +1235,103 @@ void install_call(struct install *in, struct ndrv_call *c)
 	case S_DISPOSE_ADDRESS:
 		report(in, c);
 		return;
+	case S_PREFS_FORGET:            /* (the tools are in place: a failure here only means Don't Ask Again stays) */
+		if (!err || err == FNF_ERR)
+			in->check.prefs_found = in->check.never = false;
+		next_tool(in, c);
+		return;
+	case S_PREFS_FOLDER:
+		if (err) {
+			prefs_stop(in, c, err, "finding the Preferences folder");
+			return;
+		}
+		in->vref = (int16_t)mem_r16(m, at(R_VREF));
+		in->prefs_dir = mem_r32(m, at(R_DIRID));
+		param_block(in, m);
+		mem_w16(m, pb + PB_DIR_INDEX, 0xFFFF);
+		mem_w32(m, pb + PB_DIR_ID, in->prefs_dir);
+		callout(in, c, S_PREFS_NAME, I_GET_CAT_INFO, pb, 0, 0, 0);
+		return;
+	case S_PREFS_NAME:
+		if (err)
+			snprintf(in->prefs_folder, sizeof in->prefs_folder, "Preferences");
+		else
+			roman_name(m, at(R_NAMEBUF), in->prefs_folder, sizeof in->prefs_folder);
+		put_name_spec(m, at(R_PREFS), in->vref, in->prefs_dir, INSTALL_PREFS_NAME);
+		callout(in, c, S_PREFS_DELETE, I_FSP_DELETE, at(R_PREFS), 0, 0, 0);    /* (an older one) */
+		return;
+	case S_PREFS_DELETE:
+		if (err && err != FNF_ERR) {
+			prefs_stop(in, c, err, "replacing the old " INSTALL_PREFS_NAME);
+			return;
+		}
+		callout(in, c, S_PREFS_CREATE, I_FSP_CREATE, at(R_PREFS), PREFS_CREATOR, PREFS_TYPE, SM_SYSTEM_SCRIPT);
+		return;
+	case S_PREFS_CREATE:
+		if (err) {
+			prefs_stop(in, c, err, "making " INSTALL_PREFS_NAME);
+			return;
+		}
+		callout(in, c, S_PREFS_OPEN, I_FSP_OPEN_DF, at(R_PREFS), FS_RD_WR_PERM, at(R_REFNUM), 0);
+		return;
+	case S_PREFS_OPEN: {
+		if (err) {
+			prefs_stop(in, c, err, "writing " INSTALL_PREFS_NAME);
+			return;
+		}
+		char text[INSTALL_PREFS_MAX];
+		size_t len = install_prefs_make(text, sizeof text, true);
+		in->refnum = (int16_t)mem_r16(m, at(R_REFNUM));
+		mem_load(m, at(R_BUFFER), text, (uint32_t)len);
+		mem_w32(m, at(R_COUNT), (uint32_t)len);
+		callout(in, c, S_PREFS_WRITE, I_FS_WRITE, (uint32_t)(int32_t)in->refnum, at(R_COUNT), at(R_BUFFER), 0);
+		return;
+	}
+	case S_PREFS_WRITE:
+		in->prefs_error = err;
+		in->prefs_doing = "writing " INSTALL_PREFS_NAME;
+		callout(in, c, S_PREFS_CLOSE, I_FS_CLOSE, (uint32_t)(int32_t)in->refnum, 0, 0, 0);
+		return;
+	case S_PREFS_CLOSE:
+		if (err || in->prefs_error) {
+			prefs_stop(in, c, in->prefs_error ? in->prefs_error : err, "writing " INSTALL_PREFS_NAME);
+			return;
+		}
+		callout(in, c, S_PREFS_FLUSH, I_FLUSH_VOL, 0, (uint32_t)(int32_t)in->vref, 0, 0);
+		return;
+	case S_PREFS_FLUSH:
+		if (err) {
+			prefs_stop(in, c, err, "writing " INSTALL_PREFS_NAME);
+			return;
+		}
+		in->check.prefs_found = in->check.never = true;
+		in->check.prefs_dir = in->prefs_dir;
+		report(in, c);
+		return;
 	default:
 		ndrv_finish(c, 0);
 		return;
 	}
+}
+
+/* What became of Don't Ask Again, said once the installer has finished */
+static void report_never(struct install *in, struct ndrv_call *c)
+{
+	char buf[64];
+	const char *const how = " To install them later, choose Install Guest Tools... in Blue's menu (F12).";
+	in->news[0] = '\0';
+	if (in->error == WRONG_DISK)
+		add(in->news, sizeof in->news, "couldn't save Don't Ask Again: Mac OS didn't start up from \"%s\".",
+		    in->check.system);
+	else if (in->error || in->prefs_error)
+		add(in->news, sizeof in->news, "couldn't save Don't Ask Again (%s: %s), so Blue will offer its guest "
+		    "tools again next time.", in->error ? in->error_doing : in->prefs_doing,
+		    error_text(in->error ? in->error : in->prefs_error, buf, sizeof buf));
+	else
+		add(in->news, sizeof in->news, "Blue won't offer its guest tools on \"%s\" again (" INSTALL_PREFS_NAME
+		    " in \"%s:%s\" says so).%s", in->check.volume, in->check.system, in->prefs_folder, how);
+	finish_news(in);
+	ndrv_finish(c, 0);
 }
 
 /* What was done, said once the installer has finished */
@@ -1135,6 +1340,10 @@ static void report(struct install *in, struct ndrv_call *c)
 	char *s = in->news, buf[64];
 	size_t len = sizeof in->news;
 	const struct install_result *r = in->result;
+	if (in->job == INSTALL_JOB_NEVER) {
+		report_never(in, c);
+		return;
+	}
 	s[0] = '\0';
 	/* each tool done, with the others done alike (in the same folder, as they're named) */
 	bool said[TOOLS_FILES] = { false };

@@ -525,6 +525,14 @@ static void test_startup_disk(void)
 	free(found.data);
 	CHECK_EQ(hfsread_system_file(paths + 1, 2, TBXI, &found, err, sizeof err), 1);   /* found before the bad one */
 	free(found.data);
+	/* one drive's partition, by its map entry */
+	CHECK_EQ(hfsread_system_file_in(disk, 3, TBXI, &found, err, sizeof err), 1);
+	CHECK(found.drive == 0 && found.part == 1 && strcmp(found.partition, "Second") == 0);
+	free(found.data);
+	CHECK_EQ(hfsread_system_file_in(disk, 2, TBXI, &found, err, sizeof err), 0);    /* (nothing blessed) */
+	CHECK_EQ(hfsread_system_file_in(disk, 0, TBXI, &found, err, sizeof err), 0);    /* (it has a map) */
+	CHECK_EQ(hfsread_system_file_in(empty, 0, TBXI, &found, err, sizeof err), 0);
+	CHECK_EQ(hfsread_system_file_in("/nonexistent/blue-test", 0, TBXI, &found, err, sizeof err), -1);
 	unlink(empty);
 	unlink(disk);
 }

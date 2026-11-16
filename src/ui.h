@@ -42,6 +42,8 @@ enum ui_key { UI_KEY_TAB, UI_KEY_LEFT, UI_KEY_RIGHT, UI_KEY_UP, UI_KEY_DOWN, UI_
 /* What the user chose in the menu (or a prompt's buttons) */
 enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI_FULLSCREEN, UI_STATUS_BAR,
 		 UI_CAPTURE_MOUSE, UI_RELEASE_MOUSE, UI_TURN_OFF, UI_PROMPT_YES, UI_PROMPT_NO,
+		 UI_PROMPT_ALT,                 /* (a prompt's third button, on the left: Don't Ask Again) */
+		 UI_INSTALL_TOOLS,              /* (the offer to install the guest tools, asked for) */
 		 UI_EJECT,                      /* (+ the drive's number in the menu's list) */
 		 UI_EJECT_LAST = UI_EJECT + UI_DRIVES - 1 };
 
@@ -94,9 +96,12 @@ struct ui_state {
 	bool fullscreen;
 	enum ui_mouse mouse;
 	const char *news;               /* (where a screenshot went, say), or NULL */
-	/* a question or news over the screen (the guest runs on), or NULL: its buttons (`no` may be NULL) */
-	const char *prompt, *prompt_yes, *prompt_no;
+	/* a question or news over the screen (the guest runs on), or NULL: its buttons (`no`, `alt` may be NULL) */
+	const char *prompt, *prompt_yes, *prompt_no, *prompt_alt;
 	const struct ui_drives *drives; /* the drives with removable media, or NULL without any */
+	/* the menu's Install Guest Tools... (`tools`), and why it's disabled (or NULL) */
+	bool tools;
+	const char *tools_why_not;
 };
 
 #define UI_STATUS_BAR_HEIGHT 24         /* in the window's units */

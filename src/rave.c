@@ -247,7 +247,7 @@ static bool readable(const struct mem *m, uint32_t addr, uint32_t len)
 	return true;
 }
 
-/* Writable, with any translated code there dropped (the host is about to write) */
+/* Writable, with any translated code there dropped and the write seen if watched (the host is about to write) */
 static bool writable(struct mem *m, uint32_t addr, uint32_t len)
 {
 	if (!len)
@@ -257,7 +257,7 @@ static bool writable(struct mem *m, uint32_t addr, uint32_t len)
 	for (uint32_t p = addr >> MEM_PAGE_SHIFT; p <= (addr + len - 1) >> MEM_PAGE_SHIFT; p++) {
 		if (!(m->pageflags[p] & MEM_W))
 			return false;
-		if (m->pageflags[p] & MEM_CODE)
+		if (m->pageflags[p] & (MEM_CODE | MEM_WATCH))
 			mem_invalidate(m, p << MEM_PAGE_SHIFT, MEM_PAGE_SIZE);
 	}
 	return true;

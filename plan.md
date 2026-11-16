@@ -136,6 +136,13 @@ Done:
   rasterizer without fused multiply-adds; the fragment builder's many
   exports, own code and zero-filled data; host calls with floats. See
   Findings, "Fused multiply-adds".
+- **The window on a thread of its own** (Task 15, window-speed;
+  `src/display.c`, `src/mem.c`, `src/video.c`, the JIT's fault handler
+  and checked stores): the window draws and presents on the main thread
+  while the Mac runs on another, and the framebuffer's pages are watched
+  for writes (`MEM_WATCH`) instead of compared with a copy each frame. The
+  Mac stops 0.01-0.2 ms a frame for the window where it stopped 0.2-1.2
+  ms. See Findings, "The window on a thread of its own".
 
 Where it stops:
 
@@ -153,10 +160,10 @@ page ager every 3 s). Two runs are identical. The menu-bar clock shows the
 guest time (`--fixed-time` and the guest time since, in the host's time
 zone, as for 8.5), and 9.1 reads NVRAM through its own driver for the
 `nvram` node (`nvram: 320 reads, 0 writes` at the end; it writes what it
-changed when it shuts down or restarts). Installing 9.1 from the CD
-onto a disk image is left to the user (in a window); scripted, its
-installer got as far as its Important Information page with a new 2 GB
-image as the destination. In real time with fast start the Finder is up
+changed when it shuts down or restarts). 9.1 installs from the CD onto a
+blank disk image with its installer, scripted (see Findings, "Installing
+9.1"), and the installed system starts up and takes the guest tools. In
+real time with fast start the Finder is up
 after 16 s of guest time (1.3 s on the host; it was 41 s before the
 startup disk was found at once), against 13.8 s for the 8.5 CD: what's
 left is mostly AppleTalk on Ethernet (5 s) and the CD's transfers.
@@ -529,6 +536,13 @@ the kernel); 8 onwards as the boot progresses.
   Folder:Mac OS ROM" from 91.iso, ...`); the run is otherwise as with
   `--rom MOS91.rom`. `rom info 91.iso` (and the other `rom` commands) read
   a disk image's the same way. `tests/test_hfsread.c` covers the reader.
+  The Startup Disk control panel's choice (startup-disk): Mac OS 9.1 and
+  later set Open Firmware's boot-device, which Blue reads from NVRAM at
+  launch and at each restart (`src/startup.c`, `src/ofnvram.c`), and starts
+  the ROM file of the disk and partition it names (see Findings, "The
+  Startup Disk control panel"). `tests/test_startup.c` covers the NVRAM
+  partition and variables, the paths, and which drive starts;
+  `tests/test_nvram.c` the tree's `/options`, `/openprom` and disk order.
 
 ### 12. Shared folder
 
@@ -551,8 +565,7 @@ the kernel); 8 onwards as the boot progresses.
 
 ### 13. Installing the guest tools
 
-- **Status:** done (8.5, 8.6, 9.2.2; 9.1 by the same path, tried as far
-  as its CD allows: no installed 9.1 image). In
+- **Status:** done (8.5, 8.6, 9.1, 9.2.2). In
   window runs, Blue looks for the guest tools in the startup disk's
   System Folder before Mac OS starts (`install_check()` in
   `src/install.c`: the System Folder's folders, whatever their names, for
@@ -578,7 +591,29 @@ the kernel); 8 onwards as the boot progresses.
   the installer against a File Manager of its own, the restart included.
   `--tools` is gone:
   `blue tools create FILE` makes the volume for installing them by hand
-  (`--cdrom FILE`). Open: "don't ask again"; 9.1 on an installed disk.
+  (`--cdrom FILE`). Don't Ask Again (the offer's third button; `tools
+  never`): Mac OS writes "Blue Preferences" (type 'pref', Enhancements'
+  creator, CR-ended text: `Blue Preferences`, `Offer the guest tools: no`)
+  in its Preferences folder, by the same installer (job
+  `INSTALL_JOB_NEVER`: FindFolder 'pref', PBGetCatInfo for the folder's
+  name, FSpDelete of an older one, FSpCreate, FSpOpenDF, FSWrite, FSClose,
+  FlushVol; no restart); the check finds it among the System Folder's
+  folders, and the offer then isn't made by itself. The window's menu has
+  Install Guest Tools... (`tools offer`), which makes it whenever there's
+  something to install (disabled otherwise, with why), and installing
+  deletes the file (FSpDelete before the FlushVol), so later versions are
+  offered again. The choice goes with the disk. `tests/test_install.c`
+  covers the file's contents, the check, the menu's offer and both jobs.
+  Checked on the restored 9.2.2 (set up): Don't Ask Again wrote the file,
+  the next startup offered nothing, `tools offer` and Install installed
+  the tools, deleted the file and restarted. 9.1, installed from its CD
+  (Findings, "Installing 9.1"): offered once the Finder was up (the Setup
+  Assistant in front), Install and Restart put the five tools in
+  Extensions and Apple's OpenGL libraries in Extensions (Disabled), Mac OS
+  restarted (through the Cuda), the check then found them current;
+  Enhancements ran and switched to 1024x768 for a `resize`, and Blue GL
+  Test (from a tools volume made with `BLUE_TOOLS_GL_TEST=1`) drew its
+  triangle scene through Blue's OpenGL. Open: none.
 
 ### 14. Clipboard
 
@@ -624,8 +659,9 @@ the kernel); 8 onwards as the boot progresses.
   and 8.6 from a disk: the arrow, the I-beam (all inverting pixels), the
   watch (animated, with inverting pixels), hiding while typing; with SDL's
   software renderer too (inverting pixels are black there). Instruction-time
-  runs are unchanged. Measurements in Findings. Open: presenting on a
-  thread of its own; tracking framebuffer writes instead of comparing.
+  runs are unchanged. Measurements in Findings. Presenting on a thread of
+  its own and watching the framebuffer for writes followed (window-speed):
+  see "The window on a thread of its own" in Findings.
 
 ### 16. CD audio
 
@@ -710,10 +746,10 @@ the kernel); 8 onwards as the boot progresses.
   cursor follows the pointer in window runs (8.5 and 9.2.2 CDs); fast start
   in real time as main's (8.5 CD 13.8 s of guest time, 9.1 16.2 s, 9.2.2
   13.1 s, 8.6 installed 18.5-18.7 s); host time the same within noise.
-- **Open:** on the restored 9.2.2's first startup (a disk Apple Software
-  Restore left unmounted), quitting the Setup Assistant leaves the desktop
-  without a menu bar, idle (with the VBL interrupt kept off too, and with
-  the old timer); quitting it on a cleanly unmounted restore works.
+- **Open:** none. On the restored 9.2.2's first startup (a disk Apple
+  Software Restore left unmounted), quitting the Setup Assistant left the
+  desktop without a menu bar: not the VBL's doing (see Findings, "The
+  restored 9.2.2's first startup without a menu bar").
 
 ### 18. OpenGL for Mac OS 9 games
 
@@ -2059,6 +2095,207 @@ Facts later tasks need, added as they are found.
   so only for window runs in real time. (SheepShaver reads the
   CursorImage's pixmap itself, 1-bit cursors only, and guesses the hot
   spot.)
+- **The window on a thread of its own** (Task 15, window-speed; M5,
+  macOS, window runs in real time; `BLUE_WINDOW_PROFILE=1` measures it).
+  Before, the emulation thread did all the window's work at each frame:
+  compared the framebuffer with a copy of what was last shown, row by row,
+  converted the changed rows into a locked SDL texture, drew and presented,
+  and polled SDL's events, the Mac stopped meanwhile. Now:
+  - **Threads.** `display_main()` (from `main.c`, with `--window`) runs
+    `nk_boot()` on a thread of its own, with the main thread's stack size,
+    and the main thread runs the window, as SDL wants on macOS: it opens
+    and closes it when the machine asks (`display_open()`,
+    `display_close()` wait for it), waits in `SDL_WaitEventTimeout()`, and
+    is woken by an SDL user event the machine pushes (at most one in
+    flight). Under one lock the machine hands over a frame
+    (`display_frame_begin()`/`_end()`: the changed rows copied into the
+    window's copy of the framebuffer, a byte a row marking them, and the
+    palette), the pointer, the status bar, the menu's and prompts' texts,
+    the drives; asks for the pointer captured or let go, the status bar
+    shown or hidden, text put on the host's clipboard; and asks for the
+    host's clipboard (it waits for that one, as SDL reads it on the main
+    thread). The window converts the marked rows into a 32-bit copy of its
+    own under the lock (0.06-0.2 ms a frame of a game at 1024 x 768 x 32),
+    then uploads them in bands (`SDL_UpdateTexture`), draws and presents.
+    Its events go to the machine through a queue of 1,024 (moves one after
+    another merged into one, as they'd have come to the same place; a
+    prompt's answer dropped if that prompt has gone since); the machine
+    takes them at its frames, as before. The menu and prompts are the
+    window's: it draws the menu at 60 a second while it's open (the
+    machine is paused and sends no frames), a prompt with each frame the
+    machine sends and as it answers input, and fullscreen and the status
+    bar are its own as before. Exposes and lost render targets no longer
+    go to the machine: the window has the whole screen converted.
+  - **Napping precisely.** The machine naps waiting for input (in
+    `nap()`, and while paused). With SDL that was `SDL_WaitEventTimeout()`
+    on the window's thread; a condition variable's timed wait (and
+    `nanosleep`, `mach_wait_until`) on a thread of a process that isn't in
+    front came 15-25% late on this Mac (16 ms became 18.5-19.5; with the
+    thread's QoS user-interactive and latency tier 0, about 5%), and the
+    window's frames fell from 59.8 to 58.5 a second. A kqueue timer with
+    `NOTE_CRITICAL` (which may not be put off to coalesce) came within
+    0.02-0.05 ms, so on macOS the machine waits in a kqueue, for that timer
+    or an `EVFILT_USER` the window triggers as it queues input; elsewhere on
+    a condition variable on the monotonic clock. Frames now come 59.9-60.0
+    a second, and a 3D game's (handed over when due) 16.62-16.72 ms apart
+    (1st to 99th percentile; main 16.24-17.13).
+  - **The framebuffer watched** (`mem_watch()`, `MEM_WATCH` in `mem.h`).
+    A watched page is writable but its next write is seen first: it isn't
+    `MEM_FAST_W`, so the interpreter's and checked stores take the slow
+    way (`mem_ok_w()` → `mem_write_slow()`, or the JIT's `code_store()`
+    call, beside its translated-code check, in both back ends; `stmw` and
+    `dcbz` go to the interpreter); the host's writes go through
+    `mem_ok_w()` or `mem_invalidate()` as for translated code; and the
+    JIT's view has the page read-only, where the fault handler, seeing a
+    watched page, unwatches it (with the others sharing its host page) and
+    returns to the store, which goes ahead, the instruction left as it was
+    (fastmem's other faults make an instruction checked from then on, which
+    for the framebuffer would have slowed every store to it). Unwatching
+    clears the flag on the host page's guest pages and changes the view's
+    protection. So a page still watched hasn't been written since it was
+    watched, and `video_copy_changes()` compares only the pages that
+    aren't, a host page (16 KB here) at a time, with the window's copy,
+    copying those that differ. A page that's stayed the same for 8 frames
+    is watched again. Costs, measured alone: a fault with its
+    `mprotect()` 6.2-7.6 µs per 16 KB page, an `mprotect()` of one page
+    0.7-1.8 µs, comparing or copying 16 KB about 1.7 µs; so a page written
+    in most frames costs less compared than watched. At first a page was
+    watched again as soon as it had stayed the same for one frame: in
+    Unreal Tournament every frame the game skipped (the screen the same
+    when the window looked) had all 192 of its host pages watched, then
+    seen written again by RAVE's frame (a protection change each, with the
+    process's other threads to tell): 20-29 a frame. RAVE's and OpenGL's
+    own `writable()` invalidated only pages with translated code: their
+    frames for the screen went unseen (the window showed a game's screen
+    once a second) until they took watched pages too.
+  - **Checking.** `BLUE_WINDOW_CHECK=1` compares the watched pages too and
+    says where a write went unseen: none in the Finder scenarios below,
+    Unreal Tournament's intro (RAVE on the GPU), and a restart. A
+    throwaway build also write-protected the framebuffer in the host's own
+    mapping while it was watched, so that any write by the host's code
+    there faulted with its backtrace: none either. `tests/test_jit.c` watches the data's pages in a quarter
+    of its programs (a page still watched must be as it was, either way;
+    fastmem must have seen watched writes); `tests/test_video.c` keeps the
+    copy by comparing and by watching.
+  - **Measured.** Medians of three runs (two to five for the games),
+    alternating main (with the profile added) and this; the machine was
+    shared with other agents' builds and tests (load average 4-8), and the
+    same run gave twice the time at times. Per frame the Mac was handed
+    (about 60 a second); "Mac" is the time the Mac stopped for the window
+    and its share of the time; "window" the window's thread's time
+    (main: none). The Finder: the installed 8.5's disk window dragged
+    about by a script (a drag every 0.9 s, 50 moves a second, about a
+    third of the screen redrawn when it drops), then idle (the menu-bar
+    clock), then the pointer moved in circles (the hardware cursor: the
+    framebuffer doesn't change).
+
+  | scene | changed frames a second | main: Mac | now: Mac | now: window | pages seen written a frame |
+  |---|---|---|---|---|---|
+  | Finder 640 x 480, 8 bits, drags | 24 | 0.141 (0.84%) | 0.022 (0.13%) | 0.13 [0.24] | 0.5 |
+  | ... idle | 1 | 0.066 (0.39%) | 0.018 (0.11%) | 0.04 [0.22] | 0 |
+  | ... the pointer moving | 1 | 0.328 (1.96%) | 0.024 (0.14%) | 0.12 [0.22] | 0 |
+  | Finder 640 x 480, 32 bits, drags | 25 | 0.184 (1.10%) | 0.028 (0.17%) | 0.11 [0.23] | 1.8 |
+  | ... idle | 1 | 0.177 (1.05%) | 0.014 (0.09%) | 0.02 [0.11] | 0 |
+  | ... the pointer moving | 1 | 0.273 (1.63%) | 0.018 (0.11%) | 0.14 [0.39] | 0 |
+  | Finder 1920 x 1080, 32 bits, drags | 25 | 0.514 (3.08%) | 0.076 (0.46%) | 0.20 [0.31] | 5.4 |
+  | ... idle | 1 | 1.015 (6.06%) | 0.045 (0.27%) | 0.07 [0.31] | 0 |
+  | ... the pointer moving | 1 | 1.174 (7.00%) | 0.051 (0.31%) | 0.28 [0.53] | 0 |
+  | UT intro, RAVE on the GPU, 1024 x 768, 32 bits | 60 | 0.756 (4.54%) | 0.205 (1.23%) | 0.90 [1.05] | 0 |
+  | UT intro, OpenGL on the GPU, the same | 60 | 0.52 (3.1%) | 0.088 (0.53%) | 0.63 [0.76] | 0 |
+
+  Milliseconds a frame of the host clock; in brackets the window's
+  thread's processor time, which counts what SDL does while the thread
+  waits for the next frame (it pumps Cocoa's events, 0.1-0.3 ms a wake),
+  and in parentheses the share of the time the Mac stopped. Main's Mac
+  time is all the window's work, its processor time within 0.05 ms of it;
+  the Mac's now is finding and copying the changes (the input takes under
+  0.002 ms), and seeing pages written adds their faults (about 7 µs each)
+  in the guest's own time. Main's idle and pointer rows at 1920 x 1080
+  were mostly comparing 8.3 MB a frame (0.9-1.2 ms); its drags, comparing
+  and converting a third of the screen. OpenGL's main row is of two runs.
+  The Finder scenes are 1920 x 1080 and 640 x 480 screens in windows their
+  size (the window doesn't scale them).
+
+  In the games the screen changes every frame (1024 x 768, 32 bits, 3.1 MB
+  a frame: Unreal Tournament's intro, in a window the size of the screen,
+  on the GPU): the Mac stops for comparing and copying what changed,
+  0.1-0.2 ms, where main also converted, uploaded, drew and presented
+  (0.6-1.2 ms); the window takes 0.8-1.1 ms of its own thread, and shows
+  each frame 0.7-1.1 ms after it's handed over (at most 1.8 ms). RAVE on
+  the GPU: 60.0 frames a second against main's 59.6 (53.1-60.0), the
+  frames handed over 16.67 ms apart with a standard deviation of 0.35-0.54
+  ms (main 0.36-11.3); UT's OpenGL build: 60.0 against 60.0, OpenGL's
+  frames for the screen 16.67 ms apart (deviation 0.9-1.2 ms; main
+  1.2-1.4). In software (`--no-gpu`, one run each) the game's frames rose
+  from 36.1 to 39.4 a second, the Mac's processor no longer shared with
+  the window's work. A first version also drew a prompt on a 16 ms timer
+  of its own, between the frames: with the news of the guest tools'
+  update over the game (it stays through the restart), 75-83 draws a
+  second where frames came 50-60, and the game's GPU frames fell to 49-55
+  a second, the window's presenting taking the GPU from them; drawn with
+  the frames, as main drew it, they're at 60.
+  - **Sound** in those runs (UT's music, in real time): no frames
+    dropped, and 2,816 frames of silence added at the start, as in main's
+    runs (one of main's added 30,976, in a stall of the host).
+  - **The window's own costs** (its thread): `SDL_UpdateTexture` of a
+    whole 1024 x 768 frame takes 0.4-0.8 ms with Metal (a buffer made and
+    filled each time), against the old locked texture's 0.04-0.08 (where
+    the conversion's 0.35-0.6 ms included the locked buffer's first
+    writes). The window's thread waits in `SDL_WaitEventTimeout`, which
+    pumps Cocoa's events for 0.04-0.3 ms of processor time a wake.
+  - **Instruction-time window runs** go as main's: the 8.5 CD's
+    `--window --instruction-time --input` boot to 4 billion instructions
+    has main's log (but the `jit:`, `idle:` and screen lines) and
+    screenshots, with the pages watched and the JIT's faults on them
+    (unscripted, the host pointer's moves over the window are input, and
+    no two runs are alike, main's either). Headless runs watch nothing.
+  - **Window captures** (`screencapture -l`, the window alone) of the same
+    scripted runs at the same moments, main's and this: the 8.5 CD's Finder
+    with and without the status bar and with `--integer-scale`, the
+    installed 8.5's guest tools offer over the screen, and its disk's
+    window at 1280 x 1024 in millions of colours are the same to the
+    pixel, but the status bar's processor light (whose brightness is the
+    share of the time the Mac was busy, less now).
+  - **Linux** (arm64, in a podman container: Ubuntu 24.04's SDL 2, gcc
+    13, Xvfb without a window manager, xdotool and xclip for input): no
+    warnings in Blue's files (gcc's `-Wformat-truncation` in `install.c`,
+    main's, is gone too: `report_never()` writes its news with `add()`, as
+    `report()` does), the tests pass, and in windows: the 8.5 CD's Finder; F12's menu (with its
+    Install Guest Tools...), driven by the mouse and the keyboard
+    (Screenshot and its news, Fullscreen on and off, Resume, Turn off,
+    which ends the run as before); clicks and drags in the guest; the
+    window resized, the screen scaled to it; on the installed 8.5 the
+    guest tools' offer with Don't Ask Again, answered Not Now, and Update
+    and Restart with its news after; a resize that Enhancements followed
+    (to 1024 x 768); and the clipboard both ways (the host's text into Mac
+    OS at startup; a Finder copy, after the menu's Restart, on X11's
+    clipboard as "Macintosh HD"). That last found a restart turning the
+    clipboard off for the rest of the run (`restart_machine()` didn't keep
+    it, on main too): it's kept now. Fullscreen without a window manager
+    leaves the X window its size (the renderer draws for the screen's);
+    dropped files weren't tried (xdotool can't drag), nor sound. Frames
+    came 57-58 a second there (the container's timers).
+  - **ThreadSanitizer** (macOS, `make BUILD=build/tsan CC='cc
+    -fsanitize=thread -g' CXX='c++ -fsanitize=thread -g'`) found no races
+    in three window runs: the 8.5 CD's `--window --instruction-time` boot
+    with scripted clicks, a window drag and keys (8 s); the installed 8.5
+    in real time for 24 s with the status bar, the guest tools' offer
+    answered Not Now, a click, a drag and a key, and F12's menu opened and
+    closed twice with its Screenshot taken in between (that input made in
+    the window's thread as SDL's events would be, by a scratch build, as
+    the host's own input was the user's); and Unreal
+    Tournament's intro with RAVE on the GPU (the guest tools installed and
+    a restart first, 52 s; 35-38 frames a second under TSan). (A small
+    racy program gets its report, so TSan works there.) SDL 2 on macOS is
+    Homebrew's sdl2-compat, whose constructor `dlopen()`s
+    `libSDL3.dylib`, a bare name that dyld finds through the caller's
+    rpath (sdl2-compat's leads to Homebrew's sdl3); under TSan the caller
+    is TSan's `dlopen()`, so SDL 3 isn't found and sdl2-compat aborts:
+    `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` finds it (macOS drops
+    `DYLD_` variables for its own programs, so with `/usr/bin/timeout` it
+    goes after: `timeout 60 env DYLD_FALLBACK_LIBRARY_PATH=...
+    build/tsan/blue ...`). TSan doesn't see what the JIT's code does, but
+    the machine's thread hands everything to the window's in C.
 - **Mac OS 9.2.2: the CD** (Task 10): MacOS9Lives' "Mac OS 9.2.2
   Universal" (`922.iso`, volume MacOS9Lives in the partition "Toast 5.2 HFS
   Optimizer"), for Macs Apple's 9.2.2 doesn't support. Its ROM file is
@@ -2415,6 +2652,26 @@ Facts later tasks need, added as they are found.
   run of the restored system, the TCP/IP control panel shows 10.0.2.15,
   router 10.0.2.2, name server 10.0.2.3 from DHCP (28 frames sent, 2
   received).
+- **Open Transport's stall with a full interrupt set for the Ethernet
+  node, gone:** with all three of the node's interrupts in its set (MAC,
+  transmit DMA, receive DMA, as on the iMac; a scratch build), lanLib put
+  its handler in the set's first member, the MAC's, which Blue never
+  raises: the receive channel's pulses reached no handler, so no frame
+  arrived (DHCP unanswered), though startup didn't stall: an unhandled
+  pulse is now released after one more re-evaluation ("Pulses lost at
+  PrioritizeInterrupts"), and one taken again and again may have been the
+  old stall (not reproduced). lanLib now takes the last member
+  (`interrupt_step()` in `src/net.c`): RegistryPropertyGet leaves the size
+  as given (24, for a set of one too: logged on the 8.5 and 9.1 CDs), so
+  the last entry that isn't empty, the buffer cleared first. Real-time
+  startups with networking, fast start's guest time to the Finder, 3 runs
+  each, receive channel only against all three: 9.1 CD 15.9-17.1 s against
+  16.0-16.7, 9.2.2 CD 13.9-16.2 (and 25.1, the host busy) against
+  14.1-15.4, installed 9.1 24.7-24.8 against 25.3-28.2, the restored 9.2.2
+  13.3-13.5 against 13.4-14.2; every run received by interrupt, DHCP's 2
+  frames each, nothing dropped. No stall either way; the tree keeps the
+  receive channel's alone (the only one Blue raises), so the CD checks end
+  exactly as before. Tests: `tests/test_net.c` (sets of three and of one).
 - **Startup times with the sets, and what fast start's guest time
   measures:** the 9.2.2 CD's fast start ended at 13.4-13.7 s of guest time
   with a quiet host (main 12.9-13.1), and at 13.6-15.2 s for both when the
@@ -2427,16 +2684,133 @@ Facts later tasks need, added as they are found.
   and the sound plug-ins' fades 0.1-0.2 s more. The restored system, set
   up: 13.0-13.1 s (main 12.8-13.0), and the host asleep 36.4-37.0 s of 40
   (main 35.4-35.8).
+- **Installing 9.1** (instruction time, `--fixed-time 1000000000`): a
+  blank 2 GB disk (`disk create`) first, the CD second. In the CD's
+  Finder, typing `mac os i` (3 million instructions apart) and Command-O
+  opens Mac OS Install (by instruction 5 billion). Then, at 800x600:
+  Continue (594 443), Select (594 443; Macintosh HD is already the
+  destination, "None Installed", 2046 MB available, 368 MB needed),
+  Continue on Important Information and on the license (594 443), Agree
+  (530 366), Options... (314 443), the "Update Apple Hard Disk Drivers"
+  checkbox (217 226), OK (551 389), Start (594 443) at 11.2 billion. Mac
+  OS 9.1 then Internet Access, and "The installation process has
+  finished" by 40 billion (268 MB written, 52 MB read). Its Quit (532 348)
+  took no click, nor Return, at 40-45 billion, but took the second of two
+  clicks 0.3 billion apart, and Return at 50 billion: Energy Saver had put
+  the screen to sleep (no doze: 9.1 makes no PowerDispatch calls), and the
+  first input only wakes it, as on a Mac. `power`, then Shut Down (541
+  188), and the volume is unmounted cleanly (HFS, attributes 0x0100). The
+  installed disk starts up alone, with its own ROM file, to the Finder and
+  the Mac OS Setup Assistant (Command-Q, then Quit at 541 197).
+- **The Startup Disk control panel** (startup-disk; 9.1 installed and
+  the restored 9.2.2, with CDs): Startup Disk 9.x lists the volumes with a
+  System Folder (Blue's disks and CDs, 8.5's CD too) and on a choice calls
+  StartLib's SetSelectedStartupDevice (MOS91.rom's StartLib, code offset
+  0x21A8): the drive's DriverGestalt ('boot' fails, 'nmrg', 'dvrf',
+  'intf' 'scsi', 'ofpt'), a path built from them, then
+  WriteSelectedStartupDevice: /options' `boot-device` set (created if need
+  be) with RegistryPropertySetMod's kRegPropertyValueIsSavedToNVRAM (0x20),
+  and /chosen's AAPL,boot-device-driveNumber and -interfaceType. Before
+  that it checks Gestalt 'nreg' and /openprom's `supports-bootinfo` (code
+  0xF0C): without /openprom it took another path whose length came out
+  uninitialized (NewPtr of 167 MB: -108), and without /options it couldn't
+  set the property. With both, setting it failed with -116: the Name
+  Registry writes such properties at once through the ROM's 68k code
+  (10.2f1 `0xFFC476D8`, 6.1f9 `0xFFC48A90`), which finds the CHRP
+  partition with signature 0x70 named "common" (NVRAMServicesLib's
+  NVRAMFindPartition walks 16-byte headers from offset 0, each checked
+  with its checksum; Blue's blank NVRAM ended the walk with -116) and
+  rewrites its "name=value" strings. Mac OS's PRAM stays at `0x1400`
+  (NVRAMServicesLib doesn't find "APL,MacOS75" and falls back there), and
+  NVRAM's first 2 KB were unused in every NVRAM file here, so Blue makes an
+  empty "common" there (`ofnvram_format()`). Mac OS then wrote
+  `boot-device=/pci@80000000/blue,disk@3@3:,\\:tbxi` (after an empty first
+  string; its reader skips one), `disk@3@3:8` for the 9.2.2 CD's map entry
+  8, the same numbering as Blue's bootpath. Blue reads it at launch (from
+  `--nvram`) and at each restart (the NVRAM in memory), maps the PCI device
+  to a drive, and starts the ROM file of that partition's blessed folder
+  (`hfsread_system_file_in()`), else the first drive's as before; the tree
+  has /options (`boot-device` from NVRAM, else the bootpath, so the panel
+  shows the current choice) and /openprom. Checked: 9.1 → the 9.2.2 disk
+  and back (from 9.2.2's panel), the next launch on the chosen disk, the
+  9.2.2 CD among a disk and two CDs; an absent disk falls back with a
+  note, `--rom` ignores it. The tree's nodes and the partition change what
+  9.1 and 9.2.2 do at startup (9.2.2's CD read NVRAM 352 times instead of
+  320, other counts moved; the screens the same but for the caret's
+  blink), so they're there only when NVRAM is kept or in real time, and
+  the CD checks are unchanged. 8.5's ROM image has no such code; its
+  Startup Disk (7.x) lists only the current startup disk (DriverGestalt
+  'boot', for PRAM's DefaultStartup, which Blue's driver doesn't answer).
+  Choosing the 8.5 CD in 9.1's panel loaded 8.5's ROM file, whose Start
+  Manager took the first drive with a System Folder (9.1's: "This startup
+  disk will not work on this Macintosh model"); Mac OS numbers drives in
+  the tree's order, so the chosen disk's node now goes first for ROM files
+  without parcels, and 8.5 starts from the CD.
 - **Scripting the 9.2.2 restore** (instruction time): scripted clicks and
   double-clicks didn't select the desktop's icons (main too); typing a name
   in the Finder does (`MacO`, then Command-O opens the CD's window; `apple
   s`, Command-O, opens Apple Software Restore, whose destination is already
-  Macintosh HD). Return, then a click on OK, restores (done by 39
-  billion). Its last dialog's Quit took a click only after a key press;
+  Macintosh HD); the letters must come close together (3 million
+  instructions apart; 20 million apart each starts a new name). Return,
+  then a click on OK (551 364), restores (done by 39 billion). Its last
+  dialog's Quit (494 342) took a click only after a key press, because Mac
+  OS was dozing by then (see "Mac OS 9.2.2's doze and the mouse"); now a
+  `move` there, then a `click` 30 million instructions later, quits it.
   Special > Shut Down (y 125 in the CD's Finder at 800x600, 136 in the
   restored one's, whose Special menu has Burn CD) then powers off with
-  the volume unmounted. The Setup Assistant's first screen quits with
-  Command-Q and a click on Quit.
+  the volume unmounted; or `power`, then a click on Shut Down (541 188).
+  The Setup Assistant's first screen quits with Command-Q and a click on
+  Quit (569 487 at 1024x768).
+- **The restored 9.2.2's first startup without a menu bar** (Task 17's
+  open item): reproduced from a blank disk (a scripted restore, the run
+  stopped with Apple Software Restore's last dialog up, then the disk
+  started and the Setup Assistant quit at its first screen: the desktop and
+  its icons, no menu bar (MBarHeight 0), no Control Strip, the Finder
+  current and answering clicks). It isn't the volume's unmounted bit:
+  setting it on that disk changed nothing, and clearing it on a disk that
+  works broke nothing. The disks differed in 12 blocks: the working one had
+  been mounted by the CD's Finder (after Apple Software Restore's Quit),
+  which made a Desktop Folder and a Trash at its top. Apple Software
+  Restore quits the Finder while it works (the restored volume is mounted
+  meanwhile, but no Finder sees it) and starts it again as it quits; at the
+  first startup the Setup Assistant runs before the Finder (its Launcher
+  extension), and on Quit it puts a Register with Apple alias in the
+  Desktop Folder ("you can register later by double-clicking Register with
+  Apple on the desktop"). Without the folder it quits without showing the
+  menu bar it hid, and makes no alias; the Finder then makes the folder.
+  The working disk with its Desktop Folder renamed (the catalog's key and
+  thread, in place) does the same, so that's the cause; a real Mac would
+  do it too with that disk, and its next startup is fine (checked: the
+  assistant again, quit, menu bar and alias). The VBL was on throughout
+  (no SetInterrupt). Blue's part was the stopped run: see the next.
+- **Mac OS 9.2.2's doze and the mouse:** at Apple Software Restore's last
+  dialog the power manager had been dozing since instruction 41.45 billion
+  (half an hour after the OK click; PowerDispatch 9, then 1 in a loop,
+  CacheDispatch 4, the cursor hidden twice, the display's sync off by
+  SetSync): mouse clicks (the ADB autopoll packets arrived: `00 80`, `80
+  80`) and ADB moves changed nothing, not even MBState; a key woke it at
+  once (PowerDispatch 9 within 40,000 instructions) and clicks worked
+  after. The same on the CD's Finder after 30 minutes' idling (a menu
+  wouldn't open). The ADB Manager's handler for autopoll data (10.2f1's
+  image `0xFFC2B4EA`) tells the power manager of activity (68k
+  `_PowerDispatch` with D0 `$00010001`, UsrActivity) if low memory `$DD5`
+  bit 0 is set: for the keyboard (its device's original address 2) when
+  the packet's first key is a key-down, and for the mouse (original address
+  3) only unless the power manager's globals (PMgrBase `$D18`, + `$112`)
+  say 'SARA', which they do here. So the ADB mouse never counts; on the
+  iMac the mouse is USB, and its HID driver tells the power manager itself.
+  Setting the globals' last-activity time (+ `$1A`) from the host didn't
+  wake it. Now the Cuda (`cuda_poll()`), when it has mouse data (or the
+  cursor was put where the host pointer is) while Mac OS dozes (it napped
+  through PowerDispatch in the last 250 ms of guest time: `cuda_doze()`),
+  first sends a keyboard packet with Option down and up, at most once a
+  second; a modifier alone posts no event. A click 0.3 s after the tap
+  still went unseen (Mac OS was still waking), one 1.8 s after worked:
+  window users move the mouse first. Runs that never doze are unchanged
+  (the CD checks), and a scripted restore with a plain `move` and `click`
+  quits Apple Software Restore; its disk then starts and quits the Setup
+  Assistant to the Finder with its menu bar, the Register with Apple alias
+  and the Control Strip.
 - **MacBench's Floating Point test** (M5; profiles in instruction time
   with `clock 1000`, which runs the same code, `BLUE_JIT_PROFILE=FROM:TO`
   over one part): five parts of about 10 s of guest time, each counting

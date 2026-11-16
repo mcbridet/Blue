@@ -5,16 +5,17 @@
 
 #include "cdimage.h"
 #include "disk.h"
+#include "display.h"
 #include "env.h"
 #include "hfsread.h"
 #include "mem.h"
 #include "nk.h"
 #include "ppc.h"
 #include "rom.h"
+#include "rtas.h"
 #include "share.h"
+#include "startup.h"
 #include "tools.h"
-
-#define TYPE_TBXI 0x74627869u           /* 'tbxi': the Mac OS ROM file's type */
 
 static int usage(void)
 {
@@ -29,8 +30,9 @@ static int usage(void)
 		"                               (the file may be a disk or CD image: then the Mac OS\n"
 		"                               ROM file in its System Folder, as boot would use it)\n"
 		"  boot [options]               start Mac OS under the native kernel, from the Mac OS\n"
-		"                               ROM file in the startup disk's System Folder (the first\n"
-		"                               drive with one, as a New World Mac's firmware does)\n"
+		"                               ROM file in the startup disk's System Folder (the one\n"
+		"                               NVRAM's boot-device names, else the first drive with\n"
+		"                               one, as a New World Mac's firmware does)\n"
 		"      --rom <file>             use this Mac OS ROM file or 4 MB ROM image instead\n"
 		"      --ram <MB>               RAM size (default 128)\n"
 		"      --window                 show the screen in a window (keyboard and mouse go to\n"
@@ -65,7 +67,8 @@ static int usage(void)
 		"                               key HEX [down|up], resize W H, screenshot FILE,\n"
 		"                               floppy insert FILE, floppy eject, cdrom insert FILE,\n"
 		"                               cdrom eject,\n"
-		"                               tools install|later (the answer to that offer)\n"
+		"                               tools install|later|never (the answer to that offer;\n"
+		"                               never: Don't Ask Again), tools offer (the offer, now)\n"
 		"      --max <n>                stop after n PowerPC instructions (default 500000000)\n");
 	fprintf(stderr,
 		"      --io-ram                 back touched I/O pages with plain RAM and keep going\n"
@@ -91,7 +94,8 @@ static int usage(void)
 		"                               window to put them in)\n"
 		"      --share <folder>         show a host folder to Mac OS as a volume; what Mac OS\n"
 		"                               changes on it is written back when it shuts down\n"
-		"      --nvram <file>           keep NVRAM (PRAM, settings) in this file\n"
+		"      --nvram <file>           keep NVRAM (PRAM, settings) in this file; Mac OS 9.1\n"
+		"                               and later's Startup Disk choice is kept there too\n"
 		"      --screenshot <file.png>  save the screen when the run ends\n"
 		"      --dump-ram <file>        save guest RAM when the run ends\n"
 		"      --log-hostcalls          log driver requests handled natively\n"
@@ -136,40 +140,6 @@ static bool is_rom_file(const char *path)
 	return rom;
 }
 
-/*
- * Loads the Mac OS ROM file from the startup disk, as New World Macs'
- * firmware does: the first drive whose blessed System Folder holds a file of
- * type 'tbxi'. Says where it was in `from`, and which drive and partition in
- * `drive` and `part` (if not NULL). Returns 0, 1 if no drive has one, or -1
- * (having said why).
- */
-static int load_startup_rom(const char *const *paths, unsigned count, struct rom *rom, char *from, size_t fromlen,
-			    unsigned *drive, unsigned *part)
-{
-	struct hfsread_found found;
-	char err[HFSREAD_PATH_MAX + 256], name[HFSREAD_PATH_MAX + 256];
-	int rc = hfsread_system_file(paths, count, TYPE_TBXI, &found, err, sizeof err);
-	if (rc <= 0) {
-		if (rc < 0 && err[0])
-			fprintf(stderr, "%s\n", err);
-		return rc < 0 ? -1 : 1;
-	}
-	snprintf(name, sizeof name, "%s: \"%s\"", paths[found.drive], found.path);
-	rc = rom_load_mem(found.data, found.size, name, rom, err, sizeof err);
-	free(found.data);
-	if (rc) {
-		fprintf(stderr, "%s\n", err);
-		return -1;
-	}
-	snprintf(from, fromlen, "\"%s\" from %s%s%s%s", found.path, paths[found.drive],
-		 found.partition[0] ? ", partition \"" : "", found.partition, found.partition[0] ? "\"" : "");
-	if (drive)
-		*drive = found.drive;
-	if (part)
-		*part = found.part;
-	return 0;
-}
-
 static int cmd_rom(int argc, char **argv)
 {
 	if (argc < 2)
@@ -177,15 +147,17 @@ static int cmd_rom(int argc, char **argv)
 
 	const char *sub = argv[0], *path = argv[1];
 	struct rom rom;
-	char err[256], from[HFSREAD_PATH_MAX + 256] = "";
+	struct startup start;
+	char err[256], note[8], *from = start.from;
 
+	from[0] = '\0';
 	if (is_rom_file(path)) {
 		if (rom_load(path, &rom, err, sizeof err)) {
 			fprintf(stderr, "%s\n", err);
 			return 1;
 		}
 	} else {
-		int found = load_startup_rom(&path, 1, &rom, from, sizeof from, NULL, NULL);
+		int found = startup_rom(&path, 1, NULL, 0, &rom, &start, note, sizeof note);
 		if (found > 0)
 			fprintf(stderr, "%s: not a ROM file, nor a disk image with a Mac OS ROM file in its System Folder\n",
 				path);
@@ -321,6 +293,17 @@ static int cmd_run_raw(int argc, char **argv)
 	return 0;
 }
 
+struct boot {
+	const struct rom *rom;
+	const struct nk_boot_options *opt;
+};
+
+static int boot_machine(void *arg)
+{
+	const struct boot *b = arg;
+	return nk_boot(b->rom, b->opt);
+}
+
 static int cmd_boot(int argc, char **argv)
 {
 	if (argc < 1)
@@ -448,24 +431,32 @@ static int cmd_boot(int argc, char **argv)
 		opt.max_insns = UINT64_MAX;     /* run until the window is closed */
 
 	struct rom rom;
-	char err[256], from[HFSREAD_PATH_MAX + 256], version[64];
+	char err[256], version[64];
 	int found = 0;
 	if (rom_path) {
 		found = rom_load(rom_path, &rom, err, sizeof err);
 		if (found)
 			fprintf(stderr, "%s\n", err);
 	} else {
-		const char *paths[NK_MAX_DISKS];       /* (the drives with images: not an empty CD-ROM drive) */
-		unsigned drive[NK_MAX_DISKS], images = 0;
-		for (unsigned k = 0; k < opt.disks; k++)
-			if (opt.disk[k]) {
-				drive[images] = k;
-				paths[images++] = opt.disk[k];
-			}
-		found = load_startup_rom(paths, images, &rom, from, sizeof from, &opt.rom_disk, &opt.rom_part);
+		/* (Open Firmware's boot-device, in NVRAM, may choose it: see startup.h) */
+		static uint8_t nvram[RTAS_NVRAM_SIZE];
+		FILE *f = opt.nvram ? fopen(opt.nvram, "rb") : NULL;
+		bool have_nvram = f && fread(nvram, 1, sizeof nvram, f) == sizeof nvram;
+		if (f)
+			fclose(f);
+		struct startup start;
+		char note[HFSREAD_PATH_MAX + 512];
+		found = startup_rom(opt.disk, opt.disks, have_nvram ? nvram : NULL, sizeof nvram, &rom, &start, note,
+				    sizeof note);
 		opt.rom_from_disk = !found;
-		if (!found)
-			opt.rom_disk = drive[opt.rom_disk];
+		opt.rom_disk = start.drive;
+		opt.rom_part = start.part;
+		opt.rom_chosen = start.chosen;
+		if (note[0])
+			printf("rom: %s: starting up from the first drive with one\n", note);
+		bool images = false;
+		for (unsigned k = 0; k < opt.disks; k++)
+			images |= opt.disk[k] != NULL;
 		if (found > 0 && images)
 			fprintf(stderr, "no drive has a System Folder with a Mac OS ROM file in it: give one with "
 				"--rom FILE\n");
@@ -473,9 +464,11 @@ static int cmd_boot(int argc, char **argv)
 			fprintf(stderr, "no drives to start up from (the ROM file comes from the startup disk's "
 				"System Folder): attach one with --disk or --cdrom, or give a ROM file with --rom FILE\n");
 		if (!found && rom_file_version(&rom, version, sizeof version))
-			printf("rom: %s (Mac OS ROM %s, %zu bytes)\n", from, version, rom.file_size);
+			printf("rom: %s (Mac OS ROM %s, %zu bytes)%s\n", start.from, version, rom.file_size,
+			       start.chosen ? ", which boot-device names" : "");
 		else if (!found)
-			printf("rom: %s (Toolbox release 0x%04X, %zu bytes)\n", from, rom_release(&rom), rom.file_size);
+			printf("rom: %s (Toolbox release 0x%04X, %zu bytes)%s\n", start.from, rom_release(&rom),
+			       rom.file_size, start.chosen ? ", which boot-device names" : "");
 	}
 	struct share *share = NULL;
 	if (!found && share_dir) {
@@ -491,7 +484,9 @@ static int cmd_boot(int argc, char **argv)
 	if (found)
 		return 1;
 	opt.share = share ? share_disk(share) : NULL;
-	int rc = nk_boot(&rom, &opt);
+	/* (with a window, the machine runs on a thread of its own, and this one runs the window) */
+	struct boot boot = { &rom, &opt };
+	int rc = opt.window ? display_main(boot_machine, &boot) : nk_boot(&rom, &opt);
 	rom_free(&rom);
 	if (share_close(share))
 		rc = 1;

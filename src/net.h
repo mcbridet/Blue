@@ -29,7 +29,6 @@
 #include "ndrv.h"
 
 #define HOSTCALL_LANLIB 0x110u
-#define NET_IST_RX 0u                   /* the receive DMA channel's member of the node's interrupt set */
 #define NET_QUEUE 64u
 #define NET_FRAME_MAX 1518u             /* (without the frame check sequence) */
 

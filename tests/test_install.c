@@ -25,6 +25,7 @@
 #define SYSTEM 20u
 #define EXTENSIONS 21u
 #define DISABLED 22u
+#define PREFS 23u
 #define MDB_ATRB (1024u + 10)
 #define MDB_BLESSED (1024u + 92)          /* (Finder info word 0) */
 
@@ -391,9 +392,11 @@ static int16_t file_manager(unsigned call, const uint32_t *a)
 	switch (call) {
 	case FIND_FOLDER:
 		CHECK_EQ(a[0], 0xFFFF8000u);
-		CHECK(a[1] == FOURCC('e', 'x', 't', 'n') || (a[1] == FOURCC('e', 'x', 't', 'D') && a[2] == 1));
+		CHECK(a[1] == FOURCC('e', 'x', 't', 'n') || ((a[1] == FOURCC('e', 'x', 't', 'D') ||
+							       a[1] == FOURCC('p', 'r', 'e', 'f')) && a[2] == 1));
 		mem_w16(&mem, a[3], VREF);
-		mem_w32(&mem, a[4], a[1] == FOURCC('e', 'x', 't', 'n') ? EXTENSIONS : DISABLED);
+		mem_w32(&mem, a[4], a[1] == FOURCC('e', 'x', 't', 'n') ? EXTENSIONS :
+				    a[1] == FOURCC('p', 'r', 'e', 'f') ? PREFS : DISABLED);
 		return 0;
 	case HGET_VINFO:
 		CHECK_EQ(mem_r16(&mem, pb + 22), VREF);
@@ -405,7 +408,8 @@ static int16_t file_manager(unsigned call, const uint32_t *a)
 		int16_t index = (int16_t)mem_r16(&mem, pb + 28);
 		uint32_t dir = mem_r32(&mem, pb + 48), name_ptr = mem_r32(&mem, pb + 18);
 		if (index < 0) {
-			const char *folder = dir == EXTENSIONS ? "Extensions" : "Extensions (Disabled)";
+			const char *folder = dir == EXTENSIONS ? "Extensions" : dir == PREFS ? "Preferences" :
+					     "Extensions (Disabled)";
 			mem_w8(&mem, name_ptr, (uint8_t)strlen(folder));
 			memcpy(mem_ptr(&mem, name_ptr + 1), folder, strlen(folder));
 			return 0;
@@ -586,7 +590,7 @@ static void test_installer(void)
 	CHECK(!idle_until_diverted(&in, &h, &tb));
 	CHECK_EQ(in.phase, INSTALL_ASKING);
 	CHECK(in.ask);
-	install_answer(&in, true, &h);
+	install_answer(&in, INSTALL_YES, &h);
 	CHECK_EQ(in.phase, INSTALL_INJECT);
 	w = (struct install_idle){ &mem, &h, true, tb, HZ, 1000, DRIVE, 0 };
 	CHECK(!install_idle(&in, &w));                  /* (a nap: not at the idle trap) */
@@ -635,7 +639,7 @@ static void test_installer_errors(void)
 	struct file *old = add_file(EXTENSIONS, "Blue 3D Engine", 61, &tools[TOOLS_3D_ENGINE]);
 	old->fork[0][0] ^= 1;
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, true, &h);                  /* (a script's, before the question) */
+	install_answer(&in, INSTALL_YES, &h);           /* (a script's, before the question) */
 	uint64_t tb = HZ;
 	mem_w32(&mem, TRAP_ENTRY_9, ROUTINE);           /* (Mac OS 9's idle trap, this time) */
 	idle_trap = IDLE_TRAP_9;
@@ -673,7 +677,7 @@ static void test_installer_errors(void)
 	memset(&fs, 0, sizeof fs);
 	fs.volume_locked = true;
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, true, &h);
+	install_answer(&in, INSTALL_YES, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
 	run_installer(&in);
 	CHECK(!find(EXTENSIONS, "Blue Enhancements") && !find(EXTENSIONS, "Blue installing"));
@@ -685,7 +689,7 @@ static void test_installer_errors(void)
 	fs.next_id = 100;
 	fs.send_error = -108;
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, true, &h);
+	install_answer(&in, INSTALL_YES, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
 	run_installer(&in);
 	CHECK(same_as(find(EXTENSIONS, "Blue 3D Engine"), TOOLS_3D_ENGINE));
@@ -707,7 +711,7 @@ static void test_installer_quit(void)
 	fs.next_id = 100;
 	add_file(EXTENSIONS, "Blue Helper", 62, &tools[TOOLS_ENHANCEMENTS])->locked = true;
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, true, &h);
+	install_answer(&in, INSTALL_YES, &h);
 	struct install_idle w = { &mem, &h, true, HZ, HZ, 1000, DRIVE, IDLE_TRAP };
 	for (unsigned k = 0; k < 40 && in.phase != INSTALL_QUITTING; k++, w.tb += HZ / 20)
 		CHECK(!install_idle(&in, &w));
@@ -729,7 +733,7 @@ static void test_installer_quit(void)
 	find(EXTENSIONS, "Blue Helper")->locked = false;
 	h.running = true;
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, true, &h);
+	install_answer(&in, INSTALL_YES, &h);
 	w.tb = HZ;
 	for (unsigned k = 0; k < 40 && in.phase != INSTALL_QUITTING; k++, w.tb += HZ / 20)
 		CHECK(!install_idle(&in, &w));
@@ -747,7 +751,7 @@ static void test_installer_quit(void)
 	/* ... or starts after the answer: it's asked to quit before the installer goes in */
 	h.running = false;
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, true, &h);
+	install_answer(&in, INSTALL_YES, &h);
 	w = (struct install_idle){ &mem, &h, true, HZ, HZ, 1000, DRIVE, 0 };
 	for (unsigned k = 0; k < 40 && in.phase != INSTALL_INJECT; k++, w.tb += HZ / 20)
 		CHECK(!install_idle(&in, &w));
@@ -761,7 +765,7 @@ static void test_installer_quit(void)
 	/* one that doesn't quit: Blue goes ahead after a while */
 	h.running = true;
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, true, &h);
+	install_answer(&in, INSTALL_YES, &h);
 	uint64_t tb = HZ;
 	CHECK(idle_until_diverted(&in, &h, &tb));
 	CHECK(tb > 6 * (uint64_t)HZ);
@@ -769,7 +773,7 @@ static void test_installer_quit(void)
 	/* a system that idles without the idle trap: Blue gives up, and says so */
 	h.running = false;
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, true, &h);
+	install_answer(&in, INSTALL_YES, &h);
 	w = (struct install_idle){ &mem, &h, true, tb, HZ, 1000, DRIVE, 0 };
 	for (unsigned k = 0; k < 400 && in.phase != INSTALL_DONE; k++, w.tb += HZ / 20)
 		CHECK(!install_idle(&in, &w));
@@ -778,7 +782,7 @@ static void test_installer_quit(void)
 
 	/* not now */
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, false, &h);
+	install_answer(&in, INSTALL_NOT_NOW, &h);
 	CHECK(!idle_until_diverted(&in, &h, &tb));
 	CHECK_EQ(in.phase, INSTALL_DONE);
 }
@@ -796,7 +800,7 @@ static void test_installer_apple(void)
 	memset(&fs, 0, sizeof fs);
 	fs.next_id = 100;
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, true, &h);
+	install_answer(&in, INSTALL_YES, &h);
 	uint64_t tb = HZ;
 	CHECK(idle_until_diverted(&in, &h, &tb));
 	run_installer(&in);
@@ -815,7 +819,7 @@ static void test_installer_apple(void)
 	for (unsigned k = 0; k < 3; k++)
 		add_file(EXTENSIONS, names[k], 80 + k, NULL);
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, true, &h);
+	install_answer(&in, INSTALL_YES, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
 	run_installer(&in);
 	for (unsigned t = TOOLS_GL_FIRST; t < TOOLS_GL_FIRST + TOOLS_GL_FILES; t++)
@@ -837,7 +841,7 @@ static void test_installer_apple(void)
 	items[3] = tool_item(TOOLS_3D_ENGINE, EXTENSIONS, 51, NULL, false);
 	write_volume(items, with_apple(items, 4, DISABLED, 80), 0);
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, true, &h);
+	install_answer(&in, INSTALL_YES, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
 	run_installer(&in);
 	for (unsigned k = 0; k < 3; k++)
@@ -863,7 +867,7 @@ static void test_installer_apple(void)
 	add_file(DISABLED, names[1], 99, NULL);
 	write_volume(items, with_apple(items, 4, EXTENSIONS, 80), 0);
 	install_begin(&in, volume_path, 0, false);
-	install_answer(&in, true, &h);
+	install_answer(&in, INSTALL_YES, &h);
 	CHECK(idle_until_diverted(&in, &h, &tb));
 	run_installer(&in);
 	CHECK(find(DISABLED, names[0]) && find(EXTENSIONS, names[1]) && find(DISABLED, names[2]));
@@ -871,6 +875,101 @@ static void test_installer_apple(void)
 			      "(Disabled)\"; couldn't move Apple's OpenGLMemory: something of that name is in the way.") !=
 	      NULL);
 	CHECK(fs.flushes == 0 && fs.restarts == 0);
+}
+
+/*
+ * Don't Ask Again: Blue's preferences file, its contents; the check finds it
+ * and nothing's offered, but the menu still offers; Mac OS writes it, and
+ * deletes it once the tools are installed.
+ */
+static void test_never(void)
+{
+	static struct install in;
+	struct helper h = { .running = false };
+	bool never;
+	char text[INSTALL_PREFS_MAX];
+
+	size_t len = install_prefs_make(text, sizeof text, true);
+	CHECK(len > 0 && strcmp(text, "Blue Preferences\rOffer the guest tools: no\r") == 0);
+	CHECK(install_prefs_parse((const uint8_t *)text, len, &never) && never);
+	CHECK(install_prefs_make(text, 20, true) == 0);
+	len = install_prefs_make(text, sizeof text, false);
+	CHECK(install_prefs_parse((const uint8_t *)text, len, &never) && !never);
+	static const char lf[] = "Blue Preferences\nSomething else: 3\nOffer the guest tools: no";
+	CHECK(install_prefs_parse((const uint8_t *)lf, sizeof lf - 1, &never) && never);
+	static const char other[] = "Blue Preferences 2\rOffer the guest tools: no\r";
+	CHECK(!install_prefs_parse((const uint8_t *)other, sizeof other - 1, &never) && !never);
+	static const char nope[] = "Blue Preferences\rOffer the guest tools: nope\r";
+	CHECK(install_prefs_parse((const uint8_t *)nope, sizeof nope - 1, &never) && !never);
+
+	/* found in the Preferences folder: the check knows, and nothing's offered of itself */
+	len = install_prefs_make(text, sizeof text, true);
+	struct item items[8] = { folder(SYSTEM, EXTENSIONS, "Extensions"), folder(SYSTEM, PREFS, "Preferences"),
+				 { PREFS, 30, "Blue Preferences", false, FOURCC('p', 'r', 'e', 'f'),
+				   FOURCC('s', 'y', 'H', 'p'), (const uint8_t *)text, NULL, (uint32_t)len, 0 } };
+	write_volume(items, 3, 0);
+	install_begin(&in, volume_path, 0, false);
+	CHECK(in.check.prefs_found && in.check.never);
+	CHECK_EQ(in.check.prefs_dir, PREFS);
+	CHECK_EQ(in.phase, INSTALL_OFF);
+	CHECK(in.checked && install_unofferable(&in) == NULL);
+	install_answer(&in, INSTALL_YES, &h);           /* (a script's: there's no question to answer) */
+	CHECK_EQ(in.phase, INSTALL_OFF);
+	install_begin(&in, volume_path, 0, true);       /* (read-only: the menu can't offer either) */
+	CHECK(install_unofferable(&in) != NULL);
+	items[2].creator = FOURCC('t', 't', 'x', 't');  /* (someone else's) */
+	write_volume(items, 3, 0);
+	install_begin(&in, volume_path, 0, false);
+	CHECK(!in.check.prefs_found && in.phase == INSTALL_WAIT_FINDER);
+
+	/* asked, Don't Ask Again: Mac OS writes the file, and doesn't restart */
+	write_volume(items, 2, 0);
+	memset(&fs, 0, sizeof fs);
+	fs.next_id = 100;
+	install_begin(&in, volume_path, 0, false);
+	uint64_t tb = HZ;
+	mem_w32(&mem, TRAP_ENTRY, ROUTINE);
+	CHECK(!idle_until_diverted(&in, &h, &tb));
+	CHECK(in.ask && strcmp(in.never, "Don't Ask Again") == 0);
+	install_answer(&in, INSTALL_NEVER, &h);
+	CHECK_EQ(in.phase, INSTALL_INJECT);
+	CHECK(idle_until_diverted(&in, &h, &tb));
+	run_installer(&in);
+	CHECK_EQ(in.phase, INSTALL_DONE);
+	struct file *f = find(PREFS, "Blue Preferences");
+	CHECK(f && f->type == FOURCC('p', 'r', 'e', 'f') && f->creator == FOURCC('s', 'y', 'H', 'p'));
+	CHECK(f && install_prefs_parse(f->fork[0], f->len[0], &never) && never);
+	CHECK(!find(EXTENSIONS, "Blue Enhancements"));
+	CHECK(fs.flushes == 1 && fs.restarts == 0 && !in.restarting && fs.opened == 0);
+	CHECK(in.check.never && in.check.prefs_dir == PREFS);
+	CHECK(strcmp(in.news, "Blue won't offer its guest tools on \"Test\" again (Blue Preferences in \"Test:System "
+			      "Folder:Preferences\" says so). To install them later, choose Install Guest Tools... in "
+			      "Blue's menu (F12).") == 0);
+
+	/* the menu's offer, Install: the tools, and the file goes (they're offered again when they need to be) */
+	install_offer(&in);
+	CHECK(in.phase == INSTALL_ASKING && in.ask);
+	install_answer(&in, INSTALL_YES, &h);
+	CHECK(idle_until_diverted(&in, &h, &tb));
+	run_installer(&in);
+	CHECK(same_as(find(EXTENSIONS, "Blue Enhancements"), TOOLS_ENHANCEMENTS));
+	CHECK(!find(PREFS, "Blue Preferences"));
+	CHECK(!in.check.prefs_found && !in.check.never);
+	CHECK(fs.restarts == 1 && in.restarting);
+	CHECK(install_unofferable(&in) != NULL);        /* (restarting) */
+
+	/* Don't Ask Again on a locked volume: said, and asked again next time */
+	memset(&fs, 0, sizeof fs);
+	fs.volume_locked = true;
+	install_begin(&in, volume_path, 0, false);
+	install_offer(&in);
+	install_answer(&in, INSTALL_NEVER, &h);
+	CHECK(idle_until_diverted(&in, &h, &tb));
+	run_installer(&in);
+	CHECK(!find(PREFS, "Blue Preferences"));
+	CHECK(strcmp(in.news, "couldn't save Don't Ask Again (looking at the startup disk: the disk is locked), so "
+			      "Blue will offer its guest tools again next time.") == 0);
+	CHECK(!in.check.never);
 }
 
 void test_install(void)
@@ -898,6 +997,7 @@ void test_install(void)
 	test_installer_errors();
 	test_installer_quit();
 	test_installer_apple();
+	test_never();
 	fflush(stdout);
 	if (out >= 0)
 		dup2(out, 1);

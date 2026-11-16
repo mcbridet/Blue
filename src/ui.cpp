@@ -256,6 +256,17 @@ static enum ui_action menu(const struct ui_state *s)
 		action = UI_TURN_OFF;
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("At once, as if the power went: unsaved work is lost");
+	if (s->tools) {
+		ImGui::Separator();
+		ImGui::BeginDisabled(s->tools_why_not != nullptr);
+		if (ImGui::Button("Install Guest Tools...", wide))
+			action = UI_INSTALL_TOOLS;
+		ImGui::EndDisabled();
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+			ImGui::SetTooltip("%s", s->tools_why_not ? s->tools_why_not :
+						     "Offers to install Blue's guest tools on the startup disk, as Blue does "
+						     "by itself unless told not to (Don't Ask Again)");
+	}
 	if (s->drives) {
 		enum ui_action chosen = drives_menu(s->drives);
 		if (chosen != UI_NONE)
@@ -307,14 +318,23 @@ static enum ui_action prompt(const struct ui_state *s)
 	ImGui::BeginDisabled(s->menu);
 	text_wrapped(s->prompt, PROMPT_WIDTH);
 	ImGui::Dummy(ImVec2(PROMPT_WIDTH, 4));
-	/* (as wide as the wider label needs: "Put Back and Restart") */
+	/* (as wide as the wider label needs: "Put Back and Restart"; a third button on the left, apart) */
 	const char *const labels[] = { s->prompt_no, s->prompt_yes };
 	float wide = PROMPT_BUTTON, pad = 2 * ImGui::GetStyle().FramePadding.x;
 	for (const char *label : labels)
 		if (label && ImGui::CalcTextSize(label).x + pad > wide)
 			wide = ImGui::CalcTextSize(label).x + pad;
 	float buttons = s->prompt_no ? 2 * wide + ImGui::GetStyle().ItemSpacing.x : wide;
-	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + PROMPT_WIDTH - buttons);
+	float x = ImGui::GetCursorPosX();
+	if (s->prompt_alt) {
+		float alt = ImGui::CalcTextSize(s->prompt_alt).x + pad;
+		if (ImGui::Button(s->prompt_alt, ImVec2(alt > PROMPT_BUTTON ? alt : PROMPT_BUTTON, 0)))
+			action = UI_PROMPT_ALT;
+		ImGui::SameLine();
+		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 16);      /* (apart from the others) */
+	}
+	if (x + PROMPT_WIDTH - buttons > ImGui::GetCursorPosX())
+		ImGui::SetCursorPosX(x + PROMPT_WIDTH - buttons);
 	if (s->prompt_no) {
 		if (ImGui::Button(s->prompt_no, ImVec2(wide, 0)))
 			action = UI_PROMPT_NO;

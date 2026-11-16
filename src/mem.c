@@ -41,6 +41,8 @@ int mem_init(struct mem *m)
 		return -1;
 	}
 	m->base = p;
+	long host_page = sysconf(_SC_PAGESIZE);
+	m->host_pages = host_page > (long)MEM_PAGE_SIZE ? (uint32_t)(host_page >> MEM_PAGE_SHIFT) : 1;
 	return 0;
 }
 
@@ -89,7 +91,7 @@ static void update_fast(struct mem *m, uint64_t first, uint64_t last)
 	for (uint64_t pg = first ? first - 1 : 0; pg <= last && pg < PAGES; pg++) {
 		unsigned f = m->pageflags[pg], next = pg + 1 < PAGES ? m->pageflags[pg + 1] : 0;
 		f &= ~(unsigned)(MEM_FAST_W | MEM_FAST_R);
-		if ((f & (MEM_W | MEM_CODE)) == MEM_W && (next & (MEM_W | MEM_CODE)) == MEM_W)
+		if ((f & (MEM_W | MEM_CODE | MEM_WATCH)) == MEM_W && (next & (MEM_W | MEM_CODE | MEM_WATCH)) == MEM_W)
 			f |= MEM_FAST_W;
 		if ((f & next & MEM_R))
 			f |= MEM_FAST_R;
@@ -138,6 +140,10 @@ void mem_invalidate(struct mem *m, uint32_t addr, uint32_t size)
 	uint64_t last = ((uint64_t)addr + size - 1) >> MEM_PAGE_SHIFT;
 	uint64_t end = (uint64_t)addr + size;
 	for (uint64_t pg = first; pg <= last && pg < PAGES; pg++) {
+		if (!(m->pageflags[pg] & (MEM_CODE | MEM_WATCH)))
+			continue;
+		if (m->pageflags[pg] & MEM_WATCH)
+			mem_unwatch(m, (uint32_t)pg);
 		if (!(m->pageflags[pg] & MEM_CODE))
 			continue;
 		uint64_t lo = pg << MEM_PAGE_SHIFT, hi = lo + MEM_PAGE_SIZE;
@@ -158,4 +164,35 @@ bool mem_write_slow(struct mem *m, uint32_t addr, uint32_t len)
 		return false;
 	mem_invalidate(m, addr, len);
 	return true;
+}
+
+void mem_watch(struct mem *m, uint32_t addr, uint32_t size)
+{
+	if (size == 0)
+		return;
+	uint64_t first = addr >> MEM_PAGE_SHIFT, last = ((uint64_t)addr + size - 1) >> MEM_PAGE_SHIFT;
+	bool changed = false;
+	for (uint64_t pg = first; pg <= last && pg < PAGES; pg++) {
+		if ((m->pageflags[pg] & (MEM_W | MEM_WATCH)) == MEM_W) {
+			m->pageflags[pg] |= MEM_WATCH;
+			changed = true;
+		}
+	}
+	if (!changed)
+		return;
+	update_fast(m, first, last);
+	if (m->flags_changed)
+		m->flags_changed(m->code_ctx, (uint32_t)first, (uint32_t)(last - first + 1));
+}
+
+/* (from the JIT's fault handler too: only the page flags and the view's protection change) */
+void mem_unwatch(struct mem *m, uint32_t page)
+{
+	uint32_t n = m->host_pages ? m->host_pages : 1, first = page & ~(n - 1), last = first + n - 1;
+	for (uint32_t pg = first; pg <= last; pg++)
+		m->pageflags[pg] &= (uint8_t)~MEM_WATCH;
+	m->unwatched++;
+	update_fast(m, first, last);
+	if (m->flags_changed)
+		m->flags_changed(m->code_ctx, first, n);
 }

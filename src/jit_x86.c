@@ -1442,8 +1442,9 @@ static void slow_loads(struct tx *t)
  * the interpreter executes the instruction. Then, if the page holds no
  * translated code, or the word stored to isn't one that code was
  * translated from (the page's bitmap says), the store just happens.
- * Otherwise a host function stores it, invalidating the blocks translated
- * from those bytes; the registers in caller-saved host registers are
+ * Otherwise, or if the page is watched (MEM_WATCH), a host function stores
+ * it, invalidating the blocks translated from those bytes (or seeing the
+ * write); the registers in caller-saved host registers are
  * reloaded afterwards, and if any code changed, the instruction completes
  * (rA) and the block is left after it.
  */
@@ -1469,6 +1470,8 @@ static void slow_stores(struct tx *t)
 			x86_alu_ri(B, X86_CMP, 0, T2, (int32_t)(MEM_PAGE_SIZE - bytes));
 			exit_if(t, X86_A);
 		}
+		x86_test_ri(B, 0, T1, MEM_WATCH);                       /* the host sees it */
+		uint8_t *watch = fwd(t, X86_NE);
 		x86_test_ri(B, 0, T1, MEM_CODE);
 		uint8_t *plain[2] = { fwd(t, X86_E), NULL }, *call = NULL;
 		if (bytes <= 4) {
@@ -1492,6 +1495,7 @@ static void slow_stores(struct tx *t)
 			plain[1] = fwd(t, X86_AE);
 		}
 		land(t, call);
+		land(t, watch);
 
 		/* code_store(&jit_state, EA, the bytes in guest order, size), the value taken first (xmm5) */
 		if (ss->fp && ss->size == 3)
@@ -1591,7 +1595,7 @@ static void block_flags(struct tx *t, bool load)
 	x86_test_ri(B, 0, T1, load ? MEM_R : MEM_W);
 	exit_if(t, X86_E);
 	if (!load) {
-		x86_test_ri(B, 0, T1, MEM_CODE);
+		x86_test_ri(B, 0, T1, MEM_CODE | MEM_WATCH);    /* the interpreter's job */
 		exit_if(t, X86_NE);
 	}
 }

@@ -987,8 +987,10 @@ static void land(struct tx *t, uint32_t *at)
 static void block_flags(struct tx *t, bool load, unsigned reg)
 {
 	exit_if_bit(t, false, reg, load ? 0 : 1);               /* MEM_R / MEM_W */
-	if (!load)
+	if (!load) {
 		exit_if_bit(t, true, reg, 3);                   /* MEM_CODE */
+		exit_if_bit(t, true, reg, WATCH_BIT);           /* (and MEM_WATCH: the interpreter's too) */
+	}
 }
 
 /*
@@ -1046,8 +1048,9 @@ static void load_store_multiple(struct tx *t, bool load, unsigned rs, unsigned r
  * the interpreter executes the instruction.
  * Then, if the page holds no translated code, or the word stored to isn't
  * one that code was translated from (the page's bitmap says), the store
- * just happens. Otherwise a host function stores w4/x4 at the EA in w1,
- * invalidating the blocks translated from those bytes; the cached registers
+ * just happens. Otherwise, or if the page is watched (MEM_WATCH), a host
+ * function stores w4/x4 at the EA in w1, invalidating the blocks translated
+ * from those bytes (or seeing the write); the cached registers
  * in caller-saved host registers are reloaded afterwards, and if any code
  * changed, the instruction completes (rA) and the block is left after it.
  */
@@ -1056,7 +1059,7 @@ static void slow_stores(struct tx *t)
 	for (unsigned s = 0; s < t->nslow; s++) {
 		struct slow_store *ss = &t->slow[s];
 		unsigned bytes = 1u << ss->size;
-		uint32_t *to_plain[2] = { NULL, NULL }, *to_call = NULL;
+		uint32_t *to_plain[2] = { NULL, NULL }, *to_call = NULL, *to_watch;
 		patch(t, ss->at, FIX_IMM14, t->p);
 		t->k = ss->k;
 		t->rc = ss->cs;
@@ -1072,6 +1075,8 @@ static void slow_stores(struct tx *t)
 			emit(t, a64_addsub_imm(0, 1, 1, A64_ZR, 10, MEM_PAGE_SIZE - bytes));
 			exit_if(t, A64_HI);
 		}
+		to_watch = t->p;
+		emit(t, a64_tbz(true, 9, WATCH_BIT, 0));                        /* MEM_WATCH: the host sees it */
 		to_plain[0] = t->p;
 		emit(t, a64_tbz(false, 9, 3, 0));                               /* no MEM_CODE */
 		if (bytes <= 4) {
@@ -1094,6 +1099,7 @@ static void slow_stores(struct tx *t)
 		}
 		if (to_call)
 			patch(t, to_call, FIX_IMM19, t->p);
+		patch(t, to_watch, FIX_IMM14, t->p);
 
 		rc_store(t, &ss->cs);
 		fixed_store(t, CALLER_SAVED_FIXED);
