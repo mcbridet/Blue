@@ -682,8 +682,8 @@ starts it looks in the startup disk's System Folder (its folders,
 Extensions whatever its name and Extensions (Disabled) among them) for
 them, and once the Finder is up, if one is missing or isn't this version's
 (both forks compared with what it makes), a box over the screen says so,
-with Install and Restart (or Update and Restart) and Not Now; Mac OS runs
-on meanwhile. On Install, Mac OS writes the files itself (see Findings in
+with Install and Restart (or Update and Restart), Not Now and Don't Ask
+Again (below); Mac OS runs on meanwhile. On Install, Mac OS writes the files itself (see Findings in
 plan.md): each goes to a temporary file in the folder it belongs in, which
 then takes the old copy's place, so an error (a full or locked disk) leaves
 nothing half written; a disabled copy is updated where it is and stays
@@ -718,10 +718,28 @@ tools: installed Blue OpenGL Library, Blue OpenGL Memory and Blue OpenGL Utility
 
 Nothing is offered when the startup disk is a CD, an image attached
 read-only, or a locked volume, nor without a window: an input script can
-answer instead (`tools install`, `tools later`), and that turns the check
-on; `tools install` restarts Mac OS too, and instruction-time runs stay
-reproducible. The startup disk is the partition the ROM file came from (with
-`--rom`, the first with boot blocks).
+answer instead (`tools install`, `tools later`, `tools never`), and that
+turns the check on; `tools install` restarts Mac OS too, and
+instruction-time runs stay reproducible. The startup disk is the partition
+the ROM file came from (with `--rom`, the first with boot blocks).
+
+The offer has a third button, on its left: Don't Ask Again. Blue then
+doesn't offer the tools by itself on that disk again, whatever version
+they are: Mac OS writes a small preferences file, "Blue Preferences", in
+the startup disk's Preferences folder (through the installer, as it writes
+the tools; text: `Offer the guest tools: no`), which Blue finds there as it
+looks for the tools before startup. The choice goes with the disk, so
+another system Blue starts has its own. Install Guest Tools... in Blue's
+menu (F12) makes the offer any time there's something to install (it's
+disabled otherwise, saying why), Don't Ask Again or not; installing the
+tools deletes the file, so newer versions of them are offered again.
+Deleting the file by hand does the same. In scripts, `tools offer` is the
+menu item.
+
+```
+tools: Blue won't offer its guest tools on "MacOS9Lives" again (Blue Preferences in "MacOS9Lives:System Folder:Preferences" says so). To install them later, choose Install Guest Tools... in Blue's menu (F12).
+tools: not offered (Blue Preferences: Don't Ask Again; Blue's menu, F12, offers them)
+```
 
 They can still be installed by hand: `blue tools create FILE` writes a
 small volume, "Blue Tools", holding them, which `--cdrom FILE` attaches
@@ -1362,7 +1380,8 @@ software (on 8.6, an M5 Mac).
   shuts down properly if told to (applications ask to save, NVRAM and a
   shared folder are written, and the run ends when the Mac turns itself
   off); Turn off, the power switch, for a Mac that doesn't answer (straight
-  away; it keeps NVRAM, as closing the window does); a screenshot of the Mac's screen
+  away; it keeps NVRAM, as closing the window does); Install Guest
+  Tools... (the offer, see Guest tools); a screenshot of the Mac's screen
   (a PNG on the Desktop, or in the current directory without one, named
   for when it was taken); fullscreen (at the desktop's resolution); the
   status bar; whether the pointer is captured while the Mac hides its
@@ -1493,8 +1512,7 @@ What the Trampoline replacement (`src/bootinfo.c`) tells the ROM:
    written (by protecting them) rather than comparing it with a copy each
    frame, which is most of what showing a 32-bit screen still costs (plan.md,
    Findings, "Showing the screen").
-3. Known problems: a "don't ask again" for
-   the guest tools' offer, and the offer on an installed 9.1; startup-disk
+3. Known problems: the guest tools' offer on an installed 9.1; startup-disk
    selection (the Startup Disk control panel); whether Open Transport's
    stall with a full interrupt set for the Ethernet node is still there.
 4. Later: host ports forwarded to the guest (so it can serve); the shared
@@ -1612,7 +1630,8 @@ counts, for example:
 3600000000 screenshot after.png
 3700000000 clock 800             # guest time at 800 million instructions a second from here
 3800000000 power                 # the keyboard's power key: Mac OS asks whether to shut down
-0 tools install                  # the answer to the offer to install the guest tools (or "later"): Mac OS then restarts
+0 tools install                  # the answer to the offer to install the guest tools (or "later", or "never": Don't Ask Again): Mac OS then restarts
+5000000000 tools offer           # the offer, now (the menu's Install Guest Tools...)
 3900000000 floppy insert Disk 2.img
 3950000000 cdrom insert Game CD 2.iso
 4000000000 clipboard Olé “two”\nlines   # the host's clipboard has this text now (\n: a newline)

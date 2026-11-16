@@ -1551,6 +1551,7 @@ static void follow_cursor(struct machine *m, uint64_t now)
 
 static void display_input(struct machine *m, uint64_t now);
 static void stay_paused(struct machine *m);
+static void tools_show(struct machine *m);
 
 /* A path's last part, as the menu and messages name images */
 static const char *file_name(const char *path)
@@ -1655,6 +1656,7 @@ static void menu_state(struct machine *m)
 			      m->mouse_released ? UI_MOUSE_RELEASED : UI_MOUSE_CAPTURED;
 	display_menu_state(m->display, mouse, m->menu_status);
 	drives_state(m);
+	display_tools_state(m->display, m->tools_offer, install_unofferable(&m->install));
 }
 
 /* The screen as a PNG on the Desktop (or here), named for when it was taken */
@@ -1717,9 +1719,18 @@ static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
 		break;
 	case UI_PROMPT_YES:
 	case UI_PROMPT_NO:
+	case UI_PROMPT_ALT:
 		m->prompting = false;
 		if (!m->prompt_news)
-			install_answer(&m->install, action == UI_PROMPT_YES, &m->helper);
+			install_answer(&m->install, action == UI_PROMPT_YES ? INSTALL_YES :
+				       action == UI_PROMPT_ALT ? INSTALL_NEVER : INSTALL_NOT_NOW, &m->helper);
+		follow_cursor(m, now);
+		break;
+	case UI_INSTALL_TOOLS:          /* the offer, now (Don't Ask Again or not) */
+		m->paused = false;
+		display_menu(m->display, false);
+		install_offer(&m->install);
+		tools_show(m);
 		follow_cursor(m, now);
 		break;
 	default:
@@ -2200,13 +2211,18 @@ static void script_run(struct machine *m, struct script *s)
 			else
 				printf("screen saved to %s at instruction %llu\n", e->arg,
 				       (unsigned long long)m->cpu.icount);
-		} else if (strcmp(e->cmd, "tools") == 0 && (!strcmp(e->arg, "install") || !strcmp(e->arg, "later"))) {
+		} else if (strcmp(e->cmd, "tools") == 0 && !strcmp(e->arg, "offer")) {
+			install_offer(&m->install);     /* (as the window's menu does: Install Guest Tools...) */
+			tools_show(m);
+		} else if (strcmp(e->cmd, "tools") == 0 && (!strcmp(e->arg, "install") || !strcmp(e->arg, "later") ||
+							     !strcmp(e->arg, "never"))) {
 			/* answers the window's offer to install the guest tools (see tools_startup()) */
 			if (m->prompting) {
 				m->prompting = false;
 				display_prompt(m->display, NULL, NULL, NULL);
 			}
-			install_answer(&m->install, strcmp(e->arg, "install") == 0, &m->helper);
+			install_answer(&m->install, !strcmp(e->arg, "install") ? INSTALL_YES :
+				       !strcmp(e->arg, "never") ? INSTALL_NEVER : INSTALL_NOT_NOW, &m->helper);
 		} else if (strcmp(e->cmd, "floppy") == 0) {
 			if (e->a == 1)
 				drive_insert(m, e->arg, DRIVES_FLOPPY);
@@ -2963,6 +2979,8 @@ static void tools_show(struct machine *m)
 	if (in->ask) {
 		in->ask = false;
 		shown = m->display && display_prompt(m->display, in->question, in->yes, "Not Now");
+		if (shown)
+			display_prompt_alt(m->display, in->never);
 	}
 	if (in->news_ready) {
 		in->news_ready = false;

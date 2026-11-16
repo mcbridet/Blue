@@ -65,7 +65,8 @@ static int usage(void)
 		"                               key HEX [down|up], resize W H, screenshot FILE,\n"
 		"                               floppy insert FILE, floppy eject, cdrom insert FILE,\n"
 		"                               cdrom eject,\n"
-		"                               tools install|later (the answer to that offer)\n"
+		"                               tools install|later|never (the answer to that offer;\n"
+		"                               never: Don't Ask Again), tools offer (the offer, now)\n"
 		"      --max <n>                stop after n PowerPC instructions (default 500000000)\n");
 	fprintf(stderr,
 		"      --io-ram                 back touched I/O pages with plain RAM and keep going\n"

@@ -123,6 +123,9 @@ void display_menu_state(struct display *d, enum ui_mouse mouse, const char *stat
 /* ... and of the drives with removable media (copied; NULL: there are none) */
 void display_drives_state(struct display *d, const struct ui_drives *drives);
 
+/* ... and Install Guest Tools...: whether it's there, and why it's disabled (copied; NULL: it isn't) */
+void display_tools_state(struct display *d, bool shown, const char *why_not);
+
 /*
  * Shows a question or news over the screen, with one or two buttons (`no`
  * may be NULL; all are copied), until one is chosen (DISPLAY_EVENT_MENU_ACTION,
@@ -131,6 +134,9 @@ void display_drives_state(struct display *d, const struct ui_drives *drives);
  * shown (no menu).
  */
 bool display_prompt(struct display *d, const char *text, const char *yes, const char *no);
+
+/* A third button for the question shown, on the left (UI_PROMPT_ALT): Don't Ask Again */
+void display_prompt_alt(struct display *d, const char *label);
 
 /*
  * The status bar (with the menu's SDL only), below the screen: shown or

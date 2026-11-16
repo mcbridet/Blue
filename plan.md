@@ -578,7 +578,23 @@ the kernel); 8 onwards as the boot progresses.
   the installer against a File Manager of its own, the restart included.
   `--tools` is gone:
   `blue tools create FILE` makes the volume for installing them by hand
-  (`--cdrom FILE`). Open: "don't ask again"; 9.1 on an installed disk.
+  (`--cdrom FILE`). Don't Ask Again (the offer's third button; `tools
+  never`): Mac OS writes "Blue Preferences" (type 'pref', Enhancements'
+  creator, CR-ended text: `Blue Preferences`, `Offer the guest tools: no`)
+  in its Preferences folder, by the same installer (job
+  `INSTALL_JOB_NEVER`: FindFolder 'pref', PBGetCatInfo for the folder's
+  name, FSpDelete of an older one, FSpCreate, FSpOpenDF, FSWrite, FSClose,
+  FlushVol; no restart); the check finds it among the System Folder's
+  folders, and the offer then isn't made by itself. The window's menu has
+  Install Guest Tools... (`tools offer`), which makes it whenever there's
+  something to install (disabled otherwise, with why), and installing
+  deletes the file (FSpDelete before the FlushVol), so later versions are
+  offered again. The choice goes with the disk. `tests/test_install.c`
+  covers the file's contents, the check, the menu's offer and both jobs.
+  Checked on the restored 9.2.2 (set up): Don't Ask Again wrote the file,
+  the next startup offered nothing, `tools offer` and Install installed
+  the tools, deleted the file and restarted. Open: 9.1 on an installed
+  disk.
 
 ### 14. Clipboard
 

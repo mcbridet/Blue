@@ -190,7 +190,9 @@ struct display {
 	enum ui_mouse menu_mouse;       /* what it shows */
 	char menu_status[480];
 	bool prompt;                    /* a question or news is shown (display_prompt()): input goes to it */
-	char prompt_text[1024], prompt_yes[32], prompt_no[32];
+	char prompt_text[1024], prompt_yes[32], prompt_no[32], prompt_alt[32];
+	bool tools;                     /* the menu has Install Guest Tools... (display_tools_state()), */
+	char tools_why_not[160];        /* ... enabled unless this says why not */
 	bool fullscreen;
 	bool status_bar;                /* shown, below the screen (only with the menu's SDL) */
 	struct ui_status bar;           /* what it shows */
@@ -574,7 +576,10 @@ static void draw(struct display *d)
 			.prompt = d->prompt ? d->prompt_text : NULL,
 			.prompt_yes = d->prompt_yes,
 			.prompt_no = d->prompt_no[0] ? d->prompt_no : NULL,
+			.prompt_alt = d->prompt_alt[0] ? d->prompt_alt : NULL,
 			.drives = d->has_drives ? &d->drives : NULL,
+			.tools = d->tools,
+			.tools_why_not = d->tools_why_not[0] ? d->tools_why_not : NULL,
 		};
 		enum ui_action action = ui_draw(d->ui, &s, ww, wh, ww > 0 ? (float)pw / (float)ww : 1, now - d->menu_time);
 		if (action != UI_NONE)
@@ -786,7 +791,7 @@ bool display_poll(struct display *d, struct display_event *ev)
 		} else if (action == UI_STATUS_BAR) {
 			show_status_bar(d, !d->status_bar);
 		} else {
-			if (action == UI_PROMPT_YES || action == UI_PROMPT_NO)
+			if (action == UI_PROMPT_YES || action == UI_PROMPT_NO || action == UI_PROMPT_ALT)
 				display_prompt(d, NULL, NULL, NULL);
 			ev->type = action == UI_RESUME ? DISPLAY_EVENT_MENU : DISPLAY_EVENT_MENU_ACTION;
 			ev->action = action;
@@ -985,6 +990,20 @@ void display_drives_state(struct display *d, const struct ui_drives *drives)
 		d->drives = *drives;
 }
 
+void display_tools_state(struct display *d, bool shown, const char *why_not)
+{
+	d->tools = shown;
+	snprintf(d->tools_why_not, sizeof d->tools_why_not, "%s", why_not ? why_not : "");
+}
+
+void display_prompt_alt(struct display *d, const char *label)
+{
+	if (d && d->prompt) {
+		snprintf(d->prompt_alt, sizeof d->prompt_alt, "%s", label ? label : "");
+		draw(d);
+	}
+}
+
 bool display_prompt(struct display *d, const char *text, const char *yes, const char *no)
 {
 	if (!d || (text && !d->ui))
@@ -993,7 +1012,8 @@ bool display_prompt(struct display *d, const char *text, const char *yes, const 
 	snprintf(d->prompt_text, sizeof d->prompt_text, "%s", text ? text : "");
 	snprintf(d->prompt_yes, sizeof d->prompt_yes, "%s", yes ? yes : "");
 	snprintf(d->prompt_no, sizeof d->prompt_no, "%s", no ? no : "");
-	if (d->menu_action == UI_PROMPT_YES || d->menu_action == UI_PROMPT_NO)
+	d->prompt_alt[0] = '\0';
+	if (d->menu_action == UI_PROMPT_YES || d->menu_action == UI_PROMPT_NO || d->menu_action == UI_PROMPT_ALT)
 		d->menu_action = UI_NONE;
 	d->ctrl[0] = d->ctrl[1] = d->alt[0] = d->alt[1] = false;
 	d->sdl.ShowCursor((d->prompt || d->menu) && d->ui ? 1 : 0);
