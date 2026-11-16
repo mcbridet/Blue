@@ -3005,8 +3005,9 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	if (!mem_ok(j->mem, pc0, 4, MEM_X))
 		return NULL;
 	uint32_t page = pc0 >> MEM_PAGE_SHIFT;
-	if ((size_t)(j->code_end - j->code_free) < BLOCK_RESERVE || j->nblocks >= MAX_BLOCKS ||
-	    (!j->pages[page] && j->ncode_pages + 1 >= MAX_CODE_PAGES) || j->nsites + MAX_BLOCK_INSNS > MAX_SITES)
+	if ((size_t)(j->cold_start - j->code_free) < BLOCK_RESERVE || (size_t)(j->code_end - j->cold_free) < BLOCK_RESERVE ||
+	    j->nblocks >= MAX_BLOCKS || (!j->pages[page] && j->ncode_pages + 1 >= MAX_CODE_PAGES) ||
+	    j->nsites + MAX_BLOCK_INSNS > MAX_SITES)
 		jit_flush(j);
 	struct jit_page *pg = jit_get_page(j, page);
 
@@ -3014,7 +3015,7 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	t.j = j;
 	t.max_insns = max_insns;
 	uint8_t *start = (uint8_t *)(((uintptr_t)j->code_free + sizeof(struct jit_block *) + 15) & ~(uintptr_t)15);
-	t.x = (struct x86_buf){ start, j->code_end, false };    /* (the block pointer goes just before) */
+	t.x = (struct x86_buf){ start, j->cold_start, false };  /* (the block pointer goes just before) */
 	t.nfix = 0;
 	t.nlinks = 0;
 	t.nbexits = 0;
@@ -3083,12 +3084,18 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 	if (!cover)
 		cover = budget_needed;
 
-	rc_reset(&t);                   /* (what follows is out of line) */
+	/*
+	 * What follows is out of line: the taken paths of conditional branches,
+	 * which run often, after the main line; the rest apart (see struct jit)
+	 */
+	rc_reset(&t);
+	branch_exits(&t);
+	uint8_t *end = t.x.p;
+	t.x = (struct x86_buf){ j->cold_free, j->code_end, t.x.overflow };
 	slow_stores(&t);
 	slow_loads(&t);
 	slow_ios(&t);
 	slow_fps(&t);
-	branch_exits(&t);
 	ools(&t);
 	rc_reset(&t);
 
@@ -3156,7 +3163,8 @@ static struct jit_block *translate_upto(struct jit *j, uint32_t pc0, unsigned ma
 		return NULL;    /* the interpreter runs this instruction; next time there's room */
 	}
 	memcpy(ninsn, &budget_needed, 4);
-	struct jit_block *b = jit_add_block(j, pg, pc0, budget_needed, cover, start, t.x.p, redispatch);
+	j->cold_free = t.x.p;
+	struct jit_block *b = jit_add_block(j, pg, pc0, budget_needed, cover, start, end, redispatch);
 	j->translated_insns += n;
 	return b;
 }
@@ -3368,6 +3376,7 @@ static void build_stubs(struct jit *j)
 void arch_init(struct jit *j)
 {
 	build_stubs(j);
+	j->cold_share = 7;              /* (the out-of-line code is about 40%) */
 }
 
 /* ---- the host ---------------------------------------------------------- */

@@ -44,7 +44,7 @@ struct prof_sample {
 
 static struct {
 	struct jit *j;
-	unsigned long total, blocks, stubs, host, other;
+	unsigned long total, blocks, cold, stubs, host, other;
 	struct prof_sample *s;
 	unsigned n;
 	uintptr_t text_lo, text_hi;     /* Blue's own code */
@@ -80,6 +80,7 @@ void jit_flush(struct jit *j)
 	j->nblocks = 0;
 	j->nsites = 0;
 	j->code_free = j->blocks_start;
+	j->cold_free = j->cold_start;
 	j->flushes++;
 	set_hook_entry(j);
 }
@@ -602,6 +603,8 @@ struct jit *jit_create(struct mem *mem)
 	j->match_pc = PPC_NO_HOOK;
 	if (getenv("BLUE_JIT_FAR"))             /* tests: blocks out of short branch range of the stubs */
 		j->blocks_start += CODE_SIZE - (8u << 20);
+	if (j->cold_share)
+		j->cold_start = j->code_end - (size_t)(j->code_end - j->blocks_start) / 16 * j->cold_share;
 	jit_flush(j);
 	j->flushes = 0;
 	const char *hot = getenv("BLUE_JIT_HOT");
@@ -751,6 +754,9 @@ static void prof_sample(uintptr_t pc)
 			smp.guest_pc = j->blocks[lo].pc;
 			smp.where = (uint32_t)(pc - (uintptr_t)j->blocks[lo].code);
 		}
+	} else if (pc >= (uintptr_t)j->cold_start && pc < (uintptr_t)j->cold_free) {
+		prof.blocks++;
+		prof.cold++;
 	} else if (pc >= prof.text_lo && pc < prof.text_hi) {
 		prof.host++;
 	} else {
@@ -876,6 +882,9 @@ static void prof_report(FILE *f)
 	fprintf(f, "profile: %lu samples: %.1f%% translated blocks, %.1f%% stubs, %.1f%% Blue, %.1f%% elsewhere\n",
 		prof.total, 100.0 * prof.blocks / prof.total, 100.0 * prof.stubs / prof.total,
 		100.0 * prof.host / prof.total, 100.0 * prof.other / prof.total);
+	if (prof.cold)
+		fprintf(f, "profile: %.1f%% in blocks' out-of-line code (not in the hottest blocks below)\n",
+			100.0 * prof.cold / prof.total);
 	qsort(prof.s, prof.n, sizeof *prof.s, cmp_sample);
 	struct prof_count *c = calloc(prof.n + 1, sizeof *c);
 	if (!c)
@@ -906,6 +915,7 @@ static void prof_report(FILE *f)
 			continue;
 		uintptr_t pc = prof.s[k].host_pc;
 		uintptr_t key = pc >= (uintptr_t)prof.j->code && pc < (uintptr_t)prof.j->blocks_start ? 0x1 :
+				pc >= (uintptr_t)prof.j->cold_start && pc < (uintptr_t)prof.j->cold_free ? 0x2 :
 				pc >= prof.text_lo && pc < prof.text_hi ? pc - prof.text_lo : pc;
 		if (!nc || c[nc - 1].key != key)
 			c[nc++] = (struct prof_count){ key, 0 };
@@ -930,7 +940,7 @@ static void prof_report(FILE *f)
 			fprintf(f, " %s %lu", marks[m].name, st[m]);
 		fprintf(f, "\n");
 	}
-	fprintf(f, "profile: host addresses (1 = stubs):");
+	fprintf(f, "profile: host addresses (1 = stubs, 2 = blocks' out-of-line code):");
 	for (unsigned k = 0; k < nc && k < 60; k++)
 		fprintf(f, "%s %lx %lu", k % 8 ? "," : "\n ", (unsigned long)c[k].key, c[k].count);
 	fprintf(f, "\n");
@@ -953,7 +963,8 @@ void jit_print_stats(const struct jit *j, FILE *f)
 	fprintf(f, "jit: %lu blocks (%llu instructions, %zu KB of code), %lu links, %lu invalidations, %lu flushes; "
 		"exits: %lu miss, %lu budget, %lu interpreter, %lu hook, %lu link, %lu kernel, %lu device\n",
 		j->translated, (unsigned long long)j->translated_insns,
-		(size_t)(j->code_free - j->blocks_start) / 1024, j->links, j->invalidations, j->flushes,
+		(size_t)(j->code_free - j->blocks_start + ((uintptr_t)j->cold_free - (uintptr_t)j->cold_start)) / 1024,
+		j->links, j->invalidations, j->flushes,
 		j->exits[EXIT_MISS], j->exits[EXIT_BUDGET], j->exits[EXIT_INTERP], j->exits[EXIT_HOOK],
 		j->exits[EXIT_LINK], j->exits[EXIT_TRAP] + j->exits[EXIT_SC] + j->exits[EXIT_HOSTCALL],
 		j->exits[EXIT_MMIO]);
