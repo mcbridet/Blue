@@ -113,7 +113,10 @@ jobs:
           ls -la "$RUNNER_TEMP/dmg"
           codesign --verify --deep --strict "$RUNNER_TEMP/dmg/Blue.app"
           "$RUNNER_TEMP/dmg/Blue.app/Contents/MacOS/blue" --version | tee version.txt
-          hdiutil detach "$RUNNER_TEMP/dmg"
+          # Spotlight and the like can keep the volume busy for a moment
+          detached=
+          for i in 1 2 3 4 5; do hdiutil detach "$RUNNER_TEMP/dmg" && { detached=1; break; }; sleep 3; done
+          test -n "$detached" || hdiutil detach -force "$RUNNER_TEMP/dmg"
           grep -q 'SDL2 .*/Blue.app/Contents/Frameworks/libSDL2-2.0.0.dylib$' version.txt
           grep -q 'libslirp .*/Blue.app/Contents/Frameworks/libslirp.0.dylib$' version.txt
 
