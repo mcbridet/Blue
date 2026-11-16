@@ -220,7 +220,7 @@ struct handed {
 	bool prompt_changed;
 	bool prompt;
 	unsigned prompt_id;             /* (counts the prompts shown) */
-	char prompt_text[1024], prompt_yes[32], prompt_no[32], prompt_alt[32];
+	char prompt_text[2048], prompt_yes[32], prompt_no[32], prompt_alt[32];
 	int capture;                    /* capture the pointer (1) or let it go (0); -1: as it is */
 	int status_bar;                 /* show the status bar (1) or hide it (0); -1: as it is */
 	int follows;                    /* the screen follows the window's size (1) or not (0); -1: as it was */
@@ -278,7 +278,7 @@ struct display {
 	struct ui_drives drives;
 	bool prompt;                    /* a question or news is shown (display_prompt()): input goes to it */
 	unsigned prompt_id;
-	char prompt_text[1024], prompt_yes[32], prompt_no[32], prompt_alt[32];
+	char prompt_text[2048], prompt_yes[32], prompt_no[32], prompt_alt[32];
 	bool tools;                     /* the menu has Install Guest Tools... (display_tools_state()), */
 	char tools_why_not[160];        /* ... enabled unless this says why not */
 	bool fullscreen;

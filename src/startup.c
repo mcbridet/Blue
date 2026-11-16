@@ -86,3 +86,37 @@ int startup_rom(const char *const *paths, unsigned count, const uint8_t *nvram, 
 	}
 	return 0;
 }
+
+#define TYPE_GBLY 0x67626C79u           /* 'gbly': a system enabler */
+#define ROOT_FOLDER 2u
+
+struct pippin {
+	char *name;
+	size_t len;
+};
+
+static int pippin_volume(void *ctx, const struct hfsread_volume *v)
+{
+	struct pippin *p = ctx;
+	struct hfsread_file f;
+	bool pippin = hfsread_lookup(v, ROOT_FOLDER, "PippinAuthenticationFile", &f) == 1 && !f.folder;
+	if (!pippin && v->blessed)
+		pippin = hfsread_lookup(v, v->blessed, "Pippin", &f) == 1 && !f.folder && f.type == TYPE_GBLY;
+	if (!pippin)
+		return 0;
+	if (hfsread_path(v, ROOT_FOLDER, p->name, p->len))      /* (the root folder's name is the volume's) */
+		snprintf(p->name, p->len, "Untitled");
+	return 1;
+}
+
+bool startup_pippin(const char *const *paths, unsigned count, unsigned *drive, char *name, size_t len)
+{
+	struct pippin p = { name, len };
+	for (unsigned k = 0; k < count; k++) {
+		if (paths[k] && hfsread_volumes(paths[k], pippin_volume, &p) == 1) {
+			*drive = k;
+			return true;
+		}
+	}
+	return false;
+}

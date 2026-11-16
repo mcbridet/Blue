@@ -569,6 +569,22 @@ Library, one of the guest tools. Their saved games and preferences go in
 AppleJack controller isn't emulated: titles map its buttons to keys. More
 in [docs/software.md](docs/software.md#pippin-titles).
 
+A Pippin disc doesn't start the Mac by itself: a Pippin's system is in
+its console, and its titles run inside Mac OS. Start Blue with the Mac OS
+disk you installed as well, and the disc in a CD-ROM drive:
+
+```sh
+blue boot --disk hd.img --cdrom "Super Marathon (USA).cue" --nvram blue.nvram
+```
+
+Then open the title from the disc in the Finder. Given only a Pippin
+disc, Blue says so over a black screen (and in the terminal), with the
+command for your Mac OS disk and the disc, ready to copy:
+
+<p align="center">
+  <img src="docs/images/pippin-disc.png" width="480" alt="Blue's window, black, with a box: &quot;Super Marathon&quot; is a Pippin disc. Pippin titles run inside Mac OS: start Blue with your Mac OS 8.5 to 9.2.2 disk as well, and the disc will be in its CD drive, then the command; Copy Command and Quit buttons">
+</p>
+
 ## Command-line reference
 
 Blue's commands:
@@ -732,9 +748,12 @@ window shows the command to use. See
 
 ### Mac OS won't start from my CD
 
-- Blue says "no drive has a System Folder with a Mac OS ROM file in it":
-  the image isn't a startup CD of Mac OS 8.5 to 9.2.2. Update CDs and
-  other programs' CDs can't start the Mac.
+- Blue says "No Mac OS startup disk: none of the disks or CDs has a
+  System Folder with a Mac OS ROM file" (over a black screen, and in the
+  terminal): the image isn't a startup CD of Mac OS 8.5 to 9.2.2. Update
+  CDs and other programs' CDs can't start the Mac.
+- Blue says it's a Pippin disc: Pippin titles run inside Mac OS, so start
+  Blue with your Mac OS disk as well (see [Pippin titles](#pippin-titles)).
 - Blue refuses the image: it's compressed, a `.dmg`, or a `.bin` without
   its `.cue`. See [Images Blue takes](#disks-cds-and-floppies).
 - Attach CDs with `--cdrom`, not `--disk`: the Mac OS 8.5 CD won't start

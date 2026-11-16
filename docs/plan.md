@@ -3569,3 +3569,22 @@ Facts later tasks need, added as they are found.
   display.c no longer prints it). Reproducible runs, the reference boots
   among them, are `build/blue boot --headless ...`: the same logs and
   screenshots as before.
+- **A Pippin disc on its own** (Task 19): Super Marathon's disc (one HFS
+  volume, "Super Marathon") has a `PippinAuthenticationFile` ('PpnV',
+  'PpnA') at its root and a blessed System Folder with Finder, System
+  ('zsys'), the `Pippin` enabler ('gbly' 'MACS'), Pippin Launch and a
+  StartupScreen, but no Mac OS ROM file: a Pippin's ROM is the console's.
+  Given only it, `boot` used to say "no drive has a System Folder with a
+  Mac OS ROM file in it: give one with --rom FILE" in the terminal (and
+  nothing in a window). Now when there's no startup disk it looks for a
+  Pippin disc among the images (`startup_pippin()`: the authentication
+  file at the root, or the enabler in the blessed System Folder;
+  `hfsread_lookup()` finds a name in a folder, ASCII letters in either
+  case, and `hfsread_volumes()` goes through an image's volumes) and says
+  by the volume's name that Pippin titles run inside Mac OS, with the
+  command: `boot`'s arguments, quoted for the shell, with `--disk <your
+  Mac OS disk>` before the drives and the disc as a CD. Otherwise it says
+  why there's no startup disk, with the README's Quick start. In the
+  terminal, and (but with `--headless`) over a black screen in a 640 x
+  480 window at the display's own scale, with Copy Command (the Pippin's)
+  and Quit; exit status 1.

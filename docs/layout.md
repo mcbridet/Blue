@@ -21,7 +21,7 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           net.c (Ethernet's lanLib,
           libslirp), hfs.c (HFS volume writer), hfsread.c (HFS and HFS+
           reader: the startup disk's ROM file), startup.c (which disk is
-          the startup disk), ofnvram.c (Open Firmware's variables in
+          the startup disk, and a Pippin disc's without one), ofnvram.c (Open Firmware's variables in
           NVRAM: boot-device), share.c (shared folder),
           rsrc.c (resource forks), tools.c (guest tools), pippin.c (their
           PippinPPC, for Pippin titles), install.c
@@ -41,7 +41,7 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           perf.c (host processor counters), env.c (settings' old names),
           icon.c (the window's icon), font.c (its font), hostlib.c (where
           SDL2 and libslirp are loaded from), welcome.c (the window shown
-          without a command), version.h, main.c
+          without a command, or a startup disk), version.h, main.c
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),

@@ -39,4 +39,13 @@ bool startup_choice(const uint8_t *nvram, size_t size, unsigned *drive, unsigned
 int startup_rom(const char *const *paths, unsigned count, const uint8_t *nvram, size_t size, struct rom *rom,
 		struct startup *s, char *note, size_t notelen);
 
+/*
+ * A Bandai Pippin's disc among the drives (which, with no Mac OS ROM file,
+ * has nothing to start: a Pippin's ROM is the console's): a volume with a
+ * PippinAuthenticationFile at its root, or whose blessed System Folder's
+ * system is the Pippin's (it has the "Pippin" enabler, type 'gbly'). True
+ * if there's one, with the first one's drive and volume name (UTF-8).
+ */
+bool startup_pippin(const char *const *paths, unsigned count, unsigned *drive, char *name, size_t len);
+
 #endif

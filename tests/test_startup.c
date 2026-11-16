@@ -3,7 +3,7 @@
  * partition, made when NVRAM is blank, boot-device as Mac OS 9 writes it),
  * paths to Blue's disks, and which drive's ROM file is started: the one
  * boot-device names, else the first (with a real ROM file, if there's one:
- * $BLUE_TEST_ROM or ./MOS.rom).
+ * $BLUE_TEST_ROM or ./MOS.rom); without one, a Pippin disc among them.
  */
 #include <fcntl.h>
 #include <stdio.h>
@@ -194,9 +194,98 @@ static void test_startup_rom(void)
 	unlink(c);
 }
 
+/* A volume "name" of `files`, its root folder blessed (as a System Folder) if `blessed` */
+static void make_volume(const char *path, const char *name, const struct hfs_file *files, unsigned n, bool blessed)
+{
+	int fd = open(path, O_RDWR);
+	CHECK(fd >= 0);
+	if (fd < 0)
+		return;
+	CHECK(ftruncate(fd, 8u << 20) == 0);
+	CHECK_EQ(hfs_format(fd, 8u << 20, name, 0, files, n), 0);
+	uint8_t root[4];
+	put_be32(root, 2);
+	if (blessed)
+		CHECK(pwrite(fd, root, 4, 1024 + 92) == 4);
+	close(fd);
+}
+
+/*
+ * A Pippin disc, by its PippinAuthenticationFile at the root or by its
+ * System Folder's Pippin enabler ('gbly'), among disks without a Mac OS ROM
+ * file; and a plain disk, which is neither a startup disk nor a Pippin's
+ */
+static void test_pippin_disc(void)
+{
+	static const uint8_t bytes[16] = { 1, 2, 3 };
+	const struct hfs_file auth[] = {
+		{ "Read Me", 0x54455854u, 0x74747874u, 0, 0, 0, bytes, NULL, sizeof bytes, 0 },      /* ('TEXT', 'ttxt') */
+		{ "PippinAuthenticationFile", 0x50706E56u, 0x50706E41u, 0, 0, 0, bytes, NULL, sizeof bytes, 0 },
+										/* ('PpnV', 'PpnA') */
+	};
+	const struct hfs_file system[] = {
+		{ "Finder", 0x464E4452u, 0x4D414353u, 0, 0, 0, NULL, bytes, 0, sizeof bytes },     /* ('FNDR', 'MACS') */
+		{ "Pippin", 0x67626C79u, 0x4D414353u, 0, 0, 0, NULL, bytes, 0, sizeof bytes },     /* ('gbly') */
+		{ "System", 0x7A737973u, 0x4D414353u, 0, 0, 0, NULL, bytes, 0, sizeof bytes },     /* ('zsys') */
+	};
+	const struct hfs_file not_enabler[] = {
+		{ "Pippin", 0x4150504Cu, 0x3F3F3F3Fu, 0, 0, 0, bytes, NULL, sizeof bytes, 0 },     /* ('APPL') */
+		{ "System", 0x7A737973u, 0x4D414353u, 0, 0, 0, NULL, bytes, 0, sizeof bytes },
+	};
+	char plain[256], game[256], enabler[256], other[256], name[64] = "";
+	int fds[4] = { temp_file(plain, sizeof plain), temp_file(game, sizeof game), temp_file(enabler, sizeof enabler),
+		       temp_file(other, sizeof other) };
+	for (unsigned k = 0; k < 4; k++) {
+		CHECK(fds[k] >= 0);
+		if (fds[k] < 0)
+			return;
+		close(fds[k]);
+	}
+	make_volume(plain, "Untitled", NULL, 0, false);
+	make_volume(game, "Super Marathon", auth, 2, false);
+	make_volume(enabler, "Pippin Disc", system, 3, true);
+	make_volume(other, "Not a Pippin", not_enabler, 2, true);
+	unsigned drive = 99;
+
+	/* the plain disk: no startup disk, and no Pippin disc */
+	const char *alone[1] = { plain };
+	struct rom r;
+	struct startup s;
+	char note[256];
+	CHECK_EQ(startup_rom(alone, 1, NULL, 0, &r, &s, note, sizeof note), 1);
+	CHECK(!startup_pippin(alone, 1, &drive, name, sizeof name));
+
+	/* the authentication file (after an empty drive and the plain disk) */
+	const char *with_game[3] = { NULL, plain, game };
+	CHECK_EQ(startup_rom(with_game, 3, NULL, 0, &r, &s, note, sizeof note), 1);
+	CHECK(startup_pippin(with_game, 3, &drive, name, sizeof name));
+	CHECK(drive == 2 && strcmp(name, "Super Marathon") == 0);
+
+	/* the enabler in the blessed System Folder; a "Pippin" that isn't one isn't enough */
+	const char *with_enabler[2] = { other, enabler };
+	CHECK(startup_pippin(with_enabler, 2, &drive, name, sizeof name));
+	CHECK(drive == 1 && strcmp(name, "Pippin Disc") == 0);
+	CHECK(!startup_pippin(with_enabler, 1, &drive, name, sizeof name));
+
+	/* (the name, in any case) */
+	int fd = open(game, O_RDONLY);
+	struct hfsread_volume v;
+	struct hfsread_file f;
+	CHECK(fd >= 0 && hfsread_open(&v, fd, 0, 8u << 20) == 0);
+	CHECK(hfsread_lookup(&v, 2, "pippinauthenticationfile", &f) == 1 && !f.folder && f.type == 0x50706E56u);
+	CHECK(hfsread_lookup(&v, 2, "PippinAuthentication", &f) == 0);
+	if (fd >= 0)
+		close(fd);
+	unlink(plain);
+	unlink(game);
+	unlink(enabler);
+	unlink(other);
+}
+
 void test_startup(void)
 {
 	test_variables();
 	test_paths();
 	test_startup_rom();
+	test_pippin_disc();
 }

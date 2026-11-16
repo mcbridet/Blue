@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -326,6 +327,32 @@ static int boot_machine(void *arg)
 	return nk_boot(b->rom, b->opt);
 }
 
+/*
+ * No drive has a System Folder with a Mac OS ROM file: why, in the terminal
+ * and (but with --headless) over a black screen in the window, until Quit.
+ * A Pippin disc gets its own words, with the command that adds a Mac OS
+ * disk to these arguments. The exit status is 1 either way.
+ */
+static int no_startup_disk(const struct nk_boot_options *opt, bool images, bool headless, int argc, char **argv)
+{
+	static char text[2048], command[2 * PATH_MAX + 1024];
+	char blue[PATH_MAX + 8], name[HFSREAD_NAME_MAX];
+	bool moved;
+	unsigned drive;
+	struct welcome_boot b = { blue, argc, argv, images, NULL, NULL };
+	if (!welcome_command(blue, sizeof blue, &moved))
+		snprintf(blue, sizeof blue, "blue");
+	if (startup_pippin(opt->disk, opt->disks, &drive, name, sizeof name)) {
+		b.pippin = name;
+		b.pippin_image = opt->disk[drive];
+	}
+	welcome_no_startup(&b, text, sizeof text, command, sizeof command);
+	fprintf(stderr, "%s\n", text);
+	if (!headless)
+		welcome_notice(text, command[0] ? command : NULL);
+	return 1;
+}
+
 static int cmd_boot(int argc, char **argv)
 {
 	if (argc < 1)
@@ -513,12 +540,8 @@ static int cmd_boot(int argc, char **argv)
 		bool images = false;
 		for (unsigned k = 0; k < opt.disks; k++)
 			images |= opt.disk[k] != NULL;
-		if (found > 0 && images)
-			fprintf(stderr, "no drive has a System Folder with a Mac OS ROM file in it: give one with "
-				"--rom FILE\n");
-		else if (found > 0)
-			fprintf(stderr, "no drives to start up from (the ROM file comes from the startup disk's "
-				"System Folder): attach one with --disk or --cdrom, or give a ROM file with --rom FILE\n");
+		if (found > 0)
+			return no_startup_disk(&opt, images, headless, argc, argv);
 		if (!found && rom_file_version(&rom, version, sizeof version))
 			printf("rom: %s (Mac OS ROM %s, %zu bytes)%s\n", start.from, version, rom.file_size,
 			       start.chosen ? ", which boot-device names" : "");

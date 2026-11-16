@@ -48,6 +48,39 @@ static void command(const char *appimage, const char *home, const char *expected
 	free(old_home);
 }
 
+/* What boot says with no startup disk: a Pippin disc's words and command, or why there's none */
+static void no_startup(void)
+{
+	char text[2048], cmd[2048];
+	char cue[] = "Super Marathon (USA).cue", hd[] = "Blank.img";
+	char *argv[] = { "--cdrom", cue, "--nvram", "pippin.nvram" };
+	struct welcome_boot b = { "blue", 4, argv, true, "Super Marathon", cue };
+	welcome_no_startup(&b, text, sizeof text, cmd, sizeof cmd);
+	CHECK(strcmp(cmd, "blue boot --disk <your Mac OS disk> --cdrom 'Super Marathon (USA).cue' --nvram "
+			  "pippin.nvram") == 0);
+	CHECK(strstr(text, "\"Super Marathon\" is a Pippin disc. Pippin titles run inside Mac OS") == text);
+	CHECK(strstr(text, cmd) != NULL);
+
+	/* the disc attached as a disk goes in a CD-ROM drive, after the disk given */
+	char *as_disk[] = { "--headless", "--disk", hd, "--disk", cue };
+	b = (struct welcome_boot){ "blue", 5, as_disk, true, "Super Marathon", cue };
+	welcome_no_startup(&b, text, sizeof text, cmd, sizeof cmd);
+	CHECK(strcmp(cmd, "blue boot --headless --disk <your Mac OS disk> --disk Blank.img --cdrom "
+			  "'Super Marathon (USA).cue'") == 0);
+
+	/* no Pippin disc: why, and the README's Quick start; nothing to copy */
+	char *plain[] = { "--disk", hd };
+	b = (struct welcome_boot){ "blue", 2, plain, true, NULL, NULL };
+	welcome_no_startup(&b, text, sizeof text, cmd, sizeof cmd);
+	CHECK(cmd[0] == '\0');
+	CHECK(strstr(text, "No Mac OS startup disk: none of the disks or CDs has a System Folder with a Mac OS ROM "
+			   "file.") == text);
+	CHECK(strstr(text, "#quick-start") != NULL && !strstr(text, "Pippin"));
+	b = (struct welcome_boot){ "blue", 0, plain, false, NULL, NULL };
+	welcome_no_startup(&b, text, sizeof text, cmd, sizeof cmd);
+	CHECK(strstr(text, "given no disks or CDs") != NULL && cmd[0] == '\0');
+}
+
 void test_welcome(void)
 {
 	quoted("/Applications/Blue.app/Contents/MacOS/blue", "/Applications/Blue.app/Contents/MacOS/blue");
@@ -74,4 +107,6 @@ void test_welcome(void)
 	CHECK(strncmp(about, "SDL2", 4) == 0);
 	hostlib_about(HOSTLIB_SLIRP, about, sizeof about);
 	CHECK(strncmp(about, "libslirp", 8) == 0);
+
+	no_startup();
 }
