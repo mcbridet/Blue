@@ -41,7 +41,9 @@ enum display_event_type {
 					 * or the status bar came or went in a window that kept its size) */
 	DISPLAY_EVENT_RELEASE_MOUSE,    /* the user pressed Control and Option (Ctrl and Alt) together */
 	DISPLAY_EVENT_MENU,             /* the menu's to open or close (F12; or Esc or Resume, open) */
-	DISPLAY_EVENT_MENU_ACTION,      /* something chosen in the menu: action (but Resume, Fullscreen, Status bar) */
+	DISPLAY_EVENT_MENU_ACTION,      /* something chosen in the menu: action (but Resume, Fullscreen, Status bar);
+					 * a drive's Insert...: path, the image chosen (NULL: the host has no file
+					 * chooser), until the next event */
 	DISPLAY_EVENT_DROP_FILE,        /* a file was dropped on the window: path (until the next event) */
 	DISPLAY_EVENT_CLIPBOARD,        /* the host's clipboard may have changed (or the window got the focus) */
 };

@@ -105,6 +105,38 @@ Done:
   (`ut.iso` out, `86.iso` in, by script), 9.1 and 8.5 still start up from
   ejectable CDs, and runs where discs can't be swapped are the same as
   before. See Findings, "Ejectable drives".
+- **Drives always there, and Insert...** (`src/main.c`, `src/chooser.c`,
+  `src/chooser_mac.m`, the menu in `src/ui.cpp` and `src/display.c`): in a
+  window or real time Blue adds an empty floppy drive, and an empty CD-ROM
+  drive when none was given (`--cdrom` or `--cdrom-drive`) and one of the
+  four disks is free (else it says so once), so an image can go in
+  whatever Mac OS started with; headless instruction-time runs get only the
+  drives given, as before. Each drive in the menu has Insert... beside
+  Eject: the host's file chooser, opened on the window's thread and not
+  waited for (macOS: an NSOpenPanel, `beginWithCompletionHandler:`, its
+  events run by SDL's own event loop; elsewhere zenity's or kdialog's, on
+  the PATH, run by `posix_spawn` and watched by a thread of its own, which
+  wakes the window when it's done); the file chosen goes to the machine as
+  the menu's action with a path, and in that drive through
+  `drive_insert()` (`drives_pick_in()`: that drive's checks and messages);
+  without a chooser, or if it fails, the menu says to drop an image on the
+  window. Checked: a real-time headless run of an installed 8.5 with no
+  drives given had both (`disk 1: a CD-ROM drive, empty`, the floppy drive
+  as drive 10), and a script's floppy and `922.iso` went in them and
+  mounted; with four disks, or three and `--share`, no CD-ROM drive and the
+  one line saying so; a window run of it, F12's menu with both drives
+  empty, Eject disabled and Insert... (captured by window ID); the Open
+  panel shown by a test harness running an event loop as SDL's does (not
+  blocking it, "Choose a disk image to put in the floppy drive", Insert),
+  cancelled (waking the window, nothing chosen) and closed unfinished.
+  Clicks and keys posted to the window's process didn't reach the menu
+  while another application was in front, so a file wasn't chosen there.
+  `tests/test_chooser.c` runs the zenity/kdialog chooser with stand-ins
+  (a file chosen, cancelled, failing, kdialog's without zenity, none, closed
+  unfinished); `test_routing()` in `tests/test_drives.c` has
+  `drives_pick_in()`. Not built on Linux in this session (no Linux host):
+  the zenity/kdialog chooser is plain POSIX, built and tested on macOS
+  too, and only `chooser_open()` differs.
 - **CD audio** (Task 16; `src/cdimage.c`, `src/cdaudio.c`, `src/cdrom.c`):
   CD-ROM drives answer as Apple's CD-ROM driver, with CD icons; cue sheets
   with audio tracks; the drive's audio played through the sound chip's

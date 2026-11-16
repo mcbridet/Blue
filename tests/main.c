@@ -29,6 +29,7 @@ int main(int argc, char **argv)
 		{ "hfsread", test_hfsread },
 		{ "floppy", test_floppy },
 		{ "drives", test_drives },
+		{ "chooser", test_chooser },
 		{ "install", test_install },
 		{ "share", test_share },
 		{ "tools", test_tools },

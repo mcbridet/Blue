@@ -32,6 +32,9 @@ enum drives_for { DRIVES_ANY, DRIVES_FLOPPY, DRIVES_CD };
  */
 struct disk *drives_pick(const struct drives *dr, const char *path, enum drives_for kind, char *why, size_t len);
 
+/* ... or in drive `d` (the menu's Insert...): d, or NULL with why (not an image it takes, Mac OS using its disc) */
+struct disk *drives_pick_in(const struct drives *dr, struct disk *d, const char *path, char *why, size_t len);
+
 /* A drive's name in messages: "floppy drive", "CD-ROM drive", "CD-ROM drive 2" */
 const char *drives_name(const struct drives *dr, const struct disk *d, char *buf, size_t len);
 

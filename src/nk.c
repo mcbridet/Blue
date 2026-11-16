@@ -1616,11 +1616,15 @@ static const char *drive_name(const struct machine *m, const struct disk *d)
 	return drives_name(&m->drives, d, name, sizeof name);
 }
 
-static bool drive_insert(struct machine *m, const char *path, enum drives_for kind)
+/* An image goes in a drive: the one `want` (NULL: as `kind` says, see drives_pick()) */
+static bool drive_insert(struct machine *m, const char *path, enum drives_for kind, struct disk *want)
 {
 	char why[400];
-	struct disk *d = drives_pick(&m->drives, path, kind, m->menu_status, sizeof m->menu_status);
+	struct disk *d = want ? drives_pick_in(&m->drives, want, path, m->menu_status, sizeof m->menu_status) :
+				drives_pick(&m->drives, path, kind, m->menu_status, sizeof m->menu_status);
 	if (!d) {
+		if (want)
+			kind = want->floppy ? DRIVES_FLOPPY : DRIVES_CD;
 		fprintf(stderr, "%s: %s\n", kind == DRIVES_FLOPPY ? "floppy" : kind == DRIVES_CD ? "cdrom" : "drop",
 			m->menu_status);
 		return false;
@@ -1681,7 +1685,7 @@ static void floppy_next(struct machine *m)
 		return;
 	const char *path = m->floppy_queue[0];
 	memmove(m->floppy_queue, m->floppy_queue + 1, --m->floppy_queued * sizeof m->floppy_queue[0]);
-	drive_insert(m, path, DRIVES_FLOPPY);
+	drive_insert(m, path, DRIVES_FLOPPY, NULL);
 }
 
 /* What the menu shows of the drives with removable media */
@@ -1732,8 +1736,31 @@ static void screenshot(struct machine *m)
 	}
 }
 
-/* What's chosen in the menu (the rest of it: Resume closes it, and fullscreen is the window's) */
-static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
+/*
+ * An image from the window, dropped on it or chosen with a drive's
+ * Insert... in the menu (`want`; NULL `path`: the host has no file
+ * chooser), goes in; if it can't, the menu says why (opened if need be).
+ */
+static void window_image(struct machine *m, const char *path, struct disk *want, uint64_t now)
+{
+	bool in = false;
+	if (path)
+		in = drive_insert(m, path, DRIVES_ANY, want);
+	else
+		snprintf(m->menu_status, sizeof m->menu_status, "Drop an image on the window to put it in the %s",
+			 drive_name(m, want));
+	if (!in && !m->paused) {
+		m->paused = true;
+		follow_cursor(m, now);
+		menu_state(m);
+		display_menu(m->display, true);
+		printf("paused (F12 resumes)\n");
+	}
+	menu_state(m);
+}
+
+/* What's chosen in the menu (the rest of it: Resume closes it, and fullscreen is the window's; Insert... has a path) */
+static void menu_action(struct machine *m, enum ui_action action, const char *path, uint64_t now)
 {
 	switch (action) {
 	case UI_RESTART:
@@ -1779,6 +1806,8 @@ static void menu_action(struct machine *m, enum ui_action action, uint64_t now)
 	default:
 		if (action >= UI_EJECT && action <= UI_EJECT_LAST && m->menu_drives[action - UI_EJECT])
 			drive_eject(m, m->menu_drives[action - UI_EJECT]);
+		else if (action >= UI_INSERT && action <= UI_INSERT_LAST && m->menu_drives[action - UI_INSERT])
+			window_image(m, path, m->menu_drives[action - UI_INSERT], now);
 		break;
 	}
 	menu_state(m);
@@ -2046,7 +2075,7 @@ static void display_input(struct machine *m, uint64_t now)
 			follow_cursor(m, now);          /* (resumed: it may be captured again) */
 			break;
 		case DISPLAY_EVENT_MENU_ACTION:
-			menu_action(m, ev.action, now);
+			menu_action(m, ev.action, ev.path, now);
 			break;
 		/* (a script drives scripted runs: the host's input would change what they do) */
 		case DISPLAY_EVENT_KEY:
@@ -2099,17 +2128,9 @@ static void display_input(struct machine *m, uint64_t now)
 				m->want_ns = host_ns();
 			}
 			break;
-		case DISPLAY_EVENT_DROP_FILE:   /* into a drive; if it can't go in, the menu says why */
-			if (m->scripted)
-				break;
-			if (!drive_insert(m, ev.path, DRIVES_ANY) && !m->paused) {
-				m->paused = true;
-				follow_cursor(m, now);
-				menu_state(m);
-				display_menu(m->display, true);
-				printf("paused (F12 resumes)\n");
-			}
-			menu_state(m);
+		case DISPLAY_EVENT_DROP_FILE:   /* into a drive */
+			if (!m->scripted)
+				window_image(m, ev.path, NULL, now);
 			break;
 		default:
 			break;
@@ -2316,14 +2337,14 @@ static void script_run(struct machine *m, struct script *s)
 				       !strcmp(e->arg, "never") ? INSTALL_NEVER : INSTALL_NOT_NOW, &m->helper);
 		} else if (strcmp(e->cmd, "floppy") == 0) {
 			if (e->a == 1)
-				drive_insert(m, e->arg, DRIVES_FLOPPY);
+				drive_insert(m, e->arg, DRIVES_FLOPPY, NULL);
 			else if (e->a == 2 && m->has_floppy)
 				drive_eject(m, &m->floppy);
 			else if (e->a != 2)
 				fprintf(stderr, "input script: floppy insert FILE, or floppy eject\n");
 		} else if (strcmp(e->cmd, "cdrom") == 0) {
 			if (e->a == 1)
-				drive_insert(m, e->arg, DRIVES_CD);
+				drive_insert(m, e->arg, DRIVES_CD, NULL);
 			else if (e->a == 2)
 				cd_eject(m);
 			else

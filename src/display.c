@@ -14,6 +14,7 @@
 #include <sys/event.h>
 #endif
 
+#include "chooser.h"
 #include "icon.h"
 #include "ui.h"
 
@@ -251,6 +252,8 @@ struct display {
 	bool captured;                  /* the pointer is captured (display_capture_mouse()) */
 	bool stale;                     /* the window is to be drawn again */
 	enum ui_action choice;          /* chosen in the menu or a prompt as it was drawn */
+	struct chooser *chooser;        /* the host's file chooser, open for a drive's Insert... */
+	unsigned chooser_drive;         /* ... the menu's drive k */
 	struct queued out[OUT];         /* events for the machine, not yet queued */
 	unsigned nout;
 	struct display_times times;     /* (BLUE_WINDOW_PROFILE) */
@@ -857,11 +860,57 @@ static void show_status_bar(struct display *d, bool on)
 	d->stale = true;
 }
 
-/* What was chosen in the menu or a prompt: fullscreen and the status bar are the window's */
+static void chooser_wake(void *arg)
+{
+	wake(arg);
+}
+
+/*
+ * A drive's Insert...: the host's file chooser (one at a time), whose file
+ * the machine puts in that drive as if dropped (insert_chosen()). Without
+ * one, the machine's told so (no path): it says to drop an image instead.
+ */
+static void insert(struct display *d, unsigned k)
+{
+	char name[24], message[80];
+	if (d->chooser)
+		return;
+	snprintf(name, sizeof name, "%s", k < d->drives.count ? d->drives.drive[k].name : "drive");
+	if (name[0] >= 'A' && name[0] <= 'Z' && name[1] >= 'a' && name[1] <= 'z')
+		name[0] = (char)(name[0] - 'A' + 'a');          /* ("floppy drive"; "CD-ROM drive" stays) */
+	snprintf(message, sizeof message, "Choose a disk image to put in the %s", name);
+	d->chooser = chooser_open(message, chooser_wake, d);
+	d->chooser_drive = k;
+	if (!d->chooser) {
+		struct display_event ev = { .type = DISPLAY_EVENT_MENU_ACTION, .action = (enum ui_action)(UI_INSERT + k) };
+		emit(d, &ev, NULL, 0);
+	}
+}
+
+/* ... and the file chosen (or that it went wrong), once the chooser's done */
+static void insert_chosen(struct display *d)
+{
+	char *path;
+	enum chooser_state state = chooser_poll(d->chooser, &path);
+	if (state == CHOOSER_WAITING)
+		return;
+	d->chooser = NULL;
+	if (state != CHOOSER_CANCELLED) {
+		struct display_event ev = { .type = DISPLAY_EVENT_MENU_ACTION,
+					    .action = (enum ui_action)(UI_INSERT + d->chooser_drive) };
+		emit(d, &ev, path, 0);
+	}
+}
+
+/* What was chosen in the menu or a prompt: fullscreen and the status bar are the window's, Insert... its chooser */
 static void chosen(struct display *d, enum ui_action action)
 {
 	struct display_event ev = { .type = DISPLAY_EVENT_MENU_ACTION, .action = action };
 	unsigned prompt = 0;
+	if (action >= UI_INSERT && action <= UI_INSERT_LAST) {
+		insert(d, (unsigned)(action - UI_INSERT));
+		return;
+	}
 	switch (action) {
 	case UI_FULLSCREEN:
 		d->fullscreen = !d->fullscreen;
@@ -1272,6 +1321,8 @@ static void run(struct display *d)
 			handle(d, &e);
 		while (d->sdl.PollEvent(&e))
 			handle(d, &e);
+		if (d->chooser)
+			insert_chosen(d);
 		flush(d);
 		d->times.cpu_ns[DISPLAY_TIME_EVENTS] += cpu;
 		timed(d, DISPLAY_TIME_EVENTS, t0, &c0);
@@ -1378,6 +1429,8 @@ fail:
 /* (the machine is done with it, or waits in display_close()) */
 static void destroy_window(struct display *d)
 {
+	if (d->chooser)
+		chooser_close(d->chooser);
 	for (unsigned k = 0; k < d->count; k++)
 		free(d->queue[(d->head + k) % QUEUE].path);
 	for (unsigned k = 0; k < d->nout; k++)

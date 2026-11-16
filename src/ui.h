@@ -45,7 +45,9 @@ enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI
 		 UI_PROMPT_ALT,                 /* (a prompt's third button, on the left: Don't Ask Again) */
 		 UI_INSTALL_TOOLS,              /* (the offer to install the guest tools, asked for) */
 		 UI_EJECT,                      /* (+ the drive's number in the menu's list) */
-		 UI_EJECT_LAST = UI_EJECT + UI_DRIVES - 1 };
+		 UI_EJECT_LAST = UI_EJECT + UI_DRIVES - 1,
+		 UI_INSERT,                     /* (likewise: an image chosen with the host's file chooser) */
+		 UI_INSERT_LAST = UI_INSERT + UI_DRIVES - 1 };
 
 /* What becomes of the mouse after the menu */
 enum ui_mouse {

@@ -203,7 +203,9 @@ static void text_wrapped(const char *text, float width)
 
 /*
  * The drives with removable media: what's in each, with an Eject button
- * (disabled while Mac OS uses the disc: it's the one to eject it then).
+ * (disabled while Mac OS uses the disc: it's the one to eject it then) and
+ * an Insert... button (the host's file chooser: the image chosen goes in
+ * that drive, as if dropped on the window).
  */
 static enum ui_action drives_menu(const struct ui_drives *dr)
 {
@@ -218,6 +220,9 @@ static enum ui_action drives_menu(const struct ui_drives *dr)
 			action = (enum ui_action)(UI_EJECT + k);
 		ImGui::EndDisabled();
 		ImGui::SameLine();
+		if (ImGui::Button("Insert..."))
+			action = (enum ui_action)(UI_INSERT + k);
+		ImGui::SameLine();
 		ImGui::Text("%s: %s%s", d->name, d->in[0] ? d->in : "empty", d->locked ? " (locked)" : "");
 		ImGui::PopID();
 		in_use |= d->in_use;
@@ -229,7 +234,7 @@ static enum ui_action drives_menu(const struct ui_drives *dr)
 		ImGui::TextDisabled("Next floppies, as Mac OS ejects: %s", dr->next);
 		ImGui::PopTextWrapPos();
 	}
-	ImGui::TextDisabled("(drop an image on the window to put it in)");
+	ImGui::TextDisabled("(or drop an image on the window to put it in)");
 	return action;
 }
 

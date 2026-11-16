@@ -41,6 +41,7 @@ void test_hfs(void);
 void test_hfsread(void);
 void test_floppy(void);
 void test_drives(void);
+void test_chooser(void);
 void test_install(void);
 void test_share(void);
 void test_tools(void);

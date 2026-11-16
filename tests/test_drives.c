@@ -637,6 +637,16 @@ static void test_routing(struct mem *mem)
 	volumes(mem, 0, 0);
 	CHECK(drives_pick(&dr, flop2, DRIVES_ANY, why, sizeof why) == &f);    /* (in, but not in use) */
 
+	/* a drive's Insert...: that drive, if it takes the image and Mac OS isn't using its disc */
+	volumes(mem, 9, 0);
+	CHECK(drives_pick_in(&dr, &c2, cd, why, sizeof why) == &c2);
+	CHECK(drives_pick_in(&dr, &c1, cd, why, sizeof why) == NULL);
+	CHECK(strstr(why, "The CD-ROM drive 1 has") != NULL);
+	CHECK(drives_pick_in(&dr, &f, flop2, why, sizeof why) == &f);
+	CHECK(drives_pick_in(&dr, &f, cd, why, sizeof why) == NULL);
+	CHECK(strstr(why, "too big for a floppy") != NULL);
+	CHECK(drives_pick_in(&dr, &c2, flop, why, sizeof why) == &c2);         /* (a CD can be small) */
+	volumes(mem, 0, 0);
 	/* the menu: each drive, what's in it, whether Mac OS uses it; the floppies that follow */
 	struct ui_drives ui;
 	struct disk *order[UI_DRIVES];

@@ -524,17 +524,31 @@ one whose disc Mac OS isn't using). Mac OS learns of a disc going in as
 from a real drive, by a disk-inserted event, so whatever application is in
 front and waiting for one (an installer, Disk Copy) gets it, and mounts it.
 
+In a window or real time there's always a floppy drive, and a CD-ROM drive
+unless one was given: Blue adds an empty one of each (as `--floppy-drive`
+and `--cdrom-drive` do), so a disc can go in whatever Mac OS started with.
+The CD-ROM drive is one of the four disks: with four already, there's none
+(Blue says so, `drives: no CD-ROM drive: all 4 drives are taken`).
+Instruction-time runs without a window have only the drives given, as
+before, so they stay reproducible.
+
 ```
+build/blue boot --disk hd.img --window
 build/blue boot --disk hd.img --cdrom "Game CD 1.iso" --window
-build/blue boot --disk hd.img --cdrom-drive --floppy "Install 1.image" --floppy "Install 2.image" --window
+build/blue boot --disk hd.img --floppy "Install 1.image" --floppy "Install 2.image" --window
 ```
 
-The window's menu (F12) shows what's in each drive, with an Eject button.
-Blue won't take a disc out that Mac OS has mounted (it's using it: the
-button is disabled, and the menu says to put it away in Mac OS); one that
-isn't mounted (unreadable, say, or just put in) it can. If an image can't
-go in (no empty drive, a drive Mac OS is using, not an image Blue takes),
-the menu opens to say why.
+The window's menu (F12) shows what's in each drive, with Eject and
+Insert... buttons. Insert... opens the host's file chooser (on macOS the
+system's Open panel; on Linux zenity's or kdialog's, if one is installed),
+and the image chosen goes in that drive as a dropped one would, with the
+same checks (without a chooser, the menu says to drop an image on the
+window). Neither the window nor Mac OS waits for the chooser. Blue won't
+take a disc out that Mac OS has mounted (it's using it: Eject is disabled,
+and the menu says to put it away in Mac OS); one that isn't mounted
+(unreadable, say, or just put in) it can, and Insert... puts another in its
+place. If an image can't go in (no empty drive, a drive Mac OS is using, not
+an image Blue takes), the menu opens to say why.
 
 `--floppy IMAGE` puts a floppy disk image in the floppy drive; given
 several times, for a set of disks, the first is in the drive at startup
@@ -544,9 +558,11 @@ asks for disk 2 gets it with nothing to do, and the menu lists what's still
 to come. Dropping an image puts that one in instead (when the drive is
 free), and the rest follow as before. `--floppy-drive` gives a floppy drive
 with nothing in it, `--cdrom-drive` an empty CD-ROM drive (one of the four
-disks). Input scripts have `floppy insert FILE` and `cdrom insert FILE` (the
-rest of the line), `floppy eject` and `cdrom eject` (the first CD-ROM drive
-whose disc Mac OS isn't using), which follow the same rules.
+disks): in a window or real time only for a second empty CD-ROM drive, say,
+as there's one of each anyway. Input scripts have `floppy insert FILE` and
+`cdrom insert FILE` (the rest of the line), `floppy eject` and `cdrom
+eject` (the first CD-ROM drive whose disc Mac OS isn't using), which follow
+the same rules.
 
 CD-ROM drives answer as CD-ROM drives (see CDs: audio and cue sheets
 below), and the swappable ones say their disc is ejectable. As in an iMac,
@@ -1533,8 +1549,8 @@ software (on 8.6, an M5 Mac).
   (a PNG on the Desktop, or in the current directory without one, named
   for when it was taken); fullscreen (at the desktop's resolution); the
   status bar; whether the pointer is captured while the Mac hides its
-  cursor; and what's in the floppy and CD-ROM drives, each with Eject (see
-  Floppies and CDs). In real time guest time doesn't count
+  cursor; and what's in the floppy and CD-ROM drives, each with Eject and
+  Insert... (see Floppies and CDs). In real time guest time doesn't count
   the pause, so the Mac's clock is that much behind afterwards.
   The status bar (shown unless `--no-status-bar`; the menu toggles it) sits
   below the screen, so the window grows by its height rather than covering
@@ -1760,7 +1776,7 @@ build/blue boot --rom MOS.rom --cdrom 85.iso --window   # interactive
 build/blue boot --rom MOS.rom --cdrom 85.iso --max 3000000000 --screenshot finder.png
 build/blue boot --rom MOS.rom --cdrom 85.iso --share ~/Mac --window    # with a shared folder
 build/blue boot --rom MOS.rom --cdrom 85.iso --floppy disk1.img --floppy disk2.img --window   # a floppy drive
-build/blue boot --disk hd.img --cdrom-drive --window       # an empty CD-ROM drive: drop CD images on the window
+build/blue boot --disk hd.img --window                     # with empty CD-ROM and floppy drives: drop images on the window
 build/blue boot --disk hd.img --cdrom "Game.cue" --window  # a CD with audio tracks
 build/blue disk toc "Game.cue"                             # its tracks, as its CD-ROM drive gives them
 build/blue disk create blank.img 1440K "Untitled"          # a blank floppy
@@ -1934,7 +1950,8 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           vertex's work, client arrays, the attribute stacks), gltest.c (their test application),
           surface.c + raster.c + gpu.c + gl.c (the 3D backend:
           drawing, in software and with OpenGL, and presenting), display.c (SDL2
-          window, on the main thread, and what the Mac hands it), ui.cpp (its menu and prompts, with Dear ImGui), audio.c (SDL2 sound), png.c,
+          window, on the main thread, and what the Mac hands it), ui.cpp (its menu and prompts, with Dear ImGui),
+          chooser.c, chooser_mac.m (the host's file chooser, for the menu's Insert...), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), env.c (settings' old names),
           icon.c (the window's icon), main.c
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c

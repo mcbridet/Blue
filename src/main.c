@@ -85,13 +85,15 @@ static int usage(void)
 		"                               drives are numbered, and tried for startup, in\n"
 		"                               command-line order\n"
 		"      --cdrom <image>          attach an image read-only, in a CD-ROM drive (whose\n"
-		"                               disc can be swapped in a window: drop an image on it)\n"
-		"      --cdrom-drive            an empty CD-ROM drive\n"
+		"                               disc can be swapped in a window: drop an image on it,\n"
+		"                               or Insert... in the menu, F12)\n"
+		"      --cdrom-drive            an empty CD-ROM drive (a window or real time has one\n"
+		"                               without a CD-ROM drive given)\n"
 		"      --floppy <image>         a floppy image for the floppy drive (raw 400K-1440K, or\n"
 		"                               Disk Copy 4.2); the first is in it at startup, the\n"
 		"                               others go in, in turn, as Mac OS ejects the one in\n"
-		"      --floppy-drive           a floppy drive, empty at startup (drop images on the\n"
-		"                               window to put them in)\n"
+		"      --floppy-drive           a floppy drive, empty at startup (a window or real time\n"
+		"                               always has one)\n"
 		"      --share <folder>         show a host folder to Mac OS as a volume; what Mac OS\n"
 		"                               changes on it is written back when it shuts down\n"
 		"      --nvram <file>           keep NVRAM (PRAM, settings) in this file; Mac OS 9.1\n"
@@ -429,6 +431,25 @@ static int cmd_boot(int argc, char **argv)
 		opt.realtime = false;
 	if (opt.window && !max_given)
 		opt.max_insns = UINT64_MAX;     /* run until the window is closed */
+	/*
+	 * Where someone can put discs in as Mac OS runs (a window, real time), an
+	 * empty CD-ROM drive and floppy drive if none was given, as with
+	 * --cdrom-drive and --floppy-drive. (Not in instruction-time runs without
+	 * a window: they stay as they were, the same instruction for instruction.)
+	 */
+	if (opt.window || opt.realtime) {
+		bool cd = false;
+		for (unsigned k = 0; k < opt.disks; k++)
+			cd |= opt.cdrom[k];
+		if (!cd && opt.disks + (share_dir != NULL) < NK_MAX_DISKS) {
+			opt.cdrom[opt.disks] = true;
+			opt.disk[opt.disks++] = NULL;
+		} else if (!cd) {
+			printf("drives: no CD-ROM drive: all %d drives are taken%s\n", NK_MAX_DISKS,
+			       share_dir ? " (the shared folder's included)" : "");
+		}
+		opt.floppy_drive = true;
+	}
 
 	struct rom rom;
 	char err[256], version[64];
