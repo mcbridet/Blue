@@ -2253,6 +2253,24 @@ Facts later tasks need, added as they are found.
     window at 1280 x 1024 in millions of colours are the same to the
     pixel, but the status bar's processor light (whose brightness is the
     share of the time the Mac was busy, less now).
+  - **Linux** (arm64, in a podman container: Debian's SDL 2, gcc, Xvfb
+    without a window manager, xdotool and xclip for input): no warnings in
+    Blue's files (gcc's `-Wformat-truncation` in `install.c`, main's), the
+    tests pass, and in windows: the 8.5 CD's Finder; F12's menu (with its
+    Install Guest Tools...), driven by the mouse and the keyboard
+    (Screenshot and its news, Fullscreen on and off, Resume, Turn off,
+    which ends the run as before); clicks and drags in the guest; the
+    window resized, the screen scaled to it; on the installed 8.5 the
+    guest tools' offer with Don't Ask Again, answered Not Now, and Update
+    and Restart with its news after; a resize that Enhancements followed
+    (to 1024 x 768); and the clipboard both ways (the host's text into Mac
+    OS at startup; a Finder copy, after the menu's Restart, on X11's
+    clipboard as "Macintosh HD"). That last found a restart turning the
+    clipboard off for the rest of the run (`restart_machine()` didn't keep
+    it, on main too): it's kept now. Fullscreen without a window manager
+    leaves the X window its size (the renderer draws for the screen's);
+    dropped files weren't tried (xdotool can't drag), nor sound. Frames
+    came 57-58 a second there (the container's timers).
 - **Mac OS 9.2.2: the CD** (Task 10): MacOS9Lives' "Mac OS 9.2.2
   Universal" (`922.iso`, volume MacOS9Lives in the partition "Toast 5.2 HFS
   Optimizer"), for Macs Apple's 9.2.2 doesn't support. Its ROM file is
