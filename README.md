@@ -823,8 +823,6 @@ version runs in Rosetta 2 without the JIT.
 
 Blue doesn't do everything a Mac of the time could:
 
-- **AltiVec,** the G4's vector instructions, which the iMac's G3 didn't
-  have either: programs that need a G4 don't run.
 - **Modems, serial ports, infrared and printing.**
 - **USB and FireWire devices** of any kind (game controllers reach Mac OS
   as the keyboard and mouse, and through InputSprocket: see
