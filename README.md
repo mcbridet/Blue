@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://mcbridet.github.io/Blue/">Website</a> ·
+  <a href="https://blue.tx.au/">Website</a> ·
   <a href="https://github.com/mcbridet/Blue/releases/latest">Download</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#using-blue">Using Blue</a> ·
