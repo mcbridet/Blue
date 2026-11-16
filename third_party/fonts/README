@@ -1,0 +1,21 @@
+ChicagoFLF.ttf: ChicagoFLF 2.1, by Robin Casady, a TrueType revival of Susan
+Kare's Chicago (Mac OS's system font until Mac OS 8). Public domain.
+
+Blue draws its window's menu, prompts and status bar with it, unpacked from
+src/font_data.inc, which tools/fonts.py makes from this file.
+
+Taken from https://fontsarena.com/wp-content/uploads/2018/08/ChicagoFLF.ttf.zip
+(also on Font Library, https://fontlibrary.org/en/font/chicagoflf, listed as
+public domain); SHA-256
+b442111f37639e27572d9df0c5190e7480e6a7b01ec768aea47a154efab8d50d.
+
+Its licence, as the font's own name table has it (copyright notice, name 0;
+licence, name 13: "Public Domain"):
+
+  The FLF were created by various authors including myself and Mike Wright.
+  When Casady & Greene, Inc. closed the rights went back to the authors. I
+  created ChicagoFLF and CheckboxFLF. You are free to use them as you wish.
+  I consider those two in the public domain.
+
+  Regards,
+  Robin Casady

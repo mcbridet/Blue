@@ -1,8 +1,8 @@
 /*
- * The window's menu (F12) and status bar, made with Dear ImGui
- * (third_party/imgui) and drawn with the SDL2 renderer display.c loads at
- * run time: this takes the SDL functions it draws with from there, so it
- * needs none at build time either.
+ * The window's menu (F12), prompts and status bar, made with Dear ImGui
+ * (third_party/imgui) and drawn as Mac OS 8's Platinum, in Chicago (font.h),
+ * with the SDL2 renderer display.c loads at run time: this takes the SDL
+ * functions it draws with from there, so it needs none at build time either.
  */
 #ifndef BLUE_UI_H
 #define BLUE_UI_H
@@ -115,7 +115,7 @@ void ui_close(struct ui *u);
 void ui_mouse_move(struct ui *u, float x, float y);
 void ui_mouse_button(struct ui *u, int button, bool down);      /* (0: primary) */
 void ui_mouse_wheel(struct ui *u, float dx, float dy);
-void ui_key(struct ui *u, enum ui_key key, bool down);
+void ui_key(struct ui *u, enum ui_key key, bool down);    /* (Enter: the default button; Space: the focused one) */
 
 /*
  * Draws the status bar, a prompt and the menu (whichever are shown) over what

@@ -180,6 +180,15 @@ Done:
   twelve exports on Mac OS's calls. Super Marathon's two games play from
   their disc on installed 8.5 and 9.2.2, and save, load and delete saves
   through it. See Findings, "PippinPPC" and after.
+- **The window's look** (ui-platinum; `src/ui.cpp`, `src/font.c`,
+  `third_party/fonts`, `tools/fonts.py`): the menu (F12), the prompts and
+  the status bar look like Mac OS 8's Platinum in the site's colours
+  (Platinum greys, Bondi Blue for checks and the keyboard's focus), with
+  bevelled boxes and buttons, a striped title bar, the default button's
+  ring (Return presses it), and the text in ChicagoFLF, kept in the
+  program and drawn on Chicago's own pixel grid. The same Dear ImGui menu
+  on macOS and Linux (no GTK, no native menus). See Findings, "The
+  window's look".
 
 Where it stops:
 
@@ -2533,6 +2542,60 @@ Facts later tasks need, added as they are found.
     goes after: `timeout 60 env DYLD_FALLBACK_LIBRARY_PATH=...
     build/tsan/blue ...`). TSan doesn't see what the JIT's code does, but
     the machine's thread hands everything to the window's in C.
+- **The window's look** (ui-platinum; macOS, M-series, a 1x display, and
+  Linux x86-64). The menu, prompts and status bar are drawn as Mac OS 8's
+  Platinum, in `site/style.css`'s colours, still with Dear ImGui:
+  - **Drawn.** Boxes are Dear ImGui windows without their title bars: the
+    frame is its border, and the bevel, the 2-unit shadow, the title bar's
+    stripes and the title go on the window's draw list. Buttons and
+    checkboxes are `InvisibleButton`s (behaviour, hovering, keyboard
+    navigation with `ImGuiButtonFlags_EnableNav`) drawn on the draw list:
+    gradients by shading the vertices of a filled shape, the default
+    button's ring as nested filled rounded rectangles (black, grey, white:
+    exact bands, where strokes are centred on half units), the focus ring
+    in Bondi Blue (Dear ImGui's own nav cursor made transparent). Disabled
+    items fade with `DisabledAlpha` 0.4: black on Platinum comes out
+    #8B8B8B, Mac OS's grey. Lines are a whole number of pixels thick at
+    any density (`hair()`), positions snapped to pixels, and windows'
+    sizes whole units (a size callback rounding up), so edges are sharp.
+  - **Return** is the default button's: it no longer goes to Dear ImGui's
+    navigation, which pressed whichever item had the focus, and only once
+    the keyboard had shown the focus. Space presses the focused one, Tab
+    and the arrows move it.
+  - **The font.** ChicagoFLF 2.1 (FontForge's build, 570 glyphs: Latin-1
+    and more, … “ ” ’ – — ✓ ⌘ among them; Dear ImGui's own font merged
+    for the rest). Its licence is in its own name table (copyright, name
+    0: Robin Casady's "You are free to use them as you wish. I consider
+    those two in the public domain."; licence, name 13: "Public Domain"),
+    copied into `third_party/fonts/README`. It's packed as the icon is
+    (LZSS, 50,472 bytes to 31,151). Its glyphs are drawn on a grid of
+    1000/12 units (`l`'s stem from 84 to 250, capitals 750 high: 2 and 9
+    squares), so at 12 pixels to the em every edge is a pixel's. Dear
+    ImGui sizes a font by its ascent to descent
+    (`stbtt_ScaleForPixelHeight`: 988 + 200 = 1,188 units), so size 12
+    was an em of 10.1 pixels, its stems straddling pixels (and at 13, the
+    first try, grey and soft). `ExtraSizeScale` 1.188 (`FONT_EM_SCALE`,
+    from the font's `head` and `hhea`) makes size 12 an em of 12 pixels,
+    lines still 12 apart, and `PixelSnapH` without oversampling puts each
+    glyph on whole pixels: black, sharp Chicago 12, as Mac OS drew it (the
+    guest's own menus beside it match), and at density 2 an em of 24.
+    Wrapped text has 3 units between lines (15 to a line).
+  - **Checked.** Captures by window ID of a clone of the installed 8.5
+    without the tools (Install and Restart offered) in real time, before
+    and after, with a scratch build that made input in the window's thread
+    (the menu opened, the focus moved, Return pressed: the menu resumed;
+    the offer answered Not Now). A scratch harness drew the menu, the
+    offer and a busy status bar with `ui.cpp` into SDL's software renderer
+    (no window) at densities 1, 1.5 and 2: at 2 the text is 24 pixels to
+    the em and as sharp; the same harness on Linux (x86-64, gcc 16,
+    sdl2-compat 2.32.74 over SDL 3.4) made images identical to macOS's
+    (arm64, the same sdl2-compat) to the pixel. The menu is 438 units tall where it was about 510, so it
+    fits a 640 x 480 screen's window now. Fullscreen wasn't tried (it
+    takes the screen's Space from the user), nor a high-density display.
+  - **Cost** (`BLUE_WINDOW_PROFILE`, the installed 8.5 idle in the Finder
+    with the status bar, 15 s of two 25 s runs each, alternating): drawing
+    0.085-0.093 ms a draw before, 0.090-0.094 after; presenting 0.23-0.25
+    ms both.
 - **Mac OS 9.2.2: the CD** (Task 10): MacOS9Lives' "Mac OS 9.2.2
   Universal" (`922.iso`, volume MacOS9Lives in the partition "Toast 5.2 HFS
   Optimizer"), for Macs Apple's 9.2.2 doesn't support. Its ROM file is

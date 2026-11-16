@@ -1552,8 +1552,28 @@ software (on 8.6, an M5 Mac).
   cursor; and what's in the floppy and CD-ROM drives, each with Eject and
   Insert... (see Floppies and CDs). In real time guest time doesn't count
   the pause, so the Mac's clock is that much behind afterwards.
+  The menu, the prompts (the guest tools' offer and news) and the status
+  bar look like Mac OS 8's Platinum, in the colours of Blue's site
+  (`site/style.css`), the same on macOS and Linux, in a window or
+  fullscreen: Platinum grey boxes in a black frame, bevelled (light top
+  and left edges, dark bottom and right), with a shadow and their title in
+  a striped title bar; bevelled, rounded push buttons, dark while pressed;
+  checkboxes whose check overhangs the box; etched lines between parts; and
+  Bondi Blue for the checks, the keyboard's focus ring and the processor's
+  light as it naps. A prompt has Blue's icon beside its text, as a Mac OS
+  alert has its icon, and its buttons below in Mac OS's order: the default
+  on the right, with Mac OS's thick ring around it, the other beside it,
+  and a third (Don't Ask Again) on the left. Return presses the default
+  button (Resume, in the menu), Esc the other (in the menu, Esc resumes);
+  Tab and the arrows move the focus ring, and Space presses the button it's
+  on. The text is ChicagoFLF (`third_party/fonts`: Robin Casady's
+  public-domain revival of Mac OS's Chicago), kept in the program
+  (`src/font_data.inc`, made by `tools/fonts.py`), so building needs
+  nothing more; it's drawn at 12 pixels to the em (24 on high-density
+  displays, rasterized at the display's density), Chicago's own grid, so
+  its strokes are whole pixels, as Mac OS's 12-point Chicago was.
   The status bar (shown unless `--no-status-bar`; the menu toggles it) sits
-  below the screen, so the window grows by its height rather than covering
+  below the screen, Platinum like a Mac OS 9 window's edge, so the window grows by its height rather than covering
   anything (fullscreen, or maximized, the screen fitted to the window
   shrinks instead). It has lights for the disks, CD-ROMs, the floppy drive
   (if there's one) and network, lit
@@ -1953,14 +1973,15 @@ src/      be.h, lzss.c, rom.c + parcels.c, mem.c (flat 4 GB guest space, its pag
           window, on the main thread, and what the Mac hands it), ui.cpp (its menu and prompts, with Dear ImGui),
           chooser.c, chooser_mac.m (the host's file chooser, for the menu's Insert...), audio.c (SDL2 sound), png.c,
           perf.c (host processor counters), env.c (settings' old names),
-          icon.c (the window's icon), main.c
+          icon.c (the window's icon), font.c (its font), main.c
 tests/    unit tests with a small instruction encoder (ppcasm.h); test_jit.c
           runs random programs on both engines and compares the results
 tools/    qemu-ref/ reference-boot scripts, pef.py (PEF inspector),
           devtree.py (device-tree copy dumper), disasm.py (disassembler),
           heap.py (heap zones in a RAM dump, checked),
           gltable.py (the OpenGL libraries' functions, from Apple's),
-          icons.py (the icons, from art/)
+          icons.py (the icons, from art/), fonts.py (the window's font,
+          from third_party/fonts/)
 art/      blue.svg (the icon's master), finder-icons.txt (the Finder
           icons' pixel art), png/ (the icon at each size), Info.plist
           (macOS), blue.desktop (Linux)
@@ -1970,4 +1991,5 @@ docs/     x86-jit-plan.md (the x86-64 JIT), gpu-plan.md (the
           nk2-reference.md (Mac OS 9.1 under QEMU: what Apple's NanoKernel 2
           does)
 third_party/imgui/  Dear ImGui 1.93.0 (MIT; its core files only, as released)
+third_party/fonts/  ChicagoFLF 2.1 (public domain; its notice in README there)
 ```

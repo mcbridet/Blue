@@ -1,10 +1,12 @@
 /*
  * The window's layout of the screen: where it goes, how it's scaled, and
- * which screen pixel a window position is over; and its icon.
+ * which screen pixel a window position is over; its icon and font.
  */
 #include <stdlib.h>
 
+#include "../src/be.h"
 #include "../src/display.h"
+#include "../src/font.h"
 #include "../src/icon.h"
 #include "test.h"
 
@@ -80,9 +82,38 @@ static void test_icon(void)
 	free(icon);
 }
 
+/* The font unpacks: a TrueType file, its tables' checksums right (head's whole-file adjustment aside) */
+static void test_font(void)
+{
+	size_t size;
+	uint8_t *ttf = font_ttf(&size);
+	CHECK(ttf != NULL);
+	if (!ttf)
+		return;
+	CHECK_EQ(be32(ttf), 0x00010000u);
+	unsigned tables = be16(ttf + 4), bad = 0;
+	CHECK(tables > 8 && 12 + 16 * tables <= size);
+	for (unsigned k = 0; k < tables && 12 + 16 * (k + 1) <= size; k++) {
+		const uint8_t *t = ttf + 12 + 16 * k;
+		uint32_t tag = be32(t), sum = 0, at = be32(t + 8), len = be32(t + 12);
+		if (at > size || len > size - at) {
+			bad++;
+			continue;
+		}
+		for (uint32_t n = 0; n < len; n += 4)
+			for (uint32_t b = 0; b < 4; b++)
+				sum += (uint32_t)(n + b < len && !(tag == 0x68656164u && n == 8) ? ttf[at + n + b] : 0)
+				       << (24 - 8 * b);
+		bad += sum != be32(t + 4);
+	}
+	CHECK_EQ(bad, 0);
+	free(ttf);
+}
+
 void test_display(void)
 {
 	test_view();
 	test_points();
 	test_icon();
+	test_font();
 }
