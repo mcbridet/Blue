@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "be.h"
+#include "pad.h"
 #include "tools.h"
 
 const char *const pippin_exports[PIPPIN_EXPORTS] = {
@@ -29,16 +30,22 @@ const struct ndrv_import pippin_imports[PIPPIN_IMPORTS] = {
 	[PIPPIN_NGET_TRAP_ADDRESS] = { "InterfaceLib", "NGetTrapAddress" },
 	[PIPPIN_NSET_TRAP_ADDRESS] = { "InterfaceLib", "NSetTrapAddress" },
 	[PIPPIN_OPEN_WD] = { "InterfaceLib", "OpenWD" },
+	[PIPPIN_CUR_RES_FILE] = { "InterfaceLib", "CurResFile" },
+	[PIPPIN_USE_RES_FILE] = { "InterfaceLib", "UseResFile" },
+	[PIPPIN_GET1_IND_RESOURCE] = { "InterfaceLib", "Get1IndResource" },
+	[PIPPIN_GET_HANDLE_SIZE] = { "InterfaceLib", "GetHandleSize" },
+	[PIPPIN_GET_CURRENT_PROCESS] = { "InterfaceLib", "GetCurrentProcess" },
 	[PIPPIN_STANDARD_ALERT] = { "AppearanceLib", "StandardAlert" },
 };
 
-/* Entries: initialization and termination, then the exports (as pippin_exports) */
+/* Entries: initialization and termination, then the exports (as pippin_exports), then the host calls */
 enum {
 	E_INIT, E_TERM, E_SAVE_PRAM, E_MAKE_WRITES_PERMANENT, E_READ_NV, E_WRITE_NV, E_INVOKE_SOFT_KEYBOARD,
 	E_FIND_FOLDER, E_GET_FILE, E_PUT_FILE, E_DELETE_FILE, E_HAS_FLOPPY_DOCK, E_HAS_MOUNTED_FLOPPY,
-	E_GET_DRIVE_REF_NUM, E_COUNT
+	E_GET_DRIVE_REF_NUM, E_ATTACH, E_DETACH, E_COUNT
 };
-_Static_assert(E_COUNT == PIPPIN_FIRST_EXPORT + PIPPIN_EXPORTS, "an entry for each export");
+_Static_assert(E_ATTACH == PIPPIN_FIRST_EXPORT + PIPPIN_EXPORTS && E_ATTACH == PIPPIN_ENTRY_ATTACH &&
+	       E_DETACH == PIPPIN_ENTRY_DETACH, "an entry for each export, then the host calls");
 
 /*
  * The library's data (after the imports and entry TVectors): strings, and
@@ -62,7 +69,14 @@ enum {
 	D_ORIGINAL = 124,                       /* the routine patched over */
 	D_LAST_VREF = 128,                      /* the volume PippinStandardPutFile's last file went to (0: none) */
 	D_GESTALT = 130,                        /* the 'pipn' Gestalt value is ours */
-	D_SIZE = 132,
+	D_PSN = 132,                            /* the title's ProcessSerialNumber */
+	D_ORIGINAL_COUNT = 140,                 /* CountADBs and GetIndADB, patched over */
+	D_ORIGINAL_GET_IND = 144,
+	D_CURSOR = 148,                         /* the AppleJack's cursor device record (its refCon: the AJGlobalData) */
+	D_AJ = D_CURSOR + 64,                   /* the AppleJack's AJGlobalData */
+	D_ADB_TEMPLATE = D_AJ + PAD_AJ_SIZE,    /* the two patches, with the routines patched over ... */
+	D_ADB_PATCHES = D_ADB_TEMPLATE + 60,    /* ... copied here */
+	D_SIZE = D_ADB_PATCHES + 60,
 };
 #define PREFIX_LEN (sizeof PREFIX - 1)
 #define SUFFIX_LEN (sizeof SUFFIX - 1)
@@ -80,6 +94,47 @@ static const uint8_t patch_template[] = {
 #define PATCH_SIZE sizeof patch_template
 #define PATCH_ORIGINAL 16                       /* (the jmp's address, in it) */
 _Static_assert(PATCH_SIZE <= D_PATCH - D_TEMPLATE && PATCH_SIZE <= D_ORIGINAL - D_PATCH, "the patch fits");
+
+/*
+ * CountADBs and GetIndADB, patched (OS traps: D0 the count, or the index
+ * and the result; A0 the ADBDataBlock): one more device, the AppleJack
+ */
+static const uint8_t adb_template[] = {
+	/* CountADBs */
+	0x4E, 0xB9, 0, 0, 0, 0,                 /* jsr CountADBs */
+	0x52, 0x40,                             /* addq.w #1,d0 */
+	0x4E, 0x75,                             /* rts */
+	0x4E, 0x71,                             /* (nop) */
+	/* GetIndADB */
+	0x48, 0xE7, 0xC0, 0x80,                 /* movem.l d0-d1/a0,-(sp)       (the index, the trap, the block) */
+	0x4E, 0xB9, 0, 0, 0, 0,                 /* jsr CountADBs */
+	0x24, 0x00,                             /* move.l d0,d2 */
+	0x4C, 0xDF, 0x01, 0x03,                 /* movem.l (sp)+,d0-d1/a0 */
+	0x52, 0x42,                             /* addq.w #1,d2 */
+	0xB0, 0x42,                             /* cmp.w d2,d0 */
+	0x67, 0x06,                             /* beq.s applejack */
+	0x4E, 0xF9, 0, 0, 0, 0,                 /* jmp GetIndADB */
+	0x10, 0xFC, 0x00, 0x00,                 /* applejack: move.b #0,(a0)+   (devType) */
+	0x10, 0xFC, 0x00, 0x03,                 /* move.b #3,(a0)+              (origADBAddr) */
+	0x42, 0x98,                             /* clr.l (a0)+                  (dbServiceRtPtr) */
+	0x20, 0xBC, 0, 0, 0, 0,                 /* move.l #cursor,(a0)          (dbDataAreaAddr) */
+	0x70, PIPPIN_ADB_ADDRESS,               /* moveq #15,d0 */
+	0x4E, 0x75,                             /* rts */
+};
+#define ADB_GET_IND 12                          /* (GetIndADB's patch, in it) */
+#define ADB_COUNT_AT 2                          /* (the addresses in it) */
+#define ADB_COUNT_AT_2 (ADB_GET_IND + 6)
+#define ADB_GET_IND_AT (ADB_GET_IND + 24)
+#define ADB_CURSOR_AT (ADB_GET_IND + 40)
+#define COUNT_ADBS_TRAP 0xA077u
+#define GET_IND_ADB_TRAP 0xA078u
+#define OS_TRAP 0u                              /* kOSTrapType */
+#define LM_CUR_AP_REF_NUM 0x900                 /* the current application's resource file */
+#define CURSOR_REF_CON 8                        /* (in a cursor device record) */
+#define CURSOR_DEV_CLASS 0x18
+#define CLASS_TRACKBALL 2
+_Static_assert(sizeof adb_template <= D_ADB_PATCHES - D_ADB_TEMPLATE && sizeof adb_template <= D_SIZE - D_ADB_PATCHES,
+	       "the patches fit");
 
 #define SHUTDOWN_TRAP 0xA895u
 #define TOOLBOX_TRAP 1u                         /* kToolboxTrapType */
@@ -134,7 +189,7 @@ enum label {
 	L_SUB_FILE, L_SUB_NOT_FOUND, L_SUB_RETURN, L_STO_RETURN, L_TIT_APP, L_TIT_RELEASE, L_TIT_SHORT,
 	L_TIT_APP_SHORT, L_TIT_FOLDER, L_TIT_RETURN, L_DEF_RETURN, L_FF_RETURN, L_GD_RETURN, L_MW_LAST,
 	L_MW_RETURN, L_PF_RETURN, L_DF_ASK, L_DF_STORE, L_DF_RETURN, L_RN_DONE, L_IN_PATCH, L_TE_PATCH,
-	L_TE_RETURN, L_WD_RETURN, L_COUNT
+	L_TE_RETURN, L_WD_RETURN, L_IN_NO_PIPP, L_IN_RELEASE, L_TE_ADB, L_TE_GET_IND, L_COUNT
 };
 #define MAX_FIXUPS 64
 
@@ -221,6 +276,7 @@ static uint32_t d_form(unsigned op, unsigned rt, unsigned ra, int32_t d)
 #define ADD(rt, ra, rb) X31(rt, ra, rb, 266u, 0u)
 #define CMPW(ra, rb) X31(0u, ra, rb, 0u, 0u)
 #define CLRLWI(ra, rs, n) (21u << 26 | (rs) << 21 | (ra) << 16 | (n) << 6 | 31u << 1)
+#define SRWI(ra, rs, n) (21u << 26 | (rs) << 21 | (ra) << 16 | (32u - (n)) << 11 | (n) << 6 | 31u << 1)
 #define MFLR_R0 0x7C0802A6u
 #define MTLR_R0 0x7C0803A6u
 #define MTCTR(rs) (0x7C0903A6u | (rs) << 21)
@@ -231,6 +287,7 @@ static uint32_t d_form(unsigned op, unsigned rt, unsigned ra, int32_t d)
 #define BEQ 0x41820000u                         /* (cr0) */
 #define BNE 0x40820000u
 #define BLE 0x40810000u
+#define BLT 0x41800000u
 #define BDNZ_BACK 0x4200FFFCu                   /* bdnz to the instruction before */
 
 /* Where the library's data (D_) is, from r2 */
@@ -266,6 +323,56 @@ static void epilogue(struct gen *g)
 	emit(g, MTLR_R0);
 	emit(g, LMW(26, -24, 1));
 	emit(g, BLR);
+}
+
+/* A host call: a call to an entry's stub (before our code, in the code section) */
+static void host(struct gen *g, unsigned entry)
+{
+	int32_t disp = (int32_t)(NDRV_STUB_SIZE * entry) - (int32_t)(ndrv_code_offset(E_COUNT) + 4 * g->n);
+	emit(g, BL | ((uint32_t)disp & 0x03FFFFFCu));
+}
+
+/* A register's 32 bits into the data at `at`, a halfword at a time (68k code's addresses are on halfwords) */
+static void store_halves(struct gen *g, unsigned reg, unsigned at)
+{
+	emit(g, SRWI(0, reg, 16));
+	emit(g, STH(0, data(g, at), 2));
+	emit(g, STH(reg, data(g, at + 2), 2));
+}
+
+/* NGetTrapAddress(trap, kOSTrapType) */
+static void get_os_trap(struct gen *g, uint16_t trap)
+{
+	emit(g, LI(3, 0));
+	emit(g, ORI(3, 3, trap));
+	emit(g, LI(4, OS_TRAP));
+	call(g, PIPPIN_NGET_TRAP_ADDRESS);
+}
+
+/* NSetTrapAddress(the data at `at`, trap, kOSTrapType) */
+static void set_os_trap(struct gen *g, unsigned at, uint16_t trap, bool address)
+{
+	if (address)
+		emit(g, ADDI(3, 2, data(g, at)));
+	else
+		emit(g, LWZ(3, data(g, at), 2));
+	emit(g, LI(4, 0));
+	emit(g, ORI(4, 4, trap));
+	emit(g, LI(5, OS_TRAP));
+	call(g, PIPPIN_NSET_TRAP_ADDRESS);
+}
+
+/* The routine patched over put back, unless it was never patched or has been patched over since */
+static void unpatch_os_trap(struct gen *g, uint16_t trap, unsigned original, unsigned patch, enum label skip)
+{
+	emit(g, LWZ(0, data(g, original), 2));
+	emit(g, CMPWI(0, 0));
+	branch(g, BEQ, skip);
+	get_os_trap(g, trap);
+	emit(g, ADDI(0, 2, data(g, patch)));
+	emit(g, CMPW(3, 0));
+	branch(g, BNE, skip);
+	set_os_trap(g, original, trap, false);
 }
 
 static void clear_pb(struct gen *g)
@@ -478,12 +585,75 @@ static void entries(struct gen *g, size_t at[E_COUNT])
 	emit(g, ORI(4, 4, SHUTDOWN_TRAP));
 	emit(g, LI(5, TOOLBOX_TRAP));
 	call(g, PIPPIN_NSET_TRAP_ADDRESS);
+
+	/* the AppleJack's mapping: the title's first 'pipp' resource, if it has one (else the driver's own, there) */
+	call(g, PIPPIN_CUR_RES_FILE);
+	emit(g, EXTSH(31, 3));
+	emit(g, LHA(3, LM_CUR_AP_REF_NUM, 0));
+	call(g, PIPPIN_USE_RES_FILE);
+	emit(g, LIS(3, PAD_AJ_SIGNATURE >> 16));
+	emit(g, ORI(3, 3, PAD_AJ_SIGNATURE & 0xFFFF));
+	emit(g, LI(4, 1));
+	call(g, PIPPIN_GET1_IND_RESOURCE);
+	emit(g, MR(30, 3));
+	emit(g, MR(3, 31));
+	call(g, PIPPIN_USE_RES_FILE);
+	emit(g, CMPWI(30, 0));
+	branch(g, BEQ, L_IN_NO_PIPP);
+	emit(g, MR(3, 30));
+	call(g, PIPPIN_GET_HANDLE_SIZE);
+	emit(g, CMPWI(3, PAD_AJ_MAP + 4 * PAD_AJ_SWITCHES));
+	branch(g, BLT, L_IN_RELEASE);
+	emit(g, LWZ(4, 0, 30));
+	emit(g, CMPWI(4, 0));
+	branch(g, BEQ, L_IN_RELEASE);
+	emit(g, LWZ(0, 0, 4));
+	emit(g, LIS(5, PAD_AJ_SIGNATURE >> 16));
+	emit(g, ORI(5, 5, PAD_AJ_SIGNATURE & 0xFFFF));
+	emit(g, CMPW(0, 5));
+	branch(g, BNE, L_IN_RELEASE);
+	emit(g, ADDI(3, 4, PAD_AJ_MAP));
+	emit(g, ADDI(4, 2, data(g, D_AJ + PAD_AJ_MAP)));
+	emit(g, LI(5, 4 * PAD_AJ_SWITCHES));
+	call(g, PIPPIN_BLOCK_MOVE_DATA);
+	label(g, L_IN_RELEASE);
+	emit(g, MR(3, 30));
+	call(g, PIPPIN_RELEASE_RESOURCE);
+	label(g, L_IN_NO_PIPP);
+	emit(g, ADDI(3, 2, data(g, D_PSN)));
+	call(g, PIPPIN_GET_CURRENT_PROCESS);
+
+	/* the AppleJack on the ADB: CountADBs and GetIndADB patched, the cursor device's refCon set */
+	get_os_trap(g, COUNT_ADBS_TRAP);
+	emit(g, STW(3, data(g, D_ORIGINAL_COUNT), 2));
+	store_halves(g, 3, D_ADB_TEMPLATE + ADB_COUNT_AT);
+	store_halves(g, 3, D_ADB_TEMPLATE + ADB_COUNT_AT_2);
+	get_os_trap(g, GET_IND_ADB_TRAP);
+	emit(g, STW(3, data(g, D_ORIGINAL_GET_IND), 2));
+	store_halves(g, 3, D_ADB_TEMPLATE + ADB_GET_IND_AT);
+	emit(g, ADDI(3, 2, data(g, D_CURSOR)));
+	store_halves(g, 3, D_ADB_TEMPLATE + ADB_CURSOR_AT);
+	emit(g, ADDI(0, 2, data(g, D_AJ)));
+	emit(g, STW(0, data(g, D_CURSOR + CURSOR_REF_CON), 2));
+	emit(g, ADDI(3, 2, data(g, D_ADB_TEMPLATE)));
+	emit(g, ADDI(4, 2, data(g, D_ADB_PATCHES)));
+	emit(g, LI(5, sizeof adb_template));
+	call(g, PIPPIN_BLOCK_MOVE);
+	set_os_trap(g, D_ADB_PATCHES, COUNT_ADBS_TRAP, true);
+	set_os_trap(g, D_ADB_PATCHES + ADB_GET_IND, GET_IND_ADB_TRAP, true);
+
+	/* and Blue told where the AppleJack's data is */
+	emit(g, ADDI(3, 2, data(g, D_AJ)));
+	emit(g, ADDI(4, 2, data(g, D_PSN)));
+	host(g, E_ATTACH);
 	emit(g, LI(3, 0));
 	epilogue(g);
 
-	/* void termination(void): both undone */
+	/* void termination(void): all undone */
 	at[E_TERM] = g->n;
 	prologue(g);
+	emit(g, ADDI(3, 2, data(g, D_AJ)));
+	host(g, E_DETACH);
 	emit(g, LBZ(0, data(g, D_GESTALT), 2));
 	emit(g, CMPWI(0, 0));
 	branch(g, BEQ, L_TE_PATCH);
@@ -495,19 +665,23 @@ static void entries(struct gen *g, size_t at[E_COUNT])
 	label(g, L_TE_PATCH);
 	emit(g, LWZ(0, data(g, D_ORIGINAL), 2));
 	emit(g, CMPWI(0, 0));
-	branch(g, BEQ, L_TE_RETURN);
+	branch(g, BEQ, L_TE_ADB);
 	emit(g, LI(3, 0));
 	emit(g, ORI(3, 3, SHUTDOWN_TRAP));
 	emit(g, LI(4, TOOLBOX_TRAP));
 	call(g, PIPPIN_NGET_TRAP_ADDRESS);
 	emit(g, ADDI(0, 2, data(g, D_PATCH)));
 	emit(g, CMPW(3, 0));
-	branch(g, BNE, L_TE_RETURN);            /* (patched over since: left alone) */
+	branch(g, BNE, L_TE_ADB);               /* (patched over since: left alone) */
 	emit(g, LWZ(3, data(g, D_ORIGINAL), 2));
 	emit(g, LI(4, 0));
 	emit(g, ORI(4, 4, SHUTDOWN_TRAP));
 	emit(g, LI(5, TOOLBOX_TRAP));
 	call(g, PIPPIN_NSET_TRAP_ADDRESS);
+	label(g, L_TE_ADB);
+	unpatch_os_trap(g, COUNT_ADBS_TRAP, D_ORIGINAL_COUNT, D_ADB_PATCHES, L_TE_GET_IND);
+	label(g, L_TE_GET_IND);
+	unpatch_os_trap(g, GET_IND_ADB_TRAP, D_ORIGINAL_GET_IND, D_ADB_PATCHES + ADB_GET_IND, L_TE_RETURN);
 	label(g, L_TE_RETURN);
 	epilogue(g);
 
@@ -715,7 +889,7 @@ static void entries(struct gen *g, size_t at[E_COUNT])
 
 /* ---- the fragment ------------------------------------------------------------------- */
 
-#define CODE_WORDS 1024
+#define CODE_WORDS 1536
 
 size_t pippin_build(uint8_t *out, size_t size, struct ndrv_layout *layout)
 {
@@ -732,6 +906,18 @@ size_t pippin_build(uint8_t *out, size_t size, struct ndrv_layout *layout)
 	extra[D_EXPLAIN] = (uint8_t)(sizeof EXPLAIN - 1);
 	memcpy(extra + D_EXPLAIN + 1, EXPLAIN, sizeof EXPLAIN - 1);
 	memcpy(extra + D_TEMPLATE, patch_template, PATCH_SIZE);
+	extra[D_CURSOR + CURSOR_DEV_CLASS] = CLASS_TRACKBALL;
+	put_be32(extra + D_AJ, PAD_AJ_SIGNATURE);
+	put_be32(extra + D_AJ + PAD_AJ_STATES, 0xFFFFFFFFu);    /* (no switch down) */
+	for (unsigned k = 0; k < PAD_AJ_SWITCHES; k++) {
+		const struct pad_switch *s = &pad_applejack_defaults[k];
+		uint8_t *at = extra + D_AJ + PAD_AJ_MAP + 4 * k;
+		at[0] = s->function;
+		at[1] = s->modifiers;
+		at[2] = s->key;
+		at[3] = s->chr;
+	}
+	memcpy(extra + D_ADB_TEMPLATE, adb_template, sizeof adb_template);
 	struct ndrv_spec spec = {
 		.kind = FRAG_LIBRARY,
 		.entries = E_COUNT,
@@ -751,13 +937,13 @@ size_t pippin_build(uint8_t *out, size_t size, struct ndrv_layout *layout)
 	struct gen g = { .w = code, .room = CODE_WORDS, .layout = layout };
 	for (unsigned k = 0; k < L_COUNT; k++)
 		g.label[k] = SIZE_MAX;
-	size_t at[E_COUNT];
+	size_t at[E_COUNT] = { 0 };
 	subroutines(&g);
 	entries(&g, at);
 	if (!resolve(&g))
 		return 0;
 	for (unsigned k = 0; k < E_COUNT; k++)
-		entry_code[k] = ndrv_code_offset(E_COUNT) + 4 * (uint32_t)at[k];
+		entry_code[k] = k == E_ATTACH || k == E_DETACH ? NDRV_STUB : ndrv_code_offset(E_COUNT) + 4 * (uint32_t)at[k];
 	spec.code = code;
 	spec.code_words = g.n;
 	spec.entry_code = entry_code;

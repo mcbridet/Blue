@@ -11,6 +11,7 @@
 #include "gltest.h"
 #include "hfs.h"
 #include "opengl.h"
+#include "isp.h"
 #include "pippin.h"
 #include "rave.h"
 #include "rsrc.h"
@@ -156,6 +157,7 @@ enum {
 	STEP_ORIGINAL,                          /* a patch: the routine patched over returned */
 	STEP_CURRENT, STEP_FRONT, STEP_SAME,    /* ... the host's text for the scrap: is this the front process? */
 	STEP_ALLOCATED, STEP_LOCKED, STEP_ZEROED, STEP_PUT_TEXT, STEP_PUT_UTXT, STEP_DISPOSED,
+	STEP_FRONT_ASKED,                       /* main: which process is in front (helper.want_front) */
 };
 /* The patches' other state words: which one, and its parameters */
 enum { S_ENTRY = 1, S_PARAM };
@@ -401,6 +403,27 @@ static void deliver(struct helper *h, struct ndrv_call *c, struct clip *clip, ui
 	call_original(h, c);
 }
 
+/* After a wait: the clipboard's news for the front application, a mode to switch to, or another wait */
+static void look(struct helper *h, struct ndrv_call *c, struct video *v, struct clip *clip, bool old)
+{
+	uint32_t mode, depth;
+	if (!old && h->patched && clip_telling(clip)) {
+		/* a resume event for the front application, saying the clipboard has changed */
+		clip->told = clip->serial;
+		ndrv_set_state(c, 0, STEP_POSTED);
+		ndrv_callout(c, ndrv_import(c, &h->layout, IMP_POST_EVENT), OS_EVENT, RESUME_CONVERT_CLIPBOARD, 0, 0);
+		return;
+	}
+	if (video_take_request(v, &mode, &depth)) {
+		ndrv_set_state(c, 1, mode);
+		ndrv_set_state(c, 2, depth);
+		ndrv_set_state(c, 0, STEP_GOT_DEVICE);
+		ndrv_callout(c, ndrv_import(c, &h->layout, IMP_GET_MAIN_DEVICE), 0, 0, 0, 0);
+		return;
+	}
+	wait_next_event(h, c);
+}
+
 void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct clip *clip)
 {
 	struct mem *m = c->mem;
@@ -422,7 +445,7 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct 
 	uint32_t step = ndrv_state(c, 0);
 	switch (step) {
 	case STEP_WAITED: {
-		uint32_t ev = data + (old ? V1_DATA_EVENT : DATA_EVENT), mode, depth;
+		uint32_t ev = data + (old ? V1_DATA_EVENT : DATA_EVENT);
 		if (h->quit || (mem_r16(m, ev) == HIGH_LEVEL_EVENT && mem_r32(m, ev + 2) == FOURCC('a', 'e', 'v', 't') &&
 				mem_r32(m, ev + 10) == FOURCC('q', 'u', 'i', 't'))) {
 			/* the Process Manager asks us to quit (shutting down), or Blue does (to replace us):
@@ -438,24 +461,22 @@ void helper_call(struct helper *h, struct ndrv_call *c, struct video *v, struct 
 			ndrv_finish(c, 0);
 			return;
 		}
-		if (!old && h->patched && clip_telling(clip)) {
-			/* a resume event for the front application, saying the clipboard has changed */
-			clip->told = clip->serial;
-			ndrv_set_state(c, 0, STEP_POSTED);
-			ndrv_callout(c, ndrv_import(c, &h->layout, IMP_POST_EVENT), OS_EVENT, RESUME_CONVERT_CLIPBOARD,
-				     0, 0);
+		if (!old && h->want_front) {
+			/* (into the second ProcessSerialNumber's place: the scrap's delivery uses it only between
+			 * callouts that let no other process run, as this one doesn't) */
+			ndrv_set_state(c, 0, STEP_FRONT_ASKED);
+			ndrv_callout(c, ndrv_import(c, &h->layout, IMP_GET_FRONT_PROCESS), data + DATA_PSN + 8, 0, 0, 0);
 			return;
 		}
-		if (video_take_request(v, &mode, &depth)) {
-			ndrv_set_state(c, 1, mode);
-			ndrv_set_state(c, 2, depth);
-			ndrv_set_state(c, 0, STEP_GOT_DEVICE);
-			ndrv_callout(c, ndrv_import(c, &h->layout, IMP_GET_MAIN_DEVICE), 0, 0, 0, 0);
-			return;
-		}
-		wait_next_event(h, c);
+		look(h, c, v, clip, old);
 		return;
 	}
+	case STEP_FRONT_ASKED:
+		h->front_known = result == 0;
+		h->front[0] = mem_r32(m, data + DATA_PSN + 8);
+		h->front[1] = mem_r32(m, data + DATA_PSN + 12);
+		look(h, c, v, clip, old);
+		return;
 	case STEP_GOT_DEVICE: {
 		/* DMSetDisplayMode(device, mode, &depthMode, reserved, displayState) */
 		uint32_t depth_at = data + (old ? V1_DATA_DEPTH : DATA_DEPTH);
@@ -513,6 +534,7 @@ static void icon_resources(struct rsrc *r, unsigned icon)
 
 static int gl_files(struct hfs_file files[TOOLS_GL_FILES]);
 static int pippin_file(struct hfs_file *file);
+static int isp_file(struct hfs_file *file);
 
 int tools_files(struct hfs_file files[TOOLS_FILES])
 {
@@ -551,7 +573,7 @@ int tools_files(struct hfs_file files[TOOLS_FILES])
 		engine, engine_rsrc, (uint32_t)engine_len, (uint32_t)engine_rsrc_len };
 	if (gl_files(files + TOOLS_GL_FIRST))
 		return -1;
-	return pippin_file(&files[TOOLS_PIPPIN]);
+	return pippin_file(&files[TOOLS_PIPPIN]) || isp_file(&files[TOOLS_ISP]) ? -1 : 0;
 }
 
 /* The Pippin library (pippin.h), under the fragment name of the Pippin's */
@@ -569,6 +591,24 @@ static int pippin_file(struct hfs_file *file)
 		return -1;
 	*file = (struct hfs_file){ "Blue Pippin Library", FOURCC('s', 'h', 'l', 'b'), FOURCC('s', 'y', 'P', 'P'),
 				   HAS_CUSTOM_ICON, 40, 260, frag, rsrc, (uint32_t)len, (uint32_t)rsrc_len };
+	return 0;
+}
+
+/* The InputSprocket driver (isp.h): InputSprocket loads the shared libraries of creator 'insp' in Extensions */
+static int isp_file(struct hfs_file *file)
+{
+	static uint8_t frag[ISP_LIBRARY_MAX], rsrc[4096];
+	struct ndrv_layout layout;
+	size_t len = isp_build(frag, sizeof frag, &layout);
+	uint8_t cfrg[128];
+	size_t cfrg_len = make_cfrg(cfrg, CFRG_LIBRARY, 0, "Blue Game Controllers", 0);
+	struct rsrc res[1 + ICON_RESOURCES] = { { FOURCC('c', 'f', 'r', 'g'), 0, cfrg, (uint32_t)cfrg_len } };
+	icon_resources(res + 1, FINDER_ICON_GAMEPAD);
+	size_t rsrc_len = rsrc_build(res, 1 + ICON_RESOURCES, rsrc, sizeof rsrc);
+	if (!len || !rsrc_len)
+		return -1;
+	*file = (struct hfs_file){ "Blue Game Controllers", FOURCC('s', 'h', 'l', 'b'), FOURCC('i', 'n', 's', 'p'),
+				   HAS_CUSTOM_ICON, 240, 60, frag, rsrc, (uint32_t)len, (uint32_t)rsrc_len };
 	return 0;
 }
 
@@ -617,7 +657,7 @@ static int gl_test_file(struct hfs_file *file)
 	if (!len || !rsrc_len)
 		return -1;
 	*file = (struct hfs_file){ "Blue GL Test", FOURCC('A', 'P', 'P', 'L'), FOURCC('s', 'y', 'G', 'T'), 0, 240,
-				   60, frag, rsrc, (uint32_t)len, (uint32_t)rsrc_len };
+				   160, frag, rsrc, (uint32_t)len, (uint32_t)rsrc_len };
 	return 0;
 }
 

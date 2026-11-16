@@ -239,44 +239,22 @@ it, `docs/glide-plan.md`, is in git history.
   driver of Blue's own in the Chooser (far more work).
 - **Size:** moderate: an LPD listener in the NAT, the job handling, the PPD.
 
-## Game controllers
+## A USB gamepad
 
-- **The iMac's:** USB only. Gamepads and joysticks (Gravis GamePad Pro USB,
-  MacAlly iShock, Thrustmaster and others) were used through InputSprocket
-  (Game Sprockets), with drivers from their makers or a generic USB HID
-  driver.
-- **Where Blue is:** the host's gamepads don't reach Mac OS; games see the
-  keyboard and mouse only.
-- **What for:** games with InputSprocket support, which most Mac action
-  games of the late 90s have (Unreal Tournament among them).
-- **Host side:** SDL2's game controller API (loaded at run time like the
-  rest of SDL; macOS and Linux; plugging in and out; the standard layouts of
-  Xbox, PlayStation and Switch pads), in window runs only, with script
-  commands for tests.
-- **Guest side, options:**
-  - An InputSprocket driver among the guest tools, its logic in Blue
-    through host calls like the 3D engine's: the pad appears in each game's
-    InputSprocket configuration with named buttons, sticks and triggers,
-    and no USB emulation is needed. How InputSprocket finds its drivers
-    (plug-ins in the Extensions folder, to confirm) decides the packaging.
-    The first choice.
+- **Where Blue is:** the host's pads are the Mac's keyboard and mouse, a
+  Pippin title's AppleJack, and game controllers of their own in games
+  that use InputSprocket ([input.md](input.md)).
+- **What's left:**
   - A virtual USB gamepad (HID) on Blue's USB controller, which has no
-    devices yet, for Mac OS's own USB drivers: more general (games that
-    read USB HID themselves; a base for other USB devices), but it needs
-    USB device emulation and depends on what Mac OS 8.5-9.1's USB HID
+    devices yet, for games that read USB devices themselves rather than
+    through InputSprocket, and as a base for other USB devices. It needs
+    USB device emulation, and depends on what Mac OS 8.5-9.1's USB HID
     support does with gamepads (to check).
-  - A host-side mapping of the pad to keys and the mouse, for games without
-    InputSprocket (set up in the F12 menu, say).
-- **Related, small:** right-click as Control-click (Mac OS 8's contextual
-  menus), and the scroll wheel (Mac OS 9 had no system-wide support; the
-  guest tools could turn it into scrolling).
-- **Pippin titles:** the Bandai Pippin's AppleJack pad was an ADB device
-  whose buttons its driver turned into keys, as each title's `pipp`
-  resources say (Super Marathon's: arrows, Space, Tab, Option, Command,
-  Shift, Control and letters); a host pad mapped the same way would play
-  them as on a Pippin (the key mapping above, set per title).
-- **Size:** small to moderate for the InputSprocket driver and the key
-  mapping; moderate for the USB gamepad.
+  - Mappings of one's own for the keyboard and mouse, kept between runs
+    (with the launcher), and two AppleJacks for two-player Pippin titles.
+  - The scroll wheel as scrolling (the guest tools could scroll the window
+    under the pointer) rather than arrow keys.
+- **Size:** moderate for the USB gamepad; small for the rest.
 
 ## More CD formats
 

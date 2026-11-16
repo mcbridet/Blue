@@ -17,7 +17,10 @@ test and debug it.
 - [window.md](window.md): the window, its scale, the menu, the prompts and the
   status bar.
 - [guest-tools.md](guest-tools.md): the guest tools and their installer: Blue
-  Enhancements, the clipboard, the 3D engine, OpenGL and the Pippin library.
+  Enhancements, the clipboard, the 3D engine, OpenGL, the Pippin library
+  and the InputSprocket driver.
+- [input.md](input.md): game controllers: as the keyboard and mouse, as a
+  Pippin title's AppleJack, and through InputSprocket.
 - [3d.md](3d.md): 3D: the RAVE engine and QuickDraw 3D, Blue's OpenGL, the
   software rasterizer and the GPU backend.
 - [jit.md](jit.md): the PowerPC JIT for AArch64 and x86-64, and its
@@ -47,4 +50,4 @@ test and debug it.
 - [roadmap.md](roadmap.md): the next steps.
 - [future.md](future.md): ideas further off: a modem, a serial port,
   infrared, 3D sound, sound input, AltiVec, 3dfx Glide, pictures on the
-  clipboard, printing, game controllers and the CD formats still missing.
+  clipboard, printing, a USB gamepad and the CD formats still missing.

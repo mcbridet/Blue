@@ -46,6 +46,7 @@ enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI
 		 UI_PROMPT_ALT,                 /* (a prompt's third button, on the left: Don't Ask Again) */
 		 UI_INSTALL_TOOLS,              /* (the offer to install the guest tools, asked for) */
 		 UI_SHARE_REFRESH,              /* (the shared folder's volume put away, written back, offered again) */
+		 UI_PADS,                       /* (game controllers as the keyboard and mouse, or not) */
 		 UI_EJECT,                      /* (+ the drive's number in the menu's list) */
 		 UI_EJECT_LAST = UI_EJECT + UI_DRIVES - 1,
 		 UI_INSERT,                     /* (likewise: an image chosen with the host's file chooser) */
@@ -76,6 +77,14 @@ struct ui_drives {
 	char share[64];                 /* its name */
 	char share_why_not[240];        /* why Refresh is disabled ("": it isn't) */
 	bool share_changed;             /* the folder has changed on the host since the volume was made */
+};
+
+/* The game controllers, as the menu shows them */
+struct ui_pads {
+	unsigned count;                 /* connected */
+	char names[200];                /* ... their names */
+	bool on;                        /* mapped to the keyboard and mouse (the menu's checkbox) */
+	char mapping[200];              /* ... how ("as an AppleJack, by marathon.ppc's mapping") */
 };
 
 /* The status bar's lights */
@@ -109,6 +118,7 @@ struct ui_state {
 	/* a question or news over the screen (the guest runs on), or NULL: its buttons (`no`, `alt` may be NULL) */
 	const char *prompt, *prompt_yes, *prompt_no, *prompt_alt;
 	const struct ui_drives *drives; /* the drives with removable media, or NULL without any */
+	const struct ui_pads *pads;     /* the game controllers, or NULL if the window can't have any */
 	/* the menu's Install Guest Tools... (`tools`), and why it's disabled (or NULL) */
 	bool tools;
 	const char *tools_why_not;

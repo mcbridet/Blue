@@ -50,16 +50,24 @@ enum display_event_type {
 					 * chooser), until the next event */
 	DISPLAY_EVENT_DROP_FILE,        /* a file was dropped on the window: path (until the next event) */
 	DISPLAY_EVENT_CLIPBOARD,        /* the host's clipboard may have changed (or the window got the focus) */
+	DISPLAY_EVENT_WHEEL,            /* the scroll wheel: dx, dy (right and up, as the host has it) */
+	/* game controllers (SDL's), each by Blue's number for it, pad (0 to PAD_MAX - 1) */
+	DISPLAY_EVENT_PAD_ADDED,        /* pad, path: its name (until the next event); value 1 if it's a virtual one
+					 * (display_pad_virtual()) */
+	DISPLAY_EVENT_PAD_REMOVED,      /* pad */
+	DISPLAY_EVENT_PAD_BUTTON,       /* pad, button (pad.h's, SDL's), down */
+	DISPLAY_EVENT_PAD_AXIS,         /* pad, button: the axis (pad.h's), value (-32768 to 32767; triggers 0 up) */
 };
 
 struct display_event {
 	enum display_event_type type;
 	int x, y, dx, dy;
-	int button;                     /* 0 = primary */
+	int button;                     /* 0 = primary, 1 middle, 2 secondary */
 	bool down;
 	uint8_t adb_key;                /* ADB key code */
 	enum ui_action action;
 	const char *path;
+	int pad, value;
 };
 
 /*
@@ -195,6 +203,20 @@ void display_drives_state(struct display *d, const struct ui_drives *drives);
 
 /* ... and Install Guest Tools...: whether it's there, and why it's disabled (copied; NULL: it isn't) */
 void display_tools_state(struct display *d, bool shown, const char *why_not);
+
+/* ... and the game controllers (copied) */
+void display_pads_state(struct display *d, const struct ui_pads *pads);
+
+/*
+ * Game controllers: SDL's (2.0.14 and later) virtual ones, for scripted
+ * runs in the window, which then come and go and send their buttons and
+ * axes as a real one would: false if SDL can't make them. Virtual pad n
+ * (0 to PAD_MAX - 1) is plugged in (`value` 1) or out (0), or button or
+ * axis `which` (pad.h's) is set to `value` (a button's 0 or 1; an axis's
+ * -32768 to 32767, a trigger's from 0).
+ */
+enum display_pad_op { DISPLAY_PAD_PLUG, DISPLAY_PAD_BUTTON, DISPLAY_PAD_AXIS };
+bool display_pad_virtual(struct display *d, enum display_pad_op op, unsigned n, unsigned which, int value);
 
 /*
  * Shows a question or news over the screen, with one or two buttons (`no`

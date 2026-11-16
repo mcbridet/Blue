@@ -37,6 +37,16 @@ draws with Blue's OpenGL libraries, on 8.6 and on 9.2.2: the same
 pictures as with RAVE, at 60 frames a second on the GPU and about 50 in
 software (on 8.6, an M5 Mac).
 
+A game controller plays UT through InputSprocket (with Blue Game
+Controllers, on 8.6 with InputSprocket 1.4.1, as UT installs it): the
+left stick runs and slides, the right turns and looks, the triggers fire,
+A jumps, and Start is Esc, for its menus; Options, Input Device shows the
+pad in InputSprocket's dialog (see [input.md](input.md#inputsprocket)).
+It wants its CD in the drive. A scripted run plays it in instruction
+time: from the intro, Tab and `open DM-Tempest` (its console) start a
+practice match, and `clock 300` makes it fast enough to play (see
+[findings.md](findings.md), "Unreal Tournament's needs").
+
 ## MacBench
 
 ZD MacBench 5.0 runs (tested from a shared folder, on an installed 8.5):
@@ -108,11 +118,50 @@ in `Preferences:Pippin:marathon.ppc` or `marathon2.ppc`; Continue Saved
 Game opens them there, and Quit goes back to the Finder. The keyboard
 works: in Marathon 2 the up arrow moves forward, Space fires, Tab acts (terminals),
 Return pages through a terminal, Command-Q asks to end the game; Marathon
-1 took Tab and Return held for a second in scripted tests, and its
-movement keys weren't found there (the Preferences screen sets them). The
-mouse works in the menus and dialogs. The Pippin's AppleJack controller
-isn't emulated (its buttons are keys: the titles' `pipp` resources map
-them onto the keyboard).
+1 took Tab and Return held for a second in scripted tests. The mouse
+works in the menus and dialogs.
+
+A game controller plays it as the Pippin's AppleJack, with the title's
+own mappings (see [guest-tools.md](guest-tools.md#blue-pippin-library)):
+in the menus the right stick moves the pointer and the triggers and
+shoulders click; in the game the D-pad moves (O, K, ; and L: the keys
+the game's own settings have, which is how Marathon 1's movement keys were
+found), A, B, X and Y are Shift, Tab, Space and Option, the shoulders and
+triggers Z and X, and Back, Guide and Start Command-Q, Control and P. An
+instruction-time run on 8.5 (a disk with the guest tools, the disc's cue
+sheet in a CD-ROM drive) opened the title with a scripted pad (Back and
+the D-pad's down, Command-Down Arrow, in the Finder), moved the pointer
+with its right stick and began a game with its right trigger, ended the
+chapter screen with X, then walked forward with the D-pad's up and turned
+with its left:
+
+```
+0 pad 0 plug Test Pad
+4000000000 key 01                       # "super", the disc ...
+4200000000 pad 0 button back down       # ... opened: Command-Down Arrow
+4210000000 pad 0 button dpdown down
+4220000000 pad 0 button dpdown up
+4230000000 pad 0 button back up
+...                                     # M1, then marathon.ppc, the same way
+6400000000 clock 300
+11000000000 pad 0 axis rightx 0.8       # the pointer, by the trackball
+11000000000 pad 0 axis righty 0.5
+11300000000 pad 0 axis rightx 0
+11300000000 pad 0 axis righty 0
+11900000000 move 250 310                # on Begin New Game
+12000000000 pad 0 axis righttrigger 1   # the right fire button: a click
+12100000000 pad 0 axis righttrigger 0
+15500000000 pad 0 button x down         # the chapter screen ended
+15600000000 pad 0 button x up
+16100000000 pad 0 button dpup down      # forward (O), for two seconds of guest time
+16700000000 pad 0 button dpup up
+16900000000 pad 0 button dpleft down    # a turn to the left (K)
+17100000000 pad 0 button dpleft up
+```
+
+The AppleJack isn't emulated as an ADB device: the library stands in for
+its driver. Two AppleJacks, for two players, aren't there either: every
+pad is the one AppleJack.
 
 "1995.1.17 Hanshin Daishinsai" (a Macromedia Director projector, `JISIN`,
 68k, without PippinPPC) runs on 8.5 and 9.2.2: open its disc (its name is

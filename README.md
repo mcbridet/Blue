@@ -5,10 +5,7 @@
 <h1 align="center">Blue</h1>
 
 <p align="center">
-  <strong>Classic Mac OS on a native kernel.</strong><br>
-  Mac OS 8.5 to 9.2.2 on today's Macs and Linux PCs: Apple's own code runs
-  unmodified, on a native replacement for the Power Mac's NanoKernel instead
-  of an emulated Power Mac.
+  <strong>A blazing-fast, feature-rich Mac OS 8, 9 &amp; Pippin runtime.</strong>
 </p>
 
 <p align="center">
@@ -59,9 +56,13 @@ from that disk, in a window on your desktop.
   connection, a folder of yours as a disk, the clipboard shared both ways,
   and disk, CD (`.iso`, `.toast`, `.cue`/`.bin`, `.nrg`, `.mds`, `.ccd`,
   `.chd`, `.dmg`) and floppy images you drop on the window.
+- **Game controllers:** Xbox, PlayStation, Switch and other pads play as
+  the keyboard and mouse, as a Pippin's AppleJack, and as game controllers
+  of their own in games that use InputSprocket.
 - **Guest tools,** offered once the Finder is up: the screen follows the
-  window's size, the clipboard is shared, and the 3D engine, OpenGL and a
-  library for Bandai Pippin titles are installed.
+  window's size, the clipboard is shared, and the 3D engine, OpenGL, game
+  controllers for InputSprocket and a library for Bandai Pippin titles are
+  installed.
 - **Reproducible runs** for testing and debugging: in instruction time, a run
   is the same every time, down to the instruction.
 
@@ -82,6 +83,37 @@ macOS and Linux hosts, AArch64 and x86-64
 ```
 
 [docs/architecture.md](docs/architecture.md) tells the whole story.
+
+### How Blue compares
+
+SheepShaver and QEMU are the long-standing ways to run classic Mac OS on
+today's computers, and Apple's own Classic environment once ran Mac OS 9
+inside Mac OS X. Blue owes a lot to the first two (see
+[Acknowledgements](#acknowledgements)). Here's how it stands beside all three:
+
+| | Blue | SheepShaver | QEMU | Classic, in Mac OS X |
+|---|---|---|---|---|
+| **Mac OS** | 8.5 to 9.2.2 | 7.5.3 to 9.0.4 | 9.0 to 9.2.2, and Mac OS X 10.0 to 10.5 | 9.1 to 9.2.2 |
+| **Runs on** | macOS 11 and later, and Linux: Apple silicon, ARM64 and x86-64 | macOS, Linux and Windows | macOS, Linux and Windows | PowerPC Macs, with Mac OS X 10.0 to 10.4 |
+| **How** | Apple's code, unmodified, on a native kernel in place of the NanoKernel | Apple's code on a patched ROM, with a kernel of its own | A whole Power Mac emulated, firmware and all | Mac OS 9 as a program in Mac OS X, on a real PowerPC |
+| **Speed** | A JIT on every host: about 18 times a Power Mac G3/300 in MacBench 5's processor test, on an Apple M5 | A JIT on Intel and AMD; none on Apple silicon | A JIT, with every device and the memory management unit emulated | The PowerPC's own, up to a Power Mac G5 |
+| **AltiVec** | Not yet | Yes, as a G4 (7400) | Yes, as a G4 | On G4 and G5 Macs |
+| **What you need** | A Mac OS CD or disk image | A Mac OS CD or disk image, and a ROM file found elsewhere | A Mac OS CD or disk image | Mac OS 9 installed beside Mac OS X |
+| **3D** | QuickDraw 3D, RAVE (as an ATI Rage 128) and OpenGL, drawn on your GPU | Software only | Software only | Programs that draw straight to the screen or the hardware often fail |
+| **Restart and Startup Disk** | Both work | Restarting can freeze or crash it; Startup Disk doesn't work | Neither works | Mac OS X's own |
+| **Screen** | Follows the window's size, scaled to suit your display | A fixed size, set in its settings | Set in Mac OS's Monitors control panel | Mac OS 9's windows among Mac OS X's |
+| **Sound** | Yes, with CD audio from most kinds of CD image | Yes, with CD audio from `.cue`/`.bin` images | Only in separate experimental builds | Yes |
+| **Sound input** | Not yet | No | No | Yes |
+| **Disk images** | Dropped on the window or inserted from the menu: CD images in most formats, compressed `.dmg` and Disk Copy images, floppies | Uncompressed images, and one at a time dropped in as a CD | Raw and QEMU's own formats, changed from a menu | Mac OS X's |
+| **Shared folders** | A folder of yours as a disk, its changes written back when Mac OS shuts down | A folder as a live disk, though programs can't run from it | Separate experimental drivers | Mac OS X's disks, directly |
+| **Networking** | TCP/IP through its NAT; no port forwarding yet | TCP/IP through its NAT, with port forwarding; AppleTalk with extra setup, on some hosts | TCP/IP through its NAT, with port forwarding; AppleTalk through bridged networking, run as root | Mac OS X's, AppleTalk included |
+| **USB devices** | Not yet | No | Passed through from the host | Through Mac OS X |
+| **Game controllers** | Gamepads, as keys or through InputSprocket | No | A USB gamepad, passed through | Unreliable |
+| **Pippin titles** | Yes | No | No | No |
+
+SheepShaver also runs System 7.5 to Mac OS 8.1, given an Old World ROM.
+Blue's other gaps, such as serial ports and modems, are listed under
+[What isn't there](#what-isnt-there).
 
 ## Download and install
 
@@ -322,6 +354,9 @@ F12 or Esc closes it again.
 - **Status bar** shows or hides the status bar.
 - **Capture the mouse** sets whether the mouse is captured while Mac OS
   hides its pointer, as games do (see [Keyboard and mouse](#keyboard-and-mouse)).
+- **Controllers** lists the game controllers connected, and which mapping
+  they follow; its checkbox turns them off (see
+  [Game controllers](#game-controllers)).
 
 While the menu is open, the Mac's clock stops, so it's behind by that
 much afterwards.
@@ -351,7 +386,8 @@ that it installs there for you:
 | Blue Enhancements | The screen follows the window's size, and the clipboard is shared with your computer. |
 | Blue 3D Engine | Accelerates QuickDraw 3D and RAVE games, which see an ATI Rage 128. |
 | Blue OpenGL Library, Memory and Utility | OpenGL for Mac OS 9 games, drawn on your GPU. |
-| Blue Pippin Library | Lets Bandai Pippin titles run (see [Pippin titles](#pippin-titles)). |
+| Blue Pippin Library | Lets Bandai Pippin titles run, and game controllers play them as the Pippin's AppleJack (see [Pippin titles](#pippin-titles)). |
+| Blue Game Controllers | Game controllers in games that use InputSprocket, as themselves, set up in each game's own controls dialog (see [Game controllers](#game-controllers)). |
 
 When the Finder is up and a tool is missing, or comes from another
 version of Blue, Blue offers to install them, over the Mac's screen:
@@ -414,14 +450,64 @@ Blue's: it opens the menu, and Mac OS never sees it. (On a Mac laptop,
 you may need to hold fn as you press F12.)
 
 The Mac has a one-button mouse: the left button is its button, and the
-others, and the scroll wheel, do nothing. For a contextual menu,
-Control-click.
+right button Control-clicks, for contextual menus. The scroll wheel presses
+the arrow keys (a press for each step of the wheel), which scroll most
+windows of the time: Mac OS 8 and 9 didn't know scroll wheels. In a game
+that has the mouse (below), the right button and the wheel do nothing.
 
 The Mac's pointer follows yours. When Mac OS hides its pointer for a
 moment, as games do, Blue captures the mouse, so that its movements go to
 the game; the window's title says so. Press **Control-Option**
 (Ctrl+Alt) to get your pointer back, and click in the window to capture
 it again. Capture the mouse in the menu turns this off.
+
+### Game controllers
+
+Game controllers (Xbox, PlayStation, Switch and other pads SDL knows,
+several at once, plugged in and out as you like) work in the window, as
+the Mac's keyboard and mouse. Their buttons are known by where they sit:
+A is the bottom face button, B the right one, X the left and Y the top,
+whatever the pad's labels say.
+
+| On the pad | In Mac OS |
+|---|---|
+| D-pad, left stick | The arrow keys |
+| A | Return |
+| B | Command-period (Cancel) |
+| X | Space |
+| Y | Tab |
+| Start | Esc |
+| Back (Select, View, Minus) | Command, held |
+| Left and right shoulder | Shift and Option, held |
+| Right stick | Moves the mouse (pressed: clicks) |
+| Right trigger | Clicks |
+| Left trigger | Control-clicks (a contextual menu) |
+
+While a [Pippin title](#pippin-titles) runs in front, the pad is the
+Pippin's AppleJack controller instead, and the title's own mapping of its
+buttons applies, as on a Pippin: the D-pad and left stick are its D-pad;
+A, B, X and Y its red, green, yellow and blue buttons; the shoulders and
+triggers its left and right fire buttons; Back, Guide (Home, PS) and
+Start its three buttons below; and the right stick its trackball.
+
+Games that use InputSprocket (Apple Game Sprockets' input library, which
+most Mac action games of the late 1990s do)
+get each pad as a game controller of its own, through Blue Game
+Controllers, one of the [guest tools](#the-guest-tools). The game sets it
+up as it would a joystick: shooters move and slide with the left stick,
+turn and look with the right (as with the mouse), fire with the right
+trigger and jump with A, and the game's own controls dialog (often under
+Options) shows the pad, its buttons, sticks
+and triggers by name, to change what each does; the game keeps your
+choices. While the game is in front, the controls it uses do only that;
+the rest keep the mapping above, so Start is still Esc, for its menus.
+InputSprocket itself is Apple's, not Blue's: games that use it come with
+it, to install with them.
+
+**Controllers** in Blue's menu (F12) lists the pads connected and which
+mapping they follow, and turns them off. A pad's input reaches Blue only
+while its window is in front. How it all works is in
+[docs/input.md](docs/input.md).
 
 ### Copy and paste
 
@@ -583,9 +669,11 @@ proper speed.
 Many discs for the Bandai Pippin, Apple's 1996 game console design, run
 in Blue. Titles that need the Pippin's own library get Blue Pippin
 Library, one of the guest tools. Their saved games and preferences go in
-`System Folder:Preferences:Pippin:`, under the title's name. The Pippin's
-AppleJack controller isn't emulated: titles map its buttons to keys. More
-in [docs/software.md](docs/software.md#pippin-titles).
+`System Folder:Preferences:Pippin:`, under the title's name. A game
+controller plays them as the Pippin's AppleJack controller, by the
+title's own mapping of its buttons (see
+[Game controllers](#game-controllers)); the keyboard and mouse work too.
+More in [docs/software.md](docs/software.md#pippin-titles).
 
 A Pippin disc doesn't start the Mac by itself: a Pippin's system is in
 its console, and its titles run inside Mac OS. Start Blue with the Mac OS
@@ -728,11 +816,10 @@ Blue doesn't have everything a real iMac had, yet:
 
 - **AltiVec,** the G4's vector instructions: programs that need a G4
   don't run.
-- **Mac OS's virtual memory,** which stays off: give the Mac more memory
-  with `--ram` instead.
 - **Modems, serial ports, infrared and printing.**
-- **Game controllers** (joysticks and gamepads), and USB or FireWire
-  devices of any kind: the keyboard and mouse are the Mac's input.
+- **USB and FireWire devices** of any kind (game controllers reach Mac OS
+  as the keyboard and mouse, and through InputSprocket: see
+  [Game controllers](#game-controllers)).
 - **Sound input** (a microphone), and 3D sound.
 - **AppleTalk** networking, and connections into the Mac.
 - **3dfx Glide,** for games that draw with a Voodoo card.
@@ -860,6 +947,20 @@ Blue now asks first while Mac OS is running (see [The window](#the-window)).
 Press Control-Option (Ctrl+Alt), or switch to another application. Click
 in the window to capture the mouse again.
 
+### My game controller does nothing
+
+Blue's window has to be in front. Check Controllers in Blue's menu (F12):
+the pad should be listed, and the checkbox on. Blue takes the pads SDL
+recognises as game controllers (most Xbox, PlayStation and Switch pads,
+and many others); a build of your own needs a recent SDL2 (2.0.18 or
+later, as for the menu).
+A game that uses InputSprocket gets the pad as a controller of its own
+once Blue Game Controllers is installed (Install Guest Tools… in Blue's
+menu), and if InputSprocket is (it comes with the game); look for the pad
+in the game's controls dialog. Other games get the pad as keys, which
+their own key settings may not use: set the game's keys to the arrows,
+Return, Space and Tab, or use the keyboard.
+
 ### The CD came out when Mac OS restarted
 
 It shouldn't any more: discs and floppies now stay in their drives through
@@ -892,8 +993,9 @@ menu still offers them. To stop the offer, choose Don't Ask Again.
 
 ### An application says there isn't enough memory
 
-Mac OS's virtual memory stays off in Blue. Give the Mac more memory with
-`--ram` (up to 1024 MB), and the application more in its Get Info window.
+Give the Mac more memory with `--ram` (up to 1024 MB), and the application
+more in its Get Info window. Mac OS's virtual memory stays off in Blue, so
+the memory `--ram` gives is all Mac OS has.
 
 ### StuffIt archives won't open on Mac OS 8.5 or 8.6
 
@@ -936,8 +1038,9 @@ The [docs](docs/README.md) folder goes further:
 - [How Blue works](docs/architecture.md), and how Mac OS 8.5 to 9.2.2
   [were brought up](docs/bring-up.md) on it.
 - [The iMac's devices](docs/devices.md), [the drives](docs/drives.md),
-  [the shared folder](docs/shared-folder.md), [the window](docs/window.md)
-  and [the guest tools](docs/guest-tools.md), in depth.
+  [the shared folder](docs/shared-folder.md), [the window](docs/window.md),
+  [game controllers](docs/input.md) and [the guest tools](docs/guest-tools.md),
+  in depth.
 - [3D](docs/3d.md): the RAVE engine, OpenGL and the GPU backend.
 - [The JIT](docs/jit.md).
 - [Notes on programs and games](docs/software.md).

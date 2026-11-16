@@ -2632,3 +2632,94 @@ made to start up.
   reading of it is checked against the image it was made from. macOS 27
   keeps a file's resource fork in its `com.apple.ResourceFork` attribute,
   and `NAME/..namedfork/rsrc` reads it (an NDIF image's `bcem` resource).
+- **The AppleJack** (game controllers): Apple's Pippin Technical Note
+  "Applejack Input Device Driver" (PPBD-JHACEF003, 4/11/96) gives its
+  driver's data, AJGlobalData: `pipp`, MyTalkR0, handlerID, ourMBState,
+  ourLockState, switchStates (a long, a bit per switch, 0 while down),
+  SwitchData switchMappingArray[18] (function, modifiers, keyCode,
+  charCode: functions nothing, mouse, double-click, mouse lock, keyboard,
+  front panel (unused), modifier; modifiers bits Command, Shift, Caps
+  Lock, Option, Control), nextjADBProc and cursorHandler: 92 bytes, as a
+  `pipp` resource is. The switch numbers are the bits of its ADB register
+  0: 0-2 the three system buttons below (left, middle, right), 3-7 none,
+  8 blue, 9 yellow, 10-13 the D-pad's up, left, right and down, 14 red,
+  15 green, 16 the right fire button, 17 the left. The key codes are
+  virtual ones (the KeyMap's, an event's): Super Marathon's have 0x7E for
+  up and 0x3B for Control, where the note's own constants say 0x36 (the
+  ADB keyboard's raw code); the System's `KMAP` maps the ADB keyboard's
+  codes to them (raw 0x36 Control to 0x3B, the arrows 0x3B-0x3E to
+  0x7B-0x7E, the right-hand modifiers 0x7B-0x7D to 0x3C-0x3E). The driver
+  sits in a Pippin's ROM; Super Marathon's disc has no Applejack extension
+  (its System Folder's Extensions folder has only "Pippin 1.2 ROM Init"),
+  and the enabler's own `pipp` resources (0, and 128: the startup
+  picture) aren't mappings. `marathon.ppc` and `marathon2.ppc` each have
+  `pipp` 1000 (the menus: the D-pad the arrows, the fire buttons the mouse
+  button, the system buttons Command-Q, mouse lock and double-click) and
+  1001 (the game: O, K, ; and L on the D-pad, Z and X the fire buttons,
+  Option, Space, Shift and Tab the coloured buttons, Command-Q, Control
+  and P the system buttons). Their routine at code offset 0x38174 (in
+  Marathon's) goes through CountADBs down to 1 with GetIndADB, and for a
+  device whose origADBAddr is 3 and dbDataAreaAddr isn't nil, takes that
+  as a cursor device record, its refCon (offset 8) as AJGlobalData, and if
+  that begins `pipp`, copies the resource's 18 SwitchData into it (nothing
+  else). It's called with 1000 as menus come up, and with 1001 by
+  "LoadGameAppleJackSettings" only if a byte the game sets from Gestalt
+  'pipn' says it's a Pippin. The ADB Manager's traps: _CountADBs $A077,
+  _GetIndADB $A078 and _GetADBInfo $A079 (Blue Pippin Library's patch
+  first went on $A079 by mistake: Marathon then found no AppleJack, and
+  GetADBInfo for the mouse's address 3 gave the AppleJack's record).
+- **InputSprocket's drivers** (game controllers): InputSprocketLib 1.4.1
+  (Mac OS 8.6's) loads every shared library of creator `insp` (or Apple's
+  own, `insi`) in the Extensions folder, for each game that starts it (its
+  own instance, data and all). A driver registers its devices from its
+  initialization routine (MacALLY's checks ISpGetVersion for 1.1 or later
+  first); InputSprocket 1.7 also calls the exports
+  ISpDriver_FindAndLoadDevices, _CheckConfiguration, _DisposeDevices and
+  _Tickle. ISpDevice_New takes an ISpDeviceDefinition (92 bytes: the
+  name, a Str63; class, identifier, permanentID, flags) and a meta handler
+  that gives a function for each selector, Init 1 to CalibrateDialog 22
+  (Dirty is 12, SetActive 13); ISpElement_New an ISpElementDefinitionStruct
+  (104 bytes: device, group, the name, kind, label, configInfo and its
+  length, dataSize). Init gets the game's needs (ISpNeed, 92 bytes: the
+  name, then kind at 68, label 72, flags 76), its virtual elements and the
+  `used` flags, and the driver pushes to those virtual elements itself:
+  Apple's Mouse driver keeps them by the needs' kinds (its code at 0x413C)
+  and pushes to them (0x1640). ISpConfigure's dialog (its DLOG 111, 581 x
+  365) gives the device a rect for its panel (Show, with the item number
+  its items begin at) and passes it every event of the dialog's through
+  HandleEvent, mouse-downs included; 1.4.1 never calls DialogItemHit or
+  Click. While the dialog is up it calls GetState with an empty buffer at
+  every event (2,044 times in a few seconds) and Dirty to know when to say
+  "Custom"; it keeps what GetState gives for the game, and gives it back
+  through SetState after Init.
+- **Delta data** (game controllers): InputSprocket.h has ISpDeltaData as a
+  Fixed, but Apple's Mouse driver pushes `(int)(count x scale)`, the scale
+  a float (1.0, changed by its panel's slider): plain counts. A delta
+  element's state (ISpElement_GetSimpleState) is the sum of the events
+  pushed since it was last read (InputSprocketLib's code at 0x10B8 drains
+  them). Unreal Tournament reads its two delta needs' states each frame,
+  takes 1/128 of each (`srawi 7`) and passes them on as the mouse's X and
+  Y (input keys 0xE4 and 0xE5; User.ini's `MouseX=Axis aMouseX
+  Speed=6.0`): so a count is 128 to it, and the real mouse can't be what
+  it plays by through InputSprocket (it reads that itself). To it a
+  positive Y delta is up, and so is an axis's maximum (its "Look/Move"
+  axis looks down at the minimum).
+- **Unreal Tournament's needs** (game controllers): 26 (Mac version 400):
+  the axes Turn (`xaxi`) and Look/Move (`yaxi`), both flagged as having a
+  button and a delta version; the deltas Turn and Look/Move (Mouse
+  Left/Right, Up/Down: `xdlt`, `ydlt`); the buttons Fire/Click (`fire`),
+  Alt Fire (`sfir`), Jump, Crouch, Previous and Next Weapon (`btpv`,
+  `btnx`), Throw Weapon, Mouse Look, Previous, Next and Activate
+  Inventory, Walk, Step Left and Right (`blft`, `brgt`), Sidestep (`side`)
+  and Center View; and Look Up and Down, Turn Left and Right and Run
+  Forward and Backward, flagged as having axis and delta versions. Its
+  User.ini binds them to joystick keys (`Joy1=Fire` to `Joy12=Walking`,
+  `JoyX=StrafeLeft`, `JoyPovUp=MoveForward`...). With mouse look on (its
+  default), the Look/Move axis looks rather than moves, so the left stick
+  moves by the Run buttons. It calls ISpTickle at most once a second
+  (LMGetTicks), activates the mouse and speech classes and deactivates the
+  keyboard's; Options, Input Device calls ISpConfigure. Its menus' pointer
+  follows the Mac's mouse, and the delta needs too. It needs its CD in the
+  drive; from the intro, `open DM-Tempest` typed after Tab (its console)
+  starts a practice match, and in instruction time `clock 300` makes it
+  playable.

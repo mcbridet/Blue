@@ -1,5 +1,6 @@
 #include "nk.h"
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +35,9 @@
 #include "priv.h"
 #include "putaway.h"
 #include "opengl.h"
+#include "isp.h"
+#include "pad.h"
+#include "pippin.h"
 #include "rave.h"
 #include "rtas.h"
 #include "scc.h"
@@ -553,6 +557,21 @@ struct machine {
 	uint64_t rate_in[UI_LEDS], rate_out[UI_LEDS];            /* ... and a second since */
 	uint64_t cursor_hidden_ns;      /* host time Mac OS's cursor was hidden (0: it's shown) */
 	bool scripted;                  /* input comes from a script (coordinates assume its screen) */
+	bool control_click;             /* the host's secondary button is down, as a Control-click */
+	/* game controllers (see pads_ready()) */
+	struct pad pad;
+	bool pads_off;                  /* ... the menu turned them off */
+	bool pad_window[PAD_MAX];       /* ... each one the window's (in scripted runs, a virtual one the script plugged in) */
+	struct {
+		bool attached;          /* a Pippin title runs, with Blue Pippin Library (pippin.h) */
+		bool front;             /* ... in front, last seen (see pippin_front()) */
+		uint32_t aj;            /* ... its AppleJack's data (AJGlobalData) */
+		uint32_t psn[2];        /* ... its process */
+		char name[32];
+		uint8_t map[4 * PAD_AJ_SWITCHES];       /* ... the AppleJack's mapping, as last seen */
+	} pippin;
+	struct isp isp;                 /* games reading them through InputSprocket (isp.h) */
+	bool isp_used, isp_front;       /* ... one does, in front, last seen */
 	bool realtime;                  /* guest time follows the host clock */
 	bool idle_sleep;                /* ... and the host sleeps while the guest idles */
 	uint64_t start_ns;              /* host time at boot */
@@ -562,6 +581,7 @@ struct machine {
 	uint64_t idle_ns;               /* host time spent sleeping for them */
 	/* BLUE_LOG_AUDIO (see audio_report()) */
 	bool audio_log;
+	bool pads_log;                  /* BLUE_LOG_PADS: the game controllers' buttons and axes */
 	uint64_t audio_log_ns;          /* host time of the last report */
 	uint64_t disk_charged_tb;       /* guest time disk transfers took, all along */
 	uint64_t log_disk, log_charged_tb, log_frames, log_naps;        /* ... and the rest, as of the last report */
@@ -965,6 +985,8 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	mem_map(&m->mem, FB_BASE, FB_SIZE, MEM_RW);
 	video_init(&m->video, &m->mem, FB_BASE, FB_SIZE, TIMEBASE_HZ);
 	helper_init(&m->helper);
+	isp_init(&m->isp, TIMEBASE_HZ);
+	m->isp.log = getenv("BLUE_LOG_PADS") != NULL;
 	clip_guest_reset(&m->clip);
 	rave_init(&m->rave, &m->mem);
 	m->rave.gpu = m->gpu;
@@ -1152,6 +1174,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 	awacs_init(&m->awacs, &m->dbdma, TIMEBASE_HZ);
 	m->awacs.log = getenv("BLUE_LOG_SOUND") != NULL;
 	m->audio_log = getenv("BLUE_LOG_AUDIO") != NULL;
+	m->pads_log = getenv("BLUE_LOG_PADS") != NULL;
 	m->window_profile = getenv("BLUE_WINDOW_PROFILE") != NULL;
 	m->window_compare = getenv("BLUE_WINDOW_COMPARE") != NULL;
 	/*
@@ -1809,6 +1832,239 @@ static void drives_state(struct machine *m)
 	display_drives_state(m->display, dr.count || dr.share[0] ? &dr : NULL);
 }
 
+/* ---- game controllers -------------------------------------------------------------- */
+
+/*
+ * The pads (pad.h) go to the ADB keyboard and mouse, as the window's keys
+ * and mouse do. A Pippin title's AppleJack (pippin.h) has its mapping in
+ * guest memory, and gets its switches' states there.
+ */
+static void pad_key(void *ctx, uint8_t key, bool down)
+{
+	struct machine *m = ctx;
+	adb_key(&m->cuda.adb, key, down);
+	fast_start_input(m, key, down);
+}
+
+static void pad_click(void *ctx, bool down)
+{
+	struct machine *m = ctx;
+	adb_mouse_button(&m->cuda.adb, down);
+	fast_start_input(m, -1, down);
+}
+
+static void pad_motion(void *ctx, int dx, int dy)
+{
+	struct machine *m = ctx;
+	adb_mouse_move(&m->cuda.adb, dx, dy);
+}
+
+/* Whether a Pippin title runs in front (Blue Enhancements asks Mac OS which is; without it, it's taken to be) */
+static bool pippin_front(const struct machine *m)
+{
+	return m->pippin.attached && (!m->helper.running || !m->helper.front_known ||
+				      (m->helper.front[0] == m->pippin.psn[0] && m->helper.front[1] == m->pippin.psn[1]));
+}
+
+/* Whether a game reads them through InputSprocket, in front (as pippin_front()); `name` its name */
+static bool isp_front(const struct machine *m, const char **name)
+{
+	uint32_t psn[2];
+	return isp_in_use(&m->isp, psn, name) &&
+	       (!m->helper.running || !m->helper.front_known || (m->helper.front[0] == psn[0] && m->helper.front[1] == psn[1]));
+}
+
+/* The mapping, and whether presses count, before the pads change */
+static void pads_ready(struct machine *m)
+{
+	struct pad *p = &m->pad;
+	p->quiet = m->paused || m->prompting;
+	p->mapping = m->pads_off ? PAD_MAP_OFF : PAD_MAP_DEFAULT;
+	bool isp = isp_front(m, NULL);
+	for (unsigned k = 0; k < PAD_MAX; k++)
+		p->slot[k].taken = isp ? isp_taken(&m->isp, k) : 0;
+	if (!m->pads_off && !isp && pippin_front(m) && mem_ok(&m->mem, m->pippin.aj, PAD_AJ_SIZE, MEM_R) &&
+	    pad_pipp(mem_ptr(&m->mem, m->pippin.aj), PAD_AJ_SIZE, p->pippin))
+		p->mapping = PAD_MAP_PIPPIN;
+}
+
+/* ... and after: the AppleJack's switches as they are now (0 while down) */
+static void pads_done(struct machine *m)
+{
+	if (m->pippin.attached && mem_ok(&m->mem, m->pippin.aj, PAD_AJ_SIZE, MEM_RW))
+		mem_w32(&m->mem, m->pippin.aj + PAD_AJ_STATES, ~pad_applejack(&m->pad));
+}
+
+/* What the menu shows of them */
+static void pads_state(struct machine *m)
+{
+	if (!m->display)
+		return;
+	struct ui_pads s;
+	memset(&s, 0, sizeof s);
+	for (unsigned k = 0; k < PAD_MAX; k++) {
+		size_t n = strlen(s.names);
+		if (m->pad.slot[k].connected && n + 1 < sizeof s.names)
+			snprintf(s.names + n, sizeof s.names - n, "%s%s", s.count++ ? ", " : "", m->pad.slot[k].name);
+	}
+	s.on = !m->pads_off;
+	const char *game;
+	if (m->pads_off)
+		snprintf(s.mapping, sizeof s.mapping, "off: they do nothing in Mac OS");
+	else if (isp_front(m, &game))
+		snprintf(s.mapping, sizeof s.mapping, "%s's, through InputSprocket (the rest by Blue's mapping)", game);
+	else if (pippin_front(m))
+		snprintf(s.mapping, sizeof s.mapping, "as the Pippin's AppleJack, by %s's mapping", m->pippin.name);
+	else
+		snprintf(s.mapping, sizeof s.mapping, "Blue's mapping: the arrows, Return, Space, Tab, the mouse...");
+	display_pads_state(m->display, &s);
+}
+
+/* A Pippin title's AppleJack mapping, as it changes it */
+static void pippin_watch(struct machine *m)
+{
+	static const struct { const char *name; unsigned sw; } shown[] = {
+		{ "D-pad up", 10 }, { "left", 11 }, { "right", 12 }, { "down", 13 }, { "A (red)", 14 },
+		{ "B (green)", 15 }, { "X (yellow)", 9 }, { "Y (blue)", 8 }, { "left shoulder (left fire)", 17 },
+		{ "right shoulder (right fire)", 16 }, { "Back", 0 }, { "Guide", 1 }, { "Start", 2 },
+	};
+	uint32_t aj = m->pippin.aj;
+	struct pad_switch map[PAD_AJ_SWITCHES];
+	if (!mem_ok(&m->mem, aj, PAD_AJ_SIZE, MEM_R) ||
+	    !memcmp(mem_ptr(&m->mem, aj + PAD_AJ_MAP), m->pippin.map, sizeof m->pippin.map))
+		return;
+	memcpy(m->pippin.map, mem_ptr(&m->mem, aj + PAD_AJ_MAP), sizeof m->pippin.map);
+	if (!pad_pipp(mem_ptr(&m->mem, aj), PAD_AJ_SIZE, map))
+		return;
+	printf("pippin: %s's AppleJack mapping:", m->pippin.name);
+	for (size_t k = 0; k < sizeof shown / sizeof shown[0]; k++) {
+		char what[48];
+		pad_switch_text(&map[shown[k].sw], what, sizeof what);
+		printf("%s %s %s", k ? "," : "", shown[k].name, what);
+	}
+	printf("\n");
+	fflush(stdout);
+}
+
+/* The Pippin library's host calls: a title starts (with its AppleJack), or quits */
+static void pippin_call(struct machine *m, struct ndrv_call *c)
+{
+	uint32_t aj = c->arg[0];
+	if (c->entry == PIPPIN_ENTRY_ATTACH && mem_ok(&m->mem, aj, PAD_AJ_SIZE, MEM_RW) &&
+	    mem_ok(&m->mem, c->arg[1], 8, MEM_R)) {
+		m->pippin.attached = true;
+		m->pippin.front = false;
+		m->pippin.aj = aj;
+		m->pippin.psn[0] = mem_r32(&m->mem, c->arg[1]);
+		m->pippin.psn[1] = mem_r32(&m->mem, c->arg[1] + 4);
+		memset(m->pippin.map, 0, sizeof m->pippin.map);
+		const uint8_t *name = mem_ptr(&m->mem, LM_CUR_AP_NAME);
+		snprintf(m->pippin.name, sizeof m->pippin.name, "%.*s", name[0] < 31 ? name[0] : 31, name + 1);
+		m->helper.front_known = false;
+		printf("pippin: %s runs, with an AppleJack for game controllers (its data at 0x%08X)\n", m->pippin.name, aj);
+		pads_done(m);
+		pads_state(m);
+	} else if (c->entry == PIPPIN_ENTRY_DETACH && m->pippin.attached && aj == m->pippin.aj) {
+		m->pippin.attached = false;
+		printf("pippin: %s quit\n", m->pippin.name);
+		pads_state(m);
+	}
+	fflush(stdout);
+	ndrv_finish(c, 0);
+}
+
+/* Whether a game has begun or stopped reading them through InputSprocket, or come to the front or gone */
+static void isp_watch(struct machine *m)
+{
+	const char *game = NULL;
+	bool used = isp_in_use(&m->isp, NULL, &game);
+	if (used != m->isp_used) {
+		m->isp_used = used;
+		m->helper.front_known = false;
+		if (used)
+			printf("isp: %s reads the pads through InputSprocket\n", game);
+		else
+			printf("isp: no game reads the pads through InputSprocket\n");
+	}
+	bool front = isp_front(m, &game);
+	if (front != m->isp_front) {
+		m->isp_front = front;
+		if (used)
+			printf("isp: %s %s\n", game, front ? "is in front: the pads' controls it uses are its own, the rest "
+			       "the keyboard and mouse" : "isn't in front: the pads are the keyboard and mouse");
+		pads_state(m);
+	}
+	fflush(stdout);
+}
+
+/* At each sync point: the right stick moves the mouse, and a Pippin title's mapping is watched */
+static void pads_sync(struct machine *m)
+{
+	isp_watch(m);
+	m->helper.want_front = m->pippin.attached || m->isp_used;
+	if (m->pippin.attached) {
+		pippin_watch(m);
+		if (pippin_front(m) != m->pippin.front) {
+			m->pippin.front = !m->pippin.front;
+			printf("pippin: %s %s\n", m->pippin.name, m->pippin.front ? "is in front: the pads are its AppleJack" :
+			       "isn't in front: the pads are the keyboard and mouse, by Blue's mapping");
+			fflush(stdout);
+			pads_state(m);
+		}
+	}
+	if (!pad_count(&m->pad))
+		return;
+	pads_ready(m);
+	pad_tick(&m->pad, m->cpu.tb, TIMEBASE_HZ);
+}
+
+/* A pad plugged in (slot k, or -1: the first free) or out, the window's or a script's */
+static void pad_plugged(struct machine *m, int k, const char *name, bool window)
+{
+	pads_ready(m);
+	k = pad_plug(&m->pad, k, name);
+	if (k < 0)
+		return;
+	m->pad_window[k] = window;
+	printf("pad %d: %s plugged in\n", k, m->pad.slot[k].name);
+	fflush(stdout);
+	pads_state(m);
+}
+
+static void pad_unplugged(struct machine *m, unsigned k)
+{
+	if (k >= PAD_MAX || !m->pad.slot[k].connected)
+		return;
+	pads_ready(m);
+	printf("pad %u: %s unplugged\n", k, m->pad.slot[k].name);
+	fflush(stdout);
+	pad_unplug(&m->pad, k);
+	pads_done(m);
+	pads_state(m);
+}
+
+/* A button or an axis */
+static void pad_changed(struct machine *m, unsigned k, bool axis, unsigned which, int value)
+{
+	if (k >= PAD_MAX || !m->pad.slot[k].connected)
+		return;
+	pads_ready(m);
+	if (m->pads_log) {
+		static const char *const mappings[] = { "off", "Blue's mapping", "the AppleJack's" };
+		if (axis)
+			printf("pad %u: %s %d (%s)\n", k, pad_axis_name(which), value, mappings[m->pad.mapping]);
+		else
+			printf("pad %u: %s %s (%s)\n", k, pad_button_name(which), value ? "down" : "up",
+			       mappings[m->pad.mapping]);
+		fflush(stdout);
+	}
+	if (axis)
+		pad_axis(&m->pad, k, which, value);
+	else
+		pad_button(&m->pad, k, which, value != 0);
+	pads_done(m);
+}
+
 /* What the menu shows: whether the mouse will be captured when the guest resumes, and news */
 static void menu_state(struct machine *m)
 {
@@ -1816,6 +2072,7 @@ static void menu_state(struct machine *m)
 			      m->mouse_released ? UI_MOUSE_RELEASED : UI_MOUSE_CAPTURED;
 	display_menu_state(m->display, mouse, m->menu_status);
 	drives_state(m);
+	pads_state(m);
 	display_tools_state(m->display, m->tools_offer, install_unofferable(&m->install));
 }
 
@@ -1969,6 +2226,11 @@ static void menu_action(struct machine *m, enum ui_action action, const char *pa
 	case UI_CAPTURE_MOUSE:
 	case UI_RELEASE_MOUSE:
 		m->mouse_released = action == UI_RELEASE_MOUSE;
+		break;
+	case UI_PADS:
+		m->pads_off = !m->pads_off;
+		printf("pads: %s\n", m->pads_off ? "off (they do nothing in Mac OS)" : "on, as the keyboard and mouse");
+		fflush(stdout);
 		break;
 	case UI_PROMPT_YES:
 	case UI_PROMPT_NO:
@@ -2251,6 +2513,20 @@ static void stay_paused(struct machine *m)
 	m->start_ns += host_ns() - from;
 }
 
+/* ADB key codes, for the secondary button and the scroll wheel */
+#define ADB_CONTROL 0x36
+#define ADB_LEFT 0x3B
+#define ADB_RIGHT 0x3C
+#define ADB_DOWN 0x3D
+#define ADB_UP 0x3E
+#define WHEEL_MAX 8                     /* (presses for a turn of the wheel, at most) */
+
+static void wheel_key(struct machine *m, uint8_t key)
+{
+	adb_key(&m->cuda.adb, key, true);
+	adb_key(&m->cuda.adb, key, false);
+}
+
 /* The window's input, for the guest (or the menu) */
 static void display_input(struct machine *m, uint64_t now)
 {
@@ -2297,7 +2573,7 @@ static void display_input(struct machine *m, uint64_t now)
 				move_mouse_to(m, ev.x, ev.y);
 			break;
 		case DISPLAY_EVENT_MOUSE_BUTTON:
-			if (ev.button != 0 || m->scripted)
+			if ((ev.button != 0 && ev.button != 2) || m->scripted)
 				break;
 			if (m->mouse_released && ev.down) {
 				/* a click takes the pointer back (and isn't the guest's, if that captures it) */
@@ -2306,10 +2582,47 @@ static void display_input(struct machine *m, uint64_t now)
 				if (m->mouse_captured)
 					break;
 			}
+			if (ev.button == 2) {
+				/* the secondary button: a Control-click (a contextual menu), unless a game has the mouse */
+				if (ev.down == m->control_click || (ev.down && m->mouse_captured))
+					break;
+				m->control_click = ev.down;
+				if (!m->mouse_captured)
+					move_mouse_to(m, ev.x, ev.y);
+				if (ev.down)
+					adb_key(&m->cuda.adb, ADB_CONTROL, true);
+				adb_mouse_button(&m->cuda.adb, ev.down);
+				if (!ev.down)
+					adb_key(&m->cuda.adb, ADB_CONTROL, false);
+				fast_start_input(m, -1, ev.down);
+				break;
+			}
 			if (!m->mouse_captured)
 				move_mouse_to(m, ev.x, ev.y);
 			adb_mouse_button(&m->cuda.adb, ev.down);
 			fast_start_input(m, -1, ev.down);
+			break;
+		case DISPLAY_EVENT_WHEEL:       /* as the arrow keys, a press a step (where the Mac's cursor shows) */
+			if (m->scripted || m->mouse_captured || m->paused)
+				break;
+			for (int k = 0; k < (ev.dy < 0 ? -ev.dy : ev.dy) && k < WHEEL_MAX; k++)
+				wheel_key(m, ev.dy > 0 ? ADB_UP : ADB_DOWN);
+			for (int k = 0; k < (ev.dx < 0 ? -ev.dx : ev.dx) && k < WHEEL_MAX; k++)
+				wheel_key(m, ev.dx > 0 ? ADB_RIGHT : ADB_LEFT);
+			break;
+		case DISPLAY_EVENT_PAD_ADDED:   /* (a scripted run's are the script's own virtual ones: see pad_script()) */
+			if (!m->scripted || ev.value)
+				pad_plugged(m, ev.pad, ev.path, true);
+			break;
+		case DISPLAY_EVENT_PAD_REMOVED:
+			if (ev.pad >= 0 && ev.pad < PAD_MAX && m->pad_window[ev.pad])
+				pad_unplugged(m, (unsigned)ev.pad);
+			break;
+		case DISPLAY_EVENT_PAD_BUTTON:
+		case DISPLAY_EVENT_PAD_AXIS:
+			if (ev.pad >= 0 && ev.pad < PAD_MAX && m->pad_window[ev.pad])
+				pad_changed(m, (unsigned)ev.pad, ev.type == DISPLAY_EVENT_PAD_AXIS, (unsigned)ev.button,
+					    ev.type == DISPLAY_EVENT_PAD_AXIS ? ev.value : ev.down);
 			break;
 		case DISPLAY_EVENT_RELEASE_MOUSE:
 			if (m->mouse_captured) {
@@ -2447,6 +2760,12 @@ static int script_load(struct script *s, const char *path)
 			e.a = !strcmp(what, "eject") ? 1 : !strcmp(what, "refresh") ? 2 : !strcmp(what, "file") ? 3 : 0;
 			if (e.a == 3)
 				script_text(rest + n, e.arg, sizeof e.arg);
+		} else if (strcmp(e.cmd, "pad") == 0) {
+			/* pad N plug [NAME], pad N unplug, pad N button NAME down|up, pad N axis NAME VALUE */
+			e.a = -1;
+			sscanf(rest, " %d %255[^\n#]", &e.a, e.arg);
+			for (size_t n = strlen(e.arg); n && (e.arg[n - 1] == ' ' || e.arg[n - 1] == '\r'); n--)
+				e.arg[n - 1] = '\0';
 		} else {
 			sscanf(rest, " %d %d", &e.a, &e.b);
 		}
@@ -2485,6 +2804,53 @@ static int script_load(struct script *s, const char *path)
 	if (s->count)
 		qsort(s->ev, s->count, sizeof *s->ev, script_cmp);
 	return 0;
+}
+
+/*
+ * The script's pads: in a window, virtual ones of SDL's, which come to the
+ * machine as a real one's would (see display_pad_virtual()); otherwise put
+ * in directly. (A button's down and up have to be separate commands.)
+ */
+static void pad_script_change(struct machine *m, unsigned n, enum display_pad_op op, unsigned which, int value)
+{
+	if (m->display && display_pad_virtual(m->display, op, n, which, value))
+		return;
+	pad_changed(m, n, op == DISPLAY_PAD_AXIS, which, value);
+}
+
+static void pad_script(struct machine *m, int n, const char *arg)
+{
+	char what[16] = "", name[32] = "", dir[16] = "";
+	double v = 0;
+	if (n >= 0 && n < PAD_MAX && sscanf(arg, "%15s", what) == 1) {
+		if (!strcmp(what, "plug") || !strcmp(what, "unplug")) {
+			bool in = what[0] == 'p';
+			if (m->display && display_pad_virtual(m->display, DISPLAY_PAD_PLUG, (unsigned)n, 0, in))
+				return;
+			const char *label = arg + strlen(what);
+			while (*label == ' ')
+				label++;
+			if (in)
+				pad_plugged(m, n, *label ? label : "Scripted controller", false);
+			else if (!m->pad_window[n])
+				pad_unplugged(m, (unsigned)n);
+			return;
+		}
+		int k;
+		if (!strcmp(what, "button") && sscanf(arg, "%*s %31s %15s", name, dir) == 2 &&
+		    (k = pad_button_named(name)) >= 0 && (!strcmp(dir, "down") || !strcmp(dir, "up"))) {
+			pad_script_change(m, (unsigned)n, DISPLAY_PAD_BUTTON, (unsigned)k, !strcmp(dir, "down"));
+			return;
+		}
+		if (!strcmp(what, "axis") && sscanf(arg, "%*s %31s %lf", name, &v) == 2 && (k = pad_axis_named(name)) >= 0) {
+			v = v < -1 ? -1 : v > 1 ? 1 : v;
+			pad_script_change(m, (unsigned)n, DISPLAY_PAD_AXIS, (unsigned)k, (int)lround(v * 32767));
+			return;
+		}
+	}
+	fprintf(stderr, "input script: pad %d %s: pad N (0 to %d) plug [NAME], unplug, button NAME down|up, or axis "
+		"NAME VALUE (-1 to 1), with SDL's names (a, dpup, leftshoulder; leftx, righttrigger)\n", n, arg,
+		PAD_MAX - 1);
 }
 
 static void script_run(struct machine *m, struct script *s)
@@ -2588,6 +2954,8 @@ static void script_run(struct machine *m, struct script *s)
 				share_host_file(m, e->arg);
 			else
 				fprintf(stderr, "input script: share eject, share refresh, or share file NAME TEXT\n");
+		} else if (strcmp(e->cmd, "pad") == 0) {
+			pad_script(m, e->a, e->arg);
 		} else {
 			fprintf(stderr, "input script: unknown command '%s'\n", e->cmd);
 		}
@@ -3765,6 +4133,13 @@ static const char *host_call(struct machine *m, uint32_t selector)
 		install_call(&m->install, &c);
 		tools_show(m);
 		break;
+	case HOSTCALL_TOOLS_PIPPIN:
+		pippin_call(m, &c);
+		break;
+	case HOSTCALL_TOOLS_ISP:
+		isp_call(&m->isp, &c, &m->pad);
+		isp_watch(m);
+		break;
 	case HOSTCALL_PUTAWAY:
 		putaway_call(&m->putaway, &c);
 		if (m->putaway.phase == PUTAWAY_DONE)
@@ -4507,6 +4882,10 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	m->mouse_released = old.mouse_released;
 	m->clip = old.clip;             /* (the host's side: start_machine() starts Mac OS's again) */
 	m->scripted = old.scripted;
+	m->pad = old.pad;               /* (the pads stay; what they held went with the keyboard and mouse) */
+	pad_forget(&m->pad);
+	m->pads_off = old.pads_off;
+	memcpy(m->pad_window, old.pad_window, sizeof m->pad_window);
 	m->tools_offer = old.tools_offer;
 	if (old.prompting && old.prompt_news)   /* (the installer's news stays: Mac OS restarting is in it) */
 		m->prompting = m->prompt_news = true;
@@ -4588,6 +4967,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 	if (opt->input_script && script_load(&script, opt->input_script))
 		return 1;
 	m.scripted = opt->input_script != NULL;
+	pad_init(&m.pad, &(struct pad_output){ &m, pad_key, pad_click, pad_motion });
 	/*
 	 * CD-ROM drives' discs can be swapped (Mac OS ejects them) where someone
 	 * can swap them: in a window or real time, with an empty drive, or when
@@ -4703,6 +5083,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		}
 		if (sync) {
 			script_run(&m, &script);
+			pads_sync(&m);
 			if (m.install.phase == INSTALL_WAIT_FINDER && finder_current(&m))
 				install_finder(&m.install, cpu->tb);    /* (at idle calls it may well be another's turn) */
 			follow_window(&m);
@@ -5020,6 +5401,8 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 		printf("\nopengl: %lu calls, %lu contexts, %lu frames", m.opengl.calls, m.opengl.contexts, m.opengl.frames);
 	if (m.opengl.gpu_frames)
 		printf(" (%lu drawn with %s)", m.opengl.gpu_frames, gpu_renderer(m.gpu));
+	if (m.isp.calls)
+		printf("\nisp: %lu driver calls, %lu data pushed", m.isp.calls, m.isp.pushes);
 	if (m.awacs.codec_writes)
 		printf("\nsound: %lu codec writes, %u Hz, %lu frames played, %lu recorded",
 		       m.awacs.codec_writes, awacs_rate(&m.awacs), m.awacs.frames_played, m.awacs.frames_recorded);

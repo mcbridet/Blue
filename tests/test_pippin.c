@@ -3,11 +3,12 @@
  * Code Fragment Manager finds them; its imports; its file in the tools), and
  * its code run by the processor against a Mac OS of the test's own: a
  * Preferences folder, a few folders and files, Standard File's dialogs,
- * Gestalt, the trap table.
+ * Gestalt, the trap table, resources; and its host calls (the AppleJack's).
  */
 #include <string.h>
 
 #include "../src/be.h"
+#include "../src/pad.h"
 #include "../src/pippin.h"
 #include "../src/ppc.h"
 #include "../src/rsrc.h"
@@ -29,6 +30,7 @@ static struct ndrv_layout layout;
 #define STACK 0x1F0000u
 #define ARGS 0x40000u           /* what the calls are passed */
 #define HANDLE 0x50000u         /* a 'pipn' resource: its master pointer, then the resource */
+#define PIPP_HANDLE 0x51000u    /* ... a 'pipp' one */
 #define HOSTCALL_FAKE 0x3FEu
 #define HOSTCALL_RETURN 0x3FFu
 
@@ -39,7 +41,12 @@ static struct ndrv_layout layout;
 #define LM_SF_SAVE_DISK 0x214u
 #define LM_CUR_DIR_STORE 0x398u
 #define LM_CUR_AP_NAME 0x910u
-#define SHUTDOWN_ENTRY 0x1234ABCDu      /* _ShutDown's routine in the trap table */
+#define SHUTDOWN_ENTRY 0x1234ABCDu      /* _ShutDown's routine in the trap table, */
+#define COUNT_ENTRY 0x2345BCDEu         /* ... CountADBs's */
+#define GET_IND_ENTRY 0x3456CDEFu       /* ... and GetIndADB's */
+#define LM_CUR_AP_REF_NUM 0x900u
+#define APP_FILE 0x55                   /* the title's resource file */
+#define CUR_FILE 0x66                   /* ... and the current one */
 #define WORKING_DIR (-32700)            /* a working directory's reference */
 
 /* ---- the test's Mac OS ------------------------------------------------------------- */
@@ -61,6 +68,16 @@ static struct {
 	bool gestalt, gestalt_mine;
 	uint32_t gestalt_value;
 	uint32_t trap;                  /* _ShutDown's entry in the trap table */
+	uint32_t count_trap, get_ind_trap;      /* ... CountADBs's and GetIndADB's */
+	int16_t cur_file;               /* the current resource file */
+	int16_t used[4];                /* ... as UseResFile made it */
+	unsigned uses;
+	bool pipp;                      /* Get1IndResource('pipp', 1) has one */
+	int16_t pipp_from;              /* ... in the file current then */
+	uint32_t pipp_size;
+	unsigned host_calls;            /* the library's host calls: */
+	uint32_t attached, detached;    /* ... the AppleJack's data they gave */
+	uint32_t psn_at;
 	int16_t sf_save_disk;           /* the low memory Standard File took */
 	uint32_t cur_dir_store;
 	uint32_t get_args[4], put_args[3];
@@ -83,6 +100,10 @@ static void reset_os(void)
 	nitems = 0;
 	next_dir = 100;
 	os.trap = SHUTDOWN_ENTRY;
+	os.count_trap = COUNT_ENTRY;
+	os.get_ind_trap = GET_IND_ENTRY;
+	os.cur_file = CUR_FILE;
+	mem_w16(&mem, LM_CUR_AP_REF_NUM, APP_FILE);
 	os.alert_item = 1;
 	items[nitems++] = (struct item){ ROOT, "Preferences", PREFERENCES, 0, 0 };
 	memcpy(mem_ptr(&mem, LM_CUR_AP_NAME), "\014marathon.ppc", 13);
@@ -196,8 +217,28 @@ static uint32_t fake(unsigned imp, const uint32_t *a)
 		CHECK(a[0] == FOURCC('p', 'i', 'p', 'n') && a[1] == 1);
 		return os.pipn ? HANDLE : 0;
 	case PIPPIN_RELEASE_RESOURCE:
-		CHECK_EQ(a[0], HANDLE);
+		CHECK(a[0] == HANDLE || a[0] == PIPP_HANDLE);
 		os.released++;
+		return 0;
+	case PIPPIN_CUR_RES_FILE:
+		return (uint32_t)(int32_t)os.cur_file;
+	case PIPPIN_USE_RES_FILE:
+		if (os.uses < 4)
+			os.used[os.uses] = (int16_t)a[0];
+		os.uses++;
+		os.cur_file = (int16_t)a[0];
+		return 0;
+	case PIPPIN_GET1_IND_RESOURCE:
+		CHECK(a[0] == FOURCC('p', 'i', 'p', 'p') && (int16_t)a[1] == 1);
+		os.pipp_from = os.cur_file;
+		return os.pipp ? PIPP_HANDLE : 0;
+	case PIPPIN_GET_HANDLE_SIZE:
+		CHECK_EQ(a[0], PIPP_HANDLE);
+		return os.pipp_size;
+	case PIPPIN_GET_CURRENT_PROCESS:
+		os.psn_at = a[0];
+		mem_w32(&mem, a[0], 0);
+		mem_w32(&mem, a[0] + 4, 0x2B);
 		return 0;
 	case PIPPIN_BLOCK_MOVE:
 	case PIPPIN_BLOCK_MOVE_DATA:
@@ -216,11 +257,11 @@ static uint32_t fake(unsigned imp, const uint32_t *a)
 		os.gestalt = false;
 		return 0;
 	case PIPPIN_NGET_TRAP_ADDRESS:
-		CHECK(a[0] == 0xA895 && a[1] == 1);
-		return os.trap;
+		CHECK((a[0] == 0xA895 && a[1] == 1) || ((a[0] == 0xA077 || a[0] == 0xA078) && a[1] == 0));
+		return a[0] == 0xA895 ? os.trap : a[0] == 0xA077 ? os.count_trap : os.get_ind_trap;
 	case PIPPIN_NSET_TRAP_ADDRESS:
-		CHECK(a[1] == 0xA895 && a[2] == 1);
-		os.trap = a[0];
+		CHECK((a[1] == 0xA895 && a[2] == 1) || ((a[1] == 0xA077 || a[1] == 0xA078) && a[2] == 0));
+		*(a[1] == 0xA895 ? &os.trap : a[1] == 0xA077 ? &os.count_trap : &os.get_ind_trap) = a[0];
 		return 0;
 	case PIPPIN_OPEN_WD:
 		CHECK_EQ(a[2], FOURCC('E', 'R', 'I', 'K'));
@@ -291,6 +332,21 @@ static uint32_t call(unsigned entry, uint32_t a0, uint32_t a1, uint32_t a2, uint
 		CHECK_EQ(e, PPC_EXIT_HOSTCALL);
 		if (e != PPC_EXIT_HOSTCALL)
 			return 0xBAD;
+		if ((cpu.exit_insn & 0x03FFFFFFu) == HOSTCALL_TOOLS_PIPPIN) {
+			/* (the library's own: its stub's, the entry in r11) */
+			os.host_calls++;
+			if (cpu.gpr[11] == PIPPIN_ENTRY_ATTACH) {
+				os.attached = cpu.gpr[3];
+				CHECK_EQ(cpu.gpr[4], os.psn_at);
+			} else {
+				CHECK_EQ(cpu.gpr[11], PIPPIN_ENTRY_DETACH);
+				os.detached = cpu.gpr[3];
+			}
+			cpu.gpr[3] = 0;
+			cpu.cr = (cpu.cr & 0x0FFFFFFFu) | 0x20000000u;
+			cpu.pc += 4;
+			continue;
+		}
 		if (cpu.pc == RETURN) {
 			CHECK_EQ(cpu.gpr[1], STACK);                    /* the stack and nonvolatile registers kept */
 			CHECK_EQ(cpu.gpr[2], TOC);
@@ -395,7 +451,7 @@ static void test_init(void)
 	CHECK(os.gestalt && os.gestalt_value == 0);
 	uint32_t patch = os.trap;
 	CHECK(patch != SHUTDOWN_ENTRY && patch >= TOC && patch < TOC + 0x1000);
-	CHECK_EQ(os.calls[PIPPIN_BLOCK_MOVE], 1);               /* (which flushes the 68k emulator's cache) */
+	CHECK_EQ(os.calls[PIPPIN_BLOCK_MOVE], 2);               /* (which flushes the 68k emulator's cache: and the ADB's) */
 	static const uint8_t code[] = { 0x0C, 0x6F, 0x00, 0x02, 0x00, 0x04, 0x62, 0x06, 0x20, 0x5F, 0x54, 0x8F, 0x4E, 0xD0,
 					0x4E, 0xF9 };
 	CHECK(!memcmp(mem_ptr(&mem, patch), code, sizeof code));
@@ -404,18 +460,106 @@ static void test_init(void)
 	CHECK(!os.gestalt);
 	CHECK_EQ(os.trap, SHUTDOWN_ENTRY);
 
-	/* someone else's 'pipn', and a patch over ours: left alone */
+	/* someone else's 'pipn', and patches over ours: left alone */
 	reset_os();
 	load_library();
 	os.gestalt = true;
 	os.gestalt_value = 7;
 	CHECK_EQ(call(INIT, 0, 0, 0, 0, 0), 0);
 	CHECK(os.gestalt && !os.gestalt_mine && os.gestalt_value == 7);
-	os.trap = 0x5555;
+	os.trap = os.count_trap = os.get_ind_trap = 0x5555;
 	call(TERM, 0, 0, 0, 0, 0);
 	CHECK(os.gestalt);
-	CHECK_EQ(os.trap, 0x5555);
+	CHECK(os.trap == 0x5555 && os.count_trap == 0x5555 && os.get_ind_trap == 0x5555);
 	CHECK_EQ(os.calls[PIPPIN_DELETE_GESTALT_VALUE], 0);
+}
+
+/* The AppleJack's mapping in its data (AJGlobalData), as a 'pipp' resource has it: a switch's */
+static uint32_t aj_switch(uint32_t aj, unsigned k)
+{
+	return mem_r32(&mem, aj + PAD_AJ_MAP + 4 * k);
+}
+
+static uint32_t switch_word(const struct pad_switch *s)
+{
+	return (uint32_t)s->function << 24 | (uint32_t)s->modifiers << 16 | (uint32_t)s->key << 8 | s->chr;
+}
+
+/*
+ * The title's AppleJack: its data (AJGlobalData) with the driver's own
+ * mapping or the title's first 'pipp' resource's, found by the title as an
+ * ADB device's (CountADBs and GetIndADB patched by 68k code), and Blue told
+ */
+static void test_applejack(void)
+{
+	reset_os();
+	load_library();
+	CHECK_EQ(call(INIT, 0, 0, 0, 0, 0), 0);
+	CHECK_EQ(os.host_calls, 1);
+	uint32_t aj = os.attached;
+	CHECK(aj >= TOC && aj < TOC + 0x1000);
+	CHECK_EQ(mem_r32(&mem, aj), PAD_AJ_SIGNATURE);
+	CHECK_EQ(mem_r32(&mem, aj + PAD_AJ_STATES), 0xFFFFFFFFu);      /* (nothing down) */
+	for (unsigned k = 0; k < PAD_AJ_SWITCHES; k++)
+		CHECK_EQ(aj_switch(aj, k), switch_word(&pad_applejack_defaults[k]));
+	CHECK_EQ(mem_r32(&mem, os.psn_at + 4), 0x2B);                  /* (its process, for Blue) */
+	/* the 'pipp' looked for in the title's file, and the current one put back */
+	CHECK(os.uses == 2 && os.used[0] == APP_FILE && os.used[1] == CUR_FILE && os.pipp_from == APP_FILE);
+
+	/* CountADBs: the routine's count, plus one */
+	uint32_t count = os.count_trap, get_ind = os.get_ind_trap;
+	CHECK(count >= TOC && count < TOC + 0x1000);
+	static const uint8_t count_code[] = { 0x4E, 0xB9, 0x23, 0x45, 0xBC, 0xDE, 0x52, 0x40, 0x4E, 0x75 };
+	CHECK(!memcmp(mem_ptr(&mem, count), count_code, sizeof count_code));
+	/* GetIndADB: the routine's, unless it's the one more; that one an AppleJack's (originally at 3) */
+	CHECK_EQ(get_ind, count + 12);
+	static const uint8_t get_ind_code[] = {
+		0x48, 0xE7, 0xC0, 0x80, 0x4E, 0xB9, 0x23, 0x45, 0xBC, 0xDE, 0x24, 0x00, 0x4C, 0xDF, 0x01, 0x03, 0x52, 0x42,
+		0xB0, 0x42, 0x67, 0x06, 0x4E, 0xF9, 0x34, 0x56, 0xCD, 0xEF, 0x10, 0xFC, 0x00, 0x00, 0x10, 0xFC, 0x00, 0x03,
+		0x42, 0x98, 0x20, 0xBC,
+	};
+	CHECK(!memcmp(mem_ptr(&mem, get_ind), get_ind_code, sizeof get_ind_code));
+	uint32_t cursor = mem_r32(&mem, get_ind + sizeof get_ind_code);
+	CHECK_EQ(mem_r16(&mem, get_ind + sizeof get_ind_code + 4), 0x7000 | PIPPIN_ADB_ADDRESS);
+	CHECK_EQ(mem_r16(&mem, get_ind + sizeof get_ind_code + 6), 0x4E75);
+	CHECK_EQ(mem_r32(&mem, cursor + 8), aj);                        /* its data area's refCon */
+	CHECK_EQ(mem_r8(&mem, cursor + 0x18), 2);                       /* (a trackball) */
+	call(TERM, 0, 0, 0, 0, 0);
+	CHECK_EQ(os.host_calls, 2);
+	CHECK_EQ(os.detached, aj);
+	CHECK(os.count_trap == COUNT_ENTRY && os.get_ind_trap == GET_IND_ENTRY);
+
+	/* the title's 'pipp' resource: its switches (and not the rest) */
+	reset_os();
+	load_library();
+	os.pipp = true;
+	os.pipp_size = PAD_AJ_SIZE;
+	mem_w32(&mem, PIPP_HANDLE, PIPP_HANDLE + 16);
+	uint8_t *pipp = mem_ptr(&mem, PIPP_HANDLE + 16);
+	memset(pipp, 0x77, PAD_AJ_SIZE);
+	put_be32(pipp, PAD_AJ_SIGNATURE);
+	for (unsigned k = 0; k < PAD_AJ_SWITCHES; k++)
+		put_be32(pipp + PAD_AJ_MAP + 4 * k, 0x04000000u | (k + 1) << 8 | 'a');
+	CHECK_EQ(call(INIT, 0, 0, 0, 0, 0), 0);
+	aj = os.attached;
+	for (unsigned k = 0; k < PAD_AJ_SWITCHES; k++)
+		CHECK_EQ(aj_switch(aj, k), 0x04000000u | (k + 1) << 8 | 'a');
+	CHECK_EQ(mem_r32(&mem, aj + PAD_AJ_STATES), 0xFFFFFFFFu);
+	CHECK_EQ(mem_r32(&mem, aj + PAD_AJ_MAP + 4 * PAD_AJ_SWITCHES), 0);
+	CHECK_EQ(os.released, 1);
+	/* ... one too short, or not one: the driver's */
+	static const uint32_t sizes[2] = { 40, PAD_AJ_SIZE };
+	for (unsigned t = 0; t < 2; t++) {
+		reset_os();
+		load_library();
+		os.pipp = true;
+		os.pipp_size = sizes[t];
+		if (t)
+			put_be32(pipp, FOURCC('P', 'I', 'P', 'P'));
+		CHECK_EQ(call(INIT, 0, 0, 0, 0, 0), 0);
+		CHECK_EQ(aj_switch(os.attached, 10), switch_word(&pad_applejack_defaults[10]));
+		CHECK_EQ(os.released, 1);
+	}
 }
 
 #define VREF (ARGS + 0)
@@ -601,6 +745,7 @@ void test_pippin(void)
 	mem_map(&mem, CODE, CODE_SIZE, MEM_RWX);
 	test_fragment();
 	test_init();
+	test_applejack();
 	test_find_folder();
 	test_dialogs();
 	test_delete();

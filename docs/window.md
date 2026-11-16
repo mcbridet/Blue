@@ -1,7 +1,7 @@
 # The window
 
 How Blue's window works: drawing the Mac's screen, its scale, the
-keyboard and mouse, the menu (F12), the prompts and the status bar. How to
+keyboard and mouse, game controllers, the menu (F12), the prompts and the status bar. How to
 use them is in the [README](../README.md#using-blue).
 
 ## Drawing the screen
@@ -90,8 +90,16 @@ status bar are in the window's own units (points), whatever the scale.
 
 In the window, the GUI key (Command on a Mac keyboard, the Windows or
 Super key on a PC's) is Mac OS's Command key, Alt is Option, and Control
-is Control. Only the left mouse button reaches Mac OS; F12 is Blue's own
-(the menu), and isn't passed on.
+is Control. The left mouse button is the Mac's; the right one is a
+Control-click (Control pressed, a click, Control let go), for Mac OS 8's
+contextual menus, while the Mac's cursor shows (a game that has the mouse,
+below, gets nothing from it). The scroll wheel presses the arrow keys, a
+press (down and up) for each of SDL's steps of the wheel, at most 8 at a
+time, up and down (and left and right for a sideways wheel) as the host
+has them, natural scrolling included: Mac OS 8 and 9 had no scroll wheels,
+and the arrows scroll most windows of the time (the Finder's move the
+selection). Again not while a game has the mouse, where the arrows would
+move the player. F12 is Blue's own (the menu), and isn't passed on.
 
 Every Command-key combination is Mac OS's, on macOS too. SDL makes a menu
 bar of its own when it starts (`CreateApplicationMenus()` in SDL 2.32.10's
@@ -119,6 +127,36 @@ switching away from the window; a click in the window captures it again
 (the guest doesn't get that click), and so does the cursor showing and
 hiding again. The window's title says so while it's captured.
 
+## Game controllers
+
+The window takes game controllers through SDL2's GameController API
+(loaded with the rest of SDL; `src/display.c`), with its subsystem
+started after the video's: the pads SDL recognises (its database of
+mappings covers Xbox, PlayStation, Switch and most others), up to four,
+each plugged in at startup or later (`SDL_CONTROLLERDEVICEADDED`) opened
+and numbered 0 to 3, and closed again when it goes. The hint
+`SDL_GAMECONTROLLER_USE_BUTTON_LABELS` is off, so that SDL's A is the
+bottom face button on every pad, a Switch pad's included. Their buttons
+and axes reach the Mac's thread through the window's input queue
+(`DISPLAY_EVENT_PAD_*`, a stick's run of moves made one), and go to the
+ADB keyboard and mouse there, by Blue's mapping or a Pippin title's, and
+to games that use InputSprocket, as [input.md](input.md) describes, or
+nowhere, as the menu's Controllers checkbox says; the menu lists the pads
+by SDL's names for them, and which mapping they follow. SDL only reports a pad's input while the window has the focus (and lets
+go of what was held when it loses it); a script's virtual pads (below)
+are taken in the background too. SDL's own look at the pads as it waits
+for events is turned off (`SDL_AUTO_UPDATE_JOYSTICKS`): while there was a
+pad, that wait polled every millisecond, a twentieth of a core. The window
+looks at them itself, every 8 ms while there's one, and otherwise as it
+looks round (at least every quarter of a second), for pads plugged in.
+
+An input script's pads (`pad` commands, see
+[debugging.md](debugging.md#input-scripts)) are SDL's virtual game
+controllers in a window (SDL 2.0.14 and later), which come and go and send
+their events as real ones would, the host's own pads being ignored in a
+scripted run; without a window, or virtual controllers, they're put in
+directly.
+
 ## The menu
 
 F12 opens the menu (Dear ImGui's, from `third_party/imgui`, drawn over
@@ -137,7 +175,8 @@ for when it was taken); fullscreen (at the desktop's resolution); the
 window's scale (radio buttons: Auto, saying what it chose, and 1x to 4x;
 see [the scale](#the-scale)); the
 status bar; whether the pointer is captured while the Mac hides its
-cursor; and what's in the floppy and CD-ROM drives, each with Eject and
+cursor; the game controllers (their names, the mapping they follow, and a
+checkbox that turns it off: see [Game controllers](#game-controllers)); and what's in the floppy and CD-ROM drives, each with Eject and
 Insert... (see [drives.md](drives.md#removable-drives)). In real time guest time doesn't count
 the pause, so the Mac's clock is that much behind afterwards.
 

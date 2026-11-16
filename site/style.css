@@ -12,6 +12,8 @@
   --accent: #0095b6;
   --accent-light: #c4ecf4;
   --highlight: #00566a;
+  --works: #d3eec9;
+  --works-name: #c0e3b3;
   --link: #005f78;
   --link-visited: #4a3f86;
   --chrome: "Charcoal", "Chicago", "ChicagoFLF", "Geneva", "Lucida Grande", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
@@ -265,7 +267,40 @@ code {
   border: 1px solid #000;
   box-shadow: -1px -1px 0 var(--plat-dark), 1px 1px 0 #fff;
 }
-.splash-logo { width: 76px; height: 76px; }
+.splash-logo { width: 76px; height: 76px; overflow: visible; }
+
+/* The logo's slabs drop into place, bottom first, each before the last has landed, and the stack gives
+   under each one's weight like a spring */
+@media (prefers-reduced-motion: no-preference) {
+  .splash-logo .stack {
+    transform-box: view-box;
+    transform-origin: 16px 31px;
+    animation: stack-give 1s cubic-bezier(.3, 0, .2, 1) both;
+  }
+  .splash-logo .slab { animation: slab-drop .3s cubic-bezier(.32, 0, .67, 0) both; }
+  .splash-logo .slab:nth-child(1) { --from: -22px; animation-delay: .08s; }
+  .splash-logo .slab:nth-child(2) { --from: -19px; animation-delay: .24s; }
+  .splash-logo .slab:nth-child(3) { --from: -16px; animation-delay: .4s; }
+}
+@keyframes slab-drop {
+  from { transform: translateY(var(--from)); opacity: 0; }
+  25% { opacity: 1; }
+  to { transform: none; opacity: 1; }
+}
+/* Landings at .38 s, .54 s and .7 s: 38%, 54% and 70% */
+@keyframes stack-give {
+  0%, 38% { transform: none; }
+  42% { transform: translateY(.35px) scaleY(.985); }
+  48% { transform: translateY(-.05px); }
+  54% { transform: none; }
+  58.5% { transform: translateY(.8px) scaleY(.97); }
+  64% { transform: translateY(-.12px) scaleY(1.004); }
+  70% { transform: none; }
+  75% { transform: translateY(1.6px) scaleY(.935); }
+  84% { transform: translateY(-.35px) scaleY(1.01); }
+  92% { transform: translateY(.08px) scaleY(.998); }
+  100% { transform: none; }
+}
 .splash-welcome { margin: 14px 0 0; font: 16px var(--chrome); color: #333; }
 .hero h1 {
   margin: 0 0 14px;
@@ -423,18 +458,70 @@ code {
 .name svg { flex: none; width: 22px; height: 22px; }
 .notes { padding: 6px 12px; line-height: 1.45; }
 
-.row.unsupported { background: #fbeeee; }
-.row.unsupported .name { background: #f5e0e0; }
-.row.progress { background: #fdf6e3; }
-.row.progress .name { background: #f7ecc9; }
+.list .row { background: var(--works); }
+.list .row .name { background: var(--works-name); }
+.list .row + .row { border-top: 1px solid #fff; }
+.list .row.unsupported { background: #fff; }
+.list .row.unsupported .name { background: #f0f0f0; }
+.list .row.progress { background: #fbecc0; }
+.list .row.progress .name { background: #f3df9e; }
 
 @media (max-width: 720px) {
   .list-head { display: none; }
   .row { grid-template-columns: 1fr; border-top: 1px solid #e6e6e6; }
   .row:first-of-type { border-top: 0; }
-  .name, .row.unsupported .name, .row.progress .name { background: none; }
+  .list .row .name, .list .row.unsupported .name, .list .row.progress .name { background: none; }
   .notes { padding: 0 12px 8px 38px; color: #333; }
 }
+
+/* Comparison: a Finder list view with Blue's column picked out */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.doc.compare-intro { padding-bottom: 18px; }
+.doc.compare-outro { padding-top: 18px; }
+.compare-wrap { overflow-x: auto; border-block: 1px solid #000; }
+.compare {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.compare thead th {
+  padding: 2px 8px;
+  background: var(--plat);
+  border-right: 1px solid #888;
+  border-bottom: 1px solid #000;
+  box-shadow: inset 1px 1px #fff, inset -1px -1px var(--plat-mid);
+  font: 12px/1.5 var(--chrome);
+  text-align: left;
+}
+.compare thead th:last-child { border-right: 0; }
+.compare thead th.blue { background: var(--accent); color: #fff; box-shadow: inset 1px 1px #36b4cf, inset -1px -1px var(--highlight); }
+.compare tbody th {
+  width: 14%;
+  padding: 6px 8px;
+  background: #f0f0f0;
+  font: 13px/1.3 var(--chrome);
+  text-align: left;
+  vertical-align: top;
+}
+.compare td { width: 21.5%; padding: 6px 10px; vertical-align: top; }
+.compare tbody tr + tr > * { border-top: 1px solid #e6e6e6; }
+.compare td.yes { background: var(--works); }
+.compare td.blue { box-shadow: inset 2px 0 var(--accent), inset -2px 0 var(--accent); }
+.compare tbody tr:last-child td.blue { box-shadow: inset 2px 0 var(--accent), inset -2px 0 var(--accent), inset 0 -2px var(--accent); }
+.compare code { font-size: 12px; }
+.compare .nw { white-space: nowrap; }
+.compare thead th:first-child, .compare tbody th { position: sticky; left: 0; z-index: 1; }
 
 /* Get started */
 

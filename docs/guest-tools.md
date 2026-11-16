@@ -2,8 +2,8 @@
 
 Some things only code inside Mac OS can do. Blue's guest tools are that
 code: Blue Enhancements (the screen following the window, the
-clipboard), Blue 3D Engine, Blue's OpenGL libraries and Blue Pippin
-Library. This document describes how Blue offers and installs them, and
+clipboard), Blue 3D Engine, Blue's OpenGL libraries, Blue Pippin Library
+and Blue Game Controllers. This document describes how Blue offers and installs them, and
 how each works. How to use them is in the
 [README](../README.md#the-guest-tools).
 
@@ -37,7 +37,7 @@ OS doesn't restart, and the box says what. This works on Mac OS 8.5, 8.6,
 through the restart, until OK) and printed:
 
 ```
-tools: installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory, Blue OpenGL Utility and Blue Pippin Library in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
+tools: installed Blue Enhancements, Blue 3D Engine, Blue OpenGL Library, Blue OpenGL Memory, Blue OpenGL Utility, Blue Pippin Library and Blue Game Controllers in "Macintosh HD:System Folder:Extensions". Mac OS is restarting.
 ```
 
 Mac OS 9 has OpenGL libraries of Apple's with the names Blue's have
@@ -86,7 +86,8 @@ file, with the Finder flag that says so), and the volume too (an
 invisible file at its top, `Icon\r`). Each is described below.
 
 Like the drivers, these are generated code fragments whose logic runs in
-Blue through host calls (`src/tools.c`; but for the Pippin library's).
+Blue through host calls (`src/tools.c`; but for the Pippin library's,
+which only says where its AppleJack is).
 
 ## Blue Enhancements
 
@@ -272,7 +273,8 @@ How they work, and how they're tested, is in [3d.md](3d.md#blues-opengl).
 Blue Pippin Library is PippinPPC, the Bandai Pippin's library, for
 Pippin titles (below; and [software.md](software.md#pippin-titles)), put in Extensions. Unlike the
 others its code is its own, calling Mac OS through InterfaceLib and
-AppearanceLib; it makes no host calls.
+AppearanceLib; its only host calls tell Blue of the title's AppleJack
+(below).
 
 Discs for the Bandai Pippin (Apple's 1996 console design, System 7.5) are
 HFS CDs, and many of their programs run on a Mac, but some link to the
@@ -298,7 +300,66 @@ on a Pippin", has what each does on a Pippin):
   only for the Pippin."), and ShutDwnStart and ShutDwnPower return at once:
   a Pippin turns off when its title quits, which here would shut Mac OS
   down.
+- And the title has an AppleJack, the Pippin's controller, for the host's
+  game controllers ([input.md](input.md#a-pippin-titles-applejack)). The AppleJack
+  was an ADB device whose driver (in the Pippin's ROM; on a Mac, the
+  Applejack extension) turned its 18 switches into keys and mouse clicks
+  by a mapping a title can change: its data, AJGlobalData (Apple's
+  Pippin Technical Note "Applejack Input Device Driver",
+  PPBD-JHACEF003), begins with `pipp`, then switchStates (a bit for each
+  switch, 0 while it's down), then a SwitchData for each switch: a function
+  (nothing, the mouse button, a double-click, the mouse button locked, a
+  key, a modifier), modifiers (Command, Shift, Caps Lock, Option,
+  Control), a virtual key code and a character. A title's `pipp` resources
+  are such data. A title finds the driver's as Apple's note says: among
+  the ADB devices (CountADBs, GetIndADB) one originally at address 3 whose
+  data area is a cursor device record whose refCon points at data that
+  begins `pipp`; it copies a `pipp` resource's switches there. Super
+  Marathon does that with its two: `pipp` 1000 as its menus come up (the
+  D-pad the arrow keys, the fire buttons the mouse button, the system
+  buttons Command-Q, a locked mouse button and a double-click) and 1001 as
+  a game starts (the D-pad O, K, ; and L, the fire buttons Z and X, the
+  coloured buttons Shift, Tab, Space and Option, the system buttons
+  Command-Q, Control and P), and only if Gestalt says `pipn`. The library
+  has that data (the driver's own mapping in it, from Apple's note, or the
+  title's first `pipp` resource's, as a Pippin loads one when a title
+  starts), and, as the title's own patches, CountADBs counting one more
+  device and GetIndADB giving that one as the AppleJack (68k code: the
+  routines patched over are called for the others); its initialization
+  tells Blue where the data is, and the title's process (a host call,
+  undone at its termination). Blue reads the switches' mapping there as a
+  pad's buttons go down, and keeps switchStates as the pads have them, for
+  titles that read the AppleJack themselves. It says each mapping a title
+  gives it:
+
+  ```
+  pippin: marathon.ppc runs, with an AppleJack for game controllers (its data at 0x06F4306C)
+  pippin: marathon.ppc is in front: the pads are its AppleJack
+  pippin: marathon.ppc's AppleJack mapping: D-pad up O, left K, right ;, down L, A (red) Shift, B (green) Tab, X (yellow) Space, Y (blue) Option, left shoulder (left fire) Z, right shoulder (right fire) X, Back Command-Q, Guide Control, Start P
+  ```
+
+  The mapping is the title's only while it's the front application:
+  Blue Enhancements asks Mac OS which is (GetFrontProcess, as it looks
+  round, while a title runs); without Enhancements, a title that runs is
+  taken to be in front.
 
 Nothing provides the Pippin's video calls (`PippinVideo.h`'s, which
 aren't among PippinPPC's twelve) or its floppy dock, for titles that use
 them.
+
+## Blue Game Controllers
+
+Blue Game Controllers is an InputSprocket driver (`src/isp.c`): a shared
+library of creator `insp` in Extensions, which InputSprocketLib loads for
+each game that starts it, so that each of the host's pads is a game
+controller of its own in games that use InputSprocket, set up in the
+game's own controls dialog. Its code is a host call for each entry, as
+the 3D engine's; how it works is in [input.md](input.md#inputsprocket).
+Other makers' InputSprocket drivers (`insp` too) are left alone by the
+check, which knows Blue's by its host call. A copy from another version
+of Blue doesn't run (each copy carries a hash of its layout), and Blue
+says so:
+
+```
+isp: the guest's Blue Game Controllers is from another version of Blue: update it (Blue offers to, in a window), or by hand from a volume made with "blue tools create"
+```

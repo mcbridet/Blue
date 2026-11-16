@@ -29,4 +29,4 @@ was found along the way, and how Mac OS was brought up, are in
 
 [future.md](future.md) has ideas not on the roadmap: a modem, a serial
 port, infrared, 3D sound, sound input, AltiVec, 3dfx Glide, pictures on
-the clipboard, printing, game controllers, and more CD formats.
+the clipboard, printing, a USB gamepad, and more CD formats.
