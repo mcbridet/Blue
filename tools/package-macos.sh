@@ -203,10 +203,12 @@ dmg() {
 	ditto "$1" "$stage/$(basename "$1")"
 	ln -s /Applications "$stage/Applications"
 	cp "$root/LICENSE" "$stage/LICENSE"
-	rm -f "$2"
-	# (hdiutil sometimes finds the device busy, on CI's Macs especially: a few tries)
+	# (hdiutil sometimes finds the device busy, or makes an image it can't open again, on CI's Macs
+	# especially: a few tries, each checked)
 	for try in 1 2 3; do
-		hdiutil create -quiet -volname Blue -srcfolder "$stage" -fs HFS+ -format UDZO "$2" && break
+		rm -f "$2"
+		hdiutil create -quiet -volname Blue -srcfolder "$stage" -fs HFS+ -format UDZO "$2" &&
+			hdiutil verify -quiet "$2" && break
 		[ "$try" -lt 3 ] || die "hdiutil couldn't make $2"
 		sleep 5
 	done

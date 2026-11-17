@@ -112,7 +112,7 @@ jobs:
           plutil -p build/Blue.app/Contents/Info.plist
           test "$(plutil -extract LSMinimumSystemVersion raw build/Blue.app/Contents/Info.plist)" = "$MACOSX_DEPLOYMENT_TARGET"
           dmg=$(ls build/Blue-*.dmg)
-          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" "$dmg"
+          for i in 1 2 3; do hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" "$dmg" && break; [ "$i" -lt 3 ] || exit 1; sleep 5; done
           ls -la "$RUNNER_TEMP/dmg"
           codesign --verify --deep --strict "$RUNNER_TEMP/dmg/Blue.app"
           "$RUNNER_TEMP/dmg/Blue.app/Contents/MacOS/blue" --version | tee version.txt
