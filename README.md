@@ -942,7 +942,7 @@ or CI), `blue boot` says so and stops: run it with `--headless`.
 
 | Option | What it does |
 |---|---|
-| `--usb VID:PID`, `--usb BUS-PORT` | Passes one of your computer's USB devices through to Mac OS, connected at startup (twice for both ports; real time only). |
+| `--usb VID:PID`, `--usb BUS-PORT` | Passes one of your computer's USB devices through to Mac OS, connected at startup (twice for both ports; real time only). On macOS, one macOS drives itself asks for an administrator's password first. |
 | `--usb-test-disk FILE` | Plugs Blue's USB test disk into a port: a USB mass storage device whose disk is this image, for testing and debugging (in any run: see [docs/debugging.md](docs/debugging.md#the-usb-test-disk)). |
 
 **Time and speed**
