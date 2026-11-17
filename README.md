@@ -1096,6 +1096,16 @@ open one. Mac OS 9.0.x has no sound input.
   manage: plain HTTP sites work. AppleTalk doesn't work, and nothing can
   connect in to the Mac.
 
+### My USB device can't be connected, or Mac OS does nothing with it
+
+Blue's menu says why beside Connect (point at it), as does `blue boot
+--usb` in the terminal. A device connected to your computer at high speed
+(USB 2.0) can't be passed through: plug it in through a USB 1.1 hub. On
+macOS, a device macOS drives itself needs Blue started with `sudo`; on
+Linux, a udev rule (see [USB devices](#usb-devices)). If Mac OS gets the
+device but nothing happens, it has no driver for it: install its maker's
+Mac OS drivers in Mac OS (Mac OS 8.5 has no driver for USB disks at all).
+
 ### The modem says NO CARRIER
 
 - The modem's calls go out only in real time (not with `--headless`
