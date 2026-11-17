@@ -108,10 +108,11 @@ inside Mac OS X. Blue owes a lot to the first two (see
 | **Networking** | TCP/IP through its NAT; no port forwarding yet | TCP/IP through its NAT, with port forwarding; AppleTalk with extra setup, on some hosts | TCP/IP through its NAT, with port forwarding; AppleTalk through bridged networking, run as root | Mac OS X's, AppleTalk included |
 | **Modem** | The iMac's internal modem, its calls going over the internet | The modem and printer ports passed to the host's serial ports; no modem of its own | A host serial port, through an emulated USB serial adapter and FTDI's driver; no modem of its own | Mac OS X's dial-up connection, for internet programs; terminal and fax programs can't use the modem |
 | **Game controllers** | Gamepads, as keys or through InputSprocket | No | A USB gamepad, passed through | Unreliable |
+| **USB devices** | Passed through from the host, at USB 1.1 speeds, for Mac OS's drivers or their makers' | No | Passed through from the host | Through Mac OS X |
 | **Pippin titles** | Yes | No | No | No |
 
 SheepShaver also runs System 7.5 to Mac OS 8.1, given an Old World ROM.
-Blue's other gaps, such as USB devices, are listed under
+Blue's other gaps, such as FireWire devices, are listed under
 [What isn't there](#what-isnt-there).
 
 ## Download and install
@@ -126,8 +127,8 @@ Blue's other gaps, such as USB devices, are listed under
 Each [release](https://github.com/mcbridet/Blue/releases) also has a
 `SHA256SUMS` file with the downloads' checksums, the source code it was
 built from, and `Blue-third-party-sources.tar.gz`: the exact sources of
-the libraries the packages carry (SDL2, libslirp and GLib, with what they
-need), as [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) describes.
+the libraries the packages carry (SDL2, libslirp, GLib and libusb, with
+what they need), as [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) describes.
 
 ### macOS
 
@@ -736,6 +737,70 @@ port to, rather than a 56K line's. Blue's menu shows the call and can hang
 it up; `--no-modem` leaves the modem out. The commands are the usual Hayes
 ones: see [docs/devices.md](docs/devices.md#the-modem).
 
+### USB devices
+
+Your computer's own USB devices can be passed through to Mac OS, as UTM
+and QEMU do: plugged into one of the iMac's two USB ports, a device is
+Mac OS's, and Mac OS's drivers drive it as on a real iMac. Blue supplies
+no drivers; it only passes the device through.
+
+- **Which devices work:** USB 1.1 ones. The iMac's USB is 1.1, so a device
+  your computer connects at high speed (USB 2.0) or faster isn't taken;
+  plugged in through a USB 1.1 hub, most USB 2.0 devices connect at full
+  speed instead, and can be. Mac OS also needs a driver for the device:
+  Mac OS 9 has USB mass storage built in (USB disks and flash drives, and
+  USB floppy drives as far as its driver knows them; Mac OS 8.6 needs
+  Apple's USB Mass Storage Support 1.3.5, and 8.5 has none), and a device
+  of its maker's own design needs the maker's Mac OS drivers, installed in
+  Mac OS as on a real Mac.
+- **Connecting one:** Blue's menu (F12) lists your computer's USB devices
+  under the Mac's two ports, with Connect beside each (and why not, if it
+  can't be), and Disconnect beside each port; Refresh lists them again.
+  `--usb VID:PID` connects a device at startup, by the IDs `lsusb` shows
+  (in hex: `--usb 0644:0000`), or `--usb BUS-PORT` by where it's plugged
+  in (`--usb 1-2.3`); `blue usb` lists them both ways. Put away a device's
+  disks in Mac OS before you disconnect it, as on a Mac.
+- **Unplugging:** a device unplugged from your computer goes from Mac OS
+  too; plugged in again while Blue runs, it goes back into the same port.
+- **Real time only,** as the network is: in the window, or with
+  `--headless --realtime`.
+
+**On macOS,** a device that no macOS driver has taken (the bespoke kind,
+with its own vendor-specific interface) works as it is, for any user.
+A device macOS drives itself (USB disks and floppy drives, audio devices,
+keyboards, mice and game controllers) has to be taken from macOS's
+driver first, which macOS lets only a program running as root do (or an
+app holding Apple's `com.apple.vm.device-access` entitlement, which Apple
+grants to virtual machines' publishers and which a self-signed app like
+Blue can't have). So start Blue with `sudo`:
+
+```sh
+sudo /Applications/Blue.app/Contents/MacOS/blue boot
+```
+
+Eject a disk in the Finder before you connect its drive. When Blue lets
+the device go (Disconnect, or quitting), macOS's driver has it back.
+macOS may refuse even then for keyboards, mice and other HID devices,
+which Mac OS gets from your own anyway.
+
+**On Linux,** Blue needs to be allowed to write the device's node in
+`/dev/bus/usb`, which only root can by default. A udev rule gives a device
+to whoever is logged in; for example, in
+`/etc/udev/rules.d/70-blue-usb.rules` (with the device's IDs from `lsusb`):
+
+```
+SUBSYSTEM=="usb", ATTR{idVendor}=="0644", ATTR{idProduct}=="0000", TAG+="uaccess"
+```
+
+Then `sudo udevadm control --reload && sudo udevadm trigger`, and plug the
+device in again. Linux's own driver for it (`usb-storage`, `usbhid` and
+the like) is detached as Blue takes it, and attached again when Blue lets
+it go; unmount a disk first.
+
+Blue uses libusb, which Blue.app and the AppImages carry (the AppImage's
+loads your system's libudev). A build of your own needs it installed (see
+[Building from source](#building-from-source)).
+
 ### Sound
 
 Sound plays while the Mac runs in a window, through Mac OS's own sound
@@ -817,7 +882,8 @@ Blue's commands:
 | `blue rom extract FILE OUT` | Writes the ROM's 4 MB Toolbox image. |
 | `blue rom trampoline FILE OUT` | Writes the ROM file's Trampoline (an ELF file). |
 | `blue run-raw FILE ADDR [N]` | For developers: loads raw PowerPC code at hex address `ADDR` in 64 MB of memory, runs it for at most `N` instructions (100 million unless you say), and shows the registers. |
-| `blue --version` | Shows Blue's version, and which SDL2 and libslirp it found. |
+| `blue usb` | Lists your computer's USB devices, as `--usb` names them (see [USB devices](#usb-devices)). |
+| `blue --version` | Shows Blue's version, and which SDL2, libslirp and libusb it found. |
 | `blue` | Lists the commands and options. |
 
 The options of `blue boot`:
@@ -864,6 +930,13 @@ or CI), `blue boot` says so and stops: run it with `--headless`.
 | `--no-modem` | Leaves the internal modem out. |
 | `--modem-listen [ADDRESS:]PORT` | A connection to this port is a call to the modem: it rings. |
 | `--modem-phonebook FILE` | Numbers the modem dials: lines of `NUMBER HOST:PORT`. |
+
+**USB**
+
+| Option | What it does |
+|---|---|
+| `--usb VID:PID`, `--usb BUS-PORT` | Passes one of your computer's USB devices through to Mac OS, connected at startup (twice for both ports; real time only). |
+| `--usb-test-disk FILE` | Plugs Blue's USB test disk into a port: a USB mass storage device whose disk is this image, for testing and debugging (in any run: see [docs/debugging.md](docs/debugging.md#the-usb-test-disk)). |
 
 **Time and speed**
 
@@ -935,8 +1008,13 @@ version runs in Rosetta 2 without the JIT.
 
 Blue doesn't do everything a Mac of the time could:
 
-- **USB and FireWire devices** of any kind (game controllers reach Mac OS
-  as the keyboard and mouse, and through InputSprocket: see
+- **FireWire devices** of any kind.
+- **USB 2.0 speed:** USB devices go through at USB 1.1's, as on the iMac:
+  a device that only works at high speed, or isochronous transfers at it,
+  can't be passed through; nor can a USB hub, though devices behind one
+  can. A device macOS drives needs Blue run as root (see
+  [USB devices](#usb-devices)). Game controllers reach Mac OS as the
+  keyboard and mouse, and through InputSprocket (see
   [Game controllers](#game-controllers)).
 - **AppleTalk** networking, and connections into the Mac.
 - **Old World Macs:** Blue is an original iMac, and can't start the ROMs
@@ -1151,10 +1229,11 @@ make            # builds build/blue
 make test       # runs the unit tests
 ```
 
-Blue loads SDL2 (the window, sound and input) and libslirp (the network)
-when it runs, so they aren't needed to build it, but you'll want them to
-use it: `brew install sdl2 libslirp` on macOS, or your distribution's
-SDL2 and libslirp packages on Linux.
+Blue loads SDL2 (the window, sound and input), libslirp (the network) and
+libusb (USB devices passed through) when it runs, so they aren't needed to
+build it, but you'll want them to use it: `brew install sdl2 libslirp
+libusb` on macOS, or your distribution's SDL2, libslirp and libusb-1.0
+packages on Linux.
 
 `make app` and `make dmg` make Blue.app and its disk image on macOS, and
 `make appimage` an AppImage on Linux. [docs/building.md](docs/building.md)

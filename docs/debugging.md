@@ -86,6 +86,7 @@ with `#` are comments):
 | `modem recv TEXT` | the far end sends TEXT (the rest of the line: `\r`, `\n`, `\\` and `\xHH` stand for a CR, a newline, a backslash and any byte) |
 | `modem hangup` | the far end hangs up |
 | `mic play FILE`, `mic stop` | the microphone hears a WAV file (the rest of the line), once from its start, as Mac OS records; or nothing more |
+| `usb connect FILE`, `usb disconnect [PORT]` | the USB test disk, with the image FILE (the rest of the line), plugged into a free USB port; unplugged (the test disks, or the device in port 1 or 2) |
 
 Times can be seconds of host time since the start instead, written with
 an `s` (`12.5s click 100 200`), for scripts in real time (in the window,
@@ -158,6 +159,58 @@ bigger than it is. A scripted click's press and release are 3 million
 instructions apart, which at a high `clock` can be too short for the guest
 to notice; change the clock after the clicks that matter.
 
+## The USB test disk
+
+`--usb-test-disk FILE` plugs a USB mass storage device into one of the
+Mac's USB ports at startup, its disk the image FILE (read and written in
+512-byte blocks; read-only if the file is), and `usb connect FILE` and
+`usb disconnect` in an input script plug one in and out at a given
+instruction count. It's built into Blue (`src/usbmsd.c`: bulk-only
+transport, SCSI) and answers at once, so it works in instruction time,
+where runs with it are reproducible: Mac OS's own USB stack, through the
+ROM's OHCI driver and its mass storage driver, mounts it as a removable
+disk. It's for testing the USB controller (see
+[devices.md](devices.md#usb)), not a way to attach disks (`--disk` is
+that). With Mac OS 9.2.2 installed on `hd.img`, for example:
+
+```sh
+blue disk create usb.img 20M "USB Test"
+blue boot --headless --disk hd.img --usb-test-disk usb.img --input usb.txt --max 4400000000 --fixed-time 1000000000
+```
+
+with a script `usb.txt` that opens the disk, duplicates a file on it and
+ejects it (the icon where Mac OS 9.2.2 puts the first removable disk, at
+800 × 600):
+
+```
+3000000000 click 750 182          # select USB Test
+3050000000 key 37 down            # Command-O: open it
+3060000000 key 1F
+3070000000 key 37 up
+3350000000 key 04                 # select the file starting with H
+3400000000 key 37 down            # Command-D: duplicate it
+3410000000 key 02
+3420000000 key 37 up
+3850000000 click 750 182
+3900000000 key 37 down            # Command-E: eject the disk
+3910000000 key 0E
+3920000000 key 37 up
+4300000000 screenshot ejected.png
+```
+
+The host's devices go through libusb (`src/usbhost.c`); the tests run that
+path with a stand-in for libusb (`build/libusb-mock.so`, from
+`tests/libusb_mock.c`) whose one device is a test disk, its transfers
+answered on libusb's thread a millisecond or more later. `BLUE_LIBUSB`
+loads it in place of the real one, `BLUE_LIBUSB_MOCK_IMAGE` names its
+disk's image, and creating a file named as that image with `.unplugged`
+added unplugs it (removing it plugs it in again):
+
+```sh
+BLUE_LIBUSB=build/libusb-mock.so BLUE_LIBUSB_MOCK_IMAGE=usb.img \
+	blue boot --headless --realtime --disk hd.img --usb 1209:0001 --seconds 70 --max 900000000000
+```
+
 ## When devices are serviced
 
 Devices and interrupts are serviced every 20,000 instructions and at kernel
@@ -200,10 +253,12 @@ thread's processor time, the pages seen written a frame, and how long after
 the hand-over a frame was on the screen. `BLUE_WINDOW_COMPARE=1` finds the
 changes by comparing the whole screen, without watching the framebuffer;
 `BLUE_WINDOW_CHECK=1` compares the watched pages too, and says where a
-write went unseen. `BLUE_LOG_USB=1` logs the USB
-controller's register accesses (not the frame number, which drivers poll),
+write went unseen. `BLUE_LOG_USB=1` logs USB's transfers (each TD
+retired, each request a device was given, the test disk's SCSI commands,
+the host's devices' answers), `BLUE_LOG_USB=2` the controller's register
+accesses too (not the frame number, which drivers poll),
 `BLUE_LOG_PCI=1` configuration space accesses, `BLUE_LOG_LIBS=1` the file
-each run-time library (SDL2, libslirp) was loaded from.
+each run-time library (SDL2, libslirp, libusb) was loaded from.
 `--io-ram` backs unmodelled I/O pages with plain RAM. Under gdb, `handle
 SIGSEGV nostop noprint pass` lets the JIT's memory faults through; under lldb
 on macOS, `settings set platform.plugin.darwin.ignored-exceptions
@@ -263,7 +318,8 @@ and doesn't read it.
 | `BLUE_JIT_PROFILE=1`, `=FROM:TO` | samples where host time goes, and prints it at the end ([jit.md](jit.md#profiling)) |
 | `BLUE_LOG_AUDIO=1` | how the host's sound queue fares, every second ([above](#tracing-and-logging)) |
 | `BLUE_LOG_GL=1` | logs every OpenGL call |
-| `BLUE_LOG_LIBS=1` | the file SDL2 and libslirp were loaded from |
+| `BLUE_LOG_LIBS=1` | the file SDL2, libslirp and libusb were loaded from |
+| `BLUE_LIBUSB=FILE` | loads this libusb-1.0 rather than Blue's own or the system's (the tests' stand-in for it: `build/libusb-mock.so`) |
 | `BLUE_LOG_MODEM=1` | the modem's commands, results and calls |
 | `BLUE_LOG_MP=1` | Multiprocessing Services' calls, task switches, timers and software interrupts |
 | `BLUE_LOG_NET=1` | the Ethernet driver's calls |
@@ -273,7 +329,7 @@ and doesn't read it.
 | `BLUE_LOG_SERIAL=1` | the serial controller's register accesses (the modem's channel), and its DCD, CTS, DTR and RTS |
 | `BLUE_LOG_SHARE=1` | Mac OS's writes to the shared folder |
 | `BLUE_LOG_SOUND=1` | the sound chip's register accesses, and the codec's registers as they're written |
-| `BLUE_LOG_USB=1` | the USB controller's register accesses (not the frame number) |
+| `BLUE_LOG_USB=1` | USB's transfers and requests (`2`: the controller's register accesses too, not the frame number) |
 | `BLUE_LOG_WHEEL=1` | where each of the scroll wheel's turns went: the scroll bar clicked, the lines its action procedure scrolled, or why not ([guest-tools.md](guest-tools.md#the-scroll-wheel)) |
 | `BLUE_NET=1` | connects the Ethernet in instruction time too (then not reproducible) |
 | `BLUE_PERF=1` | the host processor's counters for the emulation thread, every second (Linux) |
