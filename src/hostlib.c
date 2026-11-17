@@ -33,15 +33,20 @@ static const char *const sdl2_names[] = { "libSDL2-2.0.so.0", "libSDL2.so", "lib
 static const char *const slirp_names[] = { "libslirp.so.0", "libslirp.dylib", "/opt/homebrew/lib/libslirp.dylib",
 					   "/opt/local/lib/libslirp.dylib" };
 
+static const char *const usb_names[] = { "libusb-1.0.so.0", "libusb-1.0.0.dylib", "/opt/homebrew/lib/libusb-1.0.0.dylib",
+					 "/usr/local/lib/libusb-1.0.0.dylib", "/opt/local/lib/libusb-1.0.0.dylib" };
+
 static const struct hostlib_names libs[HOSTLIBS] = {
 #ifdef __APPLE__
 	[HOSTLIB_SDL2] = { "SDL2", "SDL_Init", "libSDL2-2.0.0.dylib", sdl2_names, sizeof sdl2_names / sizeof *sdl2_names },
 	[HOSTLIB_SLIRP] = { "libslirp", "slirp_new", "libslirp.0.dylib", slirp_names,
 			    sizeof slirp_names / sizeof *slirp_names },
+	[HOSTLIB_USB] = { "libusb", "libusb_init", "libusb-1.0.0.dylib", usb_names, sizeof usb_names / sizeof *usb_names },
 #else
 	[HOSTLIB_SDL2] = { "SDL2", "SDL_Init", "libSDL2-2.0.so.0", sdl2_names, sizeof sdl2_names / sizeof *sdl2_names },
 	[HOSTLIB_SLIRP] = { "libslirp", "slirp_new", "libslirp.so.0", slirp_names,
 			    sizeof slirp_names / sizeof *slirp_names },
+	[HOSTLIB_USB] = { "libusb", "libusb_init", "libusb-1.0.so.0", usb_names, sizeof usb_names / sizeof *usb_names },
 #endif
 };
 
@@ -109,7 +114,8 @@ void hostlib_about(enum hostlib which, char *out, size_t size)
 	void *lib = hostlib_open(which);
 	if (!lib) {
 		snprintf(out, size, "%s: not found (%s)", l->name,
-			 which == HOSTLIB_SDL2 ? "no window or sound" : "no network");
+			 which == HOSTLIB_SDL2 ? "no window or sound" : which == HOSTLIB_SLIRP ? "no network" :
+			 "no USB devices from the host");
 		return;
 	}
 	char version[32] = "";
@@ -121,11 +127,17 @@ void hostlib_about(enum hostlib which, char *out, size_t size)
 			get(v);
 			snprintf(version, sizeof version, " %u.%u.%u", v[0], v[1], v[2]);
 		}
-	} else {
+	} else if (which == HOSTLIB_SLIRP) {
 		const char *(*get)(void);
 		*(void **)&get = dlsym(lib, "slirp_version_string");
 		if (get)
 			snprintf(version, sizeof version, " %s", get());
+	} else {
+		const uint16_t *(*get)(void);  /* (a struct libusb_version: major, minor, micro, nano, ...) */
+		*(void **)&get = dlsym(lib, "libusb_get_version");
+		const uint16_t *v = get ? get() : NULL;
+		if (v)
+			snprintf(version, sizeof version, " %u.%u.%u", v[0], v[1], v[2]);
 	}
 	snprintf(out, size, "%s%s: %s", l->name, version, file_of(lib, l));
 	dlclose(lib);

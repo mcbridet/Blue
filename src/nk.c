@@ -51,6 +51,7 @@
 #include "share.h"
 #include "startup.h"
 #include "tools.h"
+#include "usbhost.h"
 #include "usbmsd.h"
 #include "via.h"
 #include "video.h"
@@ -641,6 +642,13 @@ struct machine {
 	struct net net;                 /* Ethernet */
 	uint8_t lanlib[4096];
 	uint64_t net_poll_ns;           /* host time the host network was last serviced */
+	/* the host's USB devices passed through (real time): see usb_plug() */
+	struct usbhost *usbhost;        /* libusb, once wanted (NULL: not yet, or it can't be had) */
+	char usbhost_why[240];          /* ... why it can't be */
+	struct usbhost_info usb_listed[UI_USB_DEVICES]; /* the host's devices, as the menu lists them */
+	unsigned usb_listed_count;
+	char usb_lost[OHCI_PORTS][16];  /* a device unplugged from the host, by VID:PID: it comes back if plugged in again */
+	uint64_t usb_poll_ns;           /* host time unplugging and plugging in were last looked for */
 	/* the internal modem, on the SCC's channel A (see modem_setup()) */
 	bool modem_on;                  /* it's there */
 	struct modem modem;
@@ -1764,6 +1772,8 @@ static void pass_guest_time(struct machine *m, uint64_t ticks)
 #define SOUND_WAKE_NS 4000000u          /* ... and while sound plays (4 ms) */
 #define NET_WAKE_NS 4000000u            /* ... and with a host network (4 ms) */
 #define NET_POLL_NS 1000000u            /* the host network is serviced every millisecond while running */
+#define USB_WAKE_NS 1000000u            /* ... and with USB transfers waiting on the host's devices (1 ms) */
+#define USB_POLL_NS 20000000u           /* the host's devices unplugged and plugged in are looked for every 20 ms */
 #define TRAP_SYNCH_IDLE_TIME 0xABF7u    /* the Process Manager's "nothing to run" call (before Mac OS 9) */
 #define TRAP_IDLE_9 0xAAAAu             /* Mac OS 9's idle routine's call in its place, ... */
 #define TRAP_IDLE_9_SELECTOR 0x82F0u    /* ... with this in D0.W (see tools_idle()) */
@@ -1995,6 +2005,8 @@ static void nap(struct machine *m, uint64_t deadline, bool idle)
 		until = now + SOUND_WAKE_NS;   /* (the sound DMA moves only as time is seen to pass) */
 	if ((m->net.backend || (m->modem_on && modemnet_active(&m->modemnet))) && now + NET_WAKE_NS < until)
 		until = now + NET_WAKE_NS;     /* (to see the host network's traffic, and the modem's calls) */
+	if (m->usbhost && ohci_waiting(&m->ohci) && now + USB_WAKE_NS < until)
+		until = now + USB_WAKE_NS;     /* (to see the host's USB devices' answers) */
 	if (until <= now + 20000)       /* not worth a system call */
 		return;
 	if (m->display) {
@@ -2150,11 +2162,135 @@ static void usb_unplug_test_disks(struct machine *m)
 	}
 }
 
-/* The devices the command line plugs in at startup */
+/* libusb, started when first wanted (in real time only: the host's devices answer in its time) */
+static struct usbhost *usb_host(struct machine *m)
+{
+	if (!m->usbhost && !m->usbhost_why[0]) {
+		if (!m->realtime)
+			snprintf(m->usbhost_why, sizeof m->usbhost_why, "Your computer's USB devices are passed through "
+				 "in real time only (the window, or --headless --realtime)");
+		else
+			m->usbhost = usbhost_start(m->usbhost_why, sizeof m->usbhost_why);
+	}
+	return m->usbhost;
+}
+
+static const char *usb_speed_name(unsigned speed)
+{
+	return speed == USB_SPEED_LOW ? "low speed" : speed == USB_SPEED_FULL ? "full speed" :
+	       speed == USB_SPEED_HIGH ? "high speed" : "super speed";
+}
+
+/* Takes the host's device `spec` names into a free port (`port`: that one, if free); false (and why, in the menu) if not */
+static bool usb_take(struct machine *m, const char *spec, int port)
+{
+	char err[400];
+	struct usbhost *h = usb_host(m);
+	struct usb_device *d = h ? usbhost_open(h, spec, err, sizeof err) : NULL;
+	if (!h)
+		snprintf(err, sizeof err, "%s", m->usbhost_why);
+	if (!d) {
+		fprintf(stderr, "usb: %s\n", err);
+		snprintf(m->menu_status, sizeof m->menu_status, "%s", err);
+		return false;
+	}
+	if (port >= 0 && !ohci_device(&m->ohci, (unsigned)port) && ohci_connect(&m->ohci, (unsigned)port, d)) {
+		printf("usb: %s connected to port %d\n", d->name, port + 1);
+		m->dev_dirty = true;
+		return true;
+	}
+	return usb_plug(m, d);
+}
+
+/* The host's devices, as the menu lists them */
+static void usb_list(struct machine *m)
+{
+	struct usbhost *h = usb_host(m);
+	m->usb_listed_count = h ? usbhost_list(h, m->usb_listed, UI_USB_DEVICES) : 0;
+	if (m->usb_listed_count > UI_USB_DEVICES)
+		m->usb_listed_count = UI_USB_DEVICES;
+}
+
+/* What the menu shows of USB */
+static void usb_state(struct machine *m)
+{
+	static struct ui_usb u;
+	if (!m->display)
+		return;
+	memset(&u, 0, sizeof u);
+	bool free_port = false;
+	for (unsigned k = 0; k < OHCI_PORTS && k < UI_USB_PORTS; k++) {
+		struct usb_device *d = ohci_device(&m->ohci, k);
+		snprintf(u.port[k], sizeof u.port[k], "%s", d ? d->name : "");
+		free_port |= !d;
+	}
+	if (!m->usbhost)
+		snprintf(u.why_none, sizeof u.why_none, "%s", m->usbhost_why);
+	u.count = m->usb_listed_count;
+	for (unsigned k = 0; k < u.count; k++) {
+		const struct usbhost_info *i = &m->usb_listed[k];
+		struct ui_usb_device *d = &u.dev[k];
+		snprintf(d->name, sizeof d->name, "%s", i->name[0] ? i->name : "(no name)");
+		snprintf(d->about, sizeof d->about, "%04x:%04x, %s", i->vendor, i->product, usb_speed_name(i->speed));
+		bool taken = false;
+		for (unsigned p = 0; p < OHCI_PORTS; p++) {
+			struct usb_device *dev = ohci_device(&m->ohci, p);
+			taken |= dev && usbhost_is(dev) && !strcmp(usbhost_device_info(dev)->id, i->id);
+		}
+		if (taken)
+			snprintf(d->why_not, sizeof d->why_not, "It's connected to the Mac");
+		else if (i->speed >= USB_SPEED_HIGH)
+			snprintf(d->why_not, sizeof d->why_not, "It's connected to your computer at %s, and the iMac's USB "
+				 "is 1.1: through a USB 1.1 hub, it would connect at full speed", usb_speed_name(i->speed));
+		else if (!free_port)
+			snprintf(d->why_not, sizeof d->why_not, "Both of the Mac's USB ports are taken: disconnect one first");
+	}
+	display_usb_state(m->display, &u);
+}
+
+/*
+ * The host's devices that are unplugged go from Mac OS; one plugged in
+ * again (by VID:PID) goes back into the port it was in, if it's free.
+ */
+static void usb_poll(struct machine *m)
+{
+	uint64_t now = host_ns();
+	if (!m->usbhost || now - m->usb_poll_ns < USB_POLL_NS)
+		return;
+	m->usb_poll_ns = now;
+	bool changed = false;
+	for (unsigned k = 0; k < OHCI_PORTS; k++) {
+		struct usb_device *d = ohci_device(&m->ohci, k);
+		if (d && usbhost_is(d) && usbhost_gone(d)) {
+			snprintf(m->usb_lost[k], sizeof m->usb_lost[k], "%04x:%04x", usbhost_device_info(d)->vendor,
+				 usbhost_device_info(d)->product);
+			usb_unplug(m, k, " (unplugged from your computer)");
+			changed = true;
+		}
+	}
+	struct usbhost_info info;
+	while (usbhost_arrived(m->usbhost, &info)) {
+		changed = true;
+		for (unsigned k = 0; k < OHCI_PORTS; k++) {
+			if (m->usb_lost[k][0] && !ohci_device(&m->ohci, k) && usbhost_matches(&info, m->usb_lost[k]) &&
+			    usb_take(m, info.id, (int)k))
+				m->usb_lost[k][0] = '\0';
+		}
+	}
+	if (changed && m->paused) {
+		usb_list(m);
+		usb_state(m);
+	}
+}
+
+/* The devices the command line plugs in at startup: the test disk, and the host's */
 static void usb_startup(struct machine *m, const struct nk_boot_options *opt)
 {
 	if (opt->usb_disk)
 		usb_test_disk(m, opt->usb_disk);
+	for (unsigned k = 0; k < opt->usbs; k++)
+		usb_take(m, opt->usb[k], -1);
+	m->menu_status[0] = '\0';
 }
 
 static bool drive_insert(struct machine *m, const char *path, enum drives_for kind, struct disk *want)
@@ -2759,6 +2895,7 @@ static void menu_state(struct machine *m)
 	pads_state(m);
 	mic_state(m);
 	modem_state(m);
+	usb_state(m);
 	display_tools_state(m->display, m->tools_offer, install_unofferable(&m->install));
 }
 
@@ -2962,7 +3099,18 @@ static void menu_action(struct machine *m, enum ui_action action, const char *pa
 		tools_show(m);
 		follow_cursor(m, now);
 		break;
+	case UI_USB_REFRESH:
+		usb_list(m);
+		break;
 	default:
+		if (action >= UI_USB_DISCONNECT && action <= UI_USB_DISCONNECT_LAST) {
+			m->usb_lost[action - UI_USB_DISCONNECT][0] = '\0';
+			usb_unplug(m, action - UI_USB_DISCONNECT, "");
+		} else if (action >= UI_USB_CONNECT && action <= UI_USB_CONNECT_LAST &&
+			   (unsigned)(action - UI_USB_CONNECT) < m->usb_listed_count) {
+			m->menu_status[0] = '\0';
+			usb_take(m, m->usb_listed[action - UI_USB_CONNECT].id, -1);
+		}
 		if (action >= UI_EJECT && action <= UI_EJECT_LAST && m->menu_drives[action - UI_EJECT])
 			drive_eject(m, m->menu_drives[action - UI_EJECT]);
 		else if (action >= UI_INSERT && action <= UI_INSERT_LAST && m->menu_drives[action - UI_INSERT])
@@ -3289,6 +3437,8 @@ static void display_input(struct machine *m, uint64_t now)
 			m->paused = !m->paused;
 			follow_cursor(m, now);          /* (paused: the pointer goes) */
 			m->menu_status[0] = '\0';
+			if (m->paused)
+				usb_list(m);
 			menu_state(m);
 			display_menu(m->display, m->paused);
 			printf("%s\n", m->paused ? "paused (F12 resumes)" : "resumed");
@@ -5720,6 +5870,11 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	m->dev_accesses = old.dev_accesses;
 	m->dev_inline = old.dev_inline;
 	m->net_poll_ns = old.net_poll_ns;
+	m->usbhost = old.usbhost;
+	memcpy(m->usbhost_why, old.usbhost_why, sizeof m->usbhost_why);
+	memcpy(m->usb_listed, old.usb_listed, sizeof m->usb_listed);
+	m->usb_listed_count = old.usb_listed_count;
+	memcpy(m->usb_lost, old.usb_lost, sizeof m->usb_lost);
 	m->modem_on = old.modem_on;
 	m->phonebook = old.phonebook;
 	/* (discs stay in their drives) */
@@ -5961,6 +6116,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 					net_poll(&m.net, 0);
 				}
 			}
+			usb_poll(&m);
 			if (m.net.kick) {       /* (frames came, here or while idle) */
 				m.net.kick = false;
 				macio_pulse(&m.macio, IRQ_DMA_ENET_RX);
@@ -6337,6 +6493,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 			fclose(f);
 	}
 	stop_machine(&m);
+	usbhost_stop(m.usbhost);
 	gpu_close(m.gpu);
 	if (m.wav) {
 		uint8_t h[44];

@@ -11,6 +11,7 @@
 #include "env.h"
 #include "hfsread.h"
 #include "hostlib.h"
+#include "usbhost.h"
 #include "mem.h"
 #include "nk.h"
 #include "ppc.h"
@@ -29,7 +30,7 @@ static int usage(void)
 		"\n"
 		"usage: blue <command> [args]\n"
 		"\n"
-		"  --version                    Blue's version, and the SDL2 and libslirp it finds\n"
+		"  --version                    Blue's version, and the SDL2, libslirp and libusb it finds\n"
 		"  rom info <file>              describe a Mac OS ROM file or 4 MB ROM image\n"
 		"  rom config <file>            show the NanoKernel ConfigInfo and memory map\n"
 		"  rom parcels <file>           list the parcels of a Mac OS 9.1-or-later ROM file\n"
@@ -37,6 +38,7 @@ static int usage(void)
 		"  rom trampoline <file> <out>  write the NewWorld Trampoline (ELF)\n"
 		"                               (the file may be a disk or CD image: then the Mac OS\n"
 		"                               ROM file in its System Folder, as boot would use it)\n"
+		"  usb                          list the host's USB devices (for boot's --usb)\n"
 		"  boot [options]               start Mac OS under the native kernel, in a window\n"
 		"                               (keyboard and mouse go to the guest), in real time\n"
 		"                               until Mac OS shuts down or Blue quits, from the Mac\n"
@@ -77,6 +79,11 @@ static int usage(void)
 		"                               leave a border)\n"
 		"      --no-status-bar          start without the window's status bar (its lights\n"
 		"                               and the processor's speed; F12's menu shows it)\n"
+		"      --usb <VID:PID>|<BUS-PORT>\n"
+		"                               in real time, pass this USB device of the host's\n"
+		"                               through to Mac OS, into one of the Mac's two USB\n"
+		"                               ports (repeatable; lsusb's IDs, in hex, or where it's\n"
+		"                               plugged in, as 1-2.3; F12's menu lists them)\n"
 		"      --usb-test-disk <file>   plug the USB test disk into a USB port: a USB mass\n"
 		"                               storage device whose medium is this image (for tests\n"
 		"                               and debugging; in instruction time too)\n"
@@ -443,6 +450,12 @@ static int cmd_boot(int argc, char **argv)
 			}
 		} else if (strcmp(argv[k], "--no-status-bar") == 0) {
 			opt.no_status_bar = true;
+		} else if (strcmp(argv[k], "--usb") == 0 && k + 1 < argc) {
+			if (opt.usbs >= NK_MAX_USB) {
+				fprintf(stderr, "at most %d USB devices (the Mac has %d ports)\n", NK_MAX_USB, NK_MAX_USB);
+				return 2;
+			}
+			opt.usb[opt.usbs++] = argv[++k];
 		} else if (strcmp(argv[k], "--usb-test-disk") == 0 && k + 1 < argc) {
 			opt.usb_disk = argv[++k];
 		} else if (strcmp(argv[k], "--no-net") == 0) {
@@ -675,6 +688,29 @@ static int cmd_disk(int argc, char **argv)
 	return disk_create(argv[1], size, argc > 3 ? argv[3] : floppy ? "Untitled" : "Macintosh HD") ? 1 : 0;
 }
 
+/* blue usb: the host's USB devices, as --usb names them */
+static int usb_devices(void)
+{
+	char err[300];
+	struct usbhost *h = usbhost_start(err, sizeof err);
+	if (!h) {
+		fprintf(stderr, "%s\n", err);
+		return 1;
+	}
+	struct usbhost_info info[64];
+	unsigned n = usbhost_list(h, info, 64);
+	if (!n)
+		printf("no USB devices (hubs aren't listed)\n");
+	for (unsigned k = 0; k < n && k < 64; k++) {
+		static const char *const speeds[] = { "low speed", "full speed", "high speed: can't be passed through",
+						      "super speed: can't be passed through" };
+		printf("%04x:%04x  %-9s %s (%s)\n", info[k].vendor, info[k].product, info[k].id,
+		       info[k].name[0] ? info[k].name : "(no name)", speeds[info[k].speed < 4 ? info[k].speed : 3]);
+	}
+	usbhost_stop(h);
+	return 0;
+}
+
 static int version(void)
 {
 	printf(BLUE_ABOUT "\n");
@@ -722,6 +758,8 @@ int main(int argc, char **argv)
 		return cmd_disk(argc - 2, argv + 2);
 	if (strcmp(argv[1], "tools") == 0)
 		return cmd_tools(argc - 2, argv + 2);
+	if (strcmp(argv[1], "usb") == 0)
+		return usb_devices();
 	if (strcmp(argv[1], "boot") == 0)
 		return cmd_boot(argc - 2, argv + 2);
 	if (strcmp(argv[1], "run-raw") == 0)

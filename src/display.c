@@ -271,6 +271,8 @@ struct handed {
 	bool mic_on;
 	char modem[160];                /* ("": no modem) */
 	bool modem_call;
+	bool has_usb;
+	struct ui_usb usb;
 	struct display_pad_request {    /* virtual pads' changes (display_pad_virtual()), in order */
 		enum display_pad_op op;
 		unsigned n, which;
@@ -348,6 +350,8 @@ struct display {
 	bool mic_on;
 	char modem[160];                /* ... and the modem (display_modem_state(); "": none) */
 	bool modem_call;
+	bool has_usb;                   /* ... and USB (display_usb_state()) */
+	struct ui_usb usb;
 	/* game controllers (with SDL's support for them: `pads_on`), by Blue's number for them */
 	bool pads_on;
 	struct {
@@ -1084,6 +1088,7 @@ static void draw(struct display *d)
 			.scale_auto = d->scale_auto,
 			.modem = d->modem[0] ? d->modem : NULL,
 			.modem_call = d->modem_call,
+			.usb = d->has_usb ? &d->usb : NULL,
 		};
 		enum ui_action action = ui_draw(d->ui, &s, ww, wh, ww > 0 ? (float)pw / (float)ww : 1, now - d->menu_time);
 		d->menu_time = now;
@@ -1705,6 +1710,8 @@ static void take(struct display *d, struct taken *t)
 		d->mic_on = in->mic_on;
 		memcpy(d->modem, in->modem, sizeof d->modem);
 		d->modem_call = in->modem_call;
+		d->has_usb = in->has_usb;
+		d->usb = in->usb;
 		d->stale |= d->menu;
 		in->info_changed = false;
 	}
@@ -2279,6 +2286,18 @@ void display_mic_state(struct display *d, const char *status, bool on)
 	if (strcmp(d->in.mic, status ? status : "") != 0 || d->in.mic_on != on) {
 		snprintf(d->in.mic, sizeof d->in.mic, "%s", status ? status : "");
 		d->in.mic_on = on;
+		d->in.info_changed = true;
+	}
+	pthread_mutex_unlock(&host.lock);
+}
+
+void display_usb_state(struct display *d, const struct ui_usb *usb)
+{
+	pthread_mutex_lock(&host.lock);
+	if (d->in.has_usb != (usb != NULL) || (usb && memcmp(&d->in.usb, usb, sizeof *usb) != 0)) {
+		d->in.has_usb = usb != NULL;
+		if (usb)
+			d->in.usb = *usb;
 		d->in.info_changed = true;
 	}
 	pthread_mutex_unlock(&host.lock);

@@ -1,6 +1,7 @@
 /*
  * The libraries Blue loads at run time, so that it needs none to build or
- * to start: SDL2 for the window and sound, libslirp for the network. Each
+ * to start: SDL2 for the window and sound, libslirp for the network,
+ * libusb-1.0 for the host's USB devices passed through to Mac OS. Each
  * is looked for first among Blue's own copies of them, beside the
  * executable (../Frameworks from its directory: Blue.app's
  * Contents/Frameworks; ../lib elsewhere: an AppImage's usr/lib), then as
@@ -14,7 +15,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-enum hostlib { HOSTLIB_SDL2, HOSTLIB_SLIRP, HOSTLIBS };
+enum hostlib { HOSTLIB_SDL2, HOSTLIB_SLIRP, HOSTLIB_USB, HOSTLIBS };
 
 /* dlopen()'s handle for it, or NULL (dlerror() says why) */
 void *hostlib_open(enum hostlib which);

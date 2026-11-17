@@ -65,6 +65,7 @@ void test_display(void);
 void test_video(void);
 void test_jit(void);
 void test_ohci(void);
+void test_usb(void);
 void test_mp(void);
 void test_nvram(void);
 void test_startup(void);

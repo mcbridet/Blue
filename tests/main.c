@@ -28,6 +28,7 @@ int main(int argc, char **argv)
 		{ "cdformats", test_cdformats },
 		{ "dmg", test_dmg },
 		{ "ohci", test_ohci },
+		{ "usb", test_usb },
 		{ "drivers", test_drivers },
 		{ "net", test_net },
 		{ "hfs", test_hfs },

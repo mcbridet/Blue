@@ -216,6 +216,9 @@ void display_mic_state(struct display *d, const char *status, bool on);
 /* ... and the modem: what it's doing (copied; NULL: there's none), and whether it has a call to hang up */
 void display_modem_state(struct display *d, const char *text, bool call);
 
+/* The menu's USB section: the Mac's ports and the host's devices (NULL: not shown) */
+void display_usb_state(struct display *d, const struct ui_usb *usb);
+
 /*
  * Game controllers: SDL's (2.0.14 and later) virtual ones, for scripted
  * runs in the window, which then come and go and send their buttons and

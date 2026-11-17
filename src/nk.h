@@ -126,6 +126,9 @@ struct nk_boot_options {
 	bool no_net;            /* no host network behind the guest's Ethernet (real time has one) */
 	bool no_modem;          /* no internal modem (a window or real time has one) */
 	const char *usb_disk;   /* the USB test disk's image (usbmsd.h), plugged in at startup, or NULL */
+#define NK_MAX_USB 2
+	const char *usb[NK_MAX_USB];    /* the host's USB devices to pass through (real time): VID:PID or BUS-PORT */
+	unsigned usbs;
 	const char *modem_listen;       /* calls come in on this "[ADDRESS:]PORT" (real time), or NULL */
 	const char *modem_phonebook;    /* numbers the modem dials: lines of "NUMBER HOST:PORT", or NULL */
 	bool no_gpu;            /* the 3D engine never draws with the host's GPU (real time does, if it can) */

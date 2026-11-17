@@ -40,6 +40,8 @@ struct ui_renderer {
 enum ui_key { UI_KEY_TAB, UI_KEY_LEFT, UI_KEY_RIGHT, UI_KEY_UP, UI_KEY_DOWN, UI_KEY_SPACE, UI_KEY_ENTER };
 
 #define UI_DRIVES 5                     /* drives with removable media: the floppy drive, CD-ROM drives */
+#define UI_USB_PORTS 2                  /* the Mac's USB ports */
+#define UI_USB_DEVICES 12               /* the host's USB devices listed */
 #define UI_SCALES 5                     /* the window's scales: Auto, 1x to 4x */
 
 /* What the user chose in the menu (or a prompt's buttons) */
@@ -58,7 +60,12 @@ enum ui_action { UI_NONE, UI_RESUME, UI_RESTART, UI_SHUT_DOWN, UI_SCREENSHOT, UI
 		 UI_INSERT,                     /* (likewise: an image chosen with the host's file chooser) */
 		 UI_INSERT_LAST = UI_INSERT + UI_DRIVES - 1,
 		 UI_SCALE,                      /* (+ the scale chosen: 0 Auto, else display pixels to a screen pixel) */
-		 UI_SCALE_LAST = UI_SCALE + UI_SCALES - 1 };
+		 UI_SCALE_LAST = UI_SCALE + UI_SCALES - 1,
+		 UI_USB_REFRESH,                /* (the host's USB devices listed again) */
+		 UI_USB_DISCONNECT,             /* (+ the Mac's port: 0 or 1) */
+		 UI_USB_DISCONNECT_LAST = UI_USB_DISCONNECT + UI_USB_PORTS - 1,
+		 UI_USB_CONNECT,                /* (+ the host's device's number in the menu's list) */
+		 UI_USB_CONNECT_LAST = UI_USB_CONNECT + UI_USB_DEVICES - 1 };
 
 /* What becomes of the mouse after the menu */
 enum ui_mouse {
@@ -86,6 +93,19 @@ struct ui_drives {
 };
 
 /* The game controllers, as the menu shows them */
+struct ui_usb_device {
+	char name[96];                  /* the maker's and product's names, or its IDs */
+	char about[64];                 /* "05ac:0201, full speed" */
+	char why_not[200];              /* why it can't be connected ("": it can) */
+};
+
+struct ui_usb {
+	char port[UI_USB_PORTS][112];   /* what's plugged into the Mac's ports ("": nothing) */
+	unsigned count;                 /* the host's devices (hubs left out) */
+	struct ui_usb_device dev[UI_USB_DEVICES];
+	char why_none[200];             /* why there are no host devices to take ("": there are) */
+};
+
 #define UI_PAD_TYPES (PAD_MAX + 1)
 #define UI_PAD_ID 64
 
@@ -164,6 +184,7 @@ struct ui_state {
 	/* the modem: what it's doing ("Modem: connected to host:port"; NULL: there's none), with a call to hang up */
 	const char *modem;
 	bool modem_call;
+	const struct ui_usb *usb;       /* USB: the Mac's ports and the host's devices, or NULL (not shown) */
 };
 
 #define UI_STATUS_BAR_HEIGHT 24         /* in the window's units */

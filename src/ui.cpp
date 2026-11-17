@@ -675,6 +675,55 @@ static enum ui_action drives_menu(const struct ui_drives *dr)
 	return action;
 }
 
+/* USB: the Mac's two ports, and the host's devices that can go into them */
+static enum ui_action usb_menu(const struct ui_usb *u)
+{
+	enum ui_action action = UI_NONE;
+	separator();
+	for (unsigned k = 0; k < UI_USB_PORTS; k++) {
+		ImGui::PushID((int)k + 100);
+		ImGui::BeginDisabled(!u->port[k][0]);
+		if (button("Disconnect", 0))
+			action = (enum ui_action)(UI_USB_DISCONNECT + k);
+		ImGui::EndDisabled();
+		tip("Unplugs it from the Mac (put away any disk of it in Mac OS first): it goes back to your computer");
+		beside_buttons();
+		ImGui::Text("USB port %u: %s", k + 1, u->port[k][0] ? u->port[k] : "empty");
+		ImGui::PopID();
+	}
+	if (u->why_none[0]) {
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 480);
+		ImGui::TextDisabled("%s", u->why_none);
+		ImGui::PopTextWrapPos();
+		return action;
+	}
+	if (button("Refresh", 0))
+		action = UI_USB_REFRESH;
+	tip("Lists your computer's USB devices again");
+	beside_buttons();
+	if (u->count)
+		ImGui::TextDisabled("Your computer's USB devices, to connect to the Mac:");
+	else
+		ImGui::TextDisabled("Your computer has no USB devices to connect (hubs aren't listed)");
+	for (unsigned k = 0; k < u->count && k < UI_USB_DEVICES; k++) {
+		const struct ui_usb_device *d = &u->dev[k];
+		ImGui::PushID((int)k + 200);
+		ImGui::BeginDisabled(d->why_not[0] != '\0');
+		if (button("Connect", 0))
+			action = (enum ui_action)(UI_USB_CONNECT + k);
+		ImGui::EndDisabled();
+		tip(d->why_not[0] ? d->why_not :
+				    "Plugs it into a free USB port of the Mac: Mac OS needs a driver for it (built in, or "
+				    "its maker's, installed in Mac OS)");
+		beside_buttons();
+		ImGui::Text("%s", d->name);
+		ImGui::SameLine();
+		ImGui::TextDisabled("(%s)", d->about);
+		ImGui::PopID();
+	}
+	return action;
+}
+
 #define MENU_BUTTON 240.0f
 #define TIMES "\xC3\x97"
 
@@ -755,6 +804,11 @@ static enum ui_action menu(const struct ui_state *s, const struct keys *keys)
 		tip("Ends the modem's call, as if the far end had hung up");
 		beside_buttons();
 		ImGui::TextUnformatted(s->modem);
+	}
+	if (s->usb) {
+		enum ui_action chosen = usb_menu(s->usb);
+		if (chosen != UI_NONE)
+			action = chosen;
 	}
 
 	separator();
