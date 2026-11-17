@@ -18,7 +18,8 @@ jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    # (rebuilding Blue.app's libraries on the Intel runner, when macos-deps.sh changes, takes most of it)
+    timeout-minutes: 100
     strategy:
       fail-fast: false
       matrix:
@@ -93,6 +94,8 @@ jobs:
 
       - name: Build Blue.app's libraries
         if: runner.os == 'macOS' && steps.deps.outputs.cache-hit != 'true'
+        # failing here keeps the step's log, where a cancelled job keeps none
+        timeout-minutes: 80
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet meson ninja

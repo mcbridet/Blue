@@ -117,6 +117,7 @@ licence() {
 
 recipe="Blue's tools/macos-deps.sh, which built it"
 
+echo "macos-deps: SDL2 ($(date +%H:%M:%S))"
 sdl2_url=https://github.com/libsdl-org/SDL/releases/download/release-$SDL2_VERSION/SDL2-$SDL2_VERSION.tar.gz
 fetch "$sdl2_url" "SDL2-$SDL2_VERSION.tar.gz" "$SDL2_SHA256"
 cmake -S "$work/SDL2-$SDL2_VERSION" -B "$work/sdl2" -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -129,6 +130,7 @@ licence SDL2 "$work/SDL2-$SDL2_VERSION/LICENSE.txt"
 source_of libSDL2-2.0.0.dylib SDL2 "$SDL2_VERSION" Zlib "SDL2-$SDL2_VERSION.tar.gz" "$sdl2_url"
 source_of libSDL2-2.0.0.dylib SDL2 "$SDL2_VERSION" Zlib macos-deps.sh "$recipe"
 
+echo "macos-deps: GLib ($(date +%H:%M:%S))"
 glib_url=https://download.gnome.org/sources/glib/${GLIB_VERSION%.*}/glib-$GLIB_VERSION.tar.xz
 glib=$work/glib-$GLIB_VERSION
 fetch "$glib_url" "glib-$GLIB_VERSION.tar.xz" "$GLIB_SHA256"
@@ -198,6 +200,7 @@ source_of libintl.8.dylib proxy-libintl "${intl##*-}" LGPL-2.0-or-later "glib-$G
           "GLib's subprojects/proxy-libintl.wrap, which names it"
 source_of libintl.8.dylib proxy-libintl "${intl##*-}" LGPL-2.0-or-later macos-deps.sh "$recipe"
 
+echo "macos-deps: libslirp ($(date +%H:%M:%S))"
 slirp_url=https://gitlab.freedesktop.org/slirp/libslirp/-/archive/v$SLIRP_VERSION/libslirp-v$SLIRP_VERSION.tar.gz
 fetch "$slirp_url" "libslirp-v$SLIRP_VERSION.tar.gz" "$SLIRP_SHA256"
 meson setup ${cross:+"$cross"} "$work/slirp" "$work/libslirp-v$SLIRP_VERSION" --prefix="$prefix" --libdir=lib \
@@ -209,6 +212,7 @@ licence libslirp "$work/libslirp-v$SLIRP_VERSION/COPYRIGHT"
 source_of libslirp.0.dylib libslirp "$SLIRP_VERSION" BSD-3-Clause "libslirp-v$SLIRP_VERSION.tar.gz" "$slirp_url"
 source_of libslirp.0.dylib libslirp "$SLIRP_VERSION" BSD-3-Clause macos-deps.sh "$recipe"
 
+echo "macos-deps: libusb ($(date +%H:%M:%S))"
 usb_url=https://github.com/libusb/libusb/releases/download/v$USB_VERSION/libusb-$USB_VERSION.tar.bz2
 fetch "$usb_url" "libusb-$USB_VERSION.tar.bz2" "$USB_SHA256"
 host=
@@ -220,6 +224,8 @@ licence libusb "$work/libusb-$USB_VERSION/COPYING"
 lgpl=LGPL-2.1-or-later
 source_of libusb-1.0.0.dylib libusb "$USB_VERSION" "$lgpl" "libusb-$USB_VERSION.tar.bz2" "$usb_url"
 source_of libusb-1.0.0.dylib libusb "$USB_VERSION" "$lgpl" macos-deps.sh "$recipe"
+
+echo "macos-deps: done ($(date +%H:%M:%S))"
 
 # Each library's package (its licences' directory), version and source, for tools/package-macos.sh
 cat > "$prefix/share/licenses/LIBRARIES" << EOF
