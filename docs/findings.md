@@ -3005,3 +3005,73 @@ made to start up.
   answers the test server didn't give. Both send an LCP echo request
   about every 13 seconds while connected. When the far end hangs up, the
   modem drops DCD and says `NO CARRIER`.
+- **Mac OS's USB mass storage** (USB): the iMac's 8.5 ROM file (`Mac OS
+  ROM` 1.1, MOS.rom here) and 8.5's Extensions have no mass storage class
+  driver: with the test disk plugged in, 8.5 reads its descriptors and
+  sets its configuration, and goes no further (no SCSI command is sent).
+  Apple's USB Mass Storage Support 1.3.5, a download, adds it to 8.6;
+  from 9.0 it's part of Mac OS. 9.1's and 9.2.2's Mac OS ROM files carry
+  it in the Toolbox ROM image (`USBMassStorageClassDriver`,
+  `USBMassStorageLoader` and `USBMassStorageVSDriver`, by Kurt, among the
+  ROM's strings), and both mount the test disk, an HFS volume without a
+  partition map or with Apple's (`blue disk create`), as a removable
+  disk: 9.2.2 sends INQUIRY (6 bytes, then 36), TEST UNIT READY, REQUEST
+  SENSE, READ CAPACITY, MODE SENSE(6) for all pages (4 bytes: for the
+  write-protect bit), PREVENT MEDIUM REMOVAL, then READ(10)s of a block
+  and of 32 KB, and WRITE(10)s; ejecting the disk in the Finder sends
+  START STOP UNIT with LoEj (after ALLOW MEDIUM REMOVAL). Unplugged
+  without being put away (in real time, through libusb's stand-in), 9.2.2
+  says "The device for disk "USB Test" was unexpectedly disconnected";
+  plugged in again, it enumerates and configures the device and reads the
+  volume's directory, but in that test the volume didn't come back to the
+  desktop while the notice was up.
+- **OHCIUIM's lists** (USB): the ROM's OHCI driver puts the bulk
+  endpoints' EDs on the control list, not the bulk list (the test disk's
+  OUT and IN EDs follow endpoint 0's there, and HcBulkHeadED isn't used),
+  so the list an ED is on doesn't tell its endpoint's type: Blue takes
+  bulk for EDs other than endpoint 0's on either list, interrupt on the
+  periodic list, and the host's devices' endpoint types from their
+  descriptors. Enumerating, it reads the first 8 bytes of the device
+  descriptor at address 0, sets address 65 (101 after a reconnection),
+  reads the whole descriptor, string 0's languages and each string (2
+  bytes, then all), the configuration (4 bytes, then 32), and sets
+  configuration 1; it gives TDs DelayInterrupt 0 at a request's status
+  stage and 7 elsewhere, explicit toggles for endpoint 0's TDs (DATA0 for
+  SETUP, DATA1 for the data and status stages) and the ED's carry for
+  bulk ones, and bufferRounding on data INs. With nothing connected it
+  queues no TDs at all, so the lists need no walking until a device is.
+- **Taking a USB device from macOS** (USB, the host's devices): a device
+  no macOS driver has matched opens and claims with libusb as an ordinary
+  user. One a driver holds (IOUSBMassStorageDriver for disks and floppy
+  drives, IOHIDFamily for HID devices, the audio drivers) can be claimed
+  only once the driver has let go, which needs libusb's
+  `libusb_detach_kernel_driver()` (1.0.25 and later): it re-enumerates the
+  device with IOKit's capture option, for which Apple's documentation
+  (IOUSBHostObjectInitOptionsDeviceCapture) requires root, or the
+  `com.apple.vm.device-access` entitlement plus the user's authorisation
+  (IOServiceAuthorize). That entitlement is restricted: it needs a
+  provisioning profile, which an ad-hoc-signed app can't have, and Apple
+  grants it to virtual machines; libusb's maintainers record Apple's
+  answer that it isn't for other uses. So Blue.app takes such a device only
+  when run with `sudo`. Capture is of the whole device (every interface's
+  driver goes), and when libusb's attach balances the detach, the device
+  is re-enumerated and macOS's drivers match it again. libusb's issue 1851
+  (macOS 26) reports HID-class devices still refusing a claim as root
+  through libusb's older path, and taken only through IOUSBHost's capture.
+  Listing devices needs no opening: libusb enumerates from the I/O
+  Registry, and Blue reads names from the IOUSBHostDevice entries
+  ("USB Product Name", "USB Vendor Name"), matched by bus (locationID's
+  top byte), address, vendor and product, rather than opening each to
+  read its string descriptors (opening seizes a device from other
+  user clients).
+- **Taking a USB device on Linux** (USB, the host's devices): libusb opens
+  `/dev/bus/usb/BBB/DDD`, which udev makes root's, mode 0664, unless a
+  rule says otherwise (`TAG+="uaccess"` gives the logged-in user an ACL
+  on it); reading descriptors works without, opening for transfers
+  doesn't (LIBUSB_ERROR_ACCESS). With the node writable,
+  `libusb_detach_kernel_driver()` (usbfs's USBDEVFS_DISCONNECT) detaches
+  usb-storage, usbhid and the like without root, and
+  `libusb_attach_kernel_driver()` binds them again. Ubuntu 22.04's
+  libusb-1.0-0 (1.0.25) links libudev, which the AppImage leaves to the
+  system; product and maker names come from sysfs
+  (`/sys/bus/usb/devices/BUS-PORT/product`, readable by anyone).
