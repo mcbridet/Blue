@@ -2273,8 +2273,10 @@ static void usb_poll(struct machine *m)
 		changed = true;
 		for (unsigned k = 0; k < OHCI_PORTS; k++) {
 			if (m->usb_lost[k][0] && !ohci_device(&m->ohci, k) && usbhost_matches(&info, m->usb_lost[k]) &&
-			    usb_take(m, info.id, (int)k))
+			    usb_take(m, info.id, (int)k)) {
 				m->usb_lost[k][0] = '\0';
+				break;
+			}
 		}
 	}
 	if (changed && m->paused) {
