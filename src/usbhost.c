@@ -576,7 +576,7 @@ struct usb_device *usbhost_open(struct usbhost *h, const char *spec, char *err, 
 	}
 	uint8_t bus = h->u.get_bus_number(dev), addr = h->u.get_device_address(dev);
 	host_names(&info, bus, addr);
-	char name[96];
+	char name[160];
 	if (*info.name)
 		snprintf(name, sizeof name, "%s (%04x:%04x)", info.name, info.vendor, info.product);
 	else

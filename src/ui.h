@@ -103,7 +103,7 @@ struct ui_usb {
 	char port[UI_USB_PORTS][112];   /* what's plugged into the Mac's ports ("": nothing) */
 	unsigned count;                 /* the host's devices (hubs left out) */
 	struct ui_usb_device dev[UI_USB_DEVICES];
-	char why_none[200];             /* why there are no host devices to take ("": there are) */
+	char why_none[240];             /* why there are no host devices to take ("": there are) */
 };
 
 #define UI_PAD_TYPES (PAD_MAX + 1)
