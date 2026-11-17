@@ -1,11 +1,12 @@
 #!/bin/sh
 # The libraries Blue.app bundles, built from their sources for an older macOS
-# than Homebrew's (whose minimum is the macOS they were built on): SDL2, and
-# libslirp with GLib (PCRE2 built into it, and proxy-libintl for its libintl).
+# than Homebrew's (whose minimum is the macOS they were built on): SDL2,
+# libslirp with GLib (PCRE2 built into it, and proxy-libintl for its libintl),
+# and libusb.
 # Into PREFIX, for MACOSX_DEPLOYMENT_TARGET (11.0 unless set) and this Mac's
 # architecture or ARCH's (x86_64 on Apple silicon runs its checks in
 # Rosetta), with their licences in PREFIX/share/licenses. Needs curl, cmake,
-# meson, ninja and pkg-config; `make app DEPS=PREFIX` bundles them.
+# meson, ninja, pkg-config and make; `make app DEPS=PREFIX` bundles them.
 #
 # Their exact sources stay in PREFIX/share/sources (so a cache of PREFIX
 # keeps them): each tarball, checked by SHA-256 and fetched only if it isn't
@@ -22,6 +23,8 @@ GLIB_VERSION=2.90.1
 GLIB_SHA256=93c941aa17d5eb1d53fe838365f29a8b4e539c222a256d974ec8f30fc413e396
 SLIRP_VERSION=4.9.7
 SLIRP_SHA256=d2567fa06a6357c7755d61c67293b2c0bf069b3f2173bde6b76cf768529a1938
+USB_VERSION=1.0.30
+USB_SHA256=fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf
 
 if [ $# -ne 1 ]; then
 	echo "usage: $0 PREFIX" >&2
@@ -206,12 +209,25 @@ licence libslirp "$work/libslirp-v$SLIRP_VERSION/COPYRIGHT"
 source_of libslirp.0.dylib libslirp "$SLIRP_VERSION" BSD-3-Clause "libslirp-v$SLIRP_VERSION.tar.gz" "$slirp_url"
 source_of libslirp.0.dylib libslirp "$SLIRP_VERSION" BSD-3-Clause macos-deps.sh "$recipe"
 
+usb_url=https://github.com/libusb/libusb/releases/download/v$USB_VERSION/libusb-$USB_VERSION.tar.bz2
+fetch "$usb_url" "libusb-$USB_VERSION.tar.bz2" "$USB_SHA256"
+host=
+[ "$arch" = "$(uname -m)" ] || host=--host=$(case $arch in arm64) echo aarch64 ;; *) echo "$arch" ;; esac)-apple-darwin
+# (pipe2() isn't on older macOS, though newer SDKs declare it: libusb uses pipe() without it, as GLib does above)
+(cd "$work/libusb-$USB_VERSION" && ./configure ${host:+"$host"} ac_cv_func_pipe2=no --prefix="$prefix" --disable-static \
+	--disable-examples-build --disable-tests-build > /dev/null && make -j "$jobs" > /dev/null && make install > /dev/null)
+licence libusb "$work/libusb-$USB_VERSION/COPYING"
+lgpl=LGPL-2.1-or-later
+source_of libusb-1.0.0.dylib libusb "$USB_VERSION" "$lgpl" "libusb-$USB_VERSION.tar.bz2" "$usb_url"
+source_of libusb-1.0.0.dylib libusb "$USB_VERSION" "$lgpl" macos-deps.sh "$recipe"
+
 # Each library's package (its licences' directory), version and source, for tools/package-macos.sh
 cat > "$prefix/share/licenses/LIBRARIES" << EOF
 libSDL2-2.0.0.dylib SDL2 $SDL2_VERSION https://github.com/libsdl-org/SDL/releases/tag/release-$SDL2_VERSION
 libglib-2.0.0.dylib GLib $GLIB_VERSION $glib_url
 libintl.8.dylib proxy-libintl ${intl##*-} https://github.com/frida/proxy-libintl/releases/tag/${intl##*-}
 libslirp.0.dylib libslirp $SLIRP_VERSION https://gitlab.freedesktop.org/slirp/libslirp/-/tags/v$SLIRP_VERSION
+libusb-1.0.0.dylib libusb $USB_VERSION https://github.com/libusb/libusb/releases/tag/v$USB_VERSION
 EOF
 
 # The sources' list, and their sums

@@ -119,6 +119,7 @@ jobs:
           test -n "$detached" || hdiutil detach -force "$RUNNER_TEMP/dmg"
           grep -q 'SDL2 .*/Blue.app/Contents/Frameworks/libSDL2-2.0.0.dylib$' version.txt
           grep -q 'libslirp .*/Blue.app/Contents/Frameworks/libslirp.0.dylib$' version.txt
+          grep -q 'libusb .*/Blue.app/Contents/Frameworks/libusb-1.0.0.dylib$' version.txt
 
       - name: Upload the disk image
         if: runner.os == 'macOS'
@@ -149,6 +150,7 @@ jobs:
           "$image" --appimage-extract-and-run --version | tee version.txt
           grep -q 'SDL2 .*/usr/lib/libSDL2-2.0.so.0$' version.txt
           grep -q 'libslirp .*/usr/lib/libslirp.so.0$' version.txt
+          grep -q 'libusb .*/usr/lib/libusb-1.0.so.0$' version.txt
           cat dist/sources/SOURCES
 
       - name: Upload the AppImage

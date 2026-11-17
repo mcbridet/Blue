@@ -66,7 +66,8 @@ SHA256SUMS has their SHA-256 sums.
 
 On macOS, Blue builds them from the upstream tarballs here, checked by their
 SHA-256, with tools/macos-deps.sh (macos-deps.sh here), which also makes
-GLib's one change (glib-*-blue.patch here); tools/package-macos.sh then
+GLib's one change (glib-*-blue.patch here) and configures libusb without
+pipe2(), which macOS 11 lacks; tools/package-macos.sh then
 bundles them. To build them again from these files (macos-deps.sh uses them
 rather than fetching them; only libffi, for GLib's GObject, which Blue
 doesn't carry, it still fetches):

@@ -1,19 +1,19 @@
 #!/bin/sh
 # Blue's AppImage (Linux): build/Blue-<arch>.AppImage. Blue is built here
 # (libstdc++ and libgcc linked in, so that glibc is all it needs of the
-# system), and SDL2 and libslirp, with what they need (GLib, PCRE), go in its
-# usr/lib, each with $ORIGIN as its run path, and their licences in
+# system), and SDL2, libslirp and libusb, with what they need (GLib, PCRE),
+# go in its usr/lib, each with $ORIGIN as its run path, and their licences in
 # usr/share/doc/blue. SDL2 then loads X11, Wayland, ALSA, PulseAudio,
-# PipeWire and OpenGL from the system, as Blue does OpenGL and EGL; none of
-# those, nor glibc, is bundled. Build it on an old distribution, so that it
+# PipeWire and OpenGL from the system, as Blue does OpenGL and EGL, and
+# libusb loads libudev; none of those, nor glibc, is bundled. Build it on an old distribution, so that it
 # runs on newer ones: in CI, Ubuntu 22.04 (glibc 2.35) in a container,
 #
 #   docker run --rm -v "$PWD:/src" -w /src ubuntu:22.04 tools/package-linux.sh --setup
 #
-# where --setup (as root, on Ubuntu) first installs the tools, libslirp and
+# where --setup (as root, on Ubuntu) first installs the tools, libslirp, libusb and
 # the headers of what SDL2 loads, and builds SDL2 from its source into
 # /opt/sdl2 (its backends all loaded at run time). Without it, SDL2 comes
-# from SDL2_DIR (/opt/sdl2 if it's there) or the system, libslirp from the
+# from SDL2_DIR (/opt/sdl2 if it's there) or the system, libslirp and libusb from the
 # system, and it needs make, a C/C++ compiler, readelf, patchelf, mksquashfs
 # and curl. BUILD (build/appimage) is where Blue is built, OUT (build) where
 # the AppImage goes. The AppImage runs on the AppImage project's type2-runtime
@@ -57,7 +57,7 @@ setup() {
 	fi
 	apt-get update -q
 	apt-get install -y -q --no-install-recommends build-essential gcc-12 g++-12 cmake ninja-build pkg-config curl \
-		ca-certificates patchelf squashfs-tools file libslirp0 libglib2.0-0 \
+		ca-certificates patchelf squashfs-tools file libslirp0 libglib2.0-0 libusb-1.0-0 \
 		libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
 		libxinerama-dev libxxf86vm-dev libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev \
 		libegl-dev libgl-dev libgles-dev libdrm-dev libgbm-dev libasound2-dev libpulse-dev \
@@ -97,7 +97,16 @@ system_lib() {
 }
 bundled_lib() {
 	case $1 in
-	libSDL2-2.0.so.* | libslirp.so.* | libglib-2.0.so.* | libpcre.so.* | libpcre2-8.so.* | libintl.so.*) return 0 ;;
+	libSDL2-2.0.so.* | libslirp.so.* | libusb-1.0.so.* | libglib-2.0.so.* | libpcre.so.* | libpcre2-8.so.* | \
+	libintl.so.*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+# ... and what's left to the system though a bundled library needs it (libusb's libudev, which goes with the
+# system's udev)
+host_lib() {
+	case $1 in
+	libudev.so.*) return 0 ;;
 	*) return 1 ;;
 	esac
 }
@@ -141,6 +150,7 @@ about_source() {
 	case $1 in
 	glib2.0) echo "GLib:LGPL-2.1-or-later" ;;
 	libslirp) echo "libslirp:BSD-3-Clause" ;;
+	libusb-1.0) echo "libusb:LGPL-2.1-or-later" ;;
 	pcre3) echo "PCRE:BSD-3-Clause" ;;
 	pcre2) echo "PCRE2:BSD-3-Clause WITH PCRE2-exception" ;;
 	*) return 1 ;;
@@ -196,10 +206,10 @@ done
 cp "$root/art/png/blue-256.png" "$app/blue.png"
 ln -s blue.png "$app/.DirIcon"
 
-# SDL2, libslirp and what they need but glibc
+# SDL2, libslirp, libusb and what they need but glibc (and libudev)
 list=$BUILD/libs
 : > "$list"
-for lib in libSDL2-2.0.so.0 libslirp.so.0; do
+for lib in libSDL2-2.0.so.0 libslirp.so.0 libusb-1.0.so.0; do
 	f=$(find_lib "$lib")
 	[ -n "$f" ] || die "$lib: not found (SDL2_DIR, or the system's)"
 	echo "$lib $f" >> "$list"
@@ -211,6 +221,7 @@ while [ "$n" -lt "$(wc -l < "$list")" ]; do
 	name=${line%% *}
 	for dep in $(needed "${line#* }"); do
 		system_lib "$dep" && continue
+		host_lib "$dep" && continue
 		bundled_lib "$dep" || die "$name needs $dep, which shouldn't be bundled (the system's graphics, sound, ...?)"
 		grep -q "^$dep " "$list" && continue
 		f=$(find_lib "$dep")

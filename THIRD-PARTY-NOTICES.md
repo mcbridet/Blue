@@ -336,18 +336,52 @@ for them.)
 |---|---|---|---|
 | SDL2 | zlib | both | https://github.com/libsdl-org/SDL |
 | libslirp | BSD-3-Clause | both | https://gitlab.freedesktop.org/slirp/libslirp |
+| libusb | LGPL-2.1-or-later | both | https://github.com/libusb/libusb |
 | GLib | LGPL-2.1-or-later | both | https://gitlab.gnome.org/GNOME/glib |
 | proxy-libintl (GLib's libintl) | LGPL-2.0-or-later | Blue.app | https://github.com/frida/proxy-libintl |
 | PCRE2 (built into GLib) | BSD-3-Clause (with the PCRE2 exception) | Blue.app | https://github.com/PCRE2Project/pcre2 |
 | PCRE (GLib's) | BSD-3-Clause | the AppImages | https://www.pcre.org (Ubuntu 22.04's libpcre3) |
 
 The released Blue.app's are built from their sources by
-`tools/macos-deps.sh`; the AppImages' GLib, libslirp and PCRE are Ubuntu
-22.04's packages, their SDL2 built from source by `tools/package-linux.sh`.
+`tools/macos-deps.sh`; the AppImages' GLib, libslirp, libusb and PCRE are
+Ubuntu 22.04's packages, their SDL2 built from source by
+`tools/package-linux.sh` (their libusb loads the system's libudev, which
+isn't bundled).
 A Blue.app made with Homebrew's libraries (`make app`) carries Homebrew's
 instead: SDL2 as sdl2-compat with SDL3 (zlib), and gettext's libintl
 (LGPL-2.1-or-later, https://www.gnu.org/software/gettext/) and PCRE2 as
 libraries of their own.
+
+### libusb
+
+Blue passes the host's USB devices through to Mac OS with libusb-1.0,
+which it loads at run time (`src/usbhost.c` declares the parts of its
+interface it uses; nothing of libusb is built into Blue). Blue.app and the
+AppImages carry it as a separate library (`libusb-1.0.0.dylib`,
+`libusb-1.0.so.0`), which can be replaced by another build of it; its
+licence's full text goes with it (`Licenses/libusb/COPYING` in Blue.app;
+`Licenses/libusb-1.0-0/` in an AppImage, with Debian's copyright file), and
+is at https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html. Its source
+is https://github.com/libusb/libusb (Blue.app's: the release tarball
+https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2,
+unchanged, configured without `pipe2()`; the AppImages': Ubuntu 22.04's
+libusb-1.0 source package), and is in `Blue-third-party-sources.tar.gz`.
+
+> Copyright © 2001 Johannes Erdfelt, © 2007-2009 Daniel Drake, © 2010-2012
+> Peter Stuge, © 2008-2023 Nathan Hjelm, © 2009-2013 Pete Batard,
+> © 2009-2013 Ludovic Rousseau, © 2010-2012 Michael Plante, © 2011-2013
+> Hans de Goede, © 2012-2013 Martin Pieuchot, © 2012-2013 Toby Gray,
+> © 2013-2018 Chris Dickens, and libusb's other authors (its `AUTHORS`).
+>
+> This library is free software; you can redistribute it and/or modify it
+> under the terms of the GNU Lesser General Public License as published by
+> the Free Software Foundation; either version 2.1 of the License, or (at
+> your option) any later version.
+>
+> This library is distributed in the hope that it will be useful, but
+> WITHOUT ANY WARRANTY; without even the implied warranty of
+> MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser
+> General Public License for more details.
 
 ### Their exact sources: `Blue-third-party-sources.tar.gz`
 
@@ -361,7 +395,7 @@ each file once:
 
 - **For Blue.app** (both disk images): the upstream tarballs
   `tools/macos-deps.sh` builds from, each checked by its SHA-256: SDL2
-  2.32.10, GLib 2.90.1 and libslirp 4.9.7, and PCRE2 10.46 (with its Meson
+  2.32.10, GLib 2.90.1, libslirp 4.9.7 and libusb 1.0.30, and PCRE2 10.46 (with its Meson
   build files from WrapDB) and proxy-libintl 0.5 as GLib's own
   `subprojects` wraps fetch them (the wraps give their SHA-256); Blue's one
   change to GLib, as a patch (`glib-2.90.1-blue.patch`: its `meson.build`
@@ -373,7 +407,8 @@ each file once:
 - **For the AppImages:** Ubuntu 22.04's source packages (`.dsc`,
   `.orig.tar.*`, `.debian.tar.*`, by `apt-get source`, which checks them
   against Ubuntu's signed indexes) of exactly the versions bundled: glib2.0
-  (for libglib2.0-0), libslirp (libslirp0) and pcre3 (libpcre3); SDL2
+  (for libglib2.0-0), libslirp (libslirp0), libusb-1.0 (libusb-1.0-0) and
+  pcre3 (libpcre3); SDL2
   2.32.10's tarball; and `package-linux.sh`, which builds SDL2 and bundles
   them all (Ubuntu's libraries unchanged but for their run path). glibc,
   which provides libintl on Linux, is the system's, not bundled.

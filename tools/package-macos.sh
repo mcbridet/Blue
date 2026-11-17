@@ -2,7 +2,7 @@
 # Blue.app and its disk image (macOS), for one architecture.
 #
 #   tools/package-macos.sh app BLUE INFO_PLIST DEPS OUT.app
-#       Blue.app around the executable BLUE: SDL2 and libslirp from DEPS/lib
+#       Blue.app around the executable BLUE: SDL2, libslirp and libusb from DEPS/lib
 #       (Homebrew's prefix, or tools/macos-deps.sh's) and the libraries they
 #       need but the system's, in Contents/Frameworks (their install names
 #       @rpath/NAME, found through the executable's @executable_path/../Frameworks
@@ -84,11 +84,11 @@ app() {
 	rm -rf "$icons"
 
 	# The libraries: SDL2 (and SDL3 under sdl2-compat, which opens it as @loader_path/libSDL3.dylib),
-	# libslirp, and theirs; a list of "file name, where from" as they're copied
+	# libslirp, libusb, and theirs; a list of "file name, where from" as they're copied
 	fw=$out/Contents/Frameworks
 	list=$(mktemp)
-	for lib in "$deps/lib/libSDL2-2.0.0.dylib" "$deps/lib/libslirp.0.dylib"; do
-		[ -f "$lib" ] || die "$lib: not found (Homebrew: brew install sdl2 libslirp)"
+	for lib in "$deps/lib/libSDL2-2.0.0.dylib" "$deps/lib/libslirp.0.dylib" "$deps/lib/libusb-1.0.0.dylib"; do
+		[ -f "$lib" ] || die "$lib: not found (Homebrew: brew install sdl2 libslirp libusb)"
 		echo "$(basename "$lib") $lib" >> "$list"
 	done
 	if strings - "$deps/lib/libSDL2-2.0.0.dylib" | grep -q '@loader_path/libSDL3.dylib'; then
