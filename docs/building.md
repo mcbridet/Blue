@@ -19,21 +19,21 @@ make            # build/blue (C11, and C++17 for the menu: Dear ImGui is in thir
 ```
 
 Building needs only a C11 and C++17 compiler (Clang or GCC) and `make`:
-Dear ImGui and the window's font are in the tree, and SDL2 and libslirp
-aren't build dependencies, since Blue loads them when it runs
-(`src/hostlib.c`). To run your build with a window, sound and the
-network, install them:
+Dear ImGui and the window's font are in the tree, and SDL2, libslirp and
+libusb aren't build dependencies, since Blue loads them when it runs
+(`src/hostlib.c`). To run your build with a window, sound, the network
+and USB devices passed through, install them:
 
 | Host | Packages |
 |---|---|
-| macOS (Homebrew) | `brew install sdl2 libslirp` |
-| Debian, Ubuntu | `sudo apt install libsdl2-2.0-0 libslirp0` |
-| Fedora | `sudo dnf install SDL2 libslirp` |
+| macOS (Homebrew) | `brew install sdl2 libslirp libusb` |
+| Debian, Ubuntu | `sudo apt install libsdl2-2.0-0 libslirp0 libusb-1.0-0` |
+| Fedora | `sudo dnf install SDL2 libslirp libusb1` |
 
 The menu (F12) needs SDL 2.0.18 or later. On Linux, Insert... in the menu
 uses zenity or kdialog, if one is installed; the 3D engine and OpenGL draw
 on the GPU with OpenGL 3.3, and in software without it. `build/blue
---version` says which SDL2 and libslirp Blue finds, and where.
+--version` says which SDL2, libslirp and libusb Blue finds, and where.
 
 ## Tests
 
@@ -157,17 +157,17 @@ for AppImage integration tools (AppImageLauncher, Gear Lever).
 ## What's in the packages
 
 Blue, and the libraries it loads at run time
-(`src/hostlib.c`): SDL2 (window, sound, input) and libslirp (networking),
-with GLib, which libslirp needs, and what GLib needs (on macOS its libintl,
+(`src/hostlib.c`): SDL2 (window, sound, input), libslirp (networking) and
+libusb (USB devices passed through), with GLib, which libslirp needs, and what GLib needs (on macOS its libintl,
 proxy-libintl, and PCRE2 built into it; on Linux PCRE), in Blue.app's
 `Contents/Frameworks` and the AppImage's `usr/lib`. Blue looks for each
 there first (`../Frameworks` or `../lib` from the executable's real
 directory), then where the system finds it, so `build/blue` takes the
-system's or Homebrew's; `blue --version` says which SDL2 and libslirp it
+system's or Homebrew's; `blue --version` says which SDL2, libslirp and libusb it
 found, and where, and `BLUE_LOG_LIBS=1` logs it as they're loaded. Nothing
 else is bundled: SDL2 loads X11 or Wayland, ALSA, PulseAudio or PipeWire
-and OpenGL from the system, as Blue does OpenGL and EGL, and glibc is the
-system's. The libraries' licences are in Blue.app's
+and OpenGL from the system, as Blue does OpenGL and EGL, libusb loads
+libudev on Linux, and glibc is the system's. The libraries' licences are in Blue.app's
 `Contents/Resources/Licenses` and the AppImage's `usr/share/doc/blue/Licenses`
 (beside Blue's `LICENSE` and `THIRD-PARTY-NOTICES.md`; also `LICENSE` in the
 disk image), with a `README.txt` giving each one's version and source. They
@@ -181,10 +181,11 @@ released: on macOS, built from source by `tools/macos-deps.sh`, SDL2
 GLib 2.90.1 (https://download.gnome.org/sources/glib/2.90/), with PCRE2
 10.46 and proxy-libintl 0.5 from GLib's own `subprojects` wraps
 (https://github.com/PCRE2Project/pcre2/releases/tag/pcre2-10.46,
-https://github.com/frida/proxy-libintl/releases/tag/0.5), and libslirp
-4.9.7 (https://gitlab.freedesktop.org/slirp/libslirp/-/tags/v4.9.7); on
+https://github.com/frida/proxy-libintl/releases/tag/0.5), libslirp
+4.9.7 (https://gitlab.freedesktop.org/slirp/libslirp/-/tags/v4.9.7) and
+libusb 1.0.30 (https://github.com/libusb/libusb/releases/tag/v1.0.30); on
 Linux, SDL2 2.32.10 built by `tools/package-linux.sh`, and Ubuntu 22.04's
-packages of the rest (libslirp0, libglib2.0-0, libpcre3: their sources by
+packages of the rest (libslirp0, libglib2.0-0, libpcre3, libusb-1.0-0: their sources by
 `apt-get source`, or at https://launchpad.net/ubuntu/+source/, as
 `README.txt` gives them). Blue's own source is this repository, at the
 release's tag.
@@ -211,7 +212,7 @@ it, with a `v`.
 ```
 make app                         # build/Blue.app (macOS), with Homebrew's SDL2 and libslirp
 make dmg                         # build/Blue-arm64.dmg (or x86_64): Blue.app, a link to Applications, LICENSE
-tools/macos-deps.sh ~/blue-deps  # SDL2, GLib and libslirp from their sources, for macOS 11 (a few minutes)
+tools/macos-deps.sh ~/blue-deps  # SDL2, GLib, libslirp and libusb from their sources, for macOS 11 (a few minutes)
 make app DEPS=~/blue-deps        # ... Blue.app with those, as released
 podman run --rm -v "$PWD:/src" -e BUILD=/tmp/appimage -e OUT=/src/build ubuntu:22.04 \
         /src/tools/package-linux.sh --setup          # build/Blue-<arch>.AppImage, built in Ubuntu 22.04
