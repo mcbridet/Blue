@@ -354,6 +354,7 @@ static int service_td(struct ohci *o, uint32_t ed, uint32_t e[4], unsigned list)
 	if (st == USB_NAK || st == USB_PENDING)
 		return TD_STAYS;
 
+	uint32_t flags = t[0];
 	unsigned toggle = t[0] & TD_T1 ? (t[0] & TD_T0) != 0 : (e[2] & ED_C) != 0;
 	unsigned cc = CC_NOERROR, ec = (t[0] >> TD_EC_SHIFT) & 3, packets = 0;
 	uint32_t moved = 0;
@@ -391,7 +392,7 @@ static int service_td(struct ohci *o, uint32_t ed, uint32_t e[4], unsigned list)
 	if (moved)
 		t[1] = moved == len ? 0 : td_address(cbp, be, moved);
 	if (o->log)
-		printf("usb: TD %08X ED %08X (%u.%u %s %s) %u/%u bytes -> cc %u%s\n", td, ed, fa, ep,
+		printf("usb: TD %08X (%08X) ED %08X (%u.%u %s %s) %u/%u bytes -> cc %u%s\n", td, flags, ed, fa, ep,
 		       list == LIST_PERIODIC ? "periodic" : list == LIST_CONTROL ? "control" : "bulk",
 		       pid == USB_PID_SETUP ? "setup" : pid == USB_PID_IN ? "in" : "out", moved, len, cc,
 		       cc && ec < 3 && st != USB_STALL && st != USB_OVERRUN ? " (again)" : "");

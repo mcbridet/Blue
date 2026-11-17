@@ -3035,11 +3035,13 @@ made to start up.
   descriptor at address 0, sets address 65 (101 after a reconnection),
   reads the whole descriptor, string 0's languages and each string (2
   bytes, then all), the configuration (4 bytes, then 32), and sets
-  configuration 1; it gives TDs DelayInterrupt 0 at a request's status
-  stage and 7 elsewhere, explicit toggles for endpoint 0's TDs (DATA0 for
-  SETUP, DATA1 for the data and status stages) and the ED's carry for
-  bulk ones, and bufferRounding on data INs. With nothing connected it
-  queues no TDs at all, so the lists need no walking until a device is.
+  configuration 1. Its TDs (9.2.2's, with the test disk) come with
+  ConditionCode 0 rather than NotAccessed; endpoint 0's have explicit
+  toggles (DATA0 for SETUP, DATA1 for the data and status stages), bulk
+  ones the ED's carry; DelayInterrupt is 0 on all but some of a READ's
+  data TDs (7: no interrupt until the last); bufferRounding is set on
+  SETUPs, endpoint 0's data INs and most bulk TDs, but not on status
+  stages or those 7s.
 - **Taking a USB device from macOS** (USB, the host's devices): a device
   no macOS driver has matched opens and claims with libusb as an ordinary
   user. One a driver holds (IOUSBMassStorageDriver for disks and floppy
