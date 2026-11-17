@@ -211,6 +211,17 @@ BLUE_LIBUSB=build/libusb-mock.so BLUE_LIBUSB_MOCK_IMAGE=usb.img \
 	blue boot --headless --realtime --disk hd.img --usb 1209:0001 --seconds 70 --max 900000000000
 ```
 
+On macOS, `BLUE_LIBUSB_MOCK_HELD=1` makes the stand-in's disk one the
+host's driver has, as macOS's would: Blue can't take it, and only its USB
+helper (`blue-usb-helper`) can, as root could. `BLUE_USB_HELPER_TEST=1`
+starts the helper as you, without macOS's password dialog, so the whole
+way through the helper runs without root:
+
+```sh
+BLUE_LIBUSB=build/libusb-mock.so BLUE_LIBUSB_MOCK_IMAGE=usb.img BLUE_LIBUSB_MOCK_HELD=1 \
+	BLUE_USB_HELPER_TEST=1 blue boot --headless --realtime --cdrom 922.iso --usb 1209:0001 --seconds 60
+```
+
 ## When devices are serviced
 
 Devices and interrupts are serviced every 20,000 instructions and at kernel
@@ -319,7 +330,8 @@ and doesn't read it.
 | `BLUE_LOG_AUDIO=1` | how the host's sound queue fares, every second ([above](#tracing-and-logging)) |
 | `BLUE_LOG_GL=1` | logs every OpenGL call |
 | `BLUE_LOG_LIBS=1` | the file SDL2, libslirp and libusb were loaded from |
-| `BLUE_LIBUSB=FILE` | loads this libusb-1.0 rather than Blue's own or the system's (the tests' stand-in for it: `build/libusb-mock.so`) |
+| `BLUE_LIBUSB=FILE` | loads this libusb-1.0 rather than Blue's own or the system's (the tests' stand-in for it: `build/libusb-mock.so`); never in the USB helper running as root |
+| `BLUE_USB_HELPER_TEST=1` | (macOS) starts the USB helper as you, without asking for a password (it can then take only what you could: for the tests, with the stand-in's `BLUE_LIBUSB_MOCK_HELD`; see [above](#the-usb-test-disk)) |
 | `BLUE_LOG_MODEM=1` | the modem's commands, results and calls |
 | `BLUE_LOG_MP=1` | Multiprocessing Services' calls, task switches, timers and software interrupts |
 | `BLUE_LOG_NET=1` | the Ethernet driver's calls |

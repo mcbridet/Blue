@@ -479,7 +479,8 @@ last, and the controller takes it at a frame. Opening a device claims all
 the interfaces of the configuration it's in, first detaching the host's
 driver from each that has one (Linux: usbfs's disconnect, which needs the
 device node to be writable; macOS: libusb's capture of the whole device,
-which needs root, 1.0.25 or later), and reattaches them when it's let go.
+which needs root, 1.0.25 or later: Blue's USB helper, below, has it), and
+reattaches them when it's let go.
 Mac OS's requests go to the device as control transfers, except these,
 which libusb's own calls carry out so that the host's view of the device
 stays right: SET_CONFIGURATION (the interfaces released, the configuration
@@ -495,6 +496,61 @@ Mac OS's packets into transfers of eight. libusb's hot-plug events (or a
 transfer finding the device gone) mark a device unplugged; Blue then
 unplugs it from its port, and puts a device with the same IDs plugged in
 again back in the same port.
+
+**Blue's USB helper** (macOS: `blue-usb-helper`, from `src/usbhelper.c`;
+Blue's side `src/usbremote.c`) takes the devices macOS's own drivers
+have, so that Blue needn't run as root. When taking one fails because
+the driver won't let an ordinary user have it (libusb's detach refused),
+Blue starts the helper, once a run, as root: Authorization Services'
+`AuthorizationCopyRights()` for `system.privilege.admin` shows macOS's
+own password dialog (naming Blue, with a sentence of Blue's
+in `kAuthorizationEnvironmentPrompt`), and
+`AuthorizationExecuteWithPrivileges()` runs the helper beside Blue's
+executable through `/usr/libexec/security_authtrampoline`, its standard
+input and output one end of a socket pair whose other end is Blue's. The
+rights are destroyed at once; the helper is Blue's child, and ends when
+Blue's end of the socket closes. The dialog is waited for on a thread of
+its own, so the menu stays up and devices asked for meanwhile wait.
+
+The helper is usbhost.c itself on the far side of the socket: it takes a
+device with `usbhost_open()`, so capture, the interfaces claimed and
+SET_CONFIGURATION, SET_INTERFACE, CLEAR_FEATURE(ENDPOINT_HALT) and bus
+resets carried out with libusb's calls are the same code as Blue's own,
+and Blue's side is a device (`usb.h`) that forwards each transfer.
+The protocol (`src/usbproto.h`) is framed messages, a 32-byte
+little-endian head (type, device, endpoint, transfer type, flags, request
+ID, length, status, data length, setup packet) and its data. Blue sends
+OPEN (VID:PID or BUS-PORT), SUBMIT, CANCEL, RESET and CLOSE; the helper
+answers HELLO (its version and process), OPENED (the device's
+description, or why not), DONE (status, bytes moved and the data in, on
+the request's ID) and GONE (unplugged). Transfers are asynchronous:
+SUBMIT returns at once, many are in flight, and the answers come back on
+a thread of Blue's that copies them in and sets `done`, as libusb's
+thread does. Isochronous packets are answered at once from a ring on
+Blue's side, each asking the helper for another (up to eight ahead), and
+OUT packets go without waiting; the helper's usbhost.c keeps the
+streams going. A transfer given up (CANCEL) gets no answer; one that
+comes anyway is dropped by its ID.
+
+Its security: the helper only does USB. It takes only devices Blue
+names, through usbhost.c's checks (no hubs, nothing at high speed), at
+most four at once and 64 transfers each, and checks every message
+against the protocol before acting on it (known type, a device it has,
+an endpoint and direction that agree with the transfer type and setup
+packet, lengths that match and fit 64 KB, a spec of hex digits, `:`, `-`
+and `.`, unused fields zero); at anything else it stops, giving its
+devices back. As root it keeps nothing of the user's environment (so
+`BLUE_LIBUSB` and the like are ignored), makes its user and real IDs
+root's (so the user's processes can't signal or trace it), closes every
+file it inherited but the socket, starts its own session (the
+terminal's ^C is Blue's), and listens on nothing: the socket was made
+for it, so only Blue can talk to it. On every way out (Blue's end
+closing, SIGTERM, a refused message) its devices are released and
+macOS's drivers attach again. Blue checks its messages too. The helper
+is as trustworthy as Blue.app's own files: like `sudo`, the dialog runs
+whatever is at the helper's path. `BLUE_USB_HELPER_TEST` runs it as the
+user, without the dialog, for the tests (with `BLUE_LIBUSB` and
+`BLUE_LIBUSB_MOCK_HELD`, whose stand-in disk only the helper can take).
 
 **High speed:** the iMac's OHCI is USB 1.1, and a device the host has
 connected at high speed (or faster) isn't taken, as QEMU's OHCI doesn't

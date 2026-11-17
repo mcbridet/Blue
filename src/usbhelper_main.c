@@ -44,7 +44,7 @@ int main(int argc, char **argv)
 	if (geteuid() == 0 || issetugid()) {
 		static char *none[] = { NULL };
 		environ = none;         /* (nothing of the user's as root: not BLUE_LIBUSB, say) */
-		if (geteuid() == 0 && setuid(0) != 0)
+		if ((geteuid() == 0 && setuid(0) != 0) || chdir("/") != 0)
 			return 2;
 	}
 	int fd = fcntl(0, F_DUPFD_CLOEXEC, 3), null = open("/dev/null", O_RDWR);
@@ -55,8 +55,6 @@ int main(int argc, char **argv)
 		dup2(null, 2);
 	dup2(2, 1);                     /* (what usbhost.c prints goes with Blue's messages, not into the socket) */
 	close_others(fd);
-	if (chdir("/") != 0)
-		return 2;
 	umask(077);
 	setsid();                       /* (the terminal's ^C and ^Z are Blue's: it ends this) */
 	signal(SIGPIPE, SIG_IGN);

@@ -3054,8 +3054,9 @@ made to start up.
   (IOServiceAuthorize). That entitlement is restricted: it needs a
   provisioning profile, which an ad-hoc-signed app can't have, and Apple
   grants it to virtual machines; libusb's maintainers record Apple's
-  answer that it isn't for other uses. So Blue.app takes such a device only
-  when run with `sudo`. Capture is of the whole device (every interface's
+  answer that it isn't for other uses. So Blue.app takes such a device
+  only as root: through its USB helper (below), or run with `sudo`.
+  Capture is of the whole device (every interface's
   driver goes), and when libusb's attach balances the detach, the device
   is re-enumerated and macOS's drivers match it again. libusb's issue 1851
   (macOS 26) reports HID-class devices still refusing a claim as root
@@ -3065,7 +3066,43 @@ made to start up.
   ("USB Product Name", "USB Vendor Name"), matched by bus (locationID's
   top byte), address, vendor and product, rather than opening each to
   read its string descriptors (opening seizes a device from other
-  user clients).
+  user clients). Whether a driver has a device shows there too: each of
+  its IOUSBHostInterface children that a driver has opened has a
+  `UsbExclusiveOwner` property (the driver's class, such as
+  `AppleUserUSBHostHIDDevice`, or `pid N, name` for a process such as
+  `usbaudiod`), which is how the menu knows to say Connect (needs your
+  password) before trying.
+- **Running something as root, for an ad-hoc-signed app** (USB, Blue's
+  USB helper): of macOS's ways, SMJobBless needs the helper's and the
+  app's designated requirements to name each other's signing
+  certificates (a Developer ID's, or at least a team's), which ad-hoc
+  signing hasn't got, and installs the helper for good in
+  `/Library/PrivilegedHelperTools` with a launchd job; SMAppService's
+  daemons (macOS 13 and later) are also installed for good, are
+  approved in System Settings rather than with a password, and launchd
+  checks their signatures. Both outlive the run, which Blue doesn't want.
+  `osascript`'s `do shell script ... with administrator privileges`
+  shows the dialog as osascript's (its icon, "osascript wants to make
+  changes"), waits for the command to end, and offers no way to hand the
+  command a socket, so the helper would have to find Blue again through
+  the file system (a socket's path and a token).
+  `AuthorizationExecuteWithPrivileges()`, deprecated since 10.7, is still
+  in Security.framework (macOS 27 too: `dlsym` finds it, and
+  `/usr/libexec/security_authtrampoline`, setuid root, is still there):
+  `AuthorizationCopyRights()` for `system.privilege.admin` (its
+  `kAuthorizationRightExecute`) shows SecurityAgent's dialog naming the
+  calling app, with the app's own sentence from
+  `kAuthorizationEnvironmentPrompt`, and returns errAuthorizationCanceled
+  when it's cancelled; then the function forks, and the trampoline checks
+  the rights and executes the tool as root (effective ID 0, real ID the
+  user's, so the helper sets both) in the same process, a child of the
+  app, its standard input and output one end of a socket pair
+  (`AF_UNIX`, `SOCK_STREAM`) whose other end comes back as the `FILE *`.
+  Other open files the app hadn't marked close-on-exec are inherited too,
+  so the helper closes them. It needs no signing at all, which is why
+  it's Blue's way; Blue finds it with `dlsym` so that the deprecation
+  doesn't warn, and says so if a later macOS drops it (`sudo` would be
+  left).
 - **Taking a USB device on Linux** (USB, the host's devices): libusb opens
   `/dev/bus/usb/BBB/DDD`, which udev makes root's, mode 0664, unless a
   rule says otherwise (`TAG+="uaccess"` gives the logged-in user an ACL

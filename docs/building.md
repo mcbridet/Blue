@@ -18,6 +18,10 @@ cd Blue
 make            # build/blue (C11, and C++17 for the menu: Dear ImGui is in third_party/imgui)
 ```
 
+On macOS `make` also builds `build/blue-usb-helper`, Blue's USB helper
+(see [devices.md](devices.md#usb)), which Blue finds beside itself, as
+Blue.app has it in `Contents/MacOS`.
+
 Building needs only a C11 and C++17 compiler (Clang or GCC) and `make`:
 Dear ImGui and the window's font are in the tree, and SDL2, libslirp and
 libusb aren't build dependencies, since Blue loads them when it runs

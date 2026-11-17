@@ -772,11 +772,16 @@ keyboards, mice and game controllers) has to be taken from macOS's
 driver first, which macOS lets only a program running as root do (or an
 app holding Apple's `com.apple.vm.device-access` entitlement, which Apple
 grants to virtual machines' publishers and which a self-signed app like
-Blue can't have). So start Blue with `sudo`:
-
-```sh
-sudo /Applications/Blue.app/Contents/MacOS/blue boot
-```
+Blue can't have). So for those, Connect says **Connect (needs your
+password)**: macOS asks for an administrator's name and password in its
+own dialog ("Blue wants to make changes"), and then Blue's small USB
+helper (`blue-usb-helper`, inside Blue.app) takes the device from macOS
+as root and passes its transfers to Blue, which goes on as an ordinary
+program. `--usb` asks the same way. The password is asked for once
+while Blue runs: the helper takes any other device macOS drives without
+asking again, and stops when Blue quits. Cancel the dialog and nothing is
+taken. (Starting all of Blue with `sudo` still works, but runs Mac OS's
+old software as root too, and leaves files of root's behind.)
 
 Eject a disk in the Finder before you connect its drive. When Blue lets
 the device go (Disconnect, or quitting), macOS's driver has it back.
@@ -1012,7 +1017,7 @@ Blue doesn't do everything a Mac of the time could:
 - **USB 2.0 speed:** USB devices go through at USB 1.1's, as on the iMac:
   a device that only works at high speed, or isochronous transfers at it,
   can't be passed through; nor can a USB hub, though devices behind one
-  can. A device macOS drives needs Blue run as root (see
+  can. A device macOS drives needs an administrator's password (see
   [USB devices](#usb-devices)). Game controllers reach Mac OS as the
   keyboard and mouse, and through InputSprocket (see
   [Game controllers](#game-controllers)).
@@ -1101,8 +1106,11 @@ open one. Mac OS 9.0.x has no sound input.
 Blue's menu says why beside Connect (point at it), as does `blue boot
 --usb` in the terminal. A device connected to your computer at high speed
 (USB 2.0) can't be passed through: plug it in through a USB 1.1 hub. On
-macOS, a device macOS drives itself needs Blue started with `sudo`; on
-Linux, a udev rule (see [USB devices](#usb-devices)). If Mac OS gets the
+macOS, a device macOS drives itself needs an administrator's password,
+which macOS asks for when you connect it: if that's cancelled, connect it
+again; if the dialog never comes (in a session without a screen, over
+`ssh` say), start Blue with `sudo` instead. On Linux, a device needs a
+udev rule (see [USB devices](#usb-devices)). If Mac OS gets the
 device but nothing happens, it has no driver for it: install its maker's
 Mac OS drivers in Mac OS (Mac OS 8.5 has no driver for USB disks at all).
 
