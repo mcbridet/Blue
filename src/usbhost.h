@@ -62,6 +62,9 @@ bool usbhost_gone(const struct usb_device *d);
 /* A device plugged into the host since last asked; false if none was */
 bool usbhost_arrived(struct usbhost *h, struct usbhost_info *info);
 
+/* (Blue's USB helper, as root) devices with a keyboard aren't taken: nothing typed goes through it */
+void usbhost_refuse_keyboards(struct usbhost *h);
+
 /* Calls fn(arg), on libusb's thread, whenever a transfer's answer has come or a device taken has gone */
 void usbhost_notify(struct usbhost *h, void (*fn)(void *), void *arg);
 

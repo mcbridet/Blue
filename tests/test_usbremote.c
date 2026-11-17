@@ -452,6 +452,8 @@ static void helper_thread(void)
 	if (r) {
 		CHECK(usbremote_open(r, "1209:0002", err, sizeof err) == NULL);        /* (high speed) */
 		CHECK(strstr(err, "high") != NULL);
+		CHECK(usbremote_open(r, "05ac:0201", err, sizeof err) == NULL);        /* (a keyboard) */
+		CHECK(strstr(err, "keyboard") != NULL);
 		struct usb_device *d = usbremote_open(r, "1-3", err, sizeof err);
 		CHECK(d != NULL);
 		if (d) {

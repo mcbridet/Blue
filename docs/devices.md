@@ -533,8 +533,10 @@ streams going. A transfer given up (CANCEL) gets no answer; one that
 comes anyway is dropped by its ID.
 
 Its security: the helper only does USB. It takes only devices Blue
-names, through usbhost.c's checks (no hubs, nothing at high speed), at
-most four at once and 64 transfers each, and checks every message
+names, through usbhost.c's checks (no hubs, nothing at high speed), and
+no keyboards (a device with an interface of HID's boot keyboard, in any
+configuration), so that nothing typed can go through it; at most four at
+once and 64 transfers each, and checks every message
 against the protocol before acting on it (known type, a device it has,
 an endpoint and direction that agree with the transfer type and setup
 packet, lengths that match and fit 64 KB, a spec of hex digits, `:`, `-`

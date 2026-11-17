@@ -99,8 +99,10 @@ static bool open_device(struct helper *s, const struct usbproto_msg *m)
 		k++;
 	if (!s->host && !s->why[0]) {
 		s->host = usbhost_start(s->why, sizeof s->why);
-		if (s->host)
+		if (s->host) {
 			usbhost_notify(s->host, wake, s);
+			usbhost_refuse_keyboards(s->host);
+		}
 	}
 	struct usb_device *d = NULL;
 	if (!s->host)

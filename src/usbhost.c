@@ -153,6 +153,7 @@ struct usbhost {
 	unsigned arrivals;
 	bool hotplug;
 	libusb_hotplug_callback_handle hotplug_handle;
+	bool no_keyboards;              /* (usbhost_refuse_keyboards()) */
 	void (*notify)(void *);         /* (usbhost_notify()) */
 	void *notify_arg;
 };
@@ -505,6 +506,11 @@ bool usbhost_gone(const struct usb_device *d)
 	return atomic_load(&host_of(d)->gone);
 }
 
+void usbhost_refuse_keyboards(struct usbhost *h)
+{
+	h->no_keyboards = true;
+}
+
 void usbhost_notify(struct usbhost *h, void (*fn)(void *), void *arg)
 {
 	h->notify_arg = arg;
@@ -612,6 +618,29 @@ static bool claim_all(struct hostdev *hd, int value, bool *held, char *err, size
 	return ok;
 }
 
+/* Whether a device is a keyboard: has an interface of HID's boot keyboard, in any of its configurations */
+static bool is_keyboard(struct usbhost *h, libusb_device *dev)
+{
+	struct libusb_device_descriptor dd;
+	if (h->u.get_device_descriptor(dev, &dd) != 0)
+		return false;
+	bool keyboard = false;
+	for (unsigned v = 1; v <= dd.bNumConfigurations; v++) {
+		struct libusb_config_descriptor *c;
+		if (h->u.get_config_descriptor_by_value(dev, (uint8_t)v, &c) != 0)
+			continue;
+		for (int i = 0; i < c->bNumInterfaces; i++) {
+			for (int a = 0; a < c->interface[i].num_altsetting; a++) {
+				const struct libusb_interface_descriptor *id = &c->interface[i].altsetting[a];
+				keyboard |= id->bInterfaceClass == 3 && id->bInterfaceSubClass == 1 &&
+					    id->bInterfaceProtocol == 1;
+			}
+		}
+		h->u.free_config_descriptor(c);
+	}
+	return keyboard;
+}
+
 struct usb_device *usbhost_open(struct usbhost *h, const char *spec, bool *held, char *err, size_t size)
 {
 	if (held)
@@ -646,6 +675,12 @@ struct usb_device *usbhost_open(struct usbhost *h, const char *spec, bool *held,
 		snprintf(err, size, "%s is connected at %s speed: the iMac's USB is 1.1, so it can't be passed through "
 			 "(through a USB 1.1 hub it would connect at full speed)", name,
 			 info.speed == USB_SPEED_HIGH ? "high (USB 2.0)" : "super (USB 3)");
+		h->u.unref_device(dev);
+		return NULL;
+	}
+	if (h->no_keyboards && is_keyboard(h, dev)) {
+		snprintf(err, size, "%s is a keyboard, which Blue's USB helper doesn't take (Mac OS has yours already; "
+			 "Blue run with sudo would take it)", name);
 		h->u.unref_device(dev);
 		return NULL;
 	}

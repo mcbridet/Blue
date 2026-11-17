@@ -213,7 +213,7 @@ void test_usbhost(void)
 	if (!h)
 		goto out;
 	struct usbhost_info info[8];
-	CHECK_EQ(usbhost_list(h, info, 8), 2);                  /* (the hub isn't listed) */
+	CHECK_EQ(usbhost_list(h, info, 8), 3);                  /* (the hub isn't listed) */
 	CHECK(!strcmp(info[0].id, "1-3"));
 	CHECK_EQ(info[0].vendor, 0x1209);
 	CHECK_EQ(info[0].speed, USB_SPEED_FULL);
@@ -221,6 +221,12 @@ void test_usbhost(void)
 	CHECK(usbhost_matches(&info[0], "1209:0001"));
 	CHECK(!usbhost_matches(&info[0], "1209:0002"));
 	CHECK(usbhost_matches(&info[1], "1-4"));
+	CHECK(!strcmp(info[2].id, "1-6"));
+	CHECK_EQ(info[2].speed, USB_SPEED_LOW);
+	struct usb_device *k = usbhost_open(h, "05ac:0201", NULL, err, sizeof err);     /* (a keyboard) */
+	CHECK(k != NULL);
+	if (k)
+		k->ops->destroy(k);
 	CHECK(usbhost_open(h, "1209:0002", NULL, err, sizeof err) == NULL);  /* high speed */
 	CHECK(strstr(err, "high") != NULL);
 	CHECK(usbhost_open(h, "2-1", NULL, err, sizeof err) == NULL);

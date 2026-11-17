@@ -1,9 +1,10 @@
 /*
  * A stand-in for libusb-1.0, for testing the passthrough of the host's USB
  * devices (usbhost.c) without real ones: BLUE_LIBUSB names it instead of
- * the real one. Its host has three devices on bus 1: a USB test disk
+ * the real one. Its host has four devices on bus 1: a USB test disk
  * (usbmsd.h; 1209:0001, full speed, at 1-3) whose image is
- * BLUE_LIBUSB_MOCK_IMAGE, a high-speed device (1209:0002, 1-4) and a hub.
+ * BLUE_LIBUSB_MOCK_IMAGE, a high-speed device (1209:0002, 1-4), a hub,
+ * and a low-speed keyboard (05ac:0201, 1-6) whose transfers just finish.
  * Transfers finish on the thread that handles events, a millisecond or
  * more after they're submitted (bulk in that the disk NAKs waits for data,
  * as on a bus). While a file named as the image with ".unplugged" added is
@@ -98,8 +99,8 @@ enum { ST_COMPLETED, ST_ERROR, ST_TIMED_OUT, ST_CANCELLED, ST_STALL, ST_NO_DEVIC
 #define QUEUE 64
 
 static libusb_context context;
-static libusb_device devs[3] = { { 0 }, { 1 }, { 2 } };
-static libusb_device_handle handles[3] = { { &devs[0] }, { &devs[1] }, { &devs[2] } };
+static libusb_device devs[4] = { { 0 }, { 1 }, { 2 }, { 3 } };
+static libusb_device_handle handles[4] = { { &devs[0] }, { &devs[1] }, { &devs[2] }, { &devs[3] } };
 static struct usb_device *disk;
 static char unplug_path[1100];
 static bool unplugged;
@@ -149,10 +150,10 @@ static bool present(int n)
 API ssize_t libusb_get_device_list(libusb_context *ctx, libusb_device ***list)
 {
 	(void)ctx;
-	libusb_device **l = calloc(4, sizeof *l);
+	libusb_device **l = calloc(5, sizeof *l);
 	ssize_t n = 0;
 	pthread_mutex_lock(&lock);
-	for (int k = 0; k < 3; k++)
+	for (int k = 0; k < 4; k++)
 		if (present(k))
 			l[n++] = &devs[k];
 	pthread_mutex_unlock(&lock);
@@ -177,8 +178,8 @@ API int libusb_get_device_descriptor(libusb_device *d, struct libusb_device_desc
 	dd->bcdUSB = d->n == 1 ? 0x200 : 0x110;
 	dd->bDeviceClass = d->n == 2 ? 9 : 0;
 	dd->bMaxPacketSize0 = 64;
-	dd->idVendor = d->n == 2 ? 0x05E3 : 0x1209;
-	dd->idProduct = (uint16_t)(d->n == 2 ? 0x0608 : d->n + 1);
+	dd->idVendor = d->n == 2 ? 0x05E3 : d->n == 3 ? 0x05AC : 0x1209;
+	dd->idProduct = (uint16_t)(d->n == 2 ? 0x0608 : d->n == 3 ? 0x0201 : d->n + 1);
 	dd->bNumConfigurations = 1;
 	return 0;
 }
@@ -190,19 +191,24 @@ static const struct libusb_endpoint_descriptor endpoints[2] = {
 static const struct libusb_interface_descriptor interface0 = { 9, 4, 0, 0, 2, 8, 6, 0x50, 0, endpoints, NULL, 0 };
 static const struct libusb_interface interfaces = { &interface0, 1 };
 static struct libusb_config_descriptor config1 = { 9, 2, 32, 1, 1, 0, 0x80, 50, &interfaces, NULL, 0 };
+static const struct libusb_endpoint_descriptor keyboard_endpoint = { 7, 5, 0x81, 3, 8, 10, 0, 0, NULL, 0 };
+static const struct libusb_interface_descriptor keyboard_interface = { 9, 4, 0, 0, 1, 3, 1, 1, 0, &keyboard_endpoint,
+								       NULL, 0 };
+static const struct libusb_interface keyboard_interfaces = { &keyboard_interface, 1 };
+static struct libusb_config_descriptor keyboard_config = { 9, 2, 34, 1, 1, 0, 0xA0, 50, &keyboard_interfaces, NULL, 0 };
 
 API int libusb_get_config_descriptor_by_value(libusb_device *d, uint8_t value, struct libusb_config_descriptor **c)
 {
-	if (d->n != 0 || value != 1)
+	if ((d->n != 0 && d->n != 3) || value != 1)
 		return ERROR_NOT_FOUND;
-	*c = &config1;
+	*c = d->n == 3 ? &keyboard_config : &config1;
 	return 0;
 }
 
 API void libusb_free_config_descriptor(struct libusb_config_descriptor *c) { (void)c; }
 API uint8_t libusb_get_bus_number(libusb_device *d) { (void)d; return 1; }
 API uint8_t libusb_get_device_address(libusb_device *d) { return (uint8_t)(5 + d->n); }
-API int libusb_get_device_speed(libusb_device *d) { return d->n == 1 ? 3 : 2; }
+API int libusb_get_device_speed(libusb_device *d) { return d->n == 1 ? 3 : d->n == 3 ? 1 : 2; }
 
 API int libusb_get_port_numbers(libusb_device *d, uint8_t *ports, int len)
 {

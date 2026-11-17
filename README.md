@@ -780,8 +780,10 @@ as root and passes its transfers to Blue, which goes on as an ordinary
 program. `--usb` asks the same way. The password is asked for once
 while Blue runs: the helper takes any other device macOS drives without
 asking again, and stops when Blue quits. Cancel the dialog and nothing is
-taken. (Starting all of Blue with `sudo` still works, but runs Mac OS's
-old software as root too, and leaves files of root's behind.)
+taken. The helper doesn't take keyboards, so that nothing you type goes
+through it. (Starting all of Blue with `sudo` still works, and takes
+keyboards too, but runs Mac OS's old software as root, and leaves files
+of root's behind.)
 
 Eject a disk in the Finder before you connect its drive. When Blue lets
 the device go (Disconnect, or quitting), macOS's driver has it back.
