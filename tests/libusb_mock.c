@@ -124,6 +124,8 @@ API int libusb_init(libusb_context **ctx)
 	char err[200];
 	if (image && !disk) {
 		disk = usbmsd_open(image, false, err, sizeof err);
+		if (disk)
+			disk->log = getenv("BLUE_LOG_USB") != NULL;
 		snprintf(unplug_path, sizeof unplug_path, "%s.unplugged", image);
 	}
 	*ctx = &context;
