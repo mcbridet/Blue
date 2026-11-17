@@ -25,3 +25,11 @@ brought up, are in [findings.md](findings.md) and [bring-up.md](bring-up.md).
   sent to the task's exception queue as NanoKernel 2 does (with
   `MPSetExceptionHandler` and `MPThrowException`). Such a fault stops the
   run; none of Mac OS 9.1's or 9.2.2's tasks makes one.
+- USB ([devices.md](devices.md#usb)): a USB 1.1 floppy drive's command
+  set (UFI, over control/bulk/interrupt) for the test disk, to test Mac
+  OS's floppy support as its bulk-only disk tests its mass storage; the
+  host's high-speed bulk-only devices presented as full speed (their
+  descriptors' packet sizes rewritten, transfers split and joined), if a
+  device of the time is found that only connects at high speed; and the
+  devices passed through remembered in the settings file, if connecting
+  them each time proves a chore.

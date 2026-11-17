@@ -10,7 +10,7 @@ test and debug it.
   the loader, the kernel, time, and the machine Mac OS sees.
 - [devices.md](devices.md): the iMac's devices and Blue's drivers: interrupts,
   DMA, the serial controller and the modem, the display, sound, networking
-  and USB.
+  and USB (the controller, the test disk, the host's devices passed through).
 - [drives.md](drives.md): disks, CD-ROM and floppy drives, cue sheets and CD
   audio.
 - [shared-folder.md](shared-folder.md): a host folder shown to Mac OS as a
