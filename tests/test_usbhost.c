@@ -111,10 +111,10 @@ void test_usbhost(void)
 	CHECK(usbhost_matches(&info[0], "1209:0001"));
 	CHECK(!usbhost_matches(&info[0], "1209:0002"));
 	CHECK(usbhost_matches(&info[1], "1-4"));
-	CHECK(usbhost_open(h, "1209:0002", err, sizeof err) == NULL);  /* high speed */
+	CHECK(usbhost_open(h, "1209:0002", NULL, err, sizeof err) == NULL);  /* high speed */
 	CHECK(strstr(err, "high") != NULL);
-	CHECK(usbhost_open(h, "2-1", err, sizeof err) == NULL);
-	struct usb_device *d = usbhost_open(h, "1-3", err, sizeof err);
+	CHECK(usbhost_open(h, "2-1", NULL, err, sizeof err) == NULL);
+	struct usb_device *d = usbhost_open(h, "1-3", NULL, err, sizeof err);
 	CHECK(d != NULL);
 	if (!d)
 		goto stop;
@@ -204,7 +204,7 @@ void test_usbhost(void)
 		usleep(5000);
 	}
 	CHECK(back);
-	d = usbhost_open(h, arrived.id, err, sizeof err);
+	d = usbhost_open(h, arrived.id, NULL, err, sizeof err);
 	CHECK(d != NULL);
 	if (d)
 		d->ops->destroy(d);

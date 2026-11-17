@@ -7,7 +7,10 @@
  * Transfers finish on the thread that handles events, a millisecond or
  * more after they're submitted (bulk in that the disk NAKs waits for data,
  * as on a bus). While a file named as the image with ".unplugged" added is
- * there, the disk is unplugged (hot-plug's callbacks say so).
+ * there, the disk is unplugged (hot-plug's callbacks say so). With
+ * BLUE_LIBUSB_MOCK_HELD, the host's driver has the disk, as macOS's would,
+ * and only Blue's USB helper (blue-usb-helper) can take it from it, as
+ * root could.
  */
 #include <pthread.h>
 #include <stdbool.h>
@@ -88,6 +91,7 @@ typedef int (*libusb_hotplug_callback_fn)(libusb_context *, libusb_device *, int
 struct libusb_version { uint16_t major, minor, micro, nano; const char *rc, *describe; };
 
 enum { ST_COMPLETED, ST_ERROR, ST_TIMED_OUT, ST_CANCELLED, ST_STALL, ST_NO_DEVICE, ST_OVERFLOW };
+#define ERROR_ACCESS (-3)
 #define ERROR_NO_DEVICE (-4)
 #define ERROR_NOT_FOUND (-5)
 #define ERROR_PIPE (-9)
@@ -215,9 +219,39 @@ API int libusb_open(libusb_device *d, libusb_device_handle **h)
 }
 
 API void libusb_close(libusb_device_handle *h) { (void)h; }
-API int libusb_kernel_driver_active(libusb_device_handle *h, int n) { (void)h; (void)n; return 0; }
-API int libusb_detach_kernel_driver(libusb_device_handle *h, int n) { (void)h; (void)n; return 0; }
-API int libusb_attach_kernel_driver(libusb_device_handle *h, int n) { (void)h; (void)n; return 0; }
+static bool detached;
+
+static bool held(libusb_device_handle *h)
+{
+	return h->dev->n == 0 && getenv("BLUE_LIBUSB_MOCK_HELD") && !detached;
+}
+
+API int libusb_kernel_driver_active(libusb_device_handle *h, int n)
+{
+	(void)n;
+	return held(h);
+}
+
+API int libusb_detach_kernel_driver(libusb_device_handle *h, int n)
+{
+	(void)n;
+	if (!held(h))
+		return ERROR_NOT_FOUND;
+#ifdef __APPLE__
+	if (strcmp(getprogname(), "blue-usb-helper") != 0)
+#endif
+		return ERROR_ACCESS;
+	detached = true;
+	return 0;
+}
+
+API int libusb_attach_kernel_driver(libusb_device_handle *h, int n)
+{
+	(void)n;
+	if (h->dev->n == 0)
+		detached = false;
+	return 0;
+}
 API int libusb_claim_interface(libusb_device_handle *h, int n) { (void)h; return n == 0 ? 0 : ERROR_NOT_FOUND; }
 API int libusb_release_interface(libusb_device_handle *h, int n) { (void)h; (void)n; return 0; }
 

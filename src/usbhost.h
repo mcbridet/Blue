@@ -11,7 +11,8 @@
  *
  * Taking a device claims all its interfaces, first detaching the host's
  * drivers from them where the host allows it (Linux: the device's node
- * writable; macOS: root, which captures the whole device). Mac OS's
+ * writable; macOS: root, which captures the whole device, or the USB
+ * helper, usbremote.h, which does it as root for Blue). Mac OS's
  * SET_CONFIGURATION and SET_INTERFACE are carried out on the device, so
  * that the host's view of it stays the same, as are CLEAR_FEATURE
  * (ENDPOINT_HALT) and, once Mac OS has configured it, bus resets. The
@@ -34,6 +35,7 @@ struct usbhost_info {
 	uint16_t vendor, product;
 	unsigned speed;                 /* enum usb_speed */
 	char name[128];                 /* the maker's and product's names, as far as the host says ("": not) */
+	bool held;                      /* (macOS) its own driver has it: only root can take it */
 };
 
 /* libusb, loaded and started; NULL with `err` saying why */
@@ -45,9 +47,11 @@ unsigned usbhost_list(struct usbhost *h, struct usbhost_info *out, unsigned max)
 
 /*
  * Takes the device `spec` names (VID:PID in hex, or BUS-PORT[.PORT...]) for
- * Mac OS; NULL with `err` saying why not (in a sentence for the menu).
+ * Mac OS; NULL with `err` saying why not (in a sentence for the menu), and
+ * `*held` (if not NULL) set if that's because the host's own driver has it
+ * and only root could take it from it (macOS).
  */
-struct usb_device *usbhost_open(struct usbhost *h, const char *spec, char *err, size_t size);
+struct usb_device *usbhost_open(struct usbhost *h, const char *spec, bool *held, char *err, size_t size);
 
 bool usbhost_is(const struct usb_device *d);
 const struct usbhost_info *usbhost_device_info(const struct usb_device *d);
@@ -57,6 +61,9 @@ bool usbhost_gone(const struct usb_device *d);
 
 /* A device plugged into the host since last asked; false if none was */
 bool usbhost_arrived(struct usbhost *h, struct usbhost_info *info);
+
+/* Calls fn(arg), on libusb's thread, whenever a transfer's answer has come or a device taken has gone */
+void usbhost_notify(struct usbhost *h, void (*fn)(void *), void *arg);
 
 /* Whether `spec` (as for usbhost_open()) names this device */
 bool usbhost_matches(const struct usbhost_info *info, const char *spec);

@@ -42,18 +42,31 @@ all: $(BUILD)/blue
 # it asks for the microphone, the file chooser is AppKit's (src/chooser_mac.m), the menu bar Blue's own
 # (src/menubar_mac.m), the microphone's permission AVFoundation's (src/mic_mac.m), displays' physical sizes are
 # CoreGraphics' (src/density.c), and Blue.app's libraries are found in its Frameworks (src/hostlib.c, and @rpath
-# for theirs). The oldest macOS it runs on is MACOSX_DEPLOYMENT_TARGET's.
+# for theirs). The oldest macOS it runs on is MACOSX_DEPLOYMENT_TARGET's. The USB devices macOS's own drivers
+# have are taken by Blue's USB helper, blue-usb-helper, beside Blue (src/usbhelper.h), started as root with
+# Authorization Services (src/usbremote.c).
 ifeq ($(shell uname -s),Darwin)
 export MACOSX_DEPLOYMENT_TARGET ?= 11.0
 INFO_PLIST := $(BUILD)/Info.plist
 INFO_PLIST_FLAGS := -Wl,-sectcreate,__TEXT,__info_plist,$(INFO_PLIST) -Wl,-rpath,@executable_path/../Frameworks
 OBJCFLAGS ?= -O2 -g
-LIB_OBJ += $(BUILD)/chooser_mac.o $(BUILD)/menubar_mac.o $(BUILD)/mic_mac.o
-HOST_LIBS := -framework AppKit -framework AVFoundation -framework CoreGraphics -framework IOKit -framework CoreFoundation
+LIB_OBJ += $(BUILD)/chooser_mac.o $(BUILD)/menubar_mac.o $(BUILD)/mic_mac.o $(BUILD)/usbproto.o $(BUILD)/usbremote.o
+HOST_LIBS := -framework AppKit -framework AVFoundation -framework CoreGraphics -framework IOKit -framework CoreFoundation \
+	     -framework Security
+USB_HELPER := $(BUILD)/blue-usb-helper
+USB_HELPER_OBJ := $(BUILD)/usbhelper_main.o $(BUILD)/usbhelper.o $(BUILD)/usbproto.o $(BUILD)/usbhost.o $(BUILD)/usb.o \
+		  $(BUILD)/hostlib.o
+TEST_OBJ += $(BUILD)/usbhelper.o
 endif
+
+all: $(USB_HELPER)
 
 $(BUILD)/blue: $(BUILD)/main.o $(LIB_OBJ) $(INFO_PLIST)
 	$(CXX) $(LDFLAGS) $(INFO_PLIST_FLAGS) -o $@ $(BUILD)/main.o $(LIB_OBJ) -lm -ldl -lpthread $(HOST_LIBS)
+
+# (C only: libusb, and IOKit for the devices' names)
+$(BUILD)/blue-usb-helper: $(USB_HELPER_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(USB_HELPER_OBJ) -ldl -lpthread -framework IOKit -framework CoreFoundation
 
 # art/Info.plist with the version and the oldest macOS filled in
 $(BUILD)/Info.plist: art/Info.plist src/version.h | $(BUILD)
@@ -62,7 +75,7 @@ $(BUILD)/Info.plist: art/Info.plist src/version.h | $(BUILD)
 # Blue.app (build/Blue.app), with SDL2 and libslirp and what they need from DEPS (Homebrew's prefix, or
 # tools/macos-deps.sh's), ad-hoc signed; and Blue-<arch>.dmg (arm64, x86_64), with it and a link to Applications
 DEPS ?= $(shell brew --prefix 2>/dev/null)
-app: $(BUILD)/blue $(INFO_PLIST)
+app: $(BUILD)/blue $(INFO_PLIST) $(USB_HELPER)
 	tools/package-macos.sh app $(BUILD)/blue $(INFO_PLIST) "$(DEPS)" $(BUILD)/Blue.app
 
 dmg: app
@@ -75,7 +88,7 @@ appimage:
 version:
 	@echo $(VERSION)
 
-$(BUILD)/blue-tests: $(TEST_OBJ) $(LIB_OBJ) $(BUILD)/libusb-mock.so
+$(BUILD)/blue-tests: $(TEST_OBJ) $(LIB_OBJ) $(BUILD)/libusb-mock.so $(USB_HELPER)
 	$(CXX) $(LDFLAGS) -o $@ $(TEST_OBJ) $(LIB_OBJ) -lm -ldl -lpthread $(HOST_LIBS)
 
 # A stand-in for libusb-1.0 (tests/libusb_mock.c) that the tests load in its place

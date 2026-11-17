@@ -2186,7 +2186,7 @@ static bool usb_take(struct machine *m, const char *spec, int port)
 {
 	char err[400];
 	struct usbhost *h = usb_host(m);
-	struct usb_device *d = h ? usbhost_open(h, spec, err, sizeof err) : NULL;
+	struct usb_device *d = h ? usbhost_open(h, spec, NULL, err, sizeof err) : NULL;
 	if (!h)
 		snprintf(err, sizeof err, "%s", m->usbhost_why);
 	if (!d) {

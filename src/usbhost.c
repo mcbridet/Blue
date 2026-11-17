@@ -153,6 +153,8 @@ struct usbhost {
 	unsigned arrivals;
 	bool hotplug;
 	libusb_hotplug_callback_handle hotplug_handle;
+	void (*notify)(void *);         /* (usbhost_notify()) */
+	void *notify_arg;
 };
 
 struct hostreq {
@@ -242,6 +244,27 @@ static void apple_string(io_service_t s, const char *const *keys, char *out, siz
 	}
 }
 
+/* Whether a driver has one of the device's interfaces (its UsbExclusiveOwner: a driver's name, or a process's) */
+static bool apple_held(io_service_t s)
+{
+	io_iterator_t it;
+	if (IORegistryEntryGetChildIterator(s, kIOServicePlane, &it) != KERN_SUCCESS)
+		return false;
+	bool held = false;
+	io_service_t c;
+	while ((c = IOIteratorNext(it))) {
+		if (!held && IOObjectConformsTo(c, "IOUSBHostInterface")) {
+			CFTypeRef p = IORegistryEntryCreateCFProperty(c, CFSTR("UsbExclusiveOwner"), kCFAllocatorDefault, 0);
+			held = p != NULL;
+			if (p)
+				CFRelease(p);
+		}
+		IOObjectRelease(c);
+	}
+	IOObjectRelease(it);
+	return held;
+}
+
 /* (from the I/O Registry: libusb would have to open the device, which takes it from macOS) */
 static void host_names(struct usbhost_info *info, uint8_t bus, uint8_t addr)
 {
@@ -258,6 +281,7 @@ static void host_names(struct usbhost_info *info, uint8_t bus, uint8_t addr)
 			apple_string(s, maker, m, sizeof m);
 			apple_string(s, product, p, sizeof p);
 			join_names(info->name, sizeof info->name, m, p);
+			info->held = apple_held(s);
 		}
 		IOObjectRelease(s);
 	}
@@ -347,6 +371,8 @@ static int on_hotplug(libusb_context *ctx, libusb_device *dev, int event, void *
 			h->arrivals++;
 	}
 	pthread_mutex_unlock(&h->lock);
+	if (event == HOTPLUG_LEFT && h->notify)
+		h->notify(h->notify_arg);
 	return 0;
 }
 
@@ -479,6 +505,12 @@ bool usbhost_gone(const struct usb_device *d)
 	return atomic_load(&host_of(d)->gone);
 }
 
+void usbhost_notify(struct usbhost *h, void (*fn)(void *), void *arg)
+{
+	h->notify_arg = arg;
+	h->notify = fn;
+}
+
 /* Each endpoint's type and packet size, from configuration `value`'s descriptors (all alternate settings) */
 static void learn_endpoints(struct hostdev *hd, int value)
 {
@@ -518,8 +550,11 @@ static void release_all(struct hostdev *hd, bool give_back)
 		hd->detached = 0;
 }
 
-/* Claims configuration `value`'s interfaces, detaching the host's drivers from them; false, with `err`, if one can't be */
-static bool claim_all(struct hostdev *hd, int value, char *err, size_t size)
+/*
+ * Claims configuration `value`'s interfaces, detaching the host's drivers
+ * from them; false, with `err` (and `*held` set if root could), if one can't be
+ */
+static bool claim_all(struct hostdev *hd, int value, bool *held, char *err, size_t size)
 {
 	struct usbhost *h = hd->h;
 	struct libusb_config_descriptor *c;
@@ -541,9 +576,11 @@ static bool claim_all(struct hostdev *hd, int value, char *err, size_t size)
 				hd->detached |= 1u << n;
 			} else if (r != LIBUSB_ERROR_NOT_FOUND && r != LIBUSB_ERROR_NOT_SUPPORTED) {
 #ifdef __APPLE__
-				snprintf(err, size, "macOS's own driver has %s: Blue can take a device from macOS only "
-					 "when it's run as root (with sudo)%s", hd->dev.name,
-					 geteuid() == 0 ? " (and here macOS still won't let it go)" : "");
+				if (geteuid() != 0 && held)
+					*held = true;
+				snprintf(err, size, geteuid() != 0 ? "macOS's own driver has %s: only root can take it "
+					 "from macOS" : "macOS's own driver has %s and won't let it go, even to root",
+					 hd->dev.name);
 #else
 				snprintf(err, size, "the host's driver has %s and won't let it go (%s)", hd->dev.name,
 					 error_name(h, r));
@@ -555,10 +592,12 @@ static bool claim_all(struct hostdev *hd, int value, char *err, size_t size)
 		int r = h->u.claim_interface(hd->handle, n);
 		if (r != 0) {
 #ifdef __APPLE__
-			if (geteuid() != 0)
-				snprintf(err, size, "macOS's own driver has %s: Blue can take a device from macOS only when "
-					 "it's run as root (with sudo)", hd->dev.name);
-			else
+			if (geteuid() != 0) {
+				if (held)
+					*held = true;
+				snprintf(err, size, "macOS's own driver has %s: only root can take it from macOS",
+					 hd->dev.name);
+			} else
 #endif
 			snprintf(err, size, "%s is in use on the host (interface %d: %s)", hd->dev.name, n, error_name(h, r));
 			ok = false;
@@ -570,8 +609,10 @@ static bool claim_all(struct hostdev *hd, int value, char *err, size_t size)
 	return ok;
 }
 
-struct usb_device *usbhost_open(struct usbhost *h, const char *spec, char *err, size_t size)
+struct usb_device *usbhost_open(struct usbhost *h, const char *spec, bool *held, char *err, size_t size)
 {
+	if (held)
+		*held = false;
 	libusb_device **list;
 	ssize_t n = h->u.get_device_list(h->ctx, &list);
 	libusb_device *dev = NULL;
@@ -639,7 +680,7 @@ struct usb_device *usbhost_open(struct usbhost *h, const char *spec, char *err, 
 	int config = 0;
 	if (h->u.get_configuration(handle, &config) != 0)
 		config = 0;
-	if (!claim_all(hd, config, err, size)) {
+	if (!claim_all(hd, config, held, err, size)) {
 		release_all(hd, true);
 		h->u.close(handle);
 		h->u.unref_device(dev);
@@ -693,9 +734,12 @@ static void finished(struct libusb_transfer *t)
 		}
 	}
 	pthread_mutex_unlock(&hd->lock);
+	struct usbhost *h = hd->h;
 	free(t->buffer);
-	hd->h->u.free_transfer(t);
+	h->u.free_transfer(t);
 	free(r);
+	if (h->notify)
+		h->notify(h->notify_arg);
 }
 
 static int submit(struct hostdev *hd, struct usb_xfer *x, unsigned type, uint8_t *buf, uint32_t len)
@@ -755,11 +799,11 @@ static int control(struct hostdev *hd, struct usb_xfer *x)
 		if (r != 0 && (h->u.get_configuration(hd->handle, &now) != 0 || now != value)) {
 			if (hd->dev.log)
 				printf("usb: %s: configuration %u: %s\n", hd->dev.name, value, error_name(h, r));
-			claim_all(hd, now, (char[160]){ 0 }, 160);
+			claim_all(hd, now, NULL, (char[160]){ 0 }, 160);
 			return r == LIBUSB_ERROR_NO_DEVICE ? USB_NODEV : USB_STALL;
 		}
 		char err[200];
-		if (!claim_all(hd, value, err, sizeof err))
+		if (!claim_all(hd, value, NULL, err, sizeof err))
 			fprintf(stderr, "usb: %s\n", err);
 		hd->configured = value != 0;
 		return USB_OK;
@@ -780,7 +824,7 @@ static int control(struct hostdev *hd, struct usb_xfer *x)
 		}
 		break;
 	}
-	uint8_t *buf = malloc(8u + length);
+	uint8_t *buf = calloc(1, 8u + length);
 	if (!buf)
 		return USB_ERROR;
 	memcpy(buf, s, 8);
