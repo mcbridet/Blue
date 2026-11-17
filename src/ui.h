@@ -97,6 +97,7 @@ struct ui_usb_device {
 	char name[96];                  /* the maker's and product's names, or its IDs */
 	char about[64];                 /* "05ac:0201, full speed" */
 	char why_not[200];              /* why it can't be connected ("": it can) */
+	bool password;                  /* macOS's own driver has it: taking it asks for an administrator's password */
 };
 
 struct ui_usb {

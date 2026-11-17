@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "audio.h"
 #include "burgundy.h"
@@ -52,6 +53,7 @@
 #include "startup.h"
 #include "tools.h"
 #include "usbhost.h"
+#include "usbremote.h"
 #include "usbmsd.h"
 #include "via.h"
 #include "video.h"
@@ -649,6 +651,12 @@ struct machine {
 	unsigned usb_listed_count;
 	char usb_lost[OHCI_PORTS][16];  /* a device unplugged from the host, by VID:PID: it comes back if plugged in again */
 	uint64_t usb_poll_ns;           /* host time unplugging and plugging in were last looked for */
+	struct usbremote *usb_helper;   /* Blue's USB helper (macOS), once a device macOS's own drivers have is wanted */
+	struct usb_waiting {            /* ... the devices waiting for it to start */
+		char spec[24];
+		int port;
+	} usb_waiting[OHCI_PORTS];
+	unsigned usb_waiting_count;
 	/* the internal modem, on the SCC's channel A (see modem_setup()) */
 	bool modem_on;                  /* it's there */
 	struct modem modem;
@@ -2181,14 +2189,82 @@ static const char *usb_speed_name(unsigned speed)
 	       speed == USB_SPEED_HIGH ? "high speed" : "super speed";
 }
 
-/* Takes the host's device `spec` names into a free port (`port`: that one, if free); false (and why, in the menu) if not */
-static bool usb_take(struct machine *m, const char *spec, int port)
+/* A device taken from the host, directly or through the USB helper: what the host says of it (NULL: it isn't one) */
+static const struct usbhost_info *usb_host_info(const struct usb_device *d)
+{
+	return !d ? NULL : usbhost_is(d) ? usbhost_device_info(d) : usbremote_is(d) ? usbremote_device_info(d) : NULL;
+}
+
+static bool usb_host_gone(const struct usb_device *d)
+{
+	return usbhost_is(d) ? usbhost_gone(d) : usbremote_is(d) && usbremote_gone(d);
+}
+
+static bool usb_helper_is(struct machine *m, enum usbremote_state state)
+{
+	return m->usb_helper && usbremote_state(m->usb_helper, NULL, 0) == state;
+}
+
+/*
+ * A device macOS's own driver has, which only root can take from it: taken
+ * through Blue's USB helper, started when first wanted (if `ask`: macOS asks
+ * for an administrator's password, and the device waits for it). NULL, with
+ * `err` saying why not ("": it's waiting).
+ */
+static struct usb_device *usb_take_held(struct machine *m, const char *spec, int port, bool ask, char *err,
+					size_t size)
+{
+	char why[400] = "";
+	if (m->usb_helper && usbremote_state(m->usb_helper, why, sizeof why) == USBREMOTE_FAILED) {
+		usbremote_stop(m->usb_helper);  /* (it's stopped: it's started again when wanted) */
+		m->usb_helper = NULL;
+	}
+	if (!m->usb_helper) {
+		if (!ask)
+			return NULL;
+		m->usb_helper = usbremote_start(why, sizeof why);
+		if (!m->usb_helper) {
+			if (why[0])
+				snprintf(err, size, "%s", why);
+			return NULL;
+		}
+		printf("usb: asking for an administrator's password, for Blue's USB helper\n");
+	}
+	if (usb_helper_is(m, USBREMOTE_ASKING)) {
+		bool queued = false;
+		for (unsigned k = 0; k < m->usb_waiting_count; k++)
+			queued |= !strcmp(m->usb_waiting[k].spec, spec);
+		if (!queued && m->usb_waiting_count < OHCI_PORTS) {
+			struct usb_waiting *w = &m->usb_waiting[m->usb_waiting_count++];
+			snprintf(w->spec, sizeof w->spec, "%s", spec);
+			w->port = port;
+		}
+		*err = 0;
+		return NULL;
+	}
+	return usbremote_open(m->usb_helper, spec, err, size);
+}
+
+/*
+ * Takes the host's device `spec` names into a free port (`port`: that one,
+ * if free); false (and why, in the menu) if not, or not yet (it waits for
+ * an administrator's password, if `ask`)
+ */
+static bool usb_take(struct machine *m, const char *spec, int port, bool ask)
 {
 	char err[400];
 	struct usbhost *h = usb_host(m);
-	struct usb_device *d = h ? usbhost_open(h, spec, NULL, err, sizeof err) : NULL;
+	bool held = false;
+	struct usb_device *d = h ? usbhost_open(h, spec, &held, err, sizeof err) : NULL;
 	if (!h)
 		snprintf(err, sizeof err, "%s", m->usbhost_why);
+	if (!d && held)
+		d = usb_take_held(m, spec, port, ask, err, sizeof err);
+	if (!d && !err[0]) {
+		snprintf(m->menu_status, sizeof m->menu_status, "Waiting for an administrator's password: macOS's own "
+			 "driver has the device");
+		return false;
+	}
 	if (!d) {
 		fprintf(stderr, "usb: %s\n", err);
 		snprintf(m->menu_status, sizeof m->menu_status, "%s", err);
@@ -2200,6 +2276,40 @@ static bool usb_take(struct machine *m, const char *spec, int port)
 		return true;
 	}
 	return usb_plug(m, d);
+}
+
+static void usb_list(struct machine *m);
+static void menu_state(struct machine *m);
+
+/* Once the USB helper has started, or hasn't: the devices waiting for it are taken, or it's said why not */
+static void usb_helper_poll(struct machine *m)
+{
+	if (!m->usb_waiting_count || !m->usb_helper)
+		return;
+	char why[400];
+	enum usbremote_state state = usbremote_state(m->usb_helper, why, sizeof why);
+	if (state == USBREMOTE_ASKING)
+		return;
+	struct usb_waiting waiting[OHCI_PORTS];
+	unsigned n = m->usb_waiting_count;
+	memcpy(waiting, m->usb_waiting, sizeof waiting);
+	m->usb_waiting_count = 0;
+	m->menu_status[0] = '\0';
+	if (state == USBREMOTE_READY) {
+		printf("usb: Blue's USB helper has started\n");
+		for (unsigned k = 0; k < n; k++)
+			usb_take(m, waiting[k].spec, waiting[k].port, false);
+	} else {
+		fprintf(stderr, "usb: Blue's USB helper didn't start: %s\n", why);
+		snprintf(m->menu_status, sizeof m->menu_status, "Not connected: %s (macOS's own driver keeps the device)",
+			 why);
+		usbremote_stop(m->usb_helper);
+		m->usb_helper = NULL;
+	}
+	if (m->paused && m->display) {
+		usb_list(m);
+		menu_state(m);
+	}
 }
 
 /* The host's devices, as the menu lists them */
@@ -2226,6 +2336,7 @@ static void usb_state(struct machine *m)
 	}
 	if (!m->usbhost)
 		snprintf(u.why_none, sizeof u.why_none, "%s", m->usbhost_why);
+	bool helper = usb_helper_is(m, USBREMOTE_READY), asking = usb_helper_is(m, USBREMOTE_ASKING);
 	u.count = m->usb_listed_count;
 	for (unsigned k = 0; k < u.count; k++) {
 		const struct usbhost_info *i = &m->usb_listed[k];
@@ -2234,8 +2345,8 @@ static void usb_state(struct machine *m)
 		snprintf(d->about, sizeof d->about, "%04x:%04x, %s", i->vendor, i->product, usb_speed_name(i->speed));
 		bool taken = false;
 		for (unsigned p = 0; p < OHCI_PORTS; p++) {
-			struct usb_device *dev = ohci_device(&m->ohci, p);
-			taken |= dev && usbhost_is(dev) && !strcmp(usbhost_device_info(dev)->id, i->id);
+			const struct usbhost_info *t = usb_host_info(ohci_device(&m->ohci, p));
+			taken |= t && !strcmp(t->id, i->id);
 		}
 		if (taken)
 			snprintf(d->why_not, sizeof d->why_not, "It's connected to the Mac");
@@ -2244,6 +2355,9 @@ static void usb_state(struct machine *m)
 				 "is 1.1: through a USB 1.1 hub, it would connect at full speed", usb_speed_name(i->speed));
 		else if (!free_port)
 			snprintf(d->why_not, sizeof d->why_not, "Both of the Mac's USB ports are taken: disconnect one first");
+		else if (i->held && asking)
+			snprintf(d->why_not, sizeof d->why_not, "Blue is waiting for an administrator's password");
+		d->password = !taken && i->held && geteuid() != 0 && !helper;
 	}
 	display_usb_state(m->display, &u);
 }
@@ -2258,12 +2372,13 @@ static void usb_poll(struct machine *m)
 	if (!m->usbhost || now - m->usb_poll_ns < USB_POLL_NS)
 		return;
 	m->usb_poll_ns = now;
+	usb_helper_poll(m);
 	bool changed = false;
 	for (unsigned k = 0; k < OHCI_PORTS; k++) {
 		struct usb_device *d = ohci_device(&m->ohci, k);
-		if (d && usbhost_is(d) && usbhost_gone(d)) {
-			snprintf(m->usb_lost[k], sizeof m->usb_lost[k], "%04x:%04x", usbhost_device_info(d)->vendor,
-				 usbhost_device_info(d)->product);
+		const struct usbhost_info *i = usb_host_info(d);
+		if (i && usb_host_gone(d)) {
+			snprintf(m->usb_lost[k], sizeof m->usb_lost[k], "%04x:%04x", i->vendor, i->product);
 			usb_unplug(m, k, " (unplugged from your computer)");
 			changed = true;
 		}
@@ -2273,7 +2388,7 @@ static void usb_poll(struct machine *m)
 		changed = true;
 		for (unsigned k = 0; k < OHCI_PORTS; k++) {
 			if (m->usb_lost[k][0] && !ohci_device(&m->ohci, k) && usbhost_matches(&info, m->usb_lost[k]) &&
-			    usb_take(m, info.id, (int)k)) {
+			    usb_take(m, info.id, (int)k, false)) {
 				m->usb_lost[k][0] = '\0';
 				break;
 			}
@@ -2291,7 +2406,7 @@ static void usb_startup(struct machine *m, const struct nk_boot_options *opt)
 	if (opt->usb_disk)
 		usb_test_disk(m, opt->usb_disk);
 	for (unsigned k = 0; k < opt->usbs; k++)
-		usb_take(m, opt->usb[k], -1);
+		usb_take(m, opt->usb[k], -1, true);
 	m->menu_status[0] = '\0';
 }
 
@@ -3111,7 +3226,7 @@ static void menu_action(struct machine *m, enum ui_action action, const char *pa
 		} else if (action >= UI_USB_CONNECT && action <= UI_USB_CONNECT_LAST &&
 			   (unsigned)(action - UI_USB_CONNECT) < m->usb_listed_count) {
 			m->menu_status[0] = '\0';
-			usb_take(m, m->usb_listed[action - UI_USB_CONNECT].id, -1);
+			usb_take(m, m->usb_listed[action - UI_USB_CONNECT].id, -1, true);
 		}
 		if (action >= UI_EJECT && action <= UI_EJECT_LAST && m->menu_drives[action - UI_EJECT])
 			drive_eject(m, m->menu_drives[action - UI_EJECT]);
@@ -3366,6 +3481,7 @@ static void stay_paused(struct machine *m)
 	while (m->paused && !m->quit) {
 		display_wait(m->display, 1000000000u / 60);
 		display_input(m, host_ns());
+		usb_helper_poll(m);
 	}
 	m->start_ns += host_ns() - from;
 }
@@ -5874,6 +5990,9 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	m->net_poll_ns = old.net_poll_ns;
 	m->usbhost = old.usbhost;
 	memcpy(m->usbhost_why, old.usbhost_why, sizeof m->usbhost_why);
+	m->usb_helper = old.usb_helper;
+	memcpy(m->usb_waiting, old.usb_waiting, sizeof m->usb_waiting);
+	m->usb_waiting_count = old.usb_waiting_count;
 	memcpy(m->usb_listed, old.usb_listed, sizeof m->usb_listed);
 	m->usb_listed_count = old.usb_listed_count;
 	memcpy(m->usb_lost, old.usb_lost, sizeof m->usb_lost);
@@ -6495,6 +6614,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 			fclose(f);
 	}
 	stop_machine(&m);
+	usbremote_stop(m.usb_helper);
 	usbhost_stop(m.usbhost);
 	gpu_close(m.gpu);
 	if (m.wav) {

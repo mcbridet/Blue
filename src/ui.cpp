@@ -709,12 +709,14 @@ static enum ui_action usb_menu(const struct ui_usb *u)
 		const struct ui_usb_device *d = &u->dev[k];
 		ImGui::PushID((int)k + 200);
 		ImGui::BeginDisabled(d->why_not[0] != '\0');
-		if (button("Connect", 0))
+		if (button(d->password ? "Connect (needs your password)" : "Connect", 0))
 			action = (enum ui_action)(UI_USB_CONNECT + k);
 		ImGui::EndDisabled();
 		tip(d->why_not[0] ? d->why_not :
-				    "Plugs it into a free USB port of the Mac: Mac OS needs a driver for it (built in, or "
-				    "its maker's, installed in Mac OS)");
+		    d->password ? "macOS's own driver has it: macOS asks for an administrator's password, and Blue's USB "
+				  "helper takes it from macOS for the Mac (and any others macOS has, until Blue quits)" :
+				  "Plugs it into a free USB port of the Mac: Mac OS needs a driver for it (built in, or "
+				  "its maker's, installed in Mac OS)");
 		beside_buttons();
 		ImGui::Text("%s", d->name);
 		ImGui::SameLine();

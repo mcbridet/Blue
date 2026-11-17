@@ -704,8 +704,10 @@ static int usb_devices(void)
 	for (unsigned k = 0; k < n && k < 64; k++) {
 		static const char *const speeds[] = { "low speed", "full speed", "high speed: can't be passed through",
 						      "super speed: can't be passed through" };
-		printf("%04x:%04x  %-9s %s (%s)\n", info[k].vendor, info[k].product, info[k].id,
-		       info[k].name[0] ? info[k].name : "(no name)", speeds[info[k].speed < 4 ? info[k].speed : 3]);
+		printf("%04x:%04x  %-9s %s (%s%s)\n", info[k].vendor, info[k].product, info[k].id,
+		       info[k].name[0] ? info[k].name : "(no name)", speeds[info[k].speed < 4 ? info[k].speed : 3],
+		       info[k].held && info[k].speed < USB_SPEED_HIGH && geteuid() != 0 ? "; macOS's driver has it: Blue asks for your password" :
+		       "");
 	}
 	usbhost_stop(h);
 	return 0;
