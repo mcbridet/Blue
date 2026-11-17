@@ -277,7 +277,7 @@ API int libusb_set_configuration(libusb_device_handle *h, int value)
 
 API int libusb_get_configuration(libusb_device_handle *h, int *value)
 {
-	*value = h->dev->n == 0 ? config : 1;
+	*value = h->dev->n == 0 && !held(h) ? config : 1;      /* (the host's driver configured it) */
 	return 0;
 }
 

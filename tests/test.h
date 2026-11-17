@@ -1,6 +1,7 @@
 #ifndef BLUE_TEST_H
 #define BLUE_TEST_H
 
+#include <stdbool.h>
 #include <stdio.h>
 
 extern int test_failures;
@@ -67,6 +68,14 @@ void test_jit(void);
 void test_ohci(void);
 void test_usb(void);
 void test_usbhost(void);
+void test_usbremote(void);
+
+/* (test_usbhost.c's, for test_usbremote.c) */
+struct usb_device;
+bool usbhost_test_mock(void);
+void usbhost_test_unmock(void);
+void usbhost_test_transfers(struct usb_device *d, bool (*gone)(const struct usb_device *));
+void usbhost_test_replug(void);
 void test_mp(void);
 void test_nvram(void);
 void test_startup(void);

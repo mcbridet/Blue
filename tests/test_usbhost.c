@@ -73,57 +73,61 @@ static bool until_head(uint32_t at, uint32_t head)
 
 #define TD_FLAGS(dp, toggle) (0xF0000000u | (dp) << 19 | 7u << 21 | (toggle) << 24)
 
-void test_usbhost(void)
+static char image[64], unplugged[80];
+
+static void remove_image(void)
+{
+	unlink(image);
+	unlink(unplugged);
+}
+
+bool usbhost_test_mock(void)
 {
 	char exe[PATH_MAX], lib[PATH_MAX + 32];
 	if (!hostlib_executable(exe, sizeof exe) || !strrchr(exe, '/')) {
 		CHECK(!"the tests' own path");
-		return;
+		return false;
 	}
 	*strrchr(exe, '/') = 0;
 	snprintf(lib, sizeof lib, "%s/libusb-mock.so", exe);
 	if (access(lib, F_OK) != 0) {
 		printf("usbhost skipped (no %s)\n", lib);
-		return;
+		return false;
 	}
-	char image[] = "/tmp/blue-usbhost-XXXXXX", unplugged[64];
-	int fd = mkstemp(image);
-	static uint8_t blocks[32 * 512];
-	for (unsigned k = 0; k < sizeof blocks; k++)
-		blocks[k] = (uint8_t)(k / 512 + 0x30);
-	CHECK(write(fd, blocks, sizeof blocks) == (ssize_t)sizeof blocks);
-	close(fd);
-	snprintf(unplugged, sizeof unplugged, "%s.unplugged", image);
+	if (!image[0]) {                /* (one for all the tests: the stand-in keeps the first it's given) */
+		snprintf(image, sizeof image, "/tmp/blue-usbhost-XXXXXX");
+		int fd = mkstemp(image);
+		static uint8_t blocks[32 * 512];
+		for (unsigned k = 0; k < sizeof blocks; k++)
+			blocks[k] = (uint8_t)(k / 512 + 0x30);
+		CHECK(write(fd, blocks, sizeof blocks) == (ssize_t)sizeof blocks);
+		close(fd);
+		snprintf(unplugged, sizeof unplugged, "%s.unplugged", image);
+		atexit(remove_image);
+	}
 	setenv("BLUE_LIBUSB", lib, 1);
 	setenv("BLUE_LIBUSB_MOCK_IMAGE", image, 1);
+	return true;
+}
 
-	char err[400];
-	struct usbhost *h = usbhost_start(err, sizeof err);
-	CHECK(h != NULL);
-	if (!h)
-		goto out;
-	struct usbhost_info info[8];
-	CHECK_EQ(usbhost_list(h, info, 8), 2);                  /* (the hub isn't listed) */
-	CHECK(!strcmp(info[0].id, "1-3"));
-	CHECK_EQ(info[0].vendor, 0x1209);
-	CHECK_EQ(info[0].speed, USB_SPEED_FULL);
-	CHECK_EQ(info[1].speed, USB_SPEED_HIGH);
-	CHECK(usbhost_matches(&info[0], "1209:0001"));
-	CHECK(!usbhost_matches(&info[0], "1209:0002"));
-	CHECK(usbhost_matches(&info[1], "1-4"));
-	CHECK(usbhost_open(h, "1209:0002", NULL, err, sizeof err) == NULL);  /* high speed */
-	CHECK(strstr(err, "high") != NULL);
-	CHECK(usbhost_open(h, "2-1", NULL, err, sizeof err) == NULL);
-	struct usb_device *d = usbhost_open(h, "1-3", NULL, err, sizeof err);
-	CHECK(d != NULL);
-	if (!d)
-		goto stop;
-	CHECK(usbhost_is(d));
-	CHECK(!usbhost_gone(d));
+void usbhost_test_unmock(void)
+{
+	unsetenv("BLUE_LIBUSB");
+	unsetenv("BLUE_LIBUSB_MOCK_IMAGE");
+}
 
+void usbhost_test_replug(void)
+{
+	unlink(unplugged);
+}
+
+void usbhost_test_transfers(struct usb_device *d, bool (*gone)(const struct usb_device *))
+{
+	CHECK(!gone(d));
 	if (mem_init(&mem)) {
 		CHECK(!"mem_init");
-		goto stop;
+		d->ops->destroy(d);
+		return;
 	}
 	mem_map(&mem, 0, RAM, MEM_RWX);
 	ohci_init(&usb, &mem);
@@ -186,16 +190,49 @@ void test_usbhost(void)
 	ohci_set_time(&usb, now);
 	CHECK(!ohci_waiting(&usb));
 
-	/* unplugged from the host, then plugged in again */
-	fd = open(unplugged, O_CREAT | O_WRONLY, 0644);
+	/* unplugged from the host */
+	int fd = open(unplugged, O_CREAT | O_WRONLY, 0644);
 	close(fd);
-	for (int k = 0; k < 400 && !usbhost_gone(d); k++)
+	for (int k = 0; k < 400 && !gone(d); k++)
 		usleep(5000);
-	CHECK(usbhost_gone(d));
-	struct usb_device *gone = ohci_disconnect(&usb, 0);
-	CHECK(gone == d);
+	CHECK(gone(d));
+	struct usb_device *was = ohci_disconnect(&usb, 0);
+	CHECK(was == d);
 	d->ops->destroy(d);
-	unlink(unplugged);
+	ohci_free(&usb);
+	mem_free(&mem);
+}
+
+void test_usbhost(void)
+{
+	if (!usbhost_test_mock())
+		return;
+	char err[400];
+	struct usbhost *h = usbhost_start(err, sizeof err);
+	CHECK(h != NULL);
+	if (!h)
+		goto out;
+	struct usbhost_info info[8];
+	CHECK_EQ(usbhost_list(h, info, 8), 2);                  /* (the hub isn't listed) */
+	CHECK(!strcmp(info[0].id, "1-3"));
+	CHECK_EQ(info[0].vendor, 0x1209);
+	CHECK_EQ(info[0].speed, USB_SPEED_FULL);
+	CHECK_EQ(info[1].speed, USB_SPEED_HIGH);
+	CHECK(usbhost_matches(&info[0], "1209:0001"));
+	CHECK(!usbhost_matches(&info[0], "1209:0002"));
+	CHECK(usbhost_matches(&info[1], "1-4"));
+	CHECK(usbhost_open(h, "1209:0002", NULL, err, sizeof err) == NULL);  /* high speed */
+	CHECK(strstr(err, "high") != NULL);
+	CHECK(usbhost_open(h, "2-1", NULL, err, sizeof err) == NULL);
+	struct usb_device *d = usbhost_open(h, "1-3", NULL, err, sizeof err);
+	CHECK(d != NULL);
+	if (!d)
+		goto stop;
+	CHECK(usbhost_is(d));
+	usbhost_test_transfers(d, usbhost_gone);
+
+	/* plugged in again */
+	usbhost_test_replug();
 	struct usbhost_info arrived;
 	bool back = false;
 	for (int k = 0; k < 400 && !back; k++) {
@@ -208,12 +245,18 @@ void test_usbhost(void)
 	CHECK(d != NULL);
 	if (d)
 		d->ops->destroy(d);
-	ohci_free(&usb);
-	mem_free(&mem);
+
+	/* the host's driver has it (as macOS's would): only root, or the USB helper, can take it */
+	setenv("BLUE_LIBUSB_MOCK_HELD", "1", 1);
+	bool held = false;
+	d = usbhost_open(h, "1209:0001", &held, err, sizeof err);
+	CHECK(d == NULL);
+#ifdef __APPLE__
+	CHECK(held);
+#endif
+	unsetenv("BLUE_LIBUSB_MOCK_HELD");
 stop:
 	usbhost_stop(h);
 out:
-	unsetenv("BLUE_LIBUSB");
-	unsetenv("BLUE_LIBUSB_MOCK_IMAGE");
-	unlink(image);
+	usbhost_test_unmock();
 }
