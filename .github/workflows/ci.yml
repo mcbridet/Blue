@@ -116,6 +116,10 @@ jobs:
           ls -la "$RUNNER_TEMP/dmg"
           codesign --verify --deep --strict "$RUNNER_TEMP/dmg/Blue.app"
           "$RUNNER_TEMP/dmg/Blue.app/Contents/MacOS/blue" --version | tee version.txt
+          # Blue's USB helper, beside it, signed with it (run by hand, it says what it is)
+          helper="$RUNNER_TEMP/dmg/Blue.app/Contents/MacOS/blue-usb-helper"
+          codesign --verify --strict "$helper"
+          { "$helper" 2>&1 || true; } | grep -q 'USB helper'
           # Spotlight and the like can keep the volume busy for a moment
           detached=
           for i in 1 2 3 4 5; do hdiutil detach "$RUNNER_TEMP/dmg" && { detached=1; break; }; sleep 3; done

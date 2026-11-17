@@ -8,8 +8,9 @@
 #       @rpath/NAME, found through the executable's @executable_path/../Frameworks
 #       and their own @loader_path), their licences in
 #       Contents/Resources/Licenses (Blue's LICENSE and THIRD-PARTY-NOTICES.md
-#       beside it); LSMinimumSystemVersion raised to the newest any of them
-#       needs; ad-hoc signed, the libraries first.
+#       beside it); Blue's USB helper, blue-usb-helper (BLUE's neighbour), in
+#       Contents/MacOS too; LSMinimumSystemVersion raised to the newest any of
+#       them needs; ad-hoc signed, the libraries and the helper first.
 #   tools/package-macos.sh dmg APP OUT.dmg
 #       A disk image with the app, a link to Applications, and Blue's LICENSE.
 #   tools/package-macos.sh sources APP DEPS PACKAGE OUT
@@ -49,6 +50,8 @@ sign() {
 	for f in "$app"/Contents/Frameworks/*.dylib; do
 		[ -L "$f" ] || codesign --force -s - "$f"
 	done
+	codesign --force -s - -i "$(plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist").usb-helper" \
+		"$app/Contents/MacOS/blue-usb-helper"
 	codesign --force -s - "$app"
 	codesign --verify --deep --strict "$app"
 }
@@ -57,7 +60,7 @@ sign() {
 set_minimum() {
 	app=$1
 	need=$(plutil -extract LSMinimumSystemVersion raw "$app/Contents/Info.plist")
-	for f in "$app/Contents/MacOS/blue" "$app"/Contents/Frameworks/*.dylib; do
+	for f in "$app/Contents/MacOS/blue" "$app/Contents/MacOS/blue-usb-helper" "$app"/Contents/Frameworks/*.dylib; do
 		[ -L "$f" ] || need=$(newer "$need" "$(minos "$f")")
 	done
 	plutil -replace LSMinimumSystemVersion -string "$need" "$app/Contents/Info.plist"
@@ -68,9 +71,12 @@ app() {
 	[ $# -eq 4 ] || die "usage: $0 app BLUE INFO_PLIST DEPS OUT.app"
 	blue=$1 plist=$2 deps=${3%/} out=$4
 	[ -n "$deps" ] && [ -d "$deps/lib" ] || die "no libraries to bundle: DEPS ('$deps') should be Homebrew's prefix or tools/macos-deps.sh's"
+	helper=$(dirname "$blue")/blue-usb-helper
+	[ -x "$helper" ] || die "no $helper (make builds it)"
 	rm -rf "$out"
 	mkdir -p "$out/Contents/MacOS" "$out/Contents/Frameworks" "$out/Contents/Resources/Licenses"
 	cp "$blue" "$out/Contents/MacOS/blue"
+	cp "$helper" "$out/Contents/MacOS/blue-usb-helper"
 	cp "$plist" "$out/Contents/Info.plist"
 	printf 'APPL????' > "$out/Contents/PkgInfo"
 
@@ -132,8 +138,10 @@ app() {
 			*) die "$name still loads $ref" ;; esac
 		done
 	done
-	for ref in $(deps "$out/Contents/MacOS/blue"); do
-		die "blue loads $ref (it should load only the system's libraries)"
+	for f in blue blue-usb-helper; do
+		for ref in $(deps "$out/Contents/MacOS/$f"); do
+			die "$f loads $ref (it should load only the system's libraries)"
+		done
 	done
 
 	# Their licences: tools/macos-deps.sh's (share/licenses/LIBRARIES says whose), or the Homebrew keg's
