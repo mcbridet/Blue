@@ -289,11 +289,11 @@ static void host_names(struct usbhost_info *info, uint8_t bus, uint8_t addr)
 }
 #endif
 
-/* What libusb knows of a device without opening it; false for hubs */
-static bool describe(struct usbhost *h, libusb_device *dev, struct usbhost_info *info)
+/* What libusb knows of a device without opening it; false if it can't say, or (unless `hubs`) for a hub */
+static bool describe_any(struct usbhost *h, libusb_device *dev, struct usbhost_info *info, bool hubs)
 {
 	struct libusb_device_descriptor dd;
-	if (h->u.get_device_descriptor(dev, &dd) != 0 || dd.bDeviceClass == 9)
+	if (h->u.get_device_descriptor(dev, &dd) != 0 || (dd.bDeviceClass == 9 && !hubs))
 		return false;
 	memset(info, 0, sizeof *info);
 	info->vendor = dd.idVendor;
@@ -311,6 +311,17 @@ static bool describe(struct usbhost *h, libusb_device *dev, struct usbhost_info 
 	default: info->speed = USB_SPEED_SUPER; break;
 	}
 	return true;
+}
+
+static bool describe(struct usbhost *h, libusb_device *dev, struct usbhost_info *info)
+{
+	return describe_any(h, dev, info, false);
+}
+
+static bool is_hub(struct usbhost *h, libusb_device *dev)
+{
+	struct libusb_device_descriptor dd;
+	return h->u.get_device_descriptor(dev, &dd) == 0 && dd.bDeviceClass == 9;
 }
 
 bool usbhost_matches(const struct usbhost_info *info, const char *spec)
@@ -565,13 +576,19 @@ struct usb_device *usbhost_open(struct usbhost *h, const char *spec, char *err, 
 	ssize_t n = h->u.get_device_list(h->ctx, &list);
 	libusb_device *dev = NULL;
 	struct usbhost_info info;
-	for (ssize_t k = 0; k < n && !dev; k++)
-		if (describe(h, list[k], &info) && usbhost_matches(&info, spec))
-			dev = h->u.ref_device(list[k]);
+	bool hub = false;
+	for (ssize_t k = 0; k < n && !dev; k++) {
+		if (describe_any(h, list[k], &info, true) && usbhost_matches(&info, spec)) {
+			hub = is_hub(h, list[k]);
+			if (!hub)
+				dev = h->u.ref_device(list[k]);
+		}
+	}
 	if (n >= 0)
 		h->u.free_device_list(list, 1);
 	if (!dev) {
-		snprintf(err, size, "there's no USB device %s on the host", spec);
+		snprintf(err, size, hub ? "%s is a USB hub: the Mac's ports take the devices behind it, one by one" :
+			 "there's no USB device %s on the host", spec);
 		return NULL;
 	}
 	uint8_t bus = h->u.get_bus_number(dev), addr = h->u.get_device_address(dev);
