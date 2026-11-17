@@ -705,11 +705,16 @@ static enum ui_action usb_menu(const struct ui_usb *u)
 		ImGui::TextDisabled("Your computer's USB devices, to connect to the Mac:");
 	else
 		ImGui::TextDisabled("Your computer has no USB devices to connect (hubs aren't listed)");
+	static const char password[] = "Connect (needs your password)";
+	float width = 0;                /* (the buttons the same width, if one asks for the password) */
+	for (unsigned k = 0; k < u->count && k < UI_USB_DEVICES; k++)
+		if (u->dev[k].password)
+			width = ImGui::CalcTextSize(password).x + 2 * BUTTON_PAD;
 	for (unsigned k = 0; k < u->count && k < UI_USB_DEVICES; k++) {
 		const struct ui_usb_device *d = &u->dev[k];
 		ImGui::PushID((int)k + 200);
 		ImGui::BeginDisabled(d->why_not[0] != '\0');
-		if (button(d->password ? "Connect (needs your password)" : "Connect", 0))
+		if (button(d->password ? password : "Connect", width))
 			action = (enum ui_action)(UI_USB_CONNECT + k);
 		ImGui::EndDisabled();
 		tip(d->why_not[0] ? d->why_not :
