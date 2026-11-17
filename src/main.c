@@ -77,6 +77,9 @@ static int usage(void)
 		"                               leave a border)\n"
 		"      --no-status-bar          start without the window's status bar (its lights\n"
 		"                               and the processor's speed; F12's menu shows it)\n"
+		"      --usb-test-disk <file>   plug the USB test disk into a USB port: a USB mass\n"
+		"                               storage device whose medium is this image (for tests\n"
+		"                               and debugging; in instruction time too)\n"
 		"      --no-net                 in real time, no network behind the guest's Ethernet\n"
 		"                               (with: NAT to the host's, DHCP on 10.0.2.0/24)\n"
 		"      --no-modem               no internal modem (a window or real time has one,\n"
@@ -98,7 +101,8 @@ static int usage(void)
 		"                               key HEX [down|up], resize W H, screenshot FILE,\n"
 		"                               floppy insert FILE, floppy eject, cdrom insert FILE,\n"
 		"                               cdrom eject, modem ring|pickup|hangup, modem recv TEXT\n"
-		"                               (the modem's far end), mic play FILE, mic stop,\n"
+		"                               (the modem's far end), usb connect FILE (the USB test\n"
+		"                               disk), usb disconnect [PORT], mic play FILE, mic stop,\n"
 		"                               tools install|later|never (the answer to that offer;\n"
 		"                               never: Don't Ask Again), tools offer (the offer, now)\n"
 		"      --max <n>                stop after n PowerPC instructions (with --headless,\n"
@@ -439,6 +443,8 @@ static int cmd_boot(int argc, char **argv)
 			}
 		} else if (strcmp(argv[k], "--no-status-bar") == 0) {
 			opt.no_status_bar = true;
+		} else if (strcmp(argv[k], "--usb-test-disk") == 0 && k + 1 < argc) {
+			opt.usb_disk = argv[++k];
 		} else if (strcmp(argv[k], "--no-net") == 0) {
 			opt.no_net = true;
 		} else if (strcmp(argv[k], "--no-modem") == 0) {

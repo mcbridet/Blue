@@ -51,6 +51,7 @@
 #include "share.h"
 #include "startup.h"
 #include "tools.h"
+#include "usbmsd.h"
 #include "via.h"
 #include "video.h"
 #include "wheel.h"
@@ -1637,7 +1638,7 @@ static int setup_machine(struct machine *m, const struct nk_boot_options *opt)
 		m->sound.recorded = recorded_sound;
 	mmio_add(&m->bus, MACIO_SOUND, BURGUNDY_SIZE, &burgundy_mmio_ops, &m->sound, "sound");
 	ohci_init(&m->ohci, &m->mem);
-	m->ohci.log = getenv("BLUE_LOG_USB") != NULL;
+	m->ohci.log = getenv("BLUE_LOG_USB") ? (atoi(getenv("BLUE_LOG_USB")) > 1 ? 2 : 1) : 0;
 	mmio_add(&m->bus, USB_BASE, OHCI_SIZE, &ohci_mmio_ops, &m->ohci, "usb");
 	mmio_pure_reads(&m->bus, ohci_pure_read);
 
@@ -2105,6 +2106,57 @@ static const char *drive_name(const struct machine *m, const struct disk *d)
 }
 
 /* An image goes in a drive: the one `want` (NULL: as `kind` says, see drives_pick()) */
+/* USB: devices in the controller's two ports (the test disk, usbmsd.h) */
+static bool usb_plug(struct machine *m, struct usb_device *d)
+{
+	for (unsigned k = 0; k < OHCI_PORTS; k++) {
+		if (!ohci_device(&m->ohci, k) && ohci_connect(&m->ohci, k, d)) {
+			printf("usb: %s connected to port %u\n", d->name, k + 1);
+			m->dev_dirty = true;
+			return true;
+		}
+	}
+	fprintf(stderr, "usb: %s: both ports are taken\n", d->name);
+	d->ops->destroy(d);
+	return false;
+}
+
+static void usb_unplug(struct machine *m, unsigned k, const char *why)
+{
+	struct usb_device *d = ohci_disconnect(&m->ohci, k);
+	if (!d)
+		return;
+	printf("usb: %s disconnected from port %u%s\n", d->name, k + 1, why);
+	d->ops->destroy(d);
+	m->dev_dirty = true;
+}
+
+static void usb_test_disk(struct machine *m, const char *path)
+{
+	char err[300];
+	struct usb_device *d = usbmsd_open(path, false, err, sizeof err);
+	if (!d)
+		fprintf(stderr, "usb: %s\n", err);
+	else
+		usb_plug(m, d);
+}
+
+static void usb_unplug_test_disks(struct machine *m)
+{
+	for (unsigned k = 0; k < OHCI_PORTS; k++) {
+		struct usb_device *d = ohci_device(&m->ohci, k);
+		if (d && usbmsd_is(d))
+			usb_unplug(m, k, "");
+	}
+}
+
+/* The devices the command line plugs in at startup */
+static void usb_startup(struct machine *m, const struct nk_boot_options *opt)
+{
+	if (opt->usb_disk)
+		usb_test_disk(m, opt->usb_disk);
+}
+
 static bool drive_insert(struct machine *m, const char *path, enum drives_for kind, struct disk *want)
 {
 	char why[400];
@@ -3466,6 +3518,13 @@ static int script_load(struct script *s, const char *path)
 				const char *t = rest + n + (rest[n] == ' ');
 				snprintf(e.arg, sizeof e.arg, "%.*s", (int)strcspn(t, "\r\n"), t);
 			}
+		} else if (strcmp(e.cmd, "usb") == 0) {
+			/* usb connect FILE (the test disk: the rest of the line), usb disconnect [PORT] */
+			e.a = sscanf(rest, " connect %255[^\n]", e.arg) == 1 ? 1 : strstr(rest, "disconnect") ? 2 : 0;
+			if (e.a == 2)
+				sscanf(rest, " disconnect %d", &e.b);
+			for (size_t n = strlen(e.arg); n && (e.arg[n - 1] == ' ' || e.arg[n - 1] == '\r'); n--)
+				e.arg[n - 1] = '\0';
 		} else if (strcmp(e.cmd, "wheel") == 0) {
 			/* wheel DX DY: lines (or parts of one) right and up, in the host's units */
 			double dx = 0, dy = 0;
@@ -3668,6 +3727,15 @@ static void script_run(struct machine *m, struct script *s)
 				share_host_file(m, e->arg);
 			else
 				fprintf(stderr, "input script: share eject, share refresh, or share file NAME TEXT\n");
+		} else if (strcmp(e->cmd, "usb") == 0) {
+			if (e->a == 1)
+				usb_test_disk(m, e->arg);
+			else if (e->a == 2 && e->b >= 1 && e->b <= OHCI_PORTS)
+				usb_unplug(m, (unsigned)e->b - 1, "");
+			else if (e->a == 2)
+				usb_unplug_test_disks(m);
+			else
+				fprintf(stderr, "input script: usb connect FILE, or usb disconnect [PORT]\n");
 		} else if (strcmp(e->cmd, "mic") == 0) {
 			if (e->a == 1 && !mic_play(m, e->arg, false))
 				printf("mic: %s plays as the microphone, at instruction %llu\n", e->arg,
@@ -5529,6 +5597,7 @@ static void stop_machine(struct machine *m)
 	net_free(&m->net);
 	if (m->modem_on)
 		modemnet_free(&m->modemnet);
+	ohci_free(&m->ohci);
 	jit_free(m->cpu.jit);
 	mem_free(&m->mem);
 }
@@ -5586,7 +5655,10 @@ static void restart_from(struct machine *m, struct nk_boot_options *opt, const s
 static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 {
 	static struct machine old;
+	struct usb_device *usb[OHCI_PORTS];     /* (USB devices stay plugged in) */
 
+	for (unsigned k = 0; k < OHCI_PORTS; k++)
+		usb[k] = ohci_disconnect(&m->ohci, k);
 	old = *m;
 	stop_machine(m);
 	memset(m, 0, sizeof *m);
@@ -5664,6 +5736,9 @@ static int restart_machine(struct machine *m, struct nk_boot_options *opt)
 	restart_from(m, opt, &old);
 	if (start_machine(m, opt))
 		return -1;
+	for (unsigned k = 0; k < OHCI_PORTS; k++)
+		if (usb[k])
+			ohci_connect(&m->ohci, k, usb[k]);
 	m->install.check.apple_kept = old.install.check.apple_kept;
 	tools_startup(m, opt);
 	m->cpu.icount = old.cpu.icount;
@@ -5815,6 +5890,7 @@ int nk_boot(const struct rom *rom, const struct nk_boot_options *options)
 	for (size_t k = 0; k < script.count; k++)
 		m.tools_offer |= strcmp(script.ev[k].cmd, "tools") == 0;
 	tools_startup(&m, opt);
+	usb_startup(&m, opt);
 
 	struct ppc_cpu *cpu = &m.cpu;
 	const char *why = NULL;
