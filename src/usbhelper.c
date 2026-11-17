@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include "usb.h"
@@ -186,6 +187,9 @@ int usbhelper_serve(int fd)
 		fcntl(s->wake[k], F_SETFD, FD_CLOEXEC);
 	}
 	s->fd = fd;
+	int buffer = 256 * 1024;
+	setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer, sizeof buffer);
+	setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer, sizeof buffer);
 	int result = 0;
 	struct usbproto_msg hello = { .type = USBPROTO_HELLO, .status = USBPROTO_VERSION, .id = (uint32_t)getpid() };
 	bool ok = usbproto_send(fd, &hello, NULL);

@@ -149,6 +149,17 @@ static void answered(struct usbremote *r, const struct usbproto_msg *m)
 	forget(p);
 }
 
+/* A request, whole (or not at all: false) */
+static bool send_msg(struct usbremote *r, const struct usbproto_msg *m, const void *data)
+{
+	if (atomic_load(&r->dead) || usbproto_check_request(m, data))
+		return false;
+	pthread_mutex_lock(&r->wlock);
+	bool ok = usbproto_send(r->fd, m, data);
+	pthread_mutex_unlock(&r->wlock);
+	return ok;
+}
+
 /* Reads the helper's answers, until its end closes */
 static void *reader(void *arg)
 {
@@ -161,6 +172,7 @@ static void *reader(void *arg)
 			break;
 		}
 		pthread_mutex_lock(&r->lock);
+		bool unwanted = false;
 		if (m.type == USBPROTO_DONE) {
 			answered(r, &m);
 		} else if (m.type == USBPROTO_OPENED && m.id == r->open_id && !r->opened) {
@@ -168,10 +180,16 @@ static void *reader(void *arg)
 			memcpy(r->open_data, r->buf, m.data);
 			r->opened = true;
 			pthread_cond_broadcast(&r->cond);
+		} else if (m.type == USBPROTO_OPENED) {
+			unwanted = m.status == 0;       /* (too late: given up waiting for) */
 		} else if (m.type == USBPROTO_GONE && r->devs[m.dev]) {
 			atomic_store(&r->devs[m.dev]->gone, true);
 		}
 		pthread_mutex_unlock(&r->lock);
+		if (unwanted) {
+			struct usbproto_msg close = { .type = USBPROTO_CLOSE, .dev = m.dev };
+			send_msg(r, &close, NULL);
+		}
 	}
 	pthread_mutex_lock(&r->lock);
 	atomic_store(&r->dead, true);
@@ -190,17 +208,6 @@ static void *reader(void *arg)
 	pthread_cond_broadcast(&r->cond);
 	pthread_mutex_unlock(&r->lock);
 	return NULL;
-}
-
-/* A request, whole (or not at all: false) */
-static bool send_msg(struct usbremote *r, const struct usbproto_msg *m, const void *data)
-{
-	if (atomic_load(&r->dead) || usbproto_check_request(m, data))
-		return false;
-	pthread_mutex_lock(&r->wlock);
-	bool ok = usbproto_send(r->fd, m, data);
-	pthread_mutex_unlock(&r->wlock);
-	return ok;
 }
 
 /* Gives up transfer `id` that couldn't be sent; false if it's been answered all the same (the helper gone) */
