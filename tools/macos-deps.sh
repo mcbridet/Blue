@@ -212,7 +212,7 @@ source_of libslirp.0.dylib libslirp "$SLIRP_VERSION" BSD-3-Clause macos-deps.sh 
 usb_url=https://github.com/libusb/libusb/releases/download/v$USB_VERSION/libusb-$USB_VERSION.tar.bz2
 fetch "$usb_url" "libusb-$USB_VERSION.tar.bz2" "$USB_SHA256"
 host=
-[ "$arch" = "$(uname -m)" ] || host=--host=$(case $arch in arm64) echo aarch64 ;; *) echo "$arch" ;; esac)-apple-darwin
+[ "$arch" = "$(uname -m)" ] || host=--host=$family-apple-darwin      # (family: see the cross file above)
 # (pipe2() isn't on older macOS, though newer SDKs declare it: libusb uses pipe() without it, as GLib does above)
 (cd "$work/libusb-$USB_VERSION" && ./configure ${host:+"$host"} ac_cv_func_pipe2=no --prefix="$prefix" --disable-static \
 	--disable-examples-build --disable-tests-build > /dev/null && make -j "$jobs" > /dev/null && make install > /dev/null)
