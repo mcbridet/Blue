@@ -7,7 +7,8 @@
  * Contents/Frameworks; ../lib elsewhere: an AppImage's usr/lib), then as
  * the system finds it (and on macOS in Homebrew's and MacPorts'
  * directories, which bare names aren't looked for in). BLUE_LOG_LIBS=1
- * says which file each came from.
+ * says which file each came from; BLUE_LIBUSB names a libusb to use
+ * instead (a test's stand-in for it).
  */
 #ifndef BLUE_HOSTLIB_H
 #define BLUE_HOSTLIB_H

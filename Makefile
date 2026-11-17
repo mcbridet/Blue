@@ -30,7 +30,7 @@ THIRD_DEFS := -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_DEFLATE_APIS -DMINIZ_NO_STDIO -
 	      -DMINIZ_NO_ZLIB_COMPATIBLE_NAMES -DBZ_NO_STDIO
 LIB_OBJ := $(LIB_SRC:src/%.c=$(BUILD)/%.o) $(BUILD)/ui.o $(IMGUI_SRC:third_party/imgui/%.cpp=$(BUILD)/imgui/%.o) \
 	   $(THIRD_SRC:%.c=$(BUILD)/%.o)
-TEST_SRC := $(wildcard tests/*.c)
+TEST_SRC := $(filter-out tests/libusb_mock.c,$(wildcard tests/*.c))
 TEST_OBJ := $(TEST_SRC:tests/%.c=$(BUILD)/tests/%.o)
 
 # (src/version.h's)
@@ -75,8 +75,12 @@ appimage:
 version:
 	@echo $(VERSION)
 
-$(BUILD)/blue-tests: $(TEST_OBJ) $(LIB_OBJ)
-	$(CXX) $(LDFLAGS) -o $@ $^ -lm -ldl -lpthread $(HOST_LIBS)
+$(BUILD)/blue-tests: $(TEST_OBJ) $(LIB_OBJ) $(BUILD)/libusb-mock.so
+	$(CXX) $(LDFLAGS) -o $@ $(TEST_OBJ) $(LIB_OBJ) -lm -ldl -lpthread $(HOST_LIBS)
+
+# A stand-in for libusb-1.0 (tests/libusb_mock.c) that the tests load in its place
+$(BUILD)/libusb-mock.so: tests/libusb_mock.c src/usb.c src/usbmsd.c $(wildcard src/*.h) | $(BUILD)
+	$(CC) $(CFLAGS) -fPIC -shared -o $@ tests/libusb_mock.c src/usb.c src/usbmsd.c -lpthread
 
 $(BUILD)/%.o: src/%.c $(wildcard src/*.h src/*.inc) | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<

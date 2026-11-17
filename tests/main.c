@@ -29,6 +29,7 @@ int main(int argc, char **argv)
 		{ "dmg", test_dmg },
 		{ "ohci", test_ohci },
 		{ "usb", test_usb },
+		{ "usbhost", test_usbhost },
 		{ "drivers", test_drivers },
 		{ "net", test_net },
 		{ "hfs", test_hfs },

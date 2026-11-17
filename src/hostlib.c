@@ -100,7 +100,8 @@ static const char *file_of(void *lib, const struct hostlib_names *l)
 void *hostlib_open(enum hostlib which)
 {
 	const struct hostlib_names *l = &libs[which];
-	void *lib = open_bundled(l);
+	void *lib = which == HOSTLIB_USB && getenv("BLUE_LIBUSB") ? dlopen(getenv("BLUE_LIBUSB"), RTLD_NOW | RTLD_LOCAL) :
+		    open_bundled(l);
 	for (size_t k = 0; k < l->count && !lib; k++)
 		lib = dlopen(l->system[k], RTLD_NOW | RTLD_LOCAL);
 	if (lib && getenv("BLUE_LOG_LIBS"))
