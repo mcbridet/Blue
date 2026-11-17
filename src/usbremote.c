@@ -512,8 +512,14 @@ static int ask(struct usbremote *r, char *why, size_t size)
 	if (st != errAuthorizationSuccess || !pipe) {
 		if (pipe)
 			fclose(pipe);
-		snprintf(why, size, st == errAuthorizationDenied ? "that password isn't an administrator's" :
-			 "Blue's USB helper couldn't be started as root (error %d)", (int)st);
+		if (st == errAuthorizationInteractionNotAllowed)
+			snprintf(why, size, "macOS can't ask for an administrator's password here (without a screen, "
+				 "over ssh say): start Blue with sudo instead");
+		else if (st == errAuthorizationDenied)
+			snprintf(why, size, "macOS didn't allow it: an administrator's name and password are needed");
+		else
+			snprintf(why, size, "Blue's USB helper couldn't be started as root (Authorization Services' error "
+				 "%d)", (int)st);
 		return -1;
 	}
 	int fd = fcntl(fileno(pipe), F_DUPFD_CLOEXEC, 3);

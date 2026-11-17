@@ -556,6 +556,9 @@ static void release_all(struct hostdev *hd, bool give_back)
  */
 static bool claim_all(struct hostdev *hd, int value, bool *held, char *err, size_t size)
 {
+#ifndef __APPLE__
+	(void)held;                     /* (Linux: a udev rule, not root, would) */
+#endif
 	struct usbhost *h = hd->h;
 	struct libusb_config_descriptor *c;
 	learn_endpoints(hd, value);
